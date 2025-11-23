@@ -1,47 +1,56 @@
-# ============================================================
-# BASE IMAGE
-# ============================================================
-FROM python:3.11-slim AS base
+##############################################
+# 1) BUILDER STAGE — install dependencies
+##############################################
 
-# Prevent Python from writing .pyc files and buffer output
+FROM python:3.11-slim AS builder
+
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
-# Security + timezone
-ENV TZ=Europe/Sarajevo
-
-# Create working directory
 WORKDIR /app
 
-# Install system deps (needed for FastAPI, httpx, notion-client)
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-        build-essential \
-        curl \
-        libffi-dev \
-        libssl-dev \
-        wget \
-        ca-certificates && \
-    rm -rf /var/lib/apt/lists/*
+# System dependencies for compiling wheels
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    gcc \
+    curl \
+    libffi-dev \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
 
-# ============================================================
-# INSTALL PYTHON DEPENDENCIES
-# ============================================================
+# Upgrade pip + install wheel to speed up builds
+RUN pip install --upgrade pip wheel
+
+# Copy requirements and install into isolated venv
 COPY requirements.txt .
-RUN pip install --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+RUN python -m venv /builder_venv && \
+    /builder_venv/bin/pip install --no-cache-dir -r requirements.txt
 
-# ============================================================
-# COPY APPLICATION CODE (excluding venv, cache, junk)
-# ============================================================
-COPY ./ ./
 
-# ============================================================
-# EXPOSE PORT
-# ============================================================
+##############################################
+# 2) FINAL STAGE — lightweight production image
+##############################################
+
+FROM python:3.11-slim
+
+# Prevent pyc files and enable unbuffered logs
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV TZ=Europe/Sarajevo
+
+WORKDIR /app
+
+# Copy venv from builder stage
+COPY --from=builder /builder_venv /venv
+
+# Add venv to PATH
+ENV PATH="/venv/bin:$PATH"
+
+# Copy actual application code
+COPY . .
+
+# Expose FastAPI port
 EXPOSE 10000
 
-# ============================================================
-# FINAL CMD (single worker for Starter plan)
-# ============================================================
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "10000", "--workers", "1"]
+# Run Uvicorn — single worker (Render free/starter)
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "10000"]
