@@ -1,51 +1,83 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, status
 from services.notion_sync_service import NotionSyncService
-
-# Globalni sync service – biće postavljen iz main.py
-sync_service_global: NotionSyncService | None = None
 
 router = APIRouter(prefix="/sync", tags=["Sync"])
 
+# Global sync service instance (injected via main.py)
+sync_service_global: NotionSyncService | None = None
 
-# ---------------------------------------------------------
-# GOALS SYNC
-# ---------------------------------------------------------
-@router.post("/goals")
+
+# ============================================================
+# INTERNAL VALIDATION
+# ============================================================
+def _require_sync_service() -> NotionSyncService:
+    if sync_service_global is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="NotionSyncService is not initialized"
+        )
+    return sync_service_global
+
+
+# ============================================================
+# SYNC: GOALS
+# ============================================================
+@router.post(
+    "/goals",
+    summary="Full sync for Goals (Notion ↔ Backend)",
+    status_code=status.HTTP_200_OK
+)
 async def sync_goals():
-    """
-    Full goals sync:
-    1. Notion → Backend (DOWN)
-    2. Backend → Notion (UP)
-    """
-    if sync_service_global is None:
-        raise HTTPException(500, "sync_service_global is not initialized")
+    service = _require_sync_service()
 
     try:
-        await sync_service_global.sync_goals_down()
-        await sync_service_global.sync_goals_up()
+        # Step 1: Notion → Backend
+        await service.sync_goals_down()
+
+        # Step 2: Backend → Notion
+        await service.sync_goals_up()
+
+        return {
+            "status": "success",
+            "synced": "goals",
+            "direction": "down + up",
+            "message": "Goals synchronized successfully"
+        }
+
     except Exception as e:
-        raise HTTPException(500, f"Failed to sync goals: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Goal sync failed: {str(e)}"
+        )
 
-    return {"status": "success", "message": "Goals synced successfully"}
 
-
-# ---------------------------------------------------------
-# TASKS SYNC
-# ---------------------------------------------------------
-@router.post("/tasks")
+# ============================================================
+# SYNC: TASKS
+# ============================================================
+@router.post(
+    "/tasks",
+    summary="Full sync for Tasks (Notion ↔ Backend)",
+    status_code=status.HTTP_200_OK
+)
 async def sync_tasks():
-    """
-    Full tasks sync:
-    1. Notion → Backend (DOWN)
-    2. Backend → Notion (UP)
-    """
-    if sync_service_global is None:
-        raise HTTPException(500, "sync_service_global is not initialized")
+    service = _require_sync_service()
 
     try:
-        await sync_service_global.sync_tasks_down()
-        await sync_service_global.sync_tasks_up()
-    except Exception as e:
-        raise HTTPException(500, f"Failed to sync tasks: {str(e)}")
+        # Step 1: Notion → Backend
+        await service.sync_tasks_down()
 
-    return {"status": "success", "message": "Tasks synced successfully"}
+        # Step 2: Backend → Notion
+        await service.sync_tasks_up()
+
+        return {
+            "status": "success",
+            "synced": "tasks",
+            "direction": "down + up",
+            "message": "Tasks synchronized successfully"
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Task sync failed: {str(e)}"
+        )

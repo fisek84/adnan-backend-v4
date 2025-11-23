@@ -1,11 +1,17 @@
 openapi: 3.1.0
 info:
-  title: Evolia Backend v4 API
+  title: Evolia Backend v4 (PRO)
   version: "4.0"
-  description: Official backend for Evolia System. Provides full Goal/Task management, sync capabilities, and Agents module.
+  description: >
+    Full Evolia backend API:
+    - Goal/Task management
+    - Notion sync engine
+    - AI Command system
+    - Agents module
+    - Health & system introspection
 
 servers:
-  - url: "https://adnan-backend-v4.onrender.com"
+  - url: https://adnan-backend-v4.onrender.com
 
 components:
   securitySchemes:
@@ -13,73 +19,171 @@ components:
       type: apiKey
       in: header
       name: X-API-Key
+
   schemas:
-    Goal:
+
+    # -------------------------------
+    # CORE MODELS
+    # -------------------------------
+
+    GoalModel:
       type: object
+      required: [id, title, status, progress, created_at, updated_at]
       properties:
-        id:
+        id: { type: string }
+        title: { type: string }
+        description: { type: string, nullable: true }
+        deadline: { type: string, nullable: true }
+        parent_id: { type: string, nullable: true }
+        priority: 
           type: string
-        title:
+          enum: [low, medium, high]
+          nullable: true
+        status: 
           type: string
-        level:
+          enum: [pending, in_progress, completed]
+        progress:
+          type: number
+          minimum: 0
+          maximum: 100
+        children:
+          type: array
+          items: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    TaskModel:
+      type: object
+      required: [id, title, status, created_at, updated_at]
+      properties:
+        id: { type: string }
+        title: { type: string }
+        description: { type: string, nullable: true }
+        goal_id: { type: string, nullable: true }
+        deadline: { type: string, nullable: true }
+        priority:
           type: string
-        parent_id:
-          type: string
+          enum: [low, medium, high]
           nullable: true
         status:
           type: string
-        progress:
-          type: number
-        created_at:
-          type: string
-          format: date-time
+          enum: [pending, in_progress, completed]
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
 
-    Task:
+    AIResponse:
       type: object
       properties:
-        id:
-          type: string
-        title:
-          type: string
-        goal_id:
-          type: string
-        due_date:
-          type: string
-          format: date
-        status:
-          type: string
-        created_at:
-          type: string
-          format: date-time
+        success: { type: boolean }
+        result: { nullable: true }
+        message: { type: string, nullable: true }
+        metadata: 
+          type: object
+          additionalProperties: true
+        error: { type: string, nullable: true }
+
+    AICommand:
+      type: object
+      required: [command]
+      properties:
+        command: { type: string }
+        input: { nullable: true }
+        agent: { type: string, nullable: true }
+        params:
+          type: object
+          additionalProperties: true
+        metadata:
+          type: object
+          additionalProperties: true
+
+    AgentMessage:
+      type: object
+      required: [agent, content]
+      properties:
+        agent: { type: string }
+        content: { type: string }
+        type: { type: string, default: "message" }
+
+    AgentProject:
+      type: object
+      required: [agent, title]
+      properties:
+        agent: { type: string }
+        title: { type: string }
+        description: { type: string }
+
+    AgentStateUpdate:
+      type: object
+      required: [agent, state]
+      properties:
+        agent: { type: string }
+        state: { type: string }
 
 security:
   - ApiKeyAuth: []
 
 paths:
 
-  #############################
+  # -------------------------------
+  # SYSTEM & HEALTH
+  # -------------------------------
+
+  /:
+    get:
+      summary: Root check
+      responses:
+        "200":
+          description: Running status
+
+  /health:
+    get:
+      summary: Health check
+      responses:
+        "200":
+          description: Healthy
+
+  /engine:
+    get:
+      summary: Master engine status
+      responses:
+        "200":
+          description: Engine info
+
+  /engine/state:
+    get:
+      summary: Get internal engine state
+      responses:
+        "200":
+          description: State info
+
+  /engine/progress:
+    get:
+      summary: Get progress engine status
+      responses:
+        "200":
+          description: Progress info
+
+  # -------------------------------
   # GOALS
-  #############################
+  # -------------------------------
 
   /goals/all:
     get:
-      operationId: getAllGoals
       summary: Get all goals
       security:
         - ApiKeyAuth: []
       responses:
         "200":
-          description: List of goals
+          description: All goals
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  $ref: "#/components/schemas/Goal"
+                  $ref: "#/components/schemas/GoalModel"
 
   /goals/create:
     post:
-      operationId: createGoal
       summary: Create a new goal
       security:
         - ApiKeyAuth: []
@@ -88,32 +192,41 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              properties:
-                title:
-                  type: string
-                level:
-                  type: string
-                parent_id:
-                  type: string
-                  nullable: true
+              $ref: "#/components/schemas/GoalModel"
       responses:
         "200":
           description: Created goal
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Goal"
+                $ref: "#/components/schemas/GoalModel"
 
-  /goals/update/{goal_id}:
-    post:
-      operationId: updateGoal
-      summary: Update a goal
+  /goals/{goal_id}:
+    get:
+      summary: Retrieve goal by ID
       security:
         - ApiKeyAuth: []
       parameters:
-        - name: goal_id
-          in: path
+        - in: path
+          name: goal_id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Goal
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoalModel"
+
+    put:
+      summary: Update goal
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - in: path
+          name: goal_id
           required: true
           schema:
             type: string
@@ -122,29 +235,46 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              properties:
-                title:
-                  type: string
-                level:
-                  type: string
-                status:
-                  type: string
+              $ref: "#/components/schemas/GoalModel"
       responses:
         "200":
           description: Updated goal
+
+    delete:
+      summary: Delete goal
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: goal_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Deleted goal
+
+  # -------------------------------
+  # TASKS
+  # -------------------------------
+
+  /tasks/all:
+    get:
+      summary: Get all tasks
+      security:
+        - ApiKeyAuth: []
+      responses:
+        "200":
+          description: All tasks
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Goal"
-
-  #############################
-  # TASKS
-  #############################
+                type: array
+                items:
+                  $ref: "#/components/schemas/TaskModel"
 
   /tasks/create:
     post:
-      operationId: createTask
       summary: Create a task
       security:
         - ApiKeyAuth: []
@@ -153,27 +283,28 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              properties:
-                title:
-                  type: string
-                goal_id:
-                  type: string
-                due_date:
-                  type: string
-                  format: date
+              $ref: "#/components/schemas/TaskModel"
       responses:
         "200":
           description: Created task
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Task"
 
-  /tasks/update/{task_id}:
-    post:
-      operationId: updateTask
-      summary: Update a task
+  /tasks/{task_id}:
+    get:
+      summary: Get task by ID
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - in: path
+          name: task_id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Task
+
+    put:
+      summary: Update task
       security:
         - ApiKeyAuth: []
       parameters:
@@ -187,116 +318,122 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              properties:
-                title:
-                  type: string
-                status:
-                  type: string
-                due_date:
-                  type: string
-                  format: date
+              $ref: "#/components/schemas/TaskModel"
       responses:
         "200":
           description: Updated task
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Task"
 
-  #############################
-  # SYNC
-  #############################
-
-  /sync:
-    post:
-      operationId: syncData
-      summary: Sync goal/task progress
-      security:
-        - ApiKeyAuth: []
-      responses:
-        "200":
-          description: Sync result
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status:
-                    type: string
-                  synced_goals:
-                    type: integer
-                  synced_tasks:
-                    type: integer
-
-  #############################
-  # AGENTS
-  #############################
-
-  /agents/message:
-    post:
-      operationId: sendAgentMessage
-      summary: Send message to agent system
-      security:
-        - ApiKeyAuth: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                agent_id:
-                  type: string
-                message:
-                  type: string
-      responses:
-        "200":
-          description: Agent response
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status:
-                    type: string
-                  response:
-                    type: string
-
-  /agents/messages:
-    get:
-      operationId: getAgentMessages
-      summary: Get message history for agent
+    delete:
+      summary: Delete task
       security:
         - ApiKeyAuth: []
       parameters:
-        - in: query
-          name: agent_id
+        - name: task_id
+          in: path
           required: true
           schema:
             type: string
       responses:
         "200":
-          description: Message list
+          description: Deleted task
+
+  # -------------------------------
+  # SYNC
+  # -------------------------------
+
+  /sync/goals:
+    post:
+      summary: Sync goals with Notion (UP + DOWN)
+      security:
+        - ApiKeyAuth: []
+      responses:
+        "200":
+          description: Sync result
+
+  /sync/tasks:
+    post:
+      summary: Sync tasks with Notion (UP + DOWN)
+      security:
+        - ApiKeyAuth: []
+      responses:
+        "200":
+          description: Sync result
+
+  # -------------------------------
+  # AI COMMANDS
+  # -------------------------------
+
+  /ai/command:
+    post:
+      summary: Execute AI command
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AICommand"
+      responses:
+        "200":
+          description: AI command result
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  messages:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        role:
-                          type: string
-                        content:
-                          type: string
+                $ref: "#/components/schemas/AIResponse"
+
+  /ai/run:
+    post:
+      summary: Run high-level AI command
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AICommand"
+      responses:
+        "200":
+          description: AI command result
+
+  # -------------------------------
+  # AGENTS
+  # -------------------------------
+
+  /agents/message:
+    post:
+      summary: Send message to agent exchange
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AgentMessage"
+      responses:
+        "200":
+          description: Stored message
+
+  /agents/messages:
+    get:
+      summary: Get recent messages
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: List of messages
 
   /agents/project:
     post:
-      operationId: setAgentProject
-      summary: Update or set project context
+      summary: Create agent project
       security:
         - ApiKeyAuth: []
       requestBody:
@@ -304,27 +441,14 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              properties:
-                agent_id:
-                  type: string
-                project:
-                  type: string
+              $ref: "#/components/schemas/AgentProject"
       responses:
         "200":
-          description: Project updated
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status:
-                    type: string
+          description: Project created
 
   /agents/state:
     post:
-      operationId: setAgentState
-      summary: Update or retrieve agent state
+      summary: Update an agent's internal state
       security:
         - ApiKeyAuth: []
       requestBody:
@@ -332,21 +456,7 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              properties:
-                agent_id:
-                  type: string
-                state:
-                  type: string
+              $ref: "#/components/schemas/AgentStateUpdate"
       responses:
         "200":
-          description: State updated
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status:
-                    type: string
-                  state:
-                    type: string
+          description: Updated state

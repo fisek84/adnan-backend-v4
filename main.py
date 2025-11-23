@@ -1,57 +1,63 @@
-import sys
 import os
+import sys
 from pathlib import Path
-
-# ensure project root is importable
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
 from fastapi import FastAPI, Depends, HTTPException, Header
 from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 
 # ============================================================
-# LOAD ENVIRONMENT (SAFE MODE)
+# PROJECT ROOT / CLEAN IMPORTS
 # ============================================================
-# Loads .env IF it exists – does NOT fail if it doesn't
+ROOT = Path(__file__).resolve().parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+# ============================================================
+# LOAD ENV (SAFE MODE)
+# ============================================================
+# Loads .env only if exists (local dev)
 load_dotenv()
 
-NOTION_API_KEY = os.getenv("NOTION_API_KEY")
-NOTION_GOALS_DB_ID = os.getenv("NOTION_GOALS_DB_ID")
-NOTION_TASKS_DB_ID = os.getenv("NOTION_TASKS_DB_ID")
-GPT_API_KEY = os.getenv("GPT_API_KEY")
+def env(name: str, default: str | None = None) -> str | None:
+    """Safe env getter with optional fallback."""
+    return os.getenv(name, default)
+
+NOTION_API_KEY = env("NOTION_API_KEY")
+NOTION_GOALS_DB_ID = env("NOTION_GOALS_DB_ID")
+NOTION_TASKS_DB_ID = env("NOTION_TASKS_DB_ID")
+GPT_API_KEY = env("GPT_API_KEY")
 
 # NEW ENV VARS FOR AGENTS
-NOTION_AGENT_EXCHANGE_DB_ID = os.getenv("NOTION_AGENT_EXCHANGE_DB_ID")
-NOTION_AGENT_PROJECTS_DB_ID = os.getenv("NOTION_AGENT_PROJECTS_DB_ID")
+NOTION_AGENT_EXCHANGE_DB_ID = env("NOTION_AGENT_EXCHANGE_DB_ID")
+NOTION_AGENT_PROJECTS_DB_ID = env("NOTION_AGENT_PROJECTS_DB_ID")
 
-# Warn if important env vars are missing (does NOT crash backend)
-missing = []
-if not NOTION_API_KEY: missing.append("NOTION_API_KEY")
-if not NOTION_GOALS_DB_ID: missing.append("NOTION_GOALS_DB_ID")
-if not NOTION_TASKS_DB_ID: missing.append("NOTION_TASKS_DB_ID")
-
+# Warn about missing values (non-fatal)
+required_vars = {
+    "NOTION_API_KEY": NOTION_API_KEY,
+    "NOTION_GOALS_DB_ID": NOTION_GOALS_DB_ID,
+    "NOTION_TASKS_DB_ID": NOTION_TASKS_DB_ID,
+}
+missing = [k for k, v in required_vars.items() if not v]
 if missing:
     print(f"⚠ WARNING: Missing environment variables: {', '.join(missing)}")
-    print("Backend will still run, but Notion sync may fail.")
+    print("Backend will still run, but Notion sync will fail for missing values.")
 
 
 # ============================================================
-# IMPORT MODULES (routers + services)
+# IMPORT SERVICES (DO NOT MOVE ABOVE ENV)
 # ============================================================
 from services.goals_service import GoalsService
 from services.tasks_service import TasksService
 from services.ai_command_service import AICommandService
 from services.notion_service import NotionService
 from services.notion_sync_service import NotionSyncService
-
-# NEW IMPORTS FOR AGENTS
 from services.agents_service import AgentsService
-import routers.agents_router as agents_router_module
 
 import routers.goals_router as goals_router_module
 import routers.tasks_router as tasks_router_module
 import routers.ai_router as ai_router_module
 import routers.sync_router as sync_router_module
+import routers.agents_router as agents_router_module
 
 from core.master_engine import MasterEngine
 
@@ -61,30 +67,24 @@ from core.master_engine import MasterEngine
 # ============================================================
 app = FastAPI(
     title="Evolia Backend v4",
-    version="4.0",
-    description="Evolia Core Backend + Notion Sync Engine"
+    version="4.1",
+    description="Evolia Core Backend + Notion Sync Engine (Stabilized)"
 )
 
-# ============================================================
-# SERVE .well-known FOR GPT PLUGIN / ACTIONS
-# ============================================================
+# Serve GPT actions manifest / schema
 app.mount(
     "/.well-known",
-    StaticFiles(directory=os.path.join(os.path.dirname(__file__), ".well-known")),
-    name="well-known"
+    StaticFiles(directory=ROOT / ".well-known"),
+    name="well-known",
 )
 
 
 # ============================================================
-# API KEY PROTECTION FOR GPT ACTIONS
+# PROTECT ROUTES WITH X-API-Key (optional)
 # ============================================================
 async def verify_api_key(x_api_key: str = Header(None)):
-    """
-    GPT Actions must send X-API-Key header.
-    """
-    if GPT_API_KEY is None:
-        return True  # system unlocked (dev mode)
-    if x_api_key != GPT_API_KEY:
+    """GPT Actions must send X-API-Key header when GPT_API_KEY is set."""
+    if GPT_API_KEY and x_api_key != GPT_API_KEY:
         raise HTTPException(status_code=403, detail="Invalid API Key")
     return True
 
@@ -96,13 +96,13 @@ goals_service = GoalsService()
 tasks_service = TasksService()
 ai_service = AICommandService()
 
-# bi-directional Goal ↔ Task sync
+# bi-directional sync mapping
 goals_service.bind_tasks_service(tasks_service)
 tasks_service.bind_goals_service(goals_service)
 
 
 # ============================================================
-# INITIALIZE NOTION SERVICES
+# NOTION SERVICES
 # ============================================================
 notion_service = NotionService(token=NOTION_API_KEY)
 
@@ -114,10 +114,6 @@ sync_service = NotionSyncService(
     tasks_db_id=NOTION_TASKS_DB_ID
 )
 
-
-# ============================================================
-# INITIALIZE AGENTS SERVICE
-# ============================================================
 agents_service = AgentsService(
     notion_token=NOTION_API_KEY,
     exchange_db_id=NOTION_AGENT_EXCHANGE_DB_ID,
@@ -136,13 +132,15 @@ agents_router_module.agents_service_global = agents_service
 
 
 # ============================================================
-# REGISTER ROUTERS (protected with API KEY)
+# REGISTER ROUTERS (Protected)
 # ============================================================
-app.include_router(goals_router_module.router, dependencies=[Depends(verify_api_key)])
-app.include_router(tasks_router_module.router, dependencies=[Depends(verify_api_key)])
-app.include_router(ai_router_module.router, dependencies=[Depends(verify_api_key)])
-app.include_router(sync_router_module.router, dependencies=[Depends(verify_api_key)])
-app.include_router(agents_router_module.router, dependencies=[Depends(verify_api_key)])
+protected = [Depends(verify_api_key)]
+
+app.include_router(goals_router_module.router, dependencies=protected)
+app.include_router(tasks_router_module.router, dependencies=protected)
+app.include_router(ai_router_module.router, dependencies=protected)
+app.include_router(sync_router_module.router, dependencies=protected)
+app.include_router(agents_router_module.router, dependencies=protected)
 
 
 # ============================================================
@@ -156,24 +154,20 @@ engine = MasterEngine()
 # ============================================================
 @app.get("/health")
 def health():
-    """Health check for Render + GPT Actions"""
+    """Render health check endpoint."""
     return {"status": "ok"}
-
 
 @app.get("/")
 def root():
     return {"status": "Evolia Backend v4 running"}
 
-
 @app.get("/engine")
 def engine_status():
     return engine.status()
 
-
 @app.get("/engine/state")
 def engine_check_state():
     return engine.check_state()
-
 
 @app.get("/engine/progress")
 def engine_check_progress():
