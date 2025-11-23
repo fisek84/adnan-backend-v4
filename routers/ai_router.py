@@ -31,7 +31,7 @@ def _require_ai_service() -> AICommandService:
     summary="Check AI engine availability",
     status_code=200
 )
-def status():
+def ai_status():
     return {"status": "ok", "message": "AI engine endpoint active"}
 
 
