@@ -29,7 +29,7 @@ def _require_goals_service() -> GoalsService:
     summary="Check Goals API status",
     status_code=200
 )
-def status():
+def goals_status():
     return {"status": "ok", "message": "Goals endpoint active"}
 
 
