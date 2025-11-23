@@ -1,17 +1,12 @@
 openapi: 3.1.0
 info:
-  title: Evolia Backend v4 (PRO)
+  title: Evolia Notion Ops Agent API (GPT Compatible)
   version: "4.0"
-  description: >
-    Full Evolia backend API:
-    - Goal/Task management
-    - Notion sync engine
-    - AI Command system
-    - Agents module
-    - Health & system introspection
-
 servers:
   - url: https://adnan-backend-v4.onrender.com
+
+security:
+  - ApiKeyAuth: []
 
 components:
   securitySchemes:
@@ -22,39 +17,31 @@ components:
 
   schemas:
 
-    # -------------------------------
-    # CORE MODELS
-    # -------------------------------
-
     GoalModel:
       type: object
-      required: [id, title, status, progress, created_at, updated_at]
       properties:
         id: { type: string }
         title: { type: string }
         description: { type: string, nullable: true }
         deadline: { type: string, nullable: true }
         parent_id: { type: string, nullable: true }
-        priority: 
+        priority:
           type: string
           enum: [low, medium, high]
           nullable: true
-        status: 
+        status:
           type: string
           enum: [pending, in_progress, completed]
         progress:
           type: number
-          minimum: 0
-          maximum: 100
         children:
           type: array
           items: { type: string }
-        created_at: { type: string, format: date-time }
-        updated_at: { type: string, format: date-time }
+        created_at: { type: string }
+        updated_at: { type: string }
 
     TaskModel:
       type: object
-      required: [id, title, status, created_at, updated_at]
       properties:
         id: { type: string }
         title: { type: string }
@@ -68,45 +55,17 @@ components:
         status:
           type: string
           enum: [pending, in_progress, completed]
-        created_at: { type: string, format: date-time }
-        updated_at: { type: string, format: date-time }
-
-    AIResponse:
-      type: object
-      properties:
-        success: { type: boolean }
-        result: { nullable: true }
-        message: { type: string, nullable: true }
-        metadata: 
-          type: object
-          additionalProperties: true
-        error: { type: string, nullable: true }
-
-    AICommand:
-      type: object
-      required: [command]
-      properties:
-        command: { type: string }
-        input: { nullable: true }
-        agent: { type: string, nullable: true }
-        params:
-          type: object
-          additionalProperties: true
-        metadata:
-          type: object
-          additionalProperties: true
+        created_at: { type: string }
+        updated_at: { type: string }
 
     AgentMessage:
       type: object
-      required: [agent, content]
       properties:
         agent: { type: string }
         content: { type: string }
-        type: { type: string, default: "message" }
 
     AgentProject:
       type: object
-      required: [agent, title]
       properties:
         agent: { type: string }
         title: { type: string }
@@ -114,67 +73,21 @@ components:
 
     AgentStateUpdate:
       type: object
-      required: [agent, state]
       properties:
         agent: { type: string }
         state: { type: string }
 
-security:
-  - ApiKeyAuth: []
-
 paths:
-
-  # -------------------------------
-  # SYSTEM & HEALTH
-  # -------------------------------
-
-  /:
-    get:
-      summary: Root check
-      responses:
-        "200":
-          description: Running status
-
-  /health:
-    get:
-      summary: Health check
-      responses:
-        "200":
-          description: Healthy
-
-  /engine:
-    get:
-      summary: Master engine status
-      responses:
-        "200":
-          description: Engine info
-
-  /engine/state:
-    get:
-      summary: Get internal engine state
-      responses:
-        "200":
-          description: State info
-
-  /engine/progress:
-    get:
-      summary: Get progress engine status
-      responses:
-        "200":
-          description: Progress info
-
-  # -------------------------------
-  # GOALS
-  # -------------------------------
 
   /goals/all:
     get:
+      operationId: getAllGoals
       summary: Get all goals
       security:
         - ApiKeyAuth: []
       responses:
         "200":
-          description: All goals
+          description: List of goals
           content:
             application/json:
               schema:
@@ -184,6 +97,7 @@ paths:
 
   /goals/create:
     post:
+      operationId: createGoal
       summary: Create a new goal
       security:
         - ApiKeyAuth: []
@@ -203,15 +117,15 @@ paths:
 
   /goals/{goal_id}:
     get:
-      summary: Retrieve goal by ID
+      operationId: getGoal
+      summary: Get goal by ID
       security:
         - ApiKeyAuth: []
       parameters:
-        - in: path
-          name: goal_id
+        - name: goal_id
+          in: path
           required: true
-          schema:
-            type: string
+          schema: { type: string }
       responses:
         "200":
           description: Goal
@@ -221,15 +135,15 @@ paths:
                 $ref: "#/components/schemas/GoalModel"
 
     put:
-      summary: Update goal
+      operationId: updateGoal
+      summary: Update a goal
       security:
         - ApiKeyAuth: []
       parameters:
-        - in: path
-          name: goal_id
+        - name: goal_id
+          in: path
           required: true
-          schema:
-            type: string
+          schema: { type: string }
       requestBody:
         required: true
         content:
@@ -241,25 +155,22 @@ paths:
           description: Updated goal
 
     delete:
-      summary: Delete goal
+      operationId: deleteGoal
+      summary: Delete a goal
       security:
         - ApiKeyAuth: []
       parameters:
         - name: goal_id
           in: path
           required: true
-          schema:
-            type: string
+          schema: { type: string }
       responses:
         "200":
           description: Deleted goal
 
-  # -------------------------------
-  # TASKS
-  # -------------------------------
-
   /tasks/all:
     get:
+      operationId: getAllTasks
       summary: Get all tasks
       security:
         - ApiKeyAuth: []
@@ -275,7 +186,8 @@ paths:
 
   /tasks/create:
     post:
-      summary: Create a task
+      operationId: createTask
+      summary: Create a new task
       security:
         - ApiKeyAuth: []
       requestBody:
@@ -290,29 +202,33 @@ paths:
 
   /tasks/{task_id}:
     get:
+      operationId: getTask
       summary: Get task by ID
-      security:
-        - ApiKeyAuth: []
-      parameters:
-        - in: path
-          name: task_id
-          required: true
-          schema:
-            type: string
-      responses:
-        "200":
-          description: Task
-
-    put:
-      summary: Update task
       security:
         - ApiKeyAuth: []
       parameters:
         - name: task_id
           in: path
           required: true
-          schema:
-            type: string
+          schema: { type: string }
+      responses:
+        "200":
+          description: Task
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskModel"
+
+    put:
+      operationId: updateTask
+      summary: Update a task
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema: { type: string }
       requestBody:
         required: true
         content:
@@ -324,26 +240,23 @@ paths:
           description: Updated task
 
     delete:
-      summary: Delete task
+      operationId: deleteTask
+      summary: Delete a task
       security:
         - ApiKeyAuth: []
       parameters:
         - name: task_id
           in: path
           required: true
-          schema:
-            type: string
+          schema: { type: string }
       responses:
         "200":
           description: Deleted task
 
-  # -------------------------------
-  # SYNC
-  # -------------------------------
-
   /sync/goals:
     post:
-      summary: Sync goals with Notion (UP + DOWN)
+      operationId: syncGoals
+      summary: Sync goals with Notion
       security:
         - ApiKeyAuth: []
       responses:
@@ -352,58 +265,18 @@ paths:
 
   /sync/tasks:
     post:
-      summary: Sync tasks with Notion (UP + DOWN)
+      operationId: syncTasks
+      summary: Sync tasks with Notion
       security:
         - ApiKeyAuth: []
       responses:
         "200":
           description: Sync result
 
-  # -------------------------------
-  # AI COMMANDS
-  # -------------------------------
-
-  /ai/command:
-    post:
-      summary: Execute AI command
-      security:
-        - ApiKeyAuth: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/AICommand"
-      responses:
-        "200":
-          description: AI command result
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AIResponse"
-
-  /ai/run:
-    post:
-      summary: Run high-level AI command
-      security:
-        - ApiKeyAuth: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/AICommand"
-      responses:
-        "200":
-          description: AI command result
-
-  # -------------------------------
-  # AGENTS
-  # -------------------------------
-
   /agents/message:
     post:
-      summary: Send message to agent exchange
+      operationId: sendAgentMessage
+      summary: Send agent message
       security:
         - ApiKeyAuth: []
       requestBody:
@@ -414,25 +287,26 @@ paths:
               $ref: "#/components/schemas/AgentMessage"
       responses:
         "200":
-          description: Stored message
+          description: Message stored
 
   /agents/messages:
     get:
-      summary: Get recent messages
+      operationId: getAgentMessages
+      summary: Get agent messages
       security:
         - ApiKeyAuth: []
       parameters:
         - name: limit
           in: query
           required: false
-          schema:
-            type: integer
+          schema: { type: integer }
       responses:
         "200":
           description: List of messages
 
   /agents/project:
     post:
+      operationId: createAgentProject
       summary: Create agent project
       security:
         - ApiKeyAuth: []
@@ -448,7 +322,8 @@ paths:
 
   /agents/state:
     post:
-      summary: Update an agent's internal state
+      operationId: updateAgentState
+      summary: Update agent internal state
       security:
         - ApiKeyAuth: []
       requestBody:
@@ -459,4 +334,4 @@ paths:
               $ref: "#/components/schemas/AgentStateUpdate"
       responses:
         "200":
-          description: Updated state
+          description: State updated

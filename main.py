@@ -15,7 +15,6 @@ if str(ROOT) not in sys.path:
 # ============================================================
 # LOAD ENV (SAFE MODE)
 # ============================================================
-# Loads .env only if exists (local dev)
 load_dotenv()
 
 def env(name: str, default: str | None = None) -> str | None:
@@ -71,7 +70,6 @@ app = FastAPI(
     description="Evolia Core Backend + Notion Sync Engine (Stabilized)"
 )
 
-# Serve GPT actions manifest / schema
 app.mount(
     "/.well-known",
     StaticFiles(directory=ROOT / ".well-known"),
@@ -83,7 +81,6 @@ app.mount(
 # PROTECT ROUTES WITH X-API-Key (optional)
 # ============================================================
 async def verify_api_key(x_api_key: str = Header(None)):
-    """GPT Actions must send X-API-Key header when GPT_API_KEY is set."""
     if GPT_API_KEY and x_api_key != GPT_API_KEY:
         raise HTTPException(status_code=403, detail="Invalid API Key")
     return True
@@ -96,7 +93,6 @@ goals_service = GoalsService()
 tasks_service = TasksService()
 ai_service = AICommandService()
 
-# bi-directional sync mapping
 goals_service.bind_tasks_service(tasks_service)
 tasks_service.bind_goals_service(goals_service)
 
@@ -111,13 +107,13 @@ sync_service = NotionSyncService(
     goals_service=goals_service,
     tasks_service=tasks_service,
     goals_db_id=NOTION_GOALS_DB_ID,
-    tasks_db_id=NOTION_TASKS_DB_ID
+    tasks_db_id=NOTION_TASKS_DB_ID,
 )
 
 agents_service = AgentsService(
     notion_token=NOTION_API_KEY,
     exchange_db_id=NOTION_AGENT_EXCHANGE_DB_ID,
-    projects_db_id=NOTION_AGENT_PROJECTS_DB_ID
+    projects_db_id=NOTION_AGENT_PROJECTS_DB_ID,
 )
 
 
@@ -154,7 +150,6 @@ engine = MasterEngine()
 # ============================================================
 @app.get("/health")
 def health():
-    """Render health check endpoint."""
     return {"status": "ok"}
 
 @app.get("/")
