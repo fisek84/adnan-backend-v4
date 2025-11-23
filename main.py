@@ -10,10 +10,10 @@ from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 
 # ============================================================
-# LOAD ENVIRONMENT
+# LOAD ENVIRONMENT (SAFE MODE)
 # ============================================================
-ENV_PATH = Path(__file__).parent / ".env"
-load_dotenv(ENV_PATH)
+# Loads .env IF it exists – does NOT fail if it doesn't
+load_dotenv()
 
 NOTION_API_KEY = os.getenv("NOTION_API_KEY")
 NOTION_GOALS_DB_ID = os.getenv("NOTION_GOALS_DB_ID")
@@ -24,14 +24,15 @@ GPT_API_KEY = os.getenv("GPT_API_KEY")
 NOTION_AGENT_EXCHANGE_DB_ID = os.getenv("NOTION_AGENT_EXCHANGE_DB_ID")
 NOTION_AGENT_PROJECTS_DB_ID = os.getenv("NOTION_AGENT_PROJECTS_DB_ID")
 
-# Warn for missing env vars
+# Warn if important env vars are missing (does NOT crash backend)
 missing = []
 if not NOTION_API_KEY: missing.append("NOTION_API_KEY")
 if not NOTION_GOALS_DB_ID: missing.append("NOTION_GOALS_DB_ID")
 if not NOTION_TASKS_DB_ID: missing.append("NOTION_TASKS_DB_ID")
 
 if missing:
-    print(f"⚠ WARNING: Missing env variables: {', '.join(missing)}")
+    print(f"⚠ WARNING: Missing environment variables: {', '.join(missing)}")
+    print("Backend will still run, but Notion sync may fail.")
 
 
 # ============================================================
@@ -82,7 +83,7 @@ async def verify_api_key(x_api_key: str = Header(None)):
     GPT Actions must send X-API-Key header.
     """
     if GPT_API_KEY is None:
-        return True
+        return True  # system unlocked (dev mode)
     if x_api_key != GPT_API_KEY:
         raise HTTPException(status_code=403, detail="Invalid API Key")
     return True
@@ -153,7 +154,6 @@ engine = MasterEngine()
 # ============================================================
 # SYSTEM ROUTES
 # ============================================================
-
 @app.get("/health")
 def health():
     """Health check for Render + GPT Actions"""
