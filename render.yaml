@@ -1,0 +1,8 @@
+services:
+  - type: web
+    name: adnan-backend-v4
+    env: docker
+    plan: starter
+    region: frankfurt
+    dockerfilePath: Dockerfile
+    dockerContext: .
