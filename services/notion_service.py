@@ -1,14 +1,9 @@
 import httpx
 import json
 
-
 class NotionService:
     """
     ASYNC Notion API wrapper for Evolia Backend v4.
-
-    - Fully async (httpx)
-    - Safe error detection (hard + soft errors)
-    - Stable create/update/query
     """
 
     BASE_URL = "https://api.notion.com/v1"
@@ -29,13 +24,8 @@ class NotionService:
             timeout=20.0,
         )
 
-    # ------------------------------------------------------------
-    # INTERNAL REQUEST (FIXED)
-    # ------------------------------------------------------------
     async def _request(self, method: str, endpoint: str, **kwargs):
         url = f"{self.BASE_URL}{endpoint}"
-
-        # NETWORK ERROR
         try:
             response = await self.client.request(method, url, **kwargs)
         except Exception as e:
@@ -46,13 +36,11 @@ class NotionService:
                 "status": None,
             }
 
-        # PARSE BODY
         try:
             data = response.json()
         except json.JSONDecodeError:
             data = {"raw": response.text}
 
-        # HARD API ERROR (HTTP-level)
         if response.status_code >= 400:
             return {
                 "ok": False,
@@ -61,7 +49,6 @@ class NotionService:
                 "endpoint": endpoint,
             }
 
-        # SOFT NOTION ERROR (Notion returns 200 + object=error)
         if isinstance(data, dict) and data.get("object") == "error":
             return {
                 "ok": False,
@@ -70,62 +57,32 @@ class NotionService:
                 "endpoint": endpoint,
             }
 
-        # SUCCESS
-        return {
-            "ok": True,
-            "status": response.status_code,
-            "data": data
-        }
+        return {"ok": True, "status": response.status_code, "data": data}
 
-    # ------------------------------------------------------------
-    # QUERY DATABASE
-    # ------------------------------------------------------------
     async def query_database(self, db_id: str, payload: dict | None = None):
-        if payload is None:
-            payload = {}
-
         return await self._request(
             "POST",
             f"/databases/{db_id}/query",
-            json=payload
+            json=payload or {}
         )
 
-    # ------------------------------------------------------------
-    # CREATE PAGE
-    # ------------------------------------------------------------
     async def create_page(self, db_id: str, properties: dict):
-        payload = {
-            "parent": {"database_id": db_id},
-            "properties": properties
-        }
-
         return await self._request(
             "POST",
             "/pages",
-            json=payload
+            json={"parent": {"database_id": db_id}, "properties": properties}
         )
 
-    # ------------------------------------------------------------
-    # UPDATE PAGE
-    # ------------------------------------------------------------
     async def update_page(self, page_id: str, properties: dict):
-        payload = {"properties": properties}
-
         return await self._request(
             "PATCH",
             f"/pages/{page_id}",
-            json=payload
+            json={"properties": properties}
         )
 
-    # ------------------------------------------------------------
-    # HEALTH CHECK
-    # ------------------------------------------------------------
     async def ping(self):
         return await self._request("GET", "/users/me")
 
-    # ------------------------------------------------------------
-    # CLEAN SHUTDOWN
-    # ------------------------------------------------------------
     async def close(self):
         try:
             await self.client.aclose()

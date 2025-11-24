@@ -27,11 +27,10 @@ class GoalResponse(BaseModel):
     children: List[str]
 
     class Config:
-        from_attributes = True  # Pydantic v2 replacement for orm_mode
+        from_attributes = True
 
 
 def to_response(goal):
-    """Convert internal Goal object into API-safe response."""
     return GoalResponse(
         id=goal.id,
         title=goal.title,
@@ -59,10 +58,7 @@ def create_goal(payload: GoalCreate):
     except Exception as e:
         raise HTTPException(400, f"Failed to create goal: {e}")
 
-    return {
-        "status": "created",
-        "goal": to_response(goal)
-    }
+    return {"status": "created", "goal": to_response(goal)}
 
 
 @router.patch("/{goal_id}")
@@ -77,10 +73,7 @@ def update_goal(goal_id: str, updates: GoalUpdate):
     except Exception as e:
         raise HTTPException(400, f"Update failed: {e}")
 
-    return {
-        "status": "updated",
-        "goal": to_response(goal)
-    }
+    return {"status": "updated", "goal": to_response(goal)}
 
 
 @router.get("/all")
@@ -90,10 +83,7 @@ def get_all_goals():
 
     goals = goals_service_global.get_all()
 
-    return {
-        "count": len(goals),
-        "items": [to_response(g) for g in goals]
-    }
+    return {"count": len(goals), "items": [to_response(g) for g in goals]}
 
 
 @router.delete("/{goal_id}")
@@ -106,7 +96,4 @@ def delete_goal(goal_id: str):
     except ValueError as e:
         raise HTTPException(404, str(e))
 
-    return {
-        "status": "deleted",
-        "goal": to_response(removed)
-    }
+    return {"status": "deleted", "goal": to_response(removed)}

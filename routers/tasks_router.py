@@ -9,10 +9,10 @@ tasks_service_global = None
 
 router = APIRouter(prefix="/tasks", tags=["Tasks"])
 
-
 # ============================================================
 # RESPONSE TRANSFORMER
 # ============================================================
+
 def to_resp(task):
     return {
         "id": task.id,
@@ -25,20 +25,17 @@ def to_resp(task):
         "order": task.order,
     }
 
-
 # ============================================================
 # ROUTES
 # ============================================================
+
 @router.post("/create")
 def create_task(payload: TaskCreate):
     if not tasks_service_global:
         raise HTTPException(500, "TasksService not initialized")
 
     task = tasks_service_global.create_task(payload)
-    return {
-        "status": "created",
-        "task": to_resp(task)
-    }
+    return {"status": "created", "task": to_resp(task)}
 
 
 @router.patch("/{task_id}")
@@ -51,10 +48,7 @@ def update_task(task_id: str, updates: TaskUpdate):
     except ValueError as e:
         raise HTTPException(404, str(e))
 
-    return {
-        "status": "updated",
-        "task": to_resp(task)
-    }
+    return {"status": "updated", "task": to_resp(task)}
 
 
 @router.get("/all")
@@ -76,7 +70,4 @@ def delete_task(task_id: str):
     except ValueError as e:
         raise HTTPException(404, str(e))
 
-    return {
-        "status": "deleted",
-        "task": to_resp(deleted)
-    }
+    return {"status": "deleted", "task": to_resp(deleted)}

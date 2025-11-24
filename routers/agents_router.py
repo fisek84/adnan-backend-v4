@@ -7,24 +7,18 @@ agents_service_global = None
 router = APIRouter(prefix="/agents", tags=["Agents"])
 
 
-# ============================================================
-# MODELS
-# ============================================================
 class AgentRequest(BaseModel):
     action: str
     payload: dict | None = None
 
 
-# ============================================================
-# ROUTES
-# ============================================================
 @router.post("/run")
 async def run_agent(req: AgentRequest):
     if agents_service_global is None:
         raise HTTPException(500, "AgentsService not initialized")
 
     try:
-        result = agents_service_global.execute(req.action, req.payload or {})
+        result = await agents_service_global.execute(req.action, req.payload or {})
     except Exception as e:
         raise HTTPException(500, f"Agent execution error: {str(e)}")
 

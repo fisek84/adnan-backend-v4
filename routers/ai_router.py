@@ -7,17 +7,11 @@ ai_service_global = None
 router = APIRouter(prefix="/ai", tags=["AI"])
 
 
-# ============================================================
-# MODELS
-# ============================================================
 class AIRequest(BaseModel):
     command: str
     payload: dict | None = None
 
 
-# ============================================================
-# ROUTES
-# ============================================================
 @router.post("/run")
 async def run_ai(req: AIRequest):
     if not ai_service_global:

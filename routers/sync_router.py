@@ -17,7 +17,6 @@ def check_sync():
 
 @router.post("/goals")
 async def sync_goals():
-    """Sync all LOCAL goals → Notion"""
     check_sync()
     await sync_service_global.sync_goals_up()
     return {"status": "ok", "synced": "goals"}
@@ -25,7 +24,6 @@ async def sync_goals():
 
 @router.post("/tasks")
 async def sync_tasks():
-    """Sync all LOCAL tasks → Notion"""
     check_sync()
     await sync_service_global.sync_tasks_up()
     return {"status": "ok", "synced": "tasks"}
@@ -33,7 +31,6 @@ async def sync_tasks():
 
 @router.post("/full")
 async def sync_full():
-    """Full sync: goals + tasks"""
     check_sync()
     await sync_service_global.sync_goals_up()
     await sync_service_global.sync_tasks_up()

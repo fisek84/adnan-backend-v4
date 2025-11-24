@@ -18,10 +18,8 @@ if str(ROOT) not in sys.path:
 # ============================================================
 load_dotenv()
 
-
 def env(name: str, default=None):
     return os.getenv(name, default)
-
 
 NOTION_API_KEY = env("NOTION_API_KEY")
 NOTION_GOALS_DB_ID = env("NOTION_GOALS_DB_ID")
@@ -41,30 +39,22 @@ missing = [k for k, v in required_env.items() if not v]
 if missing:
     print("⚠ Missing ENV:", ", ".join(missing))
 
-
 # ============================================================
-# API KEY PROTECTION (FINAL VERSION)
+# API KEY PROTECTION
 # ============================================================
 async def verify_api_key(
     x_api_key: str = Header(None, alias="X-API-Key"),
     x_api_key_lower: str = Header(None, alias="x-api-key")
 ):
-    """
-    Accept both X-API-Key and x-api-key headers.
-    This avoids 403 errors caused by header casing differences.
-    """
-
     key = x_api_key or x_api_key_lower
 
-    # If GPT_API_KEY is set, enforce validation.
     if GPT_API_KEY:
         if key is None:
-            return True  # allow local usage without API key
+            return True
         if key != GPT_API_KEY:
             raise HTTPException(status_code=403, detail="Invalid API Key")
 
     return True
-
 
 # ============================================================
 # IMPORT SERVICES
@@ -77,7 +67,7 @@ from services.notion_sync_service import NotionSyncService
 from services.agents_service import AgentsService
 
 import routers.goals_router as goals_router_module
-import routers.tasks_router as tasks_router_module
+import routers.task_router as tasks_router_module      # ✅ FIXED
 import routers.ai_router as ai_router_module
 import routers.sync_router as sync_router_module
 import routers.agents_router as agents_router_module
@@ -110,7 +100,7 @@ goals_service.bind_tasks_service(tasks_service)
 tasks_service.bind_goals_service(goals_service)
 
 # ============================================================
-# INITIALIZE NOTION SERVICES (ASYNC)
+# INITIALIZE NOTION SERVICES
 # ============================================================
 notion_service = NotionService(token=NOTION_API_KEY)
 
@@ -128,12 +118,12 @@ agents_service = AgentsService(
     projects_db_id=NOTION_AGENT_PROJECTS_DB_ID,
 )
 
-# Bind sync
+# Bind sync services
 goals_service.bind_sync_service(sync_service)
 tasks_service.bind_sync_service(sync_service)
 
 # ============================================================
-# ROUTERS (DI)
+# ROUTERS (Dependency Injection)
 # ============================================================
 goals_router_module.goals_service_global = goals_service
 tasks_router_module.tasks_service_global = tasks_service
@@ -161,26 +151,21 @@ engine = MasterEngine()
 def health():
     return {"status": "ok"}
 
-
 @app.get("/")
 def root():
     return {"status": "Evolia Backend v4 async running"}
-
 
 @app.get("/engine")
 def engine_status():
     return engine.status()
 
-
 @app.get("/engine/state")
 def engine_state():
     return engine.check_state()
 
-
 @app.get("/engine/progress")
 def engine_progress():
     return engine.check_progress()
-
 
 # ============================================================
 # SHUTDOWN EVENT

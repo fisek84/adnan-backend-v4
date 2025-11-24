@@ -1,12 +1,10 @@
 import httpx
-
+import asyncio
 
 class AgentsService:
     """
     Evolia AgentsService v4.1
-    - Upravljanje AI agentima
-    - Povezan sa Notion bazama (Exchange + Projects)
-    - Minimalistic, stabilan, proširiv
+    Upravljanje AI agentima + Notion integracija
     """
 
     def __init__(self, notion_token: str, exchange_db_id: str, projects_db_id: str):
@@ -40,11 +38,8 @@ class AgentsService:
 
         handler = self._actions[action]
 
-        # Ako je async handler → await
-        if hasattr(handler, "__call__") and asyncio.iscoroutinefunction(handler):
+        if asyncio.iscoroutinefunction(handler):
             return await handler(payload)
-
-        # Ako je sync → direktno
         return handler(payload)
 
     # ============================================================

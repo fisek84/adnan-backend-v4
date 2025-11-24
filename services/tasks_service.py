@@ -5,7 +5,7 @@ from typing import Dict, Any, Optional, List
 
 from models.task_create import TaskCreate
 from models.task_update import TaskUpdate
-from models.task_model import TaskModel
+from models.base_model import TaskModel   # ✅ FIX – OVAKO TREBA
 
 
 class TasksService:
@@ -15,6 +15,9 @@ class TasksService:
     def __init__(self):
         self.tasks: Dict[str, TaskModel] = {}
 
+    # ============================================================
+    # BINDING
+    # ============================================================
     def bind_goals_service(self, goals_service):
         self.goals_service = goals_service
 
@@ -58,8 +61,7 @@ class TasksService:
             order=0,
             created_at=now,
             updated_at=now,
-
-            notion_id=None   # 🔥 DODANO — ništa ne mijenja tvoju logiku
+            notion_id=None
         )
 
         self.tasks[task_id] = new_task
@@ -105,7 +107,7 @@ class TasksService:
         goal_id = goal_rel[0] if goal_rel else None
 
         if existing:
-            existing.notion_id = task_id  # 🔥 DODANO
+            existing.notion_id = task_id
 
             return self.update_task(task_id, TaskUpdate(
                 title=data.get("name"),
@@ -128,7 +130,7 @@ class TasksService:
             forced_id=task_id
         )
 
-        new_task.notion_id = task_id  # 🔥 I OVDJE VEŽEMO
+        new_task.notion_id = task_id
 
         return new_task
 
@@ -141,7 +143,7 @@ class TasksService:
     def _to_dict(self, task: TaskModel) -> Dict[str, Any]:
         return {
             "id": task.id,
-            "notion_id": task.notion_id,  # 🔥 EXPORTAMO
+            "notion_id": task.notion_id,
             "name": task.title,
             "description": task.description,
             "due_date": task.deadline,

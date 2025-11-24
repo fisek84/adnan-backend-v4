@@ -75,7 +75,7 @@ class GoalsService:
             children=[],
             created_at=now,
             updated_at=now,
-            notion_id=None,       #  🔥 DODANO
+            notion_id=None,
         )
 
         self.goals[goal_id] = new_goal
@@ -158,83 +158,4 @@ class GoalsService:
         if len(goal_ids) < 2:
             raise ValueError("At least two goal IDs required")
 
-        selected = [self.goals[g] for g in goal_ids if g in self.goals]
-
-        now = self._now()
-        merged_id = uuid4().hex
-
-        merged = GoalModel(
-            id=merged_id,
-            title=" | ".join(g.title for g in selected),
-            description=" | ".join(g.description or "" for g in selected),
-            deadline=None,
-            parent_id=None,
-            priority=None,
-            status="pending",
-            progress=0,
-            children=[],
-            created_at=now,
-            updated_at=now,
-            notion_id=None,       # 🔥 DODANO
-        )
-
-        for g in selected:
-            self.goals.pop(g.id, None)
-
-        self.goals[merged_id] = merged
-        self._trigger_sync()
-        return merged
-
-    # ============================================================
-    # SYNC FROM NOTION
-    # ============================================================
-    def sync_from_notion(self, data: Dict[str, Any]) -> GoalModel:
-        goal_id = data["id"]
-        existing = self.goals.get(goal_id)
-
-        parent = data.get("parent_goal")
-        parent_id = parent[0] if parent else None
-
-        if existing:
-            return self.update_goal(goal_id, GoalUpdate(
-                title=data.get("name"),
-                description=data.get("description"),
-                deadline=data.get("deadline"),
-                parent_id=parent_id,
-                status=data.get("status"),
-                progress=data.get("progress"),
-                priority=None
-            ))
-
-        new_goal = self.create_goal(
-            GoalCreate(
-                title=data.get("name"),
-                description=data.get("description"),
-                deadline=data.get("deadline"),
-                parent_id=parent_id,
-                priority=None
-            ),
-            forced_id=goal_id
-        )
-
-        new_goal.notion_id = goal_id   # 🔥 OVDE VEŽEMO NOTION ID
-        return new_goal
-
-    # ============================================================
-    # UTILITIES
-    # ============================================================
-    def get_all(self):
-        return list(self.goals.values())
-
-    def to_dict(self, goal: GoalModel) -> Dict[str, Any]:
-        return {
-            "id": goal.id,
-            "notion_id": goal.notion_id,     # 🔥 DODANO
-            "name": goal.title,
-            "description": goal.description,
-            "deadline": goal.deadline,
-            "parent_goal": [goal.parent_id] if goal.parent_id else [],
-            "child_goals": goal.children,
-            "status": goal.status,
-            "progress": goal.progress,
-        }
+        selected = [self.goals[g] f
