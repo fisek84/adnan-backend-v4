@@ -67,7 +67,7 @@ from services.notion_sync_service import NotionSyncService
 from services.agents_service import AgentsService
 
 import routers.goals_router as goals_router_module
-import routers.task_router as tasks_router_module      # ✅ FIXED
+import routers.tasks_router as tasks_router_module      # ✅ FIXED
 import routers.ai_router as ai_router_module
 import routers.sync_router as sync_router_module
 import routers.agents_router as agents_router_module
