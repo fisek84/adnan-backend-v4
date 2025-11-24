@@ -79,8 +79,19 @@ app.mount(
 # API KEY PROTECTION
 # ============================================================
 async def verify_api_key(x_api_key: str = Header(None)):
-    if GPT_API_KEY and x_api_key != GPT_API_KEY:
-        raise HTTPException(status_code=403, detail="Invalid API Key")
+    """
+    Allow:
+    - valid x-api-key  → full access
+    - missing x-api-key → allowed (for ChatGPT agent)
+    Block:
+    - wrong x-api-key  → forbidden
+    """
+    if GPT_API_KEY:
+        if x_api_key is None:
+            return True  # allow agent
+        if x_api_key != GPT_API_KEY:
+            raise HTTPException(status_code=403, detail="Invalid API Key")
+
     return True
 
 
