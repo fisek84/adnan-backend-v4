@@ -1,358 +1,171 @@
-diff --git a/main.py b/main.py
-index 87d7fc1769cc70c88410eea16636015ec7fc3c89..d4f0a1d1bf7f2e1ed6a3493a0d5679d098bab862 100644
---- a/main.py
-+++ b/main.py
-@@ -1,170 +1,243 @@
--from fastapi import FastAPI
--from pydantic import BaseModel
--from typing import Optional
--from notion_client import Client
- import os
-+from typing import Optional
-+
- from dotenv import load_dotenv
- 
--# ----------------------------
--# LOAD ENV VARS
--# ----------------------------
-+# Load env vars before importing Notion client so it picks up tokens
- load_dotenv()
- 
--NOTION_TOKEN = os.getenv("NOTION_TOKEN")
--GOALS_DB_ID = os.getenv("GOALS_DB_ID")
--TASKS_DB_ID = os.getenv("TASKS_DB_ID")
-+from fastapi import Depends, FastAPI, Header, HTTPException
-+from pydantic import BaseModel
-+
-+from notion_service import GOALS_DB_ID, TASKS_DB_ID, notion
-+
-+API_KEY = os.getenv("API_KEY")
- 
--notion = Client(auth=NOTION_TOKEN)
- app = FastAPI()
- 
-+
- # ----------------------------
--# PYDANTIC MODELS
-+# SECURITY
- # ----------------------------
- 
--class GoalCreate(BaseModel):
--    name: Optional[str] = None
--    outcome_state: Optional[str] = None
--    outcome_result: Optional[str] = None
--    activity_state: Optional[str] = None
--    context_state: Optional[str] = None
-+def verify_api_key(x_api_key: Optional[str] = Header(None)):
-+    if API_KEY and x_api_key != API_KEY:
-+        raise HTTPException(status_code=401, detail="Invalid API Key")
- 
--class TaskCreate(BaseModel):
--    name: str
--    goal_id: Optional[str] = None  # optional relation to a goal
- 
- # ----------------------------
--# HELPER: NAME GENERATOR
-+# PYDANTIC MODELS
- # ----------------------------
- 
--def generate_goal_name(data: GoalCreate):
--    # A) Ako name postoji → koristi ga
--    if data.name:
--        return data.name
-+class GoalCreate(BaseModel):
-+    title: str
-+    description: Optional[str] = None
-+    deadline: Optional[str] = None
-+    parent_id: Optional[str] = None
-+    priority: Optional[str] = None
-+    status: Optional[str] = None
-+    progress: Optional[int] = None
-+
- 
--    # B) Ako nema name → koristi drugo polje redom
--    if data.outcome_state:
--        return f"Goal: {data.outcome_state}"
--    if data.outcome_result:
--        return f"Goal: {data.outcome_result}"
--    if data.activity_state:
--        return f"Goal: {data.activity_state}"
--    if data.context_state:
--        return f"Goal: {data.context_state}"
-+class GoalUpdate(BaseModel):
-+    title: Optional[str] = None
-+    description: Optional[str] = None
-+    deadline: Optional[str] = None
-+    parent_id: Optional[str] = None
-+    priority: Optional[str] = None
-+    status: Optional[str] = None
-+    progress: Optional[int] = None
- 
--    # C) Ako ništa ne postoji → error
--    return None
- 
--# ----------------------------
--# ROOT
--# ----------------------------
-+class TaskCreate(BaseModel):
-+    title: str
-+    description: Optional[str] = None
-+    goal_id: Optional[str] = None
-+    deadline: Optional[str] = None
-+    priority: Optional[str] = None
-+    status: Optional[str] = None
-+    order: Optional[int] = None
-+
-+
-+class TaskUpdate(BaseModel):
-+    title: Optional[str] = None
-+    description: Optional[str] = None
-+    goal_id: Optional[str] = None
-+    deadline: Optional[str] = None
-+    priority: Optional[str] = None
-+    status: Optional[str] = None
-+    order: Optional[int] = None
-+
-+
-+# ----------------------------
-+# HELPERS: PROPERTY BUILDERS
-+# ----------------------------
-+
-+def build_goal_properties(data: BaseModel):
-+    properties = {}
-+
-+    if getattr(data, "title", None):
-+        properties["Name"] = {"title": [{"text": {"content": data.title}}]}
-+    if getattr(data, "description", None):
-+        properties["Description"] = {"rich_text": [{"text": {"content": data.description}}]}
-+    if getattr(data, "deadline", None):
-+        properties["Deadline"] = {"date": {"start": data.deadline}}
-+    if getattr(data, "priority", None):
-+        properties["Priority"] = {"select": {"name": data.priority}}
-+    if getattr(data, "status", None):
-+        properties["Goal State"] = {"select": {"name": data.status}}
-+    if getattr(data, "progress", None) is not None:
-+        properties["Progress"] = {"number": data.progress}
-+    if getattr(data, "parent_id", None):
-+        properties["Parent Goal"] = {"relation": [{"id": data.parent_id}]}
-+
-+    return properties
-+
-+
-+def build_task_properties(data: BaseModel):
-+    properties = {}
-+
-+    if getattr(data, "title", None):
-+        properties["Name"] = {"title": [{"text": {"content": data.title}}]}
-+    if getattr(data, "description", None):
-+        properties["Description"] = {"rich_text": [{"text": {"content": data.description}}]}
-+    if getattr(data, "deadline", None):
-+        properties["Deadline"] = {"date": {"start": data.deadline}}
-+    if getattr(data, "priority", None):
-+        properties["Priority"] = {"select": {"name": data.priority}}
-+    if getattr(data, "status", None):
-+        properties["Task Status"] = {"select": {"name": data.status}}
-+    if getattr(data, "order", None) is not None:
-+        properties["Order"] = {"number": data.order}
-+    if getattr(data, "goal_id", None):
-+        properties["Goal"] = {"relation": [{"id": data.goal_id}]}
-+
-+    return properties
- 
- @app.get("/")
- def root():
-     return {"status": "OK", "message": "AdnanAI backend radi."}
- 
--# ----------------------------
--# GET GOALS
--# ----------------------------
--
--@app.get("/goals")
--def get_goals():
--    try:
--        result = notion.databases.query(database_id=GOALS_DB_ID)
--        return result
--    except Exception as e:
--        return {"error": str(e)}
- 
- # ----------------------------
--# GET TASKS
-+# GOALS
- # ----------------------------
- 
--@app.get("/tasks")
--def get_tasks():
-+@app.get("/goals/all", dependencies=[Depends(verify_api_key)])
-+def get_goals():
-     try:
--        result = notion.databases.query(database_id=TASKS_DB_ID)
--        return result
-+        return notion.databases.query(database_id=GOALS_DB_ID)
-     except Exception as e:
--        return {"error": str(e)}
-+        raise HTTPException(status_code=500, detail=str(e))
- 
--# ----------------------------
--# POST GOALS (NEW)
--# ----------------------------
- 
--@app.post("/goals")
-+@app.post("/goals/create", dependencies=[Depends(verify_api_key)])
- def create_goal(data: GoalCreate):
-+    properties = build_goal_properties(data)
- 
--    # 1. GENERIŠI IME
--    generated_name = generate_goal_name(data)
--    if not generated_name:
--        return {"error": "Name is missing"}
-+    try:
-+        result = notion.pages.create(
-+            parent={"database_id": GOALS_DB_ID},
-+            properties=properties,
-+        )
- 
--    # 2. MAPIRAJ PROPERTIES
--    properties = {
--        "Name": {
--            "title": [{"text": {"content": generated_name}}]
-+        return {
-+            "status": "created",
-+            "goal": {
-+                "id": result["id"],
-+                "title": data.title,
-+                "description": data.description,
-+                "deadline": data.deadline,
-+                "parent_id": data.parent_id,
-+                "priority": data.priority,
-+                "status": data.status,
-+                "progress": data.progress,
-+            },
-         }
--    }
--
--    if data.outcome_state:
--        properties["Outcome State"] = {"select": {"name": data.outcome_state}}
-+    except Exception as e:
-+        raise HTTPException(status_code=500, detail=str(e))
- 
--    if data.outcome_result:
--        properties["Outcome Result"] = {"rich_text": [{"text": {"content": data.outcome_result}}]}
- 
--    if data.activity_state:
--        properties["Activity State"] = {"select": {"name": data.activity_state}}
-+@app.patch("/goals/{goal_id}", dependencies=[Depends(verify_api_key)])
-+def update_goal(goal_id: str, data: GoalUpdate):
-+    properties = build_goal_properties(data)
- 
--    if data.context_state:
--        properties["Context State"] = {"select": {"name": data.context_state}}
-+    if not properties:
-+        raise HTTPException(status_code=400, detail="No fields to update")
- 
--    # 3. CREATE PAGE U NOTION DATABASE
-     try:
--        result = notion.pages.create(
--            parent={"database_id": GOALS_DB_ID},
--            properties=properties
--        )
-+        notion.pages.update(page_id=goal_id, properties=properties)
-+        return {"status": "updated", "goal_id": goal_id}
-+    except Exception as e:
-+        raise HTTPException(status_code=500, detail=str(e))
- 
--        return {
--            "status": "success",
--            "goal_id": result["id"],
--            "name": generated_name
--        }
- 
-+@app.delete("/goals/{goal_id}", dependencies=[Depends(verify_api_key)])
-+def delete_goal(goal_id: str):
-+    try:
-+        notion.pages.update(page_id=goal_id, archived=True)
-+        return {"status": "deleted", "goal_id": goal_id}
-     except Exception as e:
--        return {"error": str(e)}
-+        raise HTTPException(status_code=500, detail=str(e))
-+
- 
- # ----------------------------
--# POST TASKS (NEW)
-+# TASKS
- # ----------------------------
- 
--@app.post("/tasks")
--def create_task(data: TaskCreate):
--    if not data.name:
--        return {"error": "Task name is required"}
-+@app.get("/tasks/all", dependencies=[Depends(verify_api_key)])
-+def get_tasks():
-+    try:
-+        return notion.databases.query(database_id=TASKS_DB_ID)
-+    except Exception as e:
-+        raise HTTPException(status_code=500, detail=str(e))
- 
--    properties = {
--        "Name": {
--            "title": [{"text": {"content": data.name}}]
--        }
--    }
- 
--    if data.goal_id:
--        properties["Goal"] = {
--            "relation": [{"id": data.goal_id}]
--        }
-+@app.post("/tasks/create", dependencies=[Depends(verify_api_key)])
-+def create_task(data: TaskCreate):
-+    properties = build_task_properties(data)
- 
-     try:
-         result = notion.pages.create(
-             parent={"database_id": TASKS_DB_ID},
--            properties=properties
-+            properties=properties,
-         )
- 
-         return {
--            "status": "success",
--            "task_id": result["id"],
--            "name": data.name,
--            "goal_id": data.goal_id
-+            "status": "created",
-+            "task": {
-+                "id": result["id"],
-+                "title": data.title,
-+                "description": data.description,
-+                "goal_id": data.goal_id,
-+                "deadline": data.deadline,
-+                "priority": data.priority,
-+                "status": data.status,
-+                "order": data.order,
-+            },
-         }
-+    except Exception as e:
-+        raise HTTPException(status_code=500, detail=str(e))
-+
- 
-+@app.patch("/tasks/{task_id}", dependencies=[Depends(verify_api_key)])
-+def update_task(task_id: str, data: TaskUpdate):
-+    properties = build_task_properties(data)
-+
-+    if not properties:
-+        raise HTTPException(status_code=400, detail="No fields to update")
-+
-+    try:
-+        notion.pages.update(page_id=task_id, properties=properties)
-+        return {"status": "updated", "task_id": task_id}
-+    except Exception as e:
-+        raise HTTPException(status_code=500, detail=str(e))
-+
-+
-+@app.delete("/tasks/{task_id}", dependencies=[Depends(verify_api_key)])
-+def delete_task(task_id: str):
-+    try:
-+        notion.pages.update(page_id=task_id, archived=True)
-+        return {"status": "deleted", "task_id": task_id}
-     except Exception as e:
--        return {"error": str(e)}
-+        raise HTTPException(status_code=500, detail=str(e))
+import sys
+import os
+from pathlib import Path
+from fastapi import FastAPI, Depends, HTTPException, Header
+from fastapi.staticfiles import StaticFiles
+from dotenv import load_dotenv
+import asyncio
+
+# ============================================================
+# PROJECT ROOT / CLEAN IMPORTS
+# ============================================================
+ROOT = Path(__file__).resolve().parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+# ============================================================
+# LOAD ENV
+# ============================================================
+load_dotenv()
+
+def env(name: str, default=None):
+    return os.getenv(name, default)
+
+NOTION_API_KEY = env("NOTION_API_KEY")
+NOTION_GOALS_DB_ID = env("NOTION_GOALS_DB_ID")
+NOTION_TASKS_DB_ID = env("NOTION_TASKS_DB_ID")
+GPT_API_KEY = env("GPT_API_KEY")
+
+NOTION_AGENT_EXCHANGE_DB_ID = env("NOTION_AGENT_EXCHANGE_DB_ID")
+NOTION_AGENT_PROJECTS_DB_ID = env("NOTION_AGENT_PROJECTS_DB_ID")
+
+required_env = {
+    "NOTION_API_KEY": NOTION_API_KEY,
+    "NOTION_GOALS_DB_ID": NOTION_GOALS_DB_ID,
+    "NOTION_TASKS_DB_ID": NOTION_TASKS_DB_ID,
+}
+
+missing = [k for k, v in required_env.items() if not v]
+if missing:
+    print("⚠ Missing ENV:", ", ".join(missing))
+
+# ============================================================
+# IMPORT SERVICES
+# ============================================================
+from services.goals_service import GoalsService
+from services.tasks_service import TasksService
+from services.ai_command_service import AICommandService
+from services.notion_service import NotionService
+from services.notion_sync_service import NotionSyncService
+from services.agents_service import AgentsService
+
+import routers.goals_router as goals_router_module
+import routers.tasks_router as tasks_router_module
+import routers.ai_router as ai_router_module
+import routers.sync_router as sync_router_module
+import routers.agents_router as agents_router_module
+
+from core.master_engine import MasterEngine
+
+
+# ============================================================
+# FASTAPI APP
+# ============================================================
+app = FastAPI(
+    title="Evolia Backend v4",
+    version="4.2",
+    description="Evolia Backend + Notion Sync Engine (ASYNC STABLE)"
+)
+
+app.mount(
+    "/.well-known",
+    StaticFiles(directory=ROOT / ".well-known"),
+    name="well-known",
+)
+
+# ============================================================
+# API KEY PROTECTION
+# ============================================================
+async def verify_api_key(x_api_key: str = Header(None)):
+    if GPT_API_KEY:
+        if x_api_key is None:
+            return True
+        if x_api_key != GPT_API_KEY:
+            raise HTTPException(status_code=403, detail="Invalid API Key")
+    return True
+
+
+# ============================================================
+# INITIALIZE DOMAIN SERVICES
+# ============================================================
+goals_service = GoalsService()
+tasks_service = TasksService()
+ai_service = AICommandService()
+
+goals_service.bind_tasks_service(tasks_service)
+tasks_service.bind_goals_service(goals_service)
+
+# ============================================================
+# INITIALIZE NOTION SERVICES (ASYNC)
+# ============================================================
+notion_service = NotionService(token=NOTION_API_KEY)
+
+sync_service = NotionSyncService(
+    notion_service=notion_service,
+    goals_service=goals_service,
+    tasks_service=tasks_service,
+    goals_db_id=NOTION_GOALS_DB_ID,
+    tasks_db_id=NOTION_TASKS_DB_ID,
+)
+
+agents_service = AgentsService(
+    notion_token=NOTION_API_KEY,
+    exchange_db_id=NOTION_AGENT_EXCHANGE_DB_ID,
+    projects_db_id=NOTION_AGENT_PROJECTS_DB_ID,
+)
+
+# Bind sync
+goals_service.bind_sync_service(sync_service)
+tasks_service.bind_sync_service(sync_service)
+
+# ============================================================
+# ROUTERS (DI)
+# ============================================================
+goals_router_module.goals_service_global = goals_service
+tasks_router_module.tasks_service_global = tasks_service
+ai_router_module.ai_service_global = ai_service
+sync_router_module.sync_service_global = sync_service
+agents_router_module.agents_service_global = agents_service
+
+protected = [Depends(verify_api_key)]
+
+app.include_router(goals_router_module.router, dependencies=protected)
+app.include_router(tasks_router_module.router, dependencies=protected)
+app.include_router(ai_router_module.router, dependencies=protected)
+app.include_router(sync_router_module.router, dependencies=protected)
+app.include_router(agents_router_module.router, dependencies=protected)
+
+# ============================================================
+# ENGINE
+# ============================================================
+engine = MasterEngine()
+
+# ============================================================
+# BASIC ROUTES
+# ============================================================
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+@app.get("/")
+def root():
+    return {"status": "Evolia Backend v4 async running"}
+
+@app.get("/engine")
+def engine_status():
+    return engine.status()
+
+@app.get("/engine/state")
+def engine_state():
+    return engine.check_state()
+
+@app.get("/engine/progress")
+def engine_progress():
+    return engine.check_progress()
+
+# ============================================================
+# SHUTDOWN EVENT
+# ============================================================
+@app.on_event("shutdown")
+async def shutdown_event():
+    await notion_service.close()
