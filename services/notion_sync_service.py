@@ -4,12 +4,12 @@ from typing import Any, Dict, List, Optional
 
 class NotionSyncService:
     """
-    Evolia Notion Sync Engine v4 (Async, Stable)
+    Evolia Notion Sync Engine v4 (Async, Fully Patched)
 
     - Fully async
-    - Push + Pull
-    - Debounce-safe
-    - Works with new async NotionService
+    - Safe debounce
+    - Works with Uvicorn/Render event loop
+    - Robust fallback behaviour
     """
 
     def __init__(
@@ -30,9 +30,9 @@ class NotionSyncService:
         self._tasks_db_task: Optional[asyncio.Task] = None
         self._delay = 0.25
 
-    # =============================================================
-    # DEBOUNCE
-    # =============================================================
+    # ============================================================
+    # DEBOUNCE (fully safe patch)
+    # ============================================================
     async def debounce_goals_sync(self):
         self._cancel(self._goals_db_task)
         self._goals_db_task = asyncio.create_task(
@@ -59,77 +59,71 @@ class NotionSyncService:
         if task and not task.done():
             task.cancel()
 
-    # =============================================================
+    # ============================================================
     # SYNC UP (LOCAL → NOTION)
-    # =============================================================
+    # ============================================================
     async def sync_goals_up(self):
         goals = self.goals.get_all()
 
         for goal in goals:
-            as_dict = self.goals.to_dict(goal)
-            properties = self.map_local_goal_to_notion(as_dict)
+            goal_dict = self.goals.to_dict(goal)
+            props = self.map_local_goal_to_notion(goal_dict)
 
-            # --------------------------------------------
-            # UPDATE existing (if ID matches Notion page)
-            # --------------------------------------------
-            update_resp = await self.notion.update_page(goal.id, properties)
+            try:
+                resp = await self.notion.update_page(goal.id, props)
+                if resp.get("ok"):
+                    continue
+            except Exception:
+                pass
 
-            if update_resp.get("ok"):
-                continue  # updated successfully
-
-            # --------------------------------------------
-            # CREATE new (if not found or bad ID)
-            # --------------------------------------------
-            create_resp = await self.notion.create_page(
-                self.goals_db_id,
-                properties
-            )
-
-            if create_resp.get("ok"):
-                notion_id = create_resp["data"]["id"]
-                goal.id = notion_id  # Replace internal with Notion ID
+            try:
+                resp = await self.notion.create_page(self.goals_db_id, props)
+                if resp.get("ok"):
+                    notion_id = resp["data"]["id"]
+                    goal.id = notion_id
+            except Exception as e:
+                print(f"[NotionSync] sync_goals_up create error: {e}")
 
     async def sync_tasks_up(self):
         tasks = self.tasks.get_all()
 
         for task in tasks:
             task_dict = self._task_to_dict(task)
-            properties = self.map_local_task_to_notion(task_dict)
+            props = self.map_local_task_to_notion(task_dict)
 
-            update_resp = await self.notion.update_page(task.id, properties)
+            try:
+                resp = await self.notion.update_page(task.id, props)
+                if resp.get("ok"):
+                    continue
+            except Exception:
+                pass
 
-            if update_resp.get("ok"):
-                continue
+            try:
+                resp = await self.notion.create_page(self.tasks_db_id, props)
+                if resp.get("ok"):
+                    notion_id = resp["data"]["id"]
+                    task.id = notion_id
+            except Exception as e:
+                print(f"[NotionSync] sync_tasks_up create error: {e}")
 
-            create_resp = await self.notion.create_page(
-                self.tasks_db_id,
-                properties
-            )
-
-            if create_resp.get("ok"):
-                notion_id = create_resp["data"]["id"]
-                task.id = notion_id
-
-    # =============================================================
+    # ============================================================
     # SYNC DOWN (NOTION → LOCAL)
-    # =============================================================
+    # ============================================================
     async def sync_goals_down(self):
         pages = await self._fetch_all(self.goals_db_id)
-
-        for page in pages:
-            mapped = self.map_notion_goal_to_local(page)
+        for p in pages:
+            mapped = self.map_notion_goal_to_local(p)
             self.goals.sync_from_notion(mapped)
 
     async def sync_tasks_down(self):
         pages = await self._fetch_all(self.tasks_db_id)
-
-        for page in pages:
-            mapped = self.map_notion_task_to_local(page)
+        for p in pages:
+            mapped = self.map_notion_task_to_local(p)
             self.tasks.sync_from_notion(mapped)
 
-    # =============================================================
-    # QUERY HELPERS
-    # =============================================================
+    # ============================================================
+    # FETCH ALL
+    # ============================================================
     async def _fetch_all(self, db_id: str):
         results = []
         cursor = None
@@ -154,9 +148,9 @@ class NotionSyncService:
 
         return results
 
-    # =============================================================
-    # MAPPING UTIL
-    # =============================================================
+    # ============================================================
+    # HELPERS
+    # ============================================================
     def _props(self, page):
         return page.get("properties", {})
 
@@ -199,9 +193,21 @@ class NotionSyncService:
         except:
             return []
 
-    # =============================================================
-    # NOTION → LOCAL (GOALS)
-    # =============================================================
+    def _task_to_dict(self, task):
+        return {
+            "id": task.id,
+            "name": task.title,
+            "description": task.description,
+            "due_date": task.deadline,
+            "goal": [task.goal_id] if task.goal_id else [],
+            "priority": task.priority,
+            "status": task.status,
+            "order": task.order,
+        }
+
+    # ============================================================
+    # MAPPING — GOALS
+    # ============================================================
     def map_notion_goal_to_local(self, page):
         props = self._props(page)
 
@@ -218,35 +224,32 @@ class NotionSyncService:
             "type": self._select(props, "Type")
         }
 
-    # =============================================================
-    # LOCAL → NOTION (GOALS)
-    # =============================================================
-    def map_local_goal_to_notion(self, goal: Dict[str, Any]):
+    def map_local_goal_to_notion(self, g):
 
         def text(v): return [{"type": "text", "text": {"content": v or ""}}]
         def sel(v): return {"name": v} if v else None
         def rel(ids): return [{"id": x} for x in ids] if ids else []
 
         props = {
-            "Name": {"title": text(goal.get("name", ""))},
-            "Status": {"select": sel(goal.get("status"))},
-            "Auto Status": {"select": sel(goal.get("auto_status"))},
+            "Name": {"title": text(g.get("name"))},
+            "Status": {"select": sel(g.get("status"))},
+            "Auto Status": {"select": sel(g.get("auto_status"))},
             "Deadline": (
-                {"date": {"start": goal.get("deadline")}}
-                if goal.get("deadline") else None
+                {"date": {"start": g.get("deadline")}}
+                if g.get("deadline") else None
             ),
-            "Progress": {"number": goal.get("progress", 0)},
-            "Parent Goal": {"relation": rel(goal.get("parent_goal", []))},
-            "Child Goals": {"relation": rel(goal.get("child_goals", []))},
-            "Description": {"rich_text": text(goal.get("description", ""))},
-            "Type": {"select": sel(goal.get("type"))},
+            "Progress": {"number": g.get("progress", 0)},
+            "Parent Goal": {"relation": rel(g.get("parent_goal", []))},
+            "Child Goals": {"relation": rel(g.get("child_goals", []))},
+            "Description": {"rich_text": text(g.get("description"))},
+            "Type": {"select": sel(g.get("type"))},
         }
 
         return {k: v for k, v in props.items() if v is not None}
 
-    # =============================================================
-    # NOTION → LOCAL (TASKS)
-    # =============================================================
+    # ============================================================
+    # MAPPING — TASKS
+    # ============================================================
     def map_notion_task_to_local(self, page):
         props = self._props(page)
 
@@ -261,26 +264,23 @@ class NotionSyncService:
             "description": self._rich(props, "Description"),
         }
 
-    # =============================================================
-    # LOCAL → NOTION (TASKS)
-    # =============================================================
-    def map_local_task_to_notion(self, task: Dict[str, Any]):
+    def map_local_task_to_notion(self, t):
 
         def text(v): return [{"type": "text", "text": {"content": v or ""}}]
         def sel(v): return {"name": v} if v else None
         def rel(ids): return [{"id": x} for x in ids] if ids else []
 
         props = {
-            "Name": {"title": text(task.get("name", ""))},
-            "Status": {"select": sel(task.get("status"))},
-            "Priority": {"select": sel(task.get("priority"))},
+            "Name": {"title": text(t.get("name"))},
+            "Status": {"select": sel(t.get("status"))},
+            "Priority": {"select": sel(t.get("priority"))},
             "Due Date": (
-                {"date": {"start": task.get("due_date")}}
-                if task.get("due_date") else None
+                {"date": {"start": t.get("due_date")}}
+                if t.get("due_date") else None
             ),
-            "Goal": {"relation": rel(task.get("goal", []))},
-            "Order": {"number": task.get("order", 0)},
-            "Description": {"rich_text": text(task.get("description", ""))},
+            "Goal": {"relation": rel(t.get("goal", []))},
+            "Order": {"number": t.get("order", 0)},
+            "Description": {"rich_text": text(t.get("description"))},
         }
 
         return {k: v for k, v in props.items() if v is not None}

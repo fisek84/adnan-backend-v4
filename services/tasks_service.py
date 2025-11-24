@@ -32,20 +32,36 @@ class TasksService:
         self.sync_service = sync_service
 
     # ============================================================
-    # HELPERS
+    # INTERNAL: trigger debounce sync (FINAL ASYNC PATCH)
     # ============================================================
-    def _now(self):
-        return datetime.now(timezone.utc)
-
     def _trigger_sync(self):
         if not self.sync_service:
             return
 
         import asyncio
+
         try:
-            asyncio.create_task(self.sync_service.debounce_tasks_sync())
+            loop = asyncio.get_event_loop()
+
+            # Ako event loop već radi (FastAPI + Uvicorn + Render)
+            if loop.is_running():
+                loop.create_task(self.sync_service.debounce_tasks_sync())
+            else:
+                # Lokalno bez running loop-a
+                loop.run_until_complete(self.sync_service.debounce_tasks_sync())
+
         except RuntimeError:
-            pass
+            # Fallback — kreiraj privremeni loop
+            try:
+                asyncio.run(self.sync_service.debounce_tasks_sync())
+            except Exception:
+                pass
+
+    # ============================================================
+    # HELPERS
+    # ============================================================
+    def _now(self):
+        return datetime.now(timezone.utc)
 
     # ============================================================
     # CREATE TASK
@@ -69,6 +85,7 @@ class TasksService:
 
         self.tasks[task_id] = new_task
         self._trigger_sync()
+
         return new_task
 
     # ============================================================
@@ -89,6 +106,7 @@ class TasksService:
 
         task.updated_at = self._now()
         self._trigger_sync()
+
         return task
 
     # ============================================================

@@ -33,18 +33,30 @@ class GoalsService:
         self.sync_service = sync_service
 
     # ============================================================
-    # INTERNAL: trigger debounce sync
+    # INTERNAL: trigger debounce sync (FINAL ASYNC PATCH)
     # ============================================================
     def _trigger_sync(self):
         if not self.sync_service:
             return
 
-        # Fire async debounce
         import asyncio
+
         try:
-            asyncio.create_task(self.sync_service.debounce_goals_sync())
+            loop = asyncio.get_event_loop()
+
+            # Ako loop već radi (FastAPI + Uvicorn + Render)
+            if loop.is_running():
+                loop.create_task(self.sync_service.debounce_goals_sync())
+            else:
+                # Lokalno — nema running loop-a
+                loop.run_until_complete(self.sync_service.debounce_goals_sync())
+
         except RuntimeError:
-            pass
+            # Fallback — kreiraj privremeni loop
+            try:
+                asyncio.run(self.sync_service.debounce_goals_sync())
+            except Exception:
+                pass
 
     # ============================================================
     # HELPERS
