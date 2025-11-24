@@ -4,6 +4,7 @@ from pathlib import Path
 from fastapi import FastAPI, Depends, HTTPException, Header
 from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
+import asyncio
 
 # ============================================================
 # PROJECT ROOT / CLEAN IMPORTS
@@ -13,35 +14,33 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 # ============================================================
-# LOAD ENV (SAFE MODE)
+# LOAD ENV
 # ============================================================
 load_dotenv()
 
-def env(name: str, default: str | None = None) -> str | None:
+def env(name: str, default=None):
     return os.getenv(name, default)
 
-# 🔥 KORISTIMO NOTION_API_KEY — VRATILI SMO KAKO TREBA
 NOTION_API_KEY = env("NOTION_API_KEY")
 NOTION_GOALS_DB_ID = env("NOTION_GOALS_DB_ID")
 NOTION_TASKS_DB_ID = env("NOTION_TASKS_DB_ID")
 GPT_API_KEY = env("GPT_API_KEY")
 
-# Agent DB IDs (ostaju)
 NOTION_AGENT_EXCHANGE_DB_ID = env("NOTION_AGENT_EXCHANGE_DB_ID")
 NOTION_AGENT_PROJECTS_DB_ID = env("NOTION_AGENT_PROJECTS_DB_ID")
 
-required = {
+required_env = {
     "NOTION_API_KEY": NOTION_API_KEY,
     "NOTION_GOALS_DB_ID": NOTION_GOALS_DB_ID,
     "NOTION_TASKS_DB_ID": NOTION_TASKS_DB_ID,
 }
-missing = [k for k, v in required.items() if not v]
+
+missing = [k for k, v in required_env.items() if not v]
 if missing:
     print("⚠ Missing ENV:", ", ".join(missing))
 
-
 # ============================================================
-# IMPORT SERVICES (after ENV)
+# IMPORT SERVICES
 # ============================================================
 from services.goals_service import GoalsService
 from services.tasks_service import TasksService
@@ -64,8 +63,8 @@ from core.master_engine import MasterEngine
 # ============================================================
 app = FastAPI(
     title="Evolia Backend v4",
-    version="4.1",
-    description="Evolia Core Backend + Notion Sync Engine (Stable)"
+    version="4.2",
+    description="Evolia Backend + Notion Sync Engine (ASYNC STABLE)"
 )
 
 app.mount(
@@ -74,24 +73,15 @@ app.mount(
     name="well-known",
 )
 
-
 # ============================================================
 # API KEY PROTECTION
 # ============================================================
 async def verify_api_key(x_api_key: str = Header(None)):
-    """
-    Allow:
-    - valid x-api-key  → full access
-    - missing x-api-key → allowed (for ChatGPT agent)
-    Block:
-    - wrong x-api-key  → forbidden
-    """
     if GPT_API_KEY:
         if x_api_key is None:
-            return True  # allow agent
+            return True
         if x_api_key != GPT_API_KEY:
             raise HTTPException(status_code=403, detail="Invalid API Key")
-
     return True
 
 
@@ -105,9 +95,8 @@ ai_service = AICommandService()
 goals_service.bind_tasks_service(tasks_service)
 tasks_service.bind_goals_service(goals_service)
 
-
 # ============================================================
-# INITIALIZE NOTION SERVICES
+# INITIALIZE NOTION SERVICES (ASYNC)
 # ============================================================
 notion_service = NotionService(token=NOTION_API_KEY)
 
@@ -125,9 +114,12 @@ agents_service = AgentsService(
     projects_db_id=NOTION_AGENT_PROJECTS_DB_ID,
 )
 
+# Bind sync
+goals_service.bind_sync_service(sync_service)
+tasks_service.bind_sync_service(sync_service)
 
 # ============================================================
-# ROUTERS (Inject services)
+# ROUTERS (DI)
 # ============================================================
 goals_router_module.goals_service_global = goals_service
 tasks_router_module.tasks_service_global = tasks_service
@@ -143,12 +135,10 @@ app.include_router(ai_router_module.router, dependencies=protected)
 app.include_router(sync_router_module.router, dependencies=protected)
 app.include_router(agents_router_module.router, dependencies=protected)
 
-
 # ============================================================
 # ENGINE
 # ============================================================
 engine = MasterEngine()
-
 
 # ============================================================
 # BASIC ROUTES
@@ -159,16 +149,23 @@ def health():
 
 @app.get("/")
 def root():
-    return {"status": "Evolia Backend v4 running"}
+    return {"status": "Evolia Backend v4 async running"}
 
 @app.get("/engine")
 def engine_status():
     return engine.status()
 
 @app.get("/engine/state")
-def engine_check_state():
+def engine_state():
     return engine.check_state()
 
 @app.get("/engine/progress")
-def engine_check_progress():
+def engine_progress():
     return engine.check_progress()
+
+# ============================================================
+# LIFESPAN CLEANUP (ASYNC CLIENT)
+# ============================================================
+@app.on_event("shutdown")
+async def shutdown_event():
+    await notion_service.close()

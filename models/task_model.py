@@ -1,25 +1,38 @@
+from datetime import datetime
 from pydantic import BaseModel, Field, validator
 from typing import Optional
-from datetime import datetime
 
 
 class TaskModel(BaseModel):
-    id: str = Field(..., description="Unique task identifier")
+    """
+    Core Task model for Evolia Backend v4.
+    - In-memory
+    - Synced with Notion
+    - Validated & structured
+    """
+
+    id: str = Field(..., description="Unique Task ID")
     title: str = Field(..., description="Task title")
     description: Optional[str] = Field(
-        "", description="Optional task description"
+        "", description="Task description"
     )
     goal_id: Optional[str] = Field(
-        None, description="ID of the Goal this task is linked to"
+        None, description="Linked goal ID"
     )
     deadline: Optional[str] = Field(
-        None, description="Deadline in ISO8601 format (YYYY-MM-DD)"
+        None,
+        description="Deadline in ISO8601 format (YYYY-MM-DD)"
     )
     priority: Optional[str] = Field(
-        None, description="Task priority: low, medium, high"
+        None,
+        description="Priority: low, medium, high"
     )
     status: str = Field(
-        ..., description="Task status: pending, in_progress, completed"
+        "pending",
+        description="Task status: pending, in_progress, completed"
+    )
+    order: int = Field(
+        0, description="Sort order for tasks"
     )
     created_at: datetime = Field(
         ..., description="Timestamp when task was created"
@@ -28,18 +41,17 @@ class TaskModel(BaseModel):
         ..., description="Timestamp when task was last updated"
     )
 
-    # -------------------------------------------
+    # ---------------------------------------------------------
     # VALIDATIONS
-    # -------------------------------------------
-
+    # ---------------------------------------------------------
     @validator("deadline")
     def validate_deadline(cls, v):
         if v is None:
             return v
         try:
             datetime.fromisoformat(v)
-        except ValueError:
-            raise ValueError("Deadline must be in ISO format YYYY-MM-DD")
+        except:
+            raise ValueError("Deadline must be ISO format YYYY-MM-DD")
         return v
 
     @validator("priority")
@@ -61,6 +73,7 @@ class TaskModel(BaseModel):
     class Config:
         orm_mode = True
         validate_assignment = True
+        extra = "forbid"
         json_encoders = {
             datetime: lambda v: v.isoformat()
         }

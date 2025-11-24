@@ -9,16 +9,12 @@ from models.base_model import GoalModel
 
 class GoalsService:
     """
-    Evolia GoalsService v4.0 (PRO)
-    ------------------------------------------------------
-    Poboljšanja:
-    ✔ stabilno ažuriranje ciljeva
-    ✔ potpuna kontrola hijerarhija (Parent → Child)
-    ✔ sprečavanje ciklusa
-    ✔ atomska izmjena Parent/Child strukture
-    ✔ tačna propagacija progress-a
-    ✔ stabilan Notion sync (UP & DOWN)
-    ✔ profesionalno error handling ponašanje
+    Evolia GoalsService v4.1 (Notion-Safe Version)
+
+    - Generates temporary UUIDs for local state
+    - Automatically replaced with Notion page ID during sync_up
+    - Full parent/child integrity
+    - Works with async NotionSyncService
     """
 
     tasks_service = None
@@ -43,6 +39,7 @@ class GoalsService:
         if not self.sync_service:
             return
 
+        # Fire async debounce
         import asyncio
         try:
             asyncio.create_task(self.sync_service.debounce_goals_sync())
@@ -56,7 +53,6 @@ class GoalsService:
         return datetime.now(timezone.utc)
 
     def _would_create_cycle(self, parent_id: str, child_id: str) -> bool:
-        """Provjera da li Parent → Child stvara hijerarhijski ciklus."""
         stack = [child_id]
 
         while stack:
@@ -73,6 +69,8 @@ class GoalsService:
     # ============================================================
     def create_goal(self, data: GoalCreate, forced_id: Optional[str] = None) -> GoalModel:
         now = self._now()
+
+        # Temporary UUID (will be replaced with Notion page ID upon sync)
         goal_id = forced_id or uuid4().hex
 
         new_goal = GoalModel(
@@ -91,7 +89,7 @@ class GoalsService:
 
         self.goals[goal_id] = new_goal
 
-        # auto-link
+        # Auto-link
         if data.parent_id:
             parent = self.goals.get(data.parent_id)
             if parent:
@@ -114,7 +112,7 @@ class GoalsService:
         old_parent = goal.parent_id
         new_parent = updates.parent_id
 
-        # core fields
+        # Core fields
         for field in [
             "title", "description", "deadline", "priority",
             "status", "progress"
@@ -123,16 +121,16 @@ class GoalsService:
             if val is not None:
                 setattr(goal, field, val)
 
-        # parent change
+        # Parent change
         if new_parent is not None and new_parent != old_parent:
-            # unlink from old parent
+            # Remove from old parent
             if old_parent:
                 parent = self.goals.get(old_parent)
                 if parent and goal_id in parent.children:
                     parent.children.remove(goal_id)
                     parent.updated_at = self._now()
 
-            # link to new parent
+            # Add to new parent
             if new_parent:
                 if self._would_create_cycle(new_parent, goal_id):
                     raise ValueError("Hierarchy cycle detected.")
@@ -156,7 +154,7 @@ class GoalsService:
         if not goal:
             raise ValueError(f"Goal {goal_id} not found")
 
-        # unlink from parent
+        # Unlink from parent
         if goal.parent_id:
             parent = self.goals.get(goal.parent_id)
             if parent and goal_id in parent.children:
@@ -165,7 +163,7 @@ class GoalsService:
 
         removed = self.goals.pop(goal_id)
 
-        # orphan children → convert to root
+        # Children become root goals
         for g in self.goals.values():
             if g.parent_id == goal_id:
                 g.parent_id = None
@@ -200,13 +198,12 @@ class GoalsService:
             updated_at=now,
         )
 
-        # remove old
+        # Remove old
         for g in selected:
             self.goals.pop(g.id, None)
 
         self.goals[merged_id] = merged
         self._trigger_sync()
-
         return merged
 
     # ============================================================
@@ -215,6 +212,7 @@ class GoalsService:
     def sync_from_notion(self, data: Dict[str, Any]) -> GoalModel:
         goal_id = data["id"]
         existing = self.goals.get(goal_id)
+
         parent = data.get("parent_goal")
         parent_id = parent[0] if parent else None
 
@@ -229,6 +227,7 @@ class GoalsService:
                 priority=None
             ))
 
+        # Create with forced Notion ID
         return self.create_goal(GoalCreate(
             title=data.get("name"),
             description=data.get("description"),
@@ -238,7 +237,7 @@ class GoalsService:
         ), forced_id=goal_id)
 
     # ============================================================
-    # AUTO PROGRESS FROM TASKS
+    # AUTO TASK SYNC → PROGRESS
     # ============================================================
     def sync_goal_progress_from_tasks(self, goal_id: str):
         if not self.tasks_service:
@@ -248,6 +247,7 @@ class GoalsService:
             t for t in self.tasks_service.tasks.values()
             if t.goal_id == goal_id
         ]
+
         if not tasks:
             return
 
@@ -262,24 +262,6 @@ class GoalsService:
         goal.progress = progress
         goal.status = "completed" if progress == 100 else "in_progress"
         goal.updated_at = self._now()
-
-    # ============================================================
-    # NLP PROGRESS DETECTION
-    # ============================================================
-    def compute_auto_progress(self, goal_id: str) -> str:
-        goal = self.goals.get(goal_id)
-        if not goal:
-            raise ValueError(f"Goal {goal_id} not found")
-
-        text = f"{goal.title} {goal.description or ''}".lower()
-
-        if any(k in text for k in ["done", "completed", "završeno", "gotovo", "odrađeno"]):
-            return "completed"
-
-        if any(k in text for k in ["uradi", "napraviti", "plan", "work", "task"]):
-            return "in_progress"
-
-        return "unknown"
 
     # ============================================================
     # UTILITIES

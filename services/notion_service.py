@@ -1,17 +1,14 @@
-import requests
+import httpx
 import json
 
 
 class NotionService:
     """
-    Stable Notion API wrapper used across Evolia Backend v4 (PRO Version).
+    ASYNC Notion API wrapper for Evolia Backend v4.
 
-    Features:
-    - Always sends Notion-Version header
-    - Unified request handling
-    - Clear error reporting
-    - ping() for quick connectivity test
-    - safe_close() for clean shutdown
+    - Fully async (httpx)
+    - Supports create/update/query
+    - Stable error handling
     """
 
     BASE_URL = "https://api.notion.com/v1"
@@ -23,24 +20,23 @@ class NotionService:
 
         self.token = token
 
-        # Shared persistent session (fast & stable)
-        self.session = requests.Session()
-        self.session.headers.update({
-            "Authorization": f"Bearer {token}",
-            "Notion-Version": self.NOTION_VERSION,
-            "Content-Type": "application/json"
-        })
+        self.client = httpx.AsyncClient(
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Notion-Version": self.NOTION_VERSION,
+                "Content-Type": "application/json"
+            },
+            timeout=20.0,
+        )
 
     # ------------------------------------------------------------
-    # INTERNAL REQUEST HANDLER
+    # INTERNAL REQUEST
     # ------------------------------------------------------------
-    def _request(self, method: str, endpoint: str, **kwargs):
-        """Unified request wrapper with robust error handling."""
-
+    async def _request(self, method: str, endpoint: str, **kwargs):
         url = f"{self.BASE_URL}{endpoint}"
 
         try:
-            response = self.session.request(method, url, **kwargs)
+            response = await self.client.request(method, url, **kwargs)
         except Exception as e:
             return {
                 "ok": False,
@@ -48,13 +44,11 @@ class NotionService:
                 "endpoint": endpoint
             }
 
-        # Try decode JSON
         try:
             data = response.json()
         except json.JSONDecodeError:
             data = {"raw": response.text}
 
-        # Handle API errors
         if response.status_code >= 400:
             return {
                 "ok": False,
@@ -70,63 +64,56 @@ class NotionService:
         }
 
     # ------------------------------------------------------------
-    # DATABASE METHODS
+    # QUERY DATABASE
     # ------------------------------------------------------------
-    def query_database(self, db_id: str, payload: dict | None = None):
-        """Query a Notion database with optional filter/sort."""
+    async def query_database(self, db_id: str, payload: dict | None = None):
         if payload is None:
             payload = {}
 
-        return self._request(
+        return await self._request(
             "POST",
             f"/databases/{db_id}/query",
             json=payload
         )
 
     # ------------------------------------------------------------
-    # PAGE METHODS
+    # CREATE PAGE (DATABASE ITEM)
     # ------------------------------------------------------------
-    def get_page(self, page_id: str):
-        return self._request("GET", f"/pages/{page_id}")
+    async def create_page(self, db_id: str, properties: dict):
+        payload = {
+            "parent": {"database_id": db_id},
+            "properties": properties
+        }
 
-    def create_page(self, payload: dict):
-        return self._request("POST", "/pages", json=payload)
+        return await self._request(
+            "POST",
+            "/pages",
+            json=payload
+        )
 
-    def update_page(self, page_id: str, payload: dict):
-        return self._request(
+    # ------------------------------------------------------------
+    # UPDATE PAGE
+    # ------------------------------------------------------------
+    async def update_page(self, page_id: str, properties: dict):
+        payload = {"properties": properties}
+
+        return await self._request(
             "PATCH",
             f"/pages/{page_id}",
             json=payload
         )
 
     # ------------------------------------------------------------
-    # BLOCK METHODS
-    # ------------------------------------------------------------
-    def append_block_children(self, block_id: str, payload: dict):
-        return self._request(
-            "PATCH",
-            f"/blocks/{block_id}/children",
-            json=payload
-        )
-
-    # ------------------------------------------------------------
     # HEALTH CHECK
     # ------------------------------------------------------------
-    def ping(self):
-        """
-        Quick connectivity test:
-        - validates token
-        - verifies headers
-        - prints Notion user info
-        """
-        return self._request("GET", "/users/me")
+    async def ping(self):
+        return await self._request("GET", "/users/me")
 
     # ------------------------------------------------------------
     # CLEAN SHUTDOWN
     # ------------------------------------------------------------
-    def safe_close(self):
-        """Gracefully close the session."""
+    async def close(self):
         try:
-            self.session.close()
+            await self.client.aclose()
         except:
             pass
