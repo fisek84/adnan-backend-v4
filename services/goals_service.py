@@ -25,7 +25,7 @@ class GoalsService:
         self.sync_service = sync_service
 
     # ============================================================
-    # INTERNAL — ASYNC TRIGGER
+    # INTERNAL — SYNC TRIGGER
     # ============================================================
     def _trigger_sync(self):
         if not self.sync_service:
@@ -50,7 +50,11 @@ class GoalsService:
             current = stack.pop()
             if current == parent_id:
                 return True
-            children = self.goals.get(current).children if current in self.goals else []
+            children = (
+                self.goals[current].children
+                if current in self.goals
+                else []
+            )
             stack.extend(children)
 
         return False
@@ -79,11 +83,13 @@ class GoalsService:
 
         self.goals[goal_id] = new_goal
 
+        # Parent linking
         if data.parent_id:
             parent = self.goals.get(data.parent_id)
             if parent:
                 if self._would_create_cycle(parent.id, goal_id):
                     raise ValueError("Hierarchy cycle detected.")
+
                 parent.children.append(goal_id)
                 parent.updated_at = now
 
@@ -101,13 +107,13 @@ class GoalsService:
         old_parent = goal.parent_id
         new_parent = updates.parent_id
 
-        # Update fields
+        # Update simple fields
         for field in ["title", "description", "deadline", "priority", "status", "progress"]:
             val = getattr(updates, field, None)
             if val is not None:
                 setattr(goal, field, val)
 
-        # Parent change
+        # Handle parent change
         if new_parent is not None and new_parent != old_parent:
 
             # Remove from old parent
@@ -147,7 +153,7 @@ class GoalsService:
 
         removed = self.goals.pop(goal_id)
 
-        # Orphan children
+        # Orphan children — unlink them
         for g in self.goals.values():
             if g.parent_id == goal_id:
                 g.parent_id = None
@@ -192,7 +198,7 @@ class GoalsService:
         return merged
 
     # ============================================================
-    # UTILITIES
+    # GET ALL GOALS  ✅ REQUIRED BY ROUTERS + SYNC
     # ============================================================
-    def get_all(self):
+    def get_all(self) -> List[GoalModel]:
         return list(self.goals.values())
