@@ -1,22 +1,22 @@
-from pydantic import BaseModel, Field, validator
-from typing import Optional
 from datetime import datetime
+from pydantic import BaseModel, Field, field_validator
+from typing import Optional
 
 
 class GoalCreate(BaseModel):
     """
-    Model for creating new Goal objects.
-    Strict validation ensures clean data and stable sync with Notion.
+    Input model for creating new Goal entries.
+    Fully validated and safe for API + Notion sync.
     """
 
     title: str = Field(
         ...,
-        description="Title of the goal"
+        description="Short title of the goal"
     )
 
     description: Optional[str] = Field(
         "",
-        description="Detailed description of the goal"
+        description="Optional long description of the goal"
     )
 
     deadline: Optional[str] = Field(
@@ -24,21 +24,31 @@ class GoalCreate(BaseModel):
         description="Deadline in ISO8601 format (YYYY-MM-DD)"
     )
 
-    parent_id: Optional[str] = Field(
+    why: Optional[str] = Field(
         None,
-        description="Optional parent goal reference"
+        description="Reason or purpose behind this goal"
+    )
+
+    context: Optional[str] = Field(
+        None,
+        description="Context or category (e.g. health, business, personal)"
     )
 
     priority: Optional[str] = Field(
         None,
-        description="Priority: low, medium, high"
+        description="Priority level: low, medium, high"
     )
 
-    # -------------------------------------------
-    # VALIDATIONS
-    # -------------------------------------------
+    parent_id: Optional[str] = Field(
+        None,
+        description="Optional parent goal reference (UUID or Notion ID)"
+    )
 
-    @validator("deadline")
+    # ============================================================
+    # VALIDATORS (Pydantic v2)
+    # ============================================================
+
+    @field_validator("deadline")
     def validate_deadline(cls, v):
         if v is None:
             return v
@@ -48,7 +58,7 @@ class GoalCreate(BaseModel):
             raise ValueError("Deadline must be ISO format YYYY-MM-DD")
         return v
 
-    @validator("priority")
+    @field_validator("priority")
     def validate_priority(cls, v):
         if v is None:
             return v
@@ -58,4 +68,4 @@ class GoalCreate(BaseModel):
         return v
 
     class Config:
-        extra = "forbid"  # prevents accidental unknown fields
+        extra = "forbid"  # reject unknown fields

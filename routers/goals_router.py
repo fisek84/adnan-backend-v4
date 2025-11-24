@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 
 from models.goal_create import GoalCreate
 from models.goal_update import GoalUpdate
@@ -14,6 +14,7 @@ router = APIRouter(prefix="/goals", tags=["Goals"])
 # ============================================================
 # RESPONSE MODELS
 # ============================================================
+
 class GoalResponse(BaseModel):
     id: str
     title: str
@@ -23,10 +24,14 @@ class GoalResponse(BaseModel):
     priority: Optional[str]
     status: str
     progress: int
-    children: list
+    children: List[str]
+
+    class Config:
+        from_attributes = True  # Pydantic v2 replacement for orm_mode
 
 
 def to_response(goal):
+    """Convert internal Goal object into API-safe response."""
     return GoalResponse(
         id=goal.id,
         title=goal.title,
@@ -43,12 +48,17 @@ def to_response(goal):
 # ============================================================
 # ROUTES
 # ============================================================
+
 @router.post("/create")
 def create_goal(payload: GoalCreate):
     if goals_service_global is None:
         raise HTTPException(500, "GoalsService not initialized")
 
-    goal = goals_service_global.create_goal(payload)
+    try:
+        goal = goals_service_global.create_goal(payload)
+    except Exception as e:
+        raise HTTPException(400, f"Failed to create goal: {e}")
+
     return {
         "status": "created",
         "goal": to_response(goal)
@@ -64,6 +74,8 @@ def update_goal(goal_id: str, updates: GoalUpdate):
         goal = goals_service_global.update_goal(goal_id, updates)
     except ValueError as e:
         raise HTTPException(404, str(e))
+    except Exception as e:
+        raise HTTPException(400, f"Update failed: {e}")
 
     return {
         "status": "updated",
@@ -77,7 +89,11 @@ def get_all_goals():
         raise HTTPException(500, "GoalsService not initialized")
 
     goals = goals_service_global.get_all()
-    return [to_response(g) for g in goals]
+
+    return {
+        "count": len(goals),
+        "items": [to_response(g) for g in goals]
+    }
 
 
 @router.delete("/{goal_id}")
