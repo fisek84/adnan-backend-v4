@@ -75,6 +75,7 @@ class GoalsService:
             children=[],
             created_at=now,
             updated_at=now,
+            notion_id=None,       #  🔥 DODANO
         )
 
         self.goals[goal_id] = new_goal
@@ -174,6 +175,7 @@ class GoalsService:
             children=[],
             created_at=now,
             updated_at=now,
+            notion_id=None,       # 🔥 DODANO
         )
 
         for g in selected:
@@ -204,7 +206,7 @@ class GoalsService:
                 priority=None
             ))
 
-        return self.create_goal(
+        new_goal = self.create_goal(
             GoalCreate(
                 title=data.get("name"),
                 description=data.get("description"),
@@ -215,6 +217,9 @@ class GoalsService:
             forced_id=goal_id
         )
 
+        new_goal.notion_id = goal_id   # 🔥 OVDE VEŽEMO NOTION ID
+        return new_goal
+
     # ============================================================
     # UTILITIES
     # ============================================================
@@ -224,6 +229,7 @@ class GoalsService:
     def to_dict(self, goal: GoalModel) -> Dict[str, Any]:
         return {
             "id": goal.id,
+            "notion_id": goal.notion_id,     # 🔥 DODANO
             "name": goal.title,
             "description": goal.description,
             "deadline": goal.deadline,

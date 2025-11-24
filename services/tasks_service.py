@@ -58,6 +58,8 @@ class TasksService:
             order=0,
             created_at=now,
             updated_at=now,
+
+            notion_id=None   # 🔥 DODANO — ništa ne mijenja tvoju logiku
         )
 
         self.tasks[task_id] = new_task
@@ -103,6 +105,8 @@ class TasksService:
         goal_id = goal_rel[0] if goal_rel else None
 
         if existing:
+            existing.notion_id = task_id  # 🔥 DODANO
+
             return self.update_task(task_id, TaskUpdate(
                 title=data.get("name"),
                 description=data.get("description"),
@@ -113,7 +117,7 @@ class TasksService:
                 order=data.get("order"),
             ))
 
-        return self.create_task(
+        new_task = self.create_task(
             TaskCreate(
                 title=data.get("name"),
                 description=data.get("description"),
@@ -124,6 +128,10 @@ class TasksService:
             forced_id=task_id
         )
 
+        new_task.notion_id = task_id  # 🔥 I OVDJE VEŽEMO
+
+        return new_task
+
     # ============================================================
     # UTILITIES
     # ============================================================
@@ -133,6 +141,7 @@ class TasksService:
     def _to_dict(self, task: TaskModel) -> Dict[str, Any]:
         return {
             "id": task.id,
+            "notion_id": task.notion_id,  # 🔥 EXPORTAMO
             "name": task.title,
             "description": task.description,
             "due_date": task.deadline,

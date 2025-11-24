@@ -4,12 +4,12 @@ from typing import Any, Dict, List, Optional
 
 class NotionSyncService:
     """
-    Evolia Notion Sync Engine v4 (Async, Stable, Error-Aware)
+    Evolia Notion Sync Engine v4 — Robust sync engine
 
-    - Fully async
-    - Safe debounce
-    - Detects Notion soft errors (object: error)
-    - Auto-replaces temporary UUID with real Notion page ID
+    Behaviour:
+    - If local object has no notion_id -> CREATE in Notion and persist Notion id locally.
+    - If local object has notion_id -> try UPDATE; on soft-error/404 -> fallback to CREATE.
+    - When replacing a local id with a Notion id we update service dictionaries and references.
     """
 
     def __init__(
@@ -48,7 +48,7 @@ class NotionSyncService:
         except asyncio.CancelledError:
             pass
         except Exception as e:
-            print(f"[NotionSync] Debounce error:", e)
+            print("[NotionSync] Debounce error:", e)
 
     @staticmethod
     def _cancel(task: Optional[asyncio.Task]):
@@ -56,65 +56,136 @@ class NotionSyncService:
             task.cancel()
 
     # ============================================================
+    # INTERNAL HELPERS: ID REPLACEMENT
+    # ============================================================
+    def _replace_goal_id(self, old_id: str, new_id: str):
+        """
+        Replace goal id in goals service and update parent/children references and tasks that point to it.
+        """
+        try:
+            g = self.goals.goals.pop(old_id, None)
+            if g:
+                g.id = new_id
+                self.goals.goals[new_id] = g
+
+            # update parent/children references across goals
+            for other in list(self.goals.goals.values()):
+                if other.parent_id == old_id:
+                    other.parent_id = new_id
+                other.children = [new_id if c == old_id else c for c in other.children]
+
+            # update tasks referencing this goal
+            for t in list(self.tasks.tasks.values()):
+                if t.goal_id == old_id:
+                    t.goal_id = new_id
+
+        except Exception as e:
+            print("[NotionSync] _replace_goal_id error:", e)
+
+    def _replace_task_id(self, old_id: str, new_id: str):
+        """
+        Replace task id in tasks service.
+        """
+        try:
+            t = self.tasks.tasks.pop(old_id, None)
+            if t:
+                t.id = new_id
+                self.tasks.tasks[new_id] = t
+        except Exception as e:
+            print("[NotionSync] _replace_task_id error:", e)
+
+    # ============================================================
     # SYNC UP (LOCAL → NOTION)
     # ============================================================
     async def sync_goals_up(self):
-        for goal in self.goals.get_all():
-            goal_dict = self.goals.to_dict(goal)
-            props = self.map_local_goal_to_notion(goal_dict)
+        """
+        Sync local goals -> Notion.
 
-            old_id = goal.id  # needed for ID replacement
+        Logic:
+        - if goal.notion_id missing -> create page, persist notion_id and replace local id.
+        - if goal.notion_id present -> try update, on soft error/404 fallback to create and update ids.
+        """
+        for goal in list(self.goals.get_all()):
+            try:
+                props = self.map_local_goal_to_notion(self.goals.to_dict(goal))
+            except Exception as e:
+                print("[NotionSync] Error mapping goal to notion props:", e)
+                continue
 
-            # ------------------------------
-            # TRY UPDATE
-            # ------------------------------
-            update = await self.notion.update_page(goal.id, props)
+            notion_id = getattr(goal, "notion_id", None)
 
+            # If we don't have notion_id yet => create
+            if not notion_id:
+                create = await self.notion.create_page(self.goals_db_id, props)
+                if create.get("ok"):
+                    new_id = create["data"]["id"]
+                    goal.notion_id = new_id
+                    old_id = goal.id
+                    # replace id and references
+                    self._replace_goal_id(old_id, new_id)
+                else:
+                    print("[NotionSync] Goal create failed:", create.get("error"))
+                continue
+
+            # We have a notion_id -> try update
+            update = await self.notion.update_page(notion_id, props)
             if update.get("ok"):
                 continue
 
+            # Update failed -> log and fallback to create
             if update.get("error"):
-                print("[NotionSync] Goal update failed → will create instead:", update["error"])
+                print("[NotionSync] Goal update failed -> fallback create:", update["error"])
 
-            # ------------------------------
-            # TRY CREATE
-            # ------------------------------
             create = await self.notion.create_page(self.goals_db_id, props)
-
             if create.get("ok"):
                 new_id = create["data"]["id"]
-                goal.id = new_id
-
-                # replace ID in the service dictionary
-                self.goals.goals.pop(old_id, None)
-                self.goals.goals[new_id] = goal
+                goal.notion_id = new_id
+                old_id = goal.id
+                self._replace_goal_id(old_id, new_id)
             else:
                 print("[NotionSync] Goal create failed:", create.get("error"))
 
     async def sync_tasks_up(self):
-        for task in self.tasks.get_all():
-            task_dict = self._task_to_dict(task)
-            props = self.map_local_task_to_notion(task_dict)
+        """
+        Sync local tasks -> Notion.
 
-            old_id = task.id
+        Logic:
+        - if task.notion_id missing -> create page, persist notion_id and replace local id.
+        - if task.notion_id present -> try update, on soft error/404 fallback to create and update ids.
+        """
+        for task in list(self.tasks.get_all()):
+            try:
+                props = self.map_local_task_to_notion(self.tasks._to_dict(task))
+            except Exception as e:
+                print("[NotionSync] Error mapping task to notion props:", e)
+                continue
 
-            update = await self.notion.update_page(task.id, props)
+            notion_id = getattr(task, "notion_id", None)
 
+            if not notion_id:
+                create = await self.notion.create_page(self.tasks_db_id, props)
+                if create.get("ok"):
+                    new_id = create["data"]["id"]
+                    task.notion_id = new_id
+                    old_id = task.id
+                    self._replace_task_id(old_id, new_id)
+                else:
+                    print("[NotionSync] Task create failed:", create.get("error"))
+                continue
+
+            update = await self.notion.update_page(notion_id, props)
             if update.get("ok"):
                 continue
 
             if update.get("error"):
-                print("[NotionSync] Task update failed → will create:", update["error"])
+                print("[NotionSync] Task update failed -> fallback create:", update["error"])
 
             create = await self.notion.create_page(self.tasks_db_id, props)
-
             if create.get("ok"):
                 new_id = create["data"]["id"]
-                task.id = new_id
-
-                # replace in dict
-                self.tasks.tasks.pop(old_id, None)
-                self.tasks.tasks[new_id] = task
+                task.notion_id = new_id
+                old_id = task.id
+                self._replace_task_id(old_id, new_id)
             else:
                 print("[NotionSync] Task create failed:", create.get("error"))
 
@@ -125,13 +196,19 @@ class NotionSyncService:
         pages = await self._fetch_all(self.goals_db_id)
         for page in pages:
             mapped = self.map_notion_goal_to_local(page)
-            self.goals.sync_from_notion(mapped)
+            try:
+                self.goals.sync_from_notion(mapped)
+            except Exception as e:
+                print("[NotionSync] sync_goals_down error:", e)
 
     async def sync_tasks_down(self):
         pages = await self._fetch_all(self.tasks_db_id)
         for page in pages:
             mapped = self.map_notion_task_to_local(page)
-            self.tasks.sync_from_notion(mapped)
+            try:
+                self.tasks.sync_from_notion(mapped)
+            except Exception as e:
+                print("[NotionSync] sync_tasks_down error:", e)
 
     # ============================================================
     # FETCH ALL FROM DB
@@ -243,16 +320,13 @@ class NotionSyncService:
 
         props = {
             "Name": {"title": text(g.get("name"))},
+            "Description": {"rich_text": text(g.get("description"))},
             "Status": {"select": sel(g.get("status"))},
-            "Auto Status": {"select": sel(g.get("auto_status"))},
-            "Deadline": (
-                {"date": {"start": g.get("deadline")}}
-                if g.get("deadline") else None
-            ),
+            "Priority": {"select": sel(g.get("priority"))},
+            "Deadline": {"date": {"start": g.get("deadline")}} if g.get("deadline") else None,
             "Progress": {"number": g.get("progress", 0)},
             "Parent Goal": {"relation": rel(g.get("parent_goal", []))},
             "Child Goals": {"relation": rel(g.get("child_goals", []))},
-            "Description": {"rich_text": text(g.get("description"))},
             "Type": {"select": sel(g.get("type"))},
         }
 
@@ -285,10 +359,7 @@ class NotionSyncService:
             "Name": {"title": text(t.get("name"))},
             "Status": {"select": sel(t.get("status"))},
             "Priority": {"select": sel(t.get("priority"))},
-            "Due Date": (
-                {"date": {"start": t.get("due_date")}}
-                if t.get("due_date") else None
-            ),
+            "Due Date": {"date": {"start": t.get("due_date")}} if t.get("due_date") else None,
             "Goal": {"relation": rel(t.get("goal", []))},
             "Order": {"number": t.get("order", 0)},
             "Description": {"rich_text": text(t.get("description"))},
