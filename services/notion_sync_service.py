@@ -63,6 +63,8 @@ class NotionSyncService:
             goal_dict = self.goals.to_dict(goal)
             props = self.map_local_goal_to_notion(goal_dict)
 
+            old_id = goal.id  # needed for ID replacement
+
             # ------------------------------
             # TRY UPDATE
             # ------------------------------
@@ -71,7 +73,6 @@ class NotionSyncService:
             if update.get("ok"):
                 continue
 
-            # if Notion returns soft error (object: error)
             if update.get("error"):
                 print("[NotionSync] Goal update failed → will create instead:", update["error"])
 
@@ -81,7 +82,12 @@ class NotionSyncService:
             create = await self.notion.create_page(self.goals_db_id, props)
 
             if create.get("ok"):
-                goal.id = create["data"]["id"]  # replace temp ID
+                new_id = create["data"]["id"]
+                goal.id = new_id
+
+                # replace ID in the service dictionary
+                self.goals.goals.pop(old_id, None)
+                self.goals.goals[new_id] = goal
             else:
                 print("[NotionSync] Goal create failed:", create.get("error"))
 
@@ -89,6 +95,8 @@ class NotionSyncService:
         for task in self.tasks.get_all():
             task_dict = self._task_to_dict(task)
             props = self.map_local_task_to_notion(task_dict)
+
+            old_id = task.id
 
             update = await self.notion.update_page(task.id, props)
 
@@ -101,7 +109,12 @@ class NotionSyncService:
             create = await self.notion.create_page(self.tasks_db_id, props)
 
             if create.get("ok"):
-                task.id = create["data"]["id"]
+                new_id = create["data"]["id"]
+                task.id = new_id
+
+                # replace in dict
+                self.tasks.tasks.pop(old_id, None)
+                self.tasks.tasks[new_id] = task
             else:
                 print("[NotionSync] Task create failed:", create.get("error"))
 
