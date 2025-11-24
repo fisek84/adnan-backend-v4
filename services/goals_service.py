@@ -60,7 +60,6 @@ class GoalsService:
     # ============================================================
     def create_goal(self, data: GoalCreate, forced_id: Optional[str] = None) -> GoalModel:
         now = self._now()
-
         goal_id = forced_id or uuid4().hex
 
         new_goal = GoalModel(
@@ -158,4 +157,29 @@ class GoalsService:
         if len(goal_ids) < 2:
             raise ValueError("At least two goal IDs required")
 
-        selected = [self.goals[g] f
+        selected = [self.goals[g] for g in goal_ids if g in self.goals]
+
+        now = self._now()
+        merged_id = uuid4().hex
+
+        merged = GoalModel(
+            id=merged_id,
+            title=" | ".join(g.title for g in selected),
+            description=" | ".join(g.description or "" for g in selected),
+            deadline=None,
+            parent_id=None,
+            priority=None,
+            status="pending",
+            progress=0,
+            children=[],
+            created_at=now,
+            updated_at=now,
+            notion_id=None,
+        )
+
+        for g in selected:
+            self.goals.pop(g.id, None)
+
+        self.goals[merged_id] = merged
+        self._trigger_sync()
+        return merged
