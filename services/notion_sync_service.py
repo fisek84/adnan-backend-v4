@@ -1,3 +1,5 @@
+import asyncio  # <<<<<< DODANO — FIX
+
 class NotionSyncService:
     def __init__(self, notion_service, goals_service, tasks_service, goals_db_id, tasks_db_id):
         self.notion = notion_service
@@ -37,7 +39,7 @@ class NotionSyncService:
             "Status": {"select": {"name": g["status"]}},
             "Progress": {"number": g["progress"]},
             "Parent Goal": {"relation": [{"id": g["parent_id"]}]} if g.get("parent_id") else {"relation": []},
-            "Children": {"relation": [{"id": cid} for cid in g["children"]]},
+            "Children": {"relation": [{"id": cid} for cid in g["children"]] },
         }
 
     def map_local_task_to_notion(self, t: dict):
@@ -47,7 +49,7 @@ class NotionSyncService:
             "Deadline": {"date": {"start": t["due_date"]}} if t.get("due_date") else {"date": None},
             "Priority": {"select": {"name": t["priority"]}} if t.get("priority") else {"select": None},
             "Status": {"select": {"name": t["status"]}},
-            "Goal": {"relation": [{"id": t["goal"][0]}]} if t["goal"] else {"relation": []}
+            "Goal": {"relation": [{"id": t["goal"][0]}]} if t["goal"] else {"relation": []},
         }
 
     # SYNC UP
