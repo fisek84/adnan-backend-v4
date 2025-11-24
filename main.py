@@ -40,6 +40,30 @@ if missing:
     print("⚠ Missing ENV:", ", ".join(missing))
 
 # ============================================================
+<<<<<<< HEAD
+=======
+# API KEY PROTECTION — FIXED VERSION
+# ============================================================
+async def verify_api_key(
+    x_api_key: str = Header(None, alias="X-API-Key"),
+    x_api_key_lower: str = Header(None, alias="x-api-key")
+):
+    """
+    Accept both X-API-Key and x-api-key headers.
+    Prevents false 403 errors caused by OpenAI header casing.
+    """
+    key = x_api_key or x_api_key_lower
+
+    if GPT_API_KEY:
+        if key is None:
+            return True  # allow local testing
+        if key != GPT_API_KEY:
+            raise HTTPException(status_code=403, detail="Invalid API Key")
+
+    return True
+
+# ============================================================
+>>>>>>> 18112aa (Fix API key validation and update backend auth logic)
 # IMPORT SERVICES
 # ============================================================
 from services.goals_service import GoalsService
@@ -57,7 +81,10 @@ import routers.agents_router as agents_router_module
 
 from core.master_engine import MasterEngine
 
+<<<<<<< HEAD
 
+=======
+>>>>>>> 18112aa (Fix API key validation and update backend auth logic)
 # ============================================================
 # FASTAPI APP
 # ============================================================
@@ -74,6 +101,7 @@ app.mount(
 )
 
 # ============================================================
+<<<<<<< HEAD
 # API KEY PROTECTION
 # ============================================================
 async def verify_api_key(x_api_key: str = Header(None)):
@@ -86,6 +114,8 @@ async def verify_api_key(x_api_key: str = Header(None)):
 
 
 # ============================================================
+=======
+>>>>>>> 18112aa (Fix API key validation and update backend auth logic)
 # INITIALIZE DOMAIN SERVICES
 # ============================================================
 goals_service = GoalsService()
@@ -168,4 +198,8 @@ def engine_progress():
 # ============================================================
 @app.on_event("shutdown")
 async def shutdown_event():
+<<<<<<< HEAD
     await notion_service.close()
+=======
+    await notion_service.close()
+>>>>>>> 18112aa (Fix API key validation and update backend auth logic)
