@@ -18,32 +18,34 @@ if str(ROOT) not in sys.path:
 load_dotenv()
 
 def env(name: str, default: str | None = None) -> str | None:
-    """Safe env getter with optional fallback."""
     return os.getenv(name, default)
 
-NOTION_API_KEY = env("NOTION_API_KEY")
+# ============================================================
+# ENV VARIABLES (UPDATED)
+# ============================================================
+NOTION_API_KEY = env("EVOLIA_BACKEND_KEY")   # ← KEY FIX
 NOTION_GOALS_DB_ID = env("NOTION_GOALS_DB_ID")
 NOTION_TASKS_DB_ID = env("NOTION_TASKS_DB_ID")
 GPT_API_KEY = env("GPT_API_KEY")
 
-# NEW ENV VARS FOR AGENTS
+# NEW — Agent DBs
 NOTION_AGENT_EXCHANGE_DB_ID = env("NOTION_AGENT_EXCHANGE_DB_ID")
 NOTION_AGENT_PROJECTS_DB_ID = env("NOTION_AGENT_PROJECTS_DB_ID")
 
-# Warn about missing values (non-fatal)
+# Warn missing env
 required_vars = {
-    "NOTION_API_KEY": NOTION_API_KEY,
+    "EVOLIA_BACKEND_KEY": NOTION_API_KEY,
     "NOTION_GOALS_DB_ID": NOTION_GOALS_DB_ID,
     "NOTION_TASKS_DB_ID": NOTION_TASKS_DB_ID,
 }
 missing = [k for k, v in required_vars.items() if not v]
 if missing:
     print(f"⚠ WARNING: Missing environment variables: {', '.join(missing)}")
-    print("Backend will still run, but Notion sync will fail for missing values.")
+    print("Backend will run, but Notion sync will fail.")
 
 
 # ============================================================
-# IMPORT SERVICES (DO NOT MOVE ABOVE ENV)
+# IMPORT SERVICES (AFTER ENV)
 # ============================================================
 from services.goals_service import GoalsService
 from services.tasks_service import TasksService
@@ -67,18 +69,18 @@ from core.master_engine import MasterEngine
 app = FastAPI(
     title="Evolia Backend v4",
     version="4.1",
-    description="Evolia Core Backend + Notion Sync Engine (Stabilized)"
+    description="Evolia Core Backend + Notion Sync Engine"
 )
 
 app.mount(
     "/.well-known",
     StaticFiles(directory=ROOT / ".well-known"),
-    name="well-known",
+    name="well-known"
 )
 
 
 # ============================================================
-# PROTECT ROUTES WITH X-API-Key (optional)
+# API KEY PROTECTION
 # ============================================================
 async def verify_api_key(x_api_key: str = Header(None)):
     if GPT_API_KEY and x_api_key != GPT_API_KEY:
@@ -87,7 +89,7 @@ async def verify_api_key(x_api_key: str = Header(None)):
 
 
 # ============================================================
-# INITIALIZE CORE SERVICES
+# INITIALIZE SERVICES
 # ============================================================
 goals_service = GoalsService()
 tasks_service = TasksService()
@@ -98,7 +100,7 @@ tasks_service.bind_goals_service(goals_service)
 
 
 # ============================================================
-# NOTION SERVICES
+# NOTION SERVICES (USING EVOLIA_BACKEND_KEY)
 # ============================================================
 notion_service = NotionService(token=NOTION_API_KEY)
 
@@ -118,7 +120,7 @@ agents_service = AgentsService(
 
 
 # ============================================================
-# INJECT SERVICES INTO ROUTERS
+# ROUTER DEPENDENCY INJECTION
 # ============================================================
 goals_router_module.goals_service_global = goals_service
 tasks_router_module.tasks_service_global = tasks_service
@@ -128,7 +130,7 @@ agents_router_module.agents_service_global = agents_service
 
 
 # ============================================================
-# REGISTER ROUTERS (Protected)
+# PROTECTED ROUTERS
 # ============================================================
 protected = [Depends(verify_api_key)]
 
@@ -146,7 +148,7 @@ engine = MasterEngine()
 
 
 # ============================================================
-# SYSTEM ROUTES
+# HEALTH + SYSTEM CHECK
 # ============================================================
 @app.get("/health")
 def health():
@@ -161,9 +163,9 @@ def engine_status():
     return engine.status()
 
 @app.get("/engine/state")
-def engine_check_state():
+def engine_state():
     return engine.check_state()
 
 @app.get("/engine/progress")
-def engine_check_progress():
+def engine_progress():
     return engine.check_progress()
