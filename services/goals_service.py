@@ -1,3 +1,4 @@
+import asyncio
 from uuid import uuid4
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional, List
@@ -8,15 +9,6 @@ from models.base_model import GoalModel
 
 
 class GoalsService:
-    """
-    Evolia GoalsService v4.1 (Notion-Safe Version)
-
-    - Generates temporary UUIDs for local state
-    - Automatically replaced with Notion page ID during sync_up
-    - Full parent/child integrity
-    - Works with async NotionSyncService
-    """
-
     tasks_service = None
     sync_service = None
 
@@ -33,30 +25,17 @@ class GoalsService:
         self.sync_service = sync_service
 
     # ============================================================
-    # INTERNAL: trigger debounce sync (FINAL ASYNC PATCH)
+    # INTERNAL — FIXED ASYNC TRIGGER
     # ============================================================
     def _trigger_sync(self):
         if not self.sync_service:
             return
 
-        import asyncio
-
         try:
-            loop = asyncio.get_event_loop()
-
-            # Ako loop već radi (FastAPI + Uvicorn + Render)
-            if loop.is_running():
-                loop.create_task(self.sync_service.debounce_goals_sync())
-            else:
-                # Lokalno — nema running loop-a
-                loop.run_until_complete(self.sync_service.debounce_goals_sync())
-
+            loop = asyncio.get_running_loop()
+            loop.create_task(self.sync_service.debounce_goals_sync())
         except RuntimeError:
-            # Fallback — kreiraj privremeni loop
-            try:
-                asyncio.run(self.sync_service.debounce_goals_sync())
-            except Exception:
-                pass
+            asyncio.run(self.sync_service.debounce_goals_sync())
 
     # ============================================================
     # HELPERS
@@ -82,7 +61,6 @@ class GoalsService:
     def create_goal(self, data: GoalCreate, forced_id: Optional[str] = None) -> GoalModel:
         now = self._now()
 
-        # Temporary UUID (will be replaced with Notion page ID upon sync)
         goal_id = forced_id or uuid4().hex
 
         new_goal = GoalModel(
@@ -101,7 +79,6 @@ class GoalsService:
 
         self.goals[goal_id] = new_goal
 
-        # Auto-link
         if data.parent_id:
             parent = self.goals.get(data.parent_id)
             if parent:
@@ -124,25 +101,18 @@ class GoalsService:
         old_parent = goal.parent_id
         new_parent = updates.parent_id
 
-        # Core fields
-        for field in [
-            "title", "description", "deadline", "priority",
-            "status", "progress"
-        ]:
+        for field in ["title", "description", "deadline", "priority", "status", "progress"]:
             val = getattr(updates, field, None)
             if val is not None:
                 setattr(goal, field, val)
 
-        # Parent change
         if new_parent is not None and new_parent != old_parent:
-            # Remove from old parent
+
             if old_parent:
                 parent = self.goals.get(old_parent)
                 if parent and goal_id in parent.children:
                     parent.children.remove(goal_id)
-                    parent.updated_at = self._now()
 
-            # Add to new parent
             if new_parent:
                 if self._would_create_cycle(new_parent, goal_id):
                     raise ValueError("Hierarchy cycle detected.")
@@ -150,7 +120,6 @@ class GoalsService:
                 parent = self.goals.get(new_parent)
                 if parent and goal_id not in parent.children:
                     parent.children.append(goal_id)
-                    parent.updated_at = self._now()
 
             goal.parent_id = new_parent
 
@@ -166,16 +135,13 @@ class GoalsService:
         if not goal:
             raise ValueError(f"Goal {goal_id} not found")
 
-        # Unlink from parent
         if goal.parent_id:
             parent = self.goals.get(goal.parent_id)
             if parent and goal_id in parent.children:
                 parent.children.remove(goal_id)
-                parent.updated_at = self._now()
 
         removed = self.goals.pop(goal_id)
 
-        # Children become root goals
         for g in self.goals.values():
             if g.parent_id == goal_id:
                 g.parent_id = None
@@ -210,7 +176,6 @@ class GoalsService:
             updated_at=now,
         )
 
-        # Remove old
         for g in selected:
             self.goals.pop(g.id, None)
 
@@ -219,7 +184,7 @@ class GoalsService:
         return merged
 
     # ============================================================
-    # SYNC FROM NOTION (DOWN)
+    # SYNC FROM NOTION
     # ============================================================
     def sync_from_notion(self, data: Dict[str, Any]) -> GoalModel:
         goal_id = data["id"]
@@ -239,41 +204,16 @@ class GoalsService:
                 priority=None
             ))
 
-        # Create with forced Notion ID
-        return self.create_goal(GoalCreate(
-            title=data.get("name"),
-            description=data.get("description"),
-            deadline=data.get("deadline"),
-            parent_id=parent_id,
-            priority=None
-        ), forced_id=goal_id)
-
-    # ============================================================
-    # AUTO TASK SYNC → PROGRESS
-    # ============================================================
-    def sync_goal_progress_from_tasks(self, goal_id: str):
-        if not self.tasks_service:
-            return
-
-        tasks = [
-            t for t in self.tasks_service.tasks.values()
-            if t.goal_id == goal_id
-        ]
-
-        if not tasks:
-            return
-
-        completed = sum(1 for t in tasks if t.status == "completed")
-        total = len(tasks)
-        progress = int((completed / total) * 100)
-
-        goal = self.goals.get(goal_id)
-        if not goal:
-            return
-
-        goal.progress = progress
-        goal.status = "completed" if progress == 100 else "in_progress"
-        goal.updated_at = self._now()
+        return self.create_goal(
+            GoalCreate(
+                title=data.get("name"),
+                description=data.get("description"),
+                deadline=data.get("deadline"),
+                parent_id=parent_id,
+                priority=None
+            ),
+            forced_id=goal_id
+        )
 
     # ============================================================
     # UTILITIES

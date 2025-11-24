@@ -1,3 +1,4 @@
+import asyncio
 from uuid import uuid4
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional, List
@@ -8,23 +9,12 @@ from models.task_model import TaskModel
 
 
 class TasksService:
-    """
-    Evolia TasksService v4.1 (Notion-Safe Version)
-
-    - Temporary UUIDs replaced with Notion IDs during sync_up
-    - Full Goal↔Task bindings
-    - Works with async NotionSyncService
-    """
-
     goals_service = None
     sync_service = None
 
     def __init__(self):
         self.tasks: Dict[str, TaskModel] = {}
 
-    # ============================================================
-    # BINDING
-    # ============================================================
     def bind_goals_service(self, goals_service):
         self.goals_service = goals_service
 
@@ -32,30 +22,17 @@ class TasksService:
         self.sync_service = sync_service
 
     # ============================================================
-    # INTERNAL: trigger debounce sync (FINAL ASYNC PATCH)
+    # FIXED ASYNC TRIGGER
     # ============================================================
     def _trigger_sync(self):
         if not self.sync_service:
             return
 
-        import asyncio
-
         try:
-            loop = asyncio.get_event_loop()
-
-            # Ako event loop već radi (FastAPI + Uvicorn + Render)
-            if loop.is_running():
-                loop.create_task(self.sync_service.debounce_tasks_sync())
-            else:
-                # Lokalno bez running loop-a
-                loop.run_until_complete(self.sync_service.debounce_tasks_sync())
-
+            loop = asyncio.get_running_loop()
+            loop.create_task(self.sync_service.debounce_tasks_sync())
         except RuntimeError:
-            # Fallback — kreiraj privremeni loop
-            try:
-                asyncio.run(self.sync_service.debounce_tasks_sync())
-            except Exception:
-                pass
+            asyncio.run(self.sync_service.debounce_tasks_sync())
 
     # ============================================================
     # HELPERS
@@ -77,15 +54,14 @@ class TasksService:
             deadline=data.deadline,
             goal_id=data.goal_id,
             priority=data.priority,
-            status=data.status or "pending",
-            order=data.order or 0,
+            status="pending",
+            order=0,
             created_at=now,
             updated_at=now,
         )
 
         self.tasks[task_id] = new_task
         self._trigger_sync()
-
         return new_task
 
     # ============================================================
@@ -96,17 +72,13 @@ class TasksService:
         if not task:
             raise ValueError(f"Task {task_id} not found")
 
-        for field in [
-            "title", "description", "deadline", "goal_id",
-            "priority", "status", "order"
-        ]:
+        for field in ["title", "description", "deadline", "goal_id", "priority", "status", "order"]:
             val = getattr(updates, field, None)
             if val is not None:
                 setattr(task, field, val)
 
         task.updated_at = self._now()
         self._trigger_sync()
-
         return task
 
     # ============================================================
@@ -121,7 +93,7 @@ class TasksService:
         return task
 
     # ============================================================
-    # SYNC FROM NOTION (DOWN)
+    # SYNC FROM NOTION
     # ============================================================
     def sync_from_notion(self, data: Dict[str, Any]) -> TaskModel:
         task_id = data["id"]
@@ -141,15 +113,16 @@ class TasksService:
                 order=data.get("order"),
             ))
 
-        return self.create_task(TaskCreate(
-            title=data.get("name"),
-            description=data.get("description"),
-            deadline=data.get("due_date"),
-            goal_id=goal_id,
-            priority=data.get("priority"),
-            status=data.get("status"),
-            order=data.get("order"),
-        ), forced_id=task_id)
+        return self.create_task(
+            TaskCreate(
+                title=data.get("name"),
+                description=data.get("description"),
+                deadline=data.get("due_date"),
+                goal_id=goal_id,
+                priority=data.get("priority"),
+            ),
+            forced_id=task_id
+        )
 
     # ============================================================
     # UTILITIES
