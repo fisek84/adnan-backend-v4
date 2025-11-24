@@ -25,7 +25,7 @@ class GoalsService:
         self.sync_service = sync_service
 
     # ============================================================
-    # INTERNAL — FIXED ASYNC TRIGGER
+    # INTERNAL — ASYNC TRIGGER
     # ============================================================
     def _trigger_sync(self):
         if not self.sync_service:
@@ -101,18 +101,22 @@ class GoalsService:
         old_parent = goal.parent_id
         new_parent = updates.parent_id
 
+        # Update fields
         for field in ["title", "description", "deadline", "priority", "status", "progress"]:
             val = getattr(updates, field, None)
             if val is not None:
                 setattr(goal, field, val)
 
+        # Parent change
         if new_parent is not None and new_parent != old_parent:
 
+            # Remove from old parent
             if old_parent:
                 parent = self.goals.get(old_parent)
                 if parent and goal_id in parent.children:
                     parent.children.remove(goal_id)
 
+            # Add to new parent
             if new_parent:
                 if self._would_create_cycle(new_parent, goal_id):
                     raise ValueError("Hierarchy cycle detected.")
@@ -135,6 +139,7 @@ class GoalsService:
         if not goal:
             raise ValueError(f"Goal {goal_id} not found")
 
+        # Remove from parent
         if goal.parent_id:
             parent = self.goals.get(goal.parent_id)
             if parent and goal_id in parent.children:
@@ -142,6 +147,7 @@ class GoalsService:
 
         removed = self.goals.pop(goal_id)
 
+        # Orphan children
         for g in self.goals.values():
             if g.parent_id == goal_id:
                 g.parent_id = None
@@ -177,9 +183,16 @@ class GoalsService:
             notion_id=None,
         )
 
+        # Remove originals
         for g in selected:
             self.goals.pop(g.id, None)
 
         self.goals[merged_id] = merged
         self._trigger_sync()
         return merged
+
+    # ============================================================
+    # UTILITIES
+    # ============================================================
+    def get_all(self):
+        return list(self.goals.values())
