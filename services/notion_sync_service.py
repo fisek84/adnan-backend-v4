@@ -4,12 +4,12 @@ from typing import Any, Dict, List, Optional
 
 class NotionSyncService:
     """
-    Evolia Notion Sync Engine v4 (Async, Fully Patched)
+    Evolia Notion Sync Engine v4 (Async, Stable, Error-Aware)
 
     - Fully async
     - Safe debounce
-    - Works with Uvicorn/Render event loop
-    - Robust fallback behaviour
+    - Detects Notion soft errors (object: error)
+    - Auto-replaces temporary UUID with real Notion page ID
     """
 
     def __init__(
@@ -31,19 +31,15 @@ class NotionSyncService:
         self._delay = 0.25
 
     # ============================================================
-    # DEBOUNCE (fully safe patch)
+    # DEBOUNCE
     # ============================================================
     async def debounce_goals_sync(self):
         self._cancel(self._goals_db_task)
-        self._goals_db_task = asyncio.create_task(
-            self._debounce(self.sync_goals_up)
-        )
+        self._goals_db_task = asyncio.create_task(self._debounce(self.sync_goals_up))
 
     async def debounce_tasks_sync(self):
         self._cancel(self._tasks_db_task)
-        self._tasks_db_task = asyncio.create_task(
-            self._debounce(self.sync_tasks_up)
-        )
+        self._tasks_db_task = asyncio.create_task(self._debounce(self.sync_tasks_up))
 
     async def _debounce(self, fn):
         try:
@@ -52,10 +48,10 @@ class NotionSyncService:
         except asyncio.CancelledError:
             pass
         except Exception as e:
-            print(f"[NotionSync] Debounce error: {e}")
+            print(f"[NotionSync] Debounce error:", e)
 
     @staticmethod
-    def _cancel(task):
+    def _cancel(task: Optional[asyncio.Task]):
         if task and not task.done():
             task.cancel()
 
@@ -63,79 +59,81 @@ class NotionSyncService:
     # SYNC UP (LOCAL → NOTION)
     # ============================================================
     async def sync_goals_up(self):
-        goals = self.goals.get_all()
-
-        for goal in goals:
+        for goal in self.goals.get_all():
             goal_dict = self.goals.to_dict(goal)
             props = self.map_local_goal_to_notion(goal_dict)
 
-            try:
-                resp = await self.notion.update_page(goal.id, props)
-                if resp.get("ok"):
-                    continue
-            except Exception:
-                pass
+            # ------------------------------
+            # TRY UPDATE
+            # ------------------------------
+            update = await self.notion.update_page(goal.id, props)
 
-            try:
-                resp = await self.notion.create_page(self.goals_db_id, props)
-                if resp.get("ok"):
-                    notion_id = resp["data"]["id"]
-                    goal.id = notion_id
-            except Exception as e:
-                print(f"[NotionSync] sync_goals_up create error: {e}")
+            if update.get("ok"):
+                continue
+
+            # if Notion returns soft error (object: error)
+            if update.get("error"):
+                print("[NotionSync] Goal update failed → will create instead:", update["error"])
+
+            # ------------------------------
+            # TRY CREATE
+            # ------------------------------
+            create = await self.notion.create_page(self.goals_db_id, props)
+
+            if create.get("ok"):
+                goal.id = create["data"]["id"]  # replace temp ID
+            else:
+                print("[NotionSync] Goal create failed:", create.get("error"))
 
     async def sync_tasks_up(self):
-        tasks = self.tasks.get_all()
-
-        for task in tasks:
+        for task in self.tasks.get_all():
             task_dict = self._task_to_dict(task)
             props = self.map_local_task_to_notion(task_dict)
 
-            try:
-                resp = await self.notion.update_page(task.id, props)
-                if resp.get("ok"):
-                    continue
-            except Exception:
-                pass
+            update = await self.notion.update_page(task.id, props)
 
-            try:
-                resp = await self.notion.create_page(self.tasks_db_id, props)
-                if resp.get("ok"):
-                    notion_id = resp["data"]["id"]
-                    task.id = notion_id
-            except Exception as e:
-                print(f"[NotionSync] sync_tasks_up create error: {e}")
+            if update.get("ok"):
+                continue
+
+            if update.get("error"):
+                print("[NotionSync] Task update failed → will create:", update["error"])
+
+            create = await self.notion.create_page(self.tasks_db_id, props)
+
+            if create.get("ok"):
+                task.id = create["data"]["id"]
+            else:
+                print("[NotionSync] Task create failed:", create.get("error"))
 
     # ============================================================
     # SYNC DOWN (NOTION → LOCAL)
     # ============================================================
     async def sync_goals_down(self):
         pages = await self._fetch_all(self.goals_db_id)
-        for p in pages:
-            mapped = self.map_notion_goal_to_local(p)
+        for page in pages:
+            mapped = self.map_notion_goal_to_local(page)
             self.goals.sync_from_notion(mapped)
 
     async def sync_tasks_down(self):
         pages = await self._fetch_all(self.tasks_db_id)
-        for p in pages:
-            mapped = self.map_notion_task_to_local(p)
+        for page in pages:
+            mapped = self.map_notion_task_to_local(page)
             self.tasks.sync_from_notion(mapped)
 
     # ============================================================
-    # FETCH ALL
+    # FETCH ALL FROM DB
     # ============================================================
     async def _fetch_all(self, db_id: str):
         results = []
         cursor = None
 
         while True:
-            payload = {}
-            if cursor:
-                payload["start_cursor"] = cursor
+            payload = {"start_cursor": cursor} if cursor else {}
 
             resp = await self.notion.query_database(db_id, payload)
 
             if not resp.get("ok"):
+                print("[NotionSync] fetch_all error:", resp.get("error"))
                 break
 
             data = resp["data"]
@@ -189,7 +187,7 @@ class NotionSyncService:
 
     def _rels(self, props, key):
         try:
-            return [x["id"] for x in props[key]["relation"]]
+            return [item["id"] for item in props[key]["relation"]]
         except:
             return []
 
@@ -221,7 +219,7 @@ class NotionSyncService:
             "parent_goal": self._rels(props, "Parent Goal"),
             "child_goals": self._rels(props, "Child Goals"),
             "description": self._rich(props, "Description"),
-            "type": self._select(props, "Type")
+            "type": self._select(props, "Type"),
         }
 
     def map_local_goal_to_notion(self, g):

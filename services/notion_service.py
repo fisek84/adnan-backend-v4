@@ -7,8 +7,8 @@ class NotionService:
     ASYNC Notion API wrapper for Evolia Backend v4.
 
     - Fully async (httpx)
-    - Supports create/update/query
-    - Stable error handling
+    - Safe error detection (hard + soft errors)
+    - Stable create/update/query
     """
 
     BASE_URL = "https://api.notion.com/v1"
@@ -30,33 +30,47 @@ class NotionService:
         )
 
     # ------------------------------------------------------------
-    # INTERNAL REQUEST
+    # INTERNAL REQUEST (FIXED)
     # ------------------------------------------------------------
     async def _request(self, method: str, endpoint: str, **kwargs):
         url = f"{self.BASE_URL}{endpoint}"
 
+        # NETWORK ERROR
         try:
             response = await self.client.request(method, url, **kwargs)
         except Exception as e:
             return {
                 "ok": False,
                 "error": f"Request error: {str(e)}",
-                "endpoint": endpoint
+                "endpoint": endpoint,
+                "status": None,
             }
 
+        # PARSE BODY
         try:
             data = response.json()
         except json.JSONDecodeError:
             data = {"raw": response.text}
 
+        # HARD API ERROR (HTTP-level)
         if response.status_code >= 400:
             return {
                 "ok": False,
                 "status": response.status_code,
                 "error": data,
-                "endpoint": endpoint
+                "endpoint": endpoint,
             }
 
+        # SOFT NOTION ERROR (Notion returns 200 + object=error)
+        if isinstance(data, dict) and data.get("object") == "error":
+            return {
+                "ok": False,
+                "status": response.status_code,
+                "error": data,
+                "endpoint": endpoint,
+            }
+
+        # SUCCESS
         return {
             "ok": True,
             "status": response.status_code,
@@ -77,7 +91,7 @@ class NotionService:
         )
 
     # ------------------------------------------------------------
-    # CREATE PAGE (DATABASE ITEM)
+    # CREATE PAGE
     # ------------------------------------------------------------
     async def create_page(self, db_id: str, properties: dict):
         payload = {
