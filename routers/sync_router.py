@@ -1,58 +1,80 @@
 from fastapi import APIRouter, HTTPException
 
-# Injected iz main.py
+# Injected from main.py
 sync_service_global = None
 
 router = APIRouter(prefix="/sync", tags=["Sync"])
 
 
-# ============================================================
-# MANUAL SYNC — GOALS & TASKS (ASYNC)
-# ============================================================
-@router.post("/goals/up")
-async def sync_goals_up():
+def check_sync():
     if sync_service_global is None:
         raise HTTPException(500, "SyncService not initialized")
 
+
+# ============================================================
+# FRIENDLY ENDPOINTS
+# ============================================================
+
+@router.post("/goals")
+async def sync_goals():
+    """Sync all LOCAL goals → Notion"""
+    check_sync()
+    await sync_service_global.sync_goals_up()
+    return {"status": "ok", "synced": "goals"}
+
+
+@router.post("/tasks")
+async def sync_tasks():
+    """Sync all LOCAL tasks → Notion"""
+    check_sync()
+    await sync_service_global.sync_tasks_up()
+    return {"status": "ok", "synced": "tasks"}
+
+
+@router.post("/full")
+async def sync_full():
+    """Full sync: goals + tasks"""
+    check_sync()
+    await sync_service_global.sync_goals_up()
+    await sync_service_global.sync_tasks_up()
+    return {"status": "ok", "synced": "full"}
+
+
+# ============================================================
+# RAW ENDPOINTS (KEEP)
+# ============================================================
+
+@router.post("/goals/up")
+async def sync_goals_up():
+    check_sync()
     await sync_service_global.sync_goals_up()
     return {"status": "ok", "action": "goals_sync_up"}
 
 
 @router.post("/goals/down")
 async def sync_goals_down():
-    if sync_service_global is None:
-        raise HTTPException(500, "SyncService not initialized")
-
+    check_sync()
     await sync_service_global.sync_goals_down()
     return {"status": "ok", "action": "goals_sync_down"}
 
 
 @router.post("/tasks/up")
 async def sync_tasks_up():
-    if sync_service_global is None:
-        raise HTTPException(500, "SyncService not initialized")
-
+    check_sync()
     await sync_service_global.sync_tasks_up()
     return {"status": "ok", "action": "tasks_sync_up"}
 
 
 @router.post("/tasks/down")
 async def sync_tasks_down():
-    if sync_service_global is None:
-        raise HTTPException(500, "SyncService not initialized")
-
+    check_sync()
     await sync_service_global.sync_tasks_down()
     return {"status": "ok", "action": "tasks_sync_down"}
 
 
-# ============================================================
-# COMBINED SYNC
-# ============================================================
 @router.post("/all/up")
 async def sync_all_up():
-    if sync_service_global is None:
-        raise HTTPException(500, "SyncService not initialized")
-
+    check_sync()
     await sync_service_global.sync_goals_up()
     await sync_service_global.sync_tasks_up()
     return {"status": "ok", "action": "all_sync_up"}
@@ -60,9 +82,7 @@ async def sync_all_up():
 
 @router.post("/all/down")
 async def sync_all_down():
-    if sync_service_global is None:
-        raise HTTPException(500, "SyncService not initialized")
-
+    check_sync()
     await sync_service_global.sync_goals_down()
     await sync_service_global.sync_tasks_down()
     return {"status": "ok", "action": "all_sync_down"}
