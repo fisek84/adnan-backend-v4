@@ -4,31 +4,13 @@ import os
 from models.task_create import TaskCreate
 from models.task_update import TaskUpdate
 
-# Injected in main.py
-tasks_service_global = None
-notion_service_global = None
+from main import get_tasks_service, get_notion_service
 
 router = APIRouter(prefix="/tasks", tags=["Tasks"])
 
 
 # ============================================================
-# DEPENDENCIES
-# ============================================================
-
-def get_tasks_service():
-    if tasks_service_global is None:
-        raise HTTPException(500, "TasksService not initialized")
-    return tasks_service_global
-
-
-def get_notion_service():
-    if notion_service_global is None:
-        raise HTTPException(500, "NotionService not initialized")
-    return notion_service_global
-
-
-# ============================================================
-# RESPONSE TRANSFORMER
+# TRANSFORMER
 # ============================================================
 
 def to_resp(task):
@@ -45,7 +27,7 @@ def to_resp(task):
 
 
 # ============================================================
-# CREATE TASK (Async, Notion + Local)
+# CREATE TASK
 # ============================================================
 
 @router.post("/create")
@@ -55,10 +37,10 @@ async def create_task(
     notion=Depends(get_notion_service)
 ):
     try:
-        TASKS_DB_ID = os.getenv("NOTION_TASKS_DB_ID")
+        db_id = os.getenv("NOTION_TASKS_DB_ID")
 
         notion_payload = {
-            "parent": {"database_id": TASKS_DB_ID},
+            "parent": {"database_id": db_id},
             "properties": {
                 "Name": {
                     "title": [{"text": {"content": payload.title}}]
@@ -66,20 +48,15 @@ async def create_task(
             }
         }
 
-        # Create in Notion
         notion_res = await notion.create_page(notion_payload)
 
-        notion_id = notion_res.get("id")
-        notion_url = notion_res.get("url")
-
-        # Create in local DB
         local_task = tasks_service.create_task(payload)
 
         return {
             "status": "created",
             "local": to_resp(local_task),
-            "notion_page_id": notion_id,
-            "notion_url": notion_url
+            "notion_page_id": notion_res.get("id"),
+            "notion_url": notion_res.get("url")
         }
 
     except Exception as e:
@@ -91,11 +68,7 @@ async def create_task(
 # ============================================================
 
 @router.patch("/{task_id}")
-async def update_task(
-    task_id: str,
-    updates: TaskUpdate,
-    tasks_service=Depends(get_tasks_service)
-):
+async def update_task(task_id: str, updates: TaskUpdate, tasks_service=Depends(get_tasks_service)):
     try:
         task = tasks_service.update_task(task_id, updates)
         return {"status": "updated", "task": to_resp(task)}

@@ -1,32 +1,15 @@
 from fastapi import APIRouter, HTTPException, Depends
-from typing import Optional, List
-from pydantic import BaseModel
 import os
+
+from pydantic import BaseModel
+from typing import List, Optional
 
 from models.goal_create import GoalCreate
 from models.goal_update import GoalUpdate
 
-# Injected from main.py
-goals_service_global = None
-notion_service_global = None
+from main import get_goals_service, get_notion_service
 
 router = APIRouter(prefix="/goals", tags=["Goals"])
-
-
-# ============================================================
-# DEPENDENCIES
-# ============================================================
-
-def get_goals_service():
-    if goals_service_global is None:
-        raise HTTPException(500, "GoalsService not initialized")
-    return goals_service_global
-
-
-def get_notion_service():
-    if notion_service_global is None:
-        raise HTTPException(500, "NotionService not initialized")
-    return notion_service_global
 
 
 # ============================================================
@@ -49,7 +32,7 @@ class GoalResponse(BaseModel):
 
 
 # ============================================================
-# CREATE GOAL (ASYNC)
+# CREATE GOAL
 # ============================================================
 
 @router.post("/create")
@@ -59,8 +42,10 @@ async def create_goal(
     notion=Depends(get_notion_service)
 ):
     try:
+        db_id = os.getenv("NOTION_GOALS_DB_ID")
+
         notion_payload = {
-            "parent": {"database_id": os.getenv("NOTION_GOALS_DB_ID")},
+            "parent": {"database_id": db_id},
             "properties": {
                 "Name": {
                     "title": [{"text": {"content": payload.title}}]
@@ -70,21 +55,17 @@ async def create_goal(
 
         notion_res = await notion.create_page(notion_payload)
 
-        notion_id = notion_res.get("id")
-        notion_url = notion_res.get("url")
-
-        # Local DB create
-        goal = goals_service.create_goal(payload)
+        local_goal = goals_service.create_goal(payload)
 
         return {
             "status": "created",
-            "notion_page_id": notion_id,
-            "notion_url": notion_url,
-            "local_goal": goal.model_dump(),
+            "local": local_goal.model_dump(),
+            "notion_page_id": notion_res.get("id"),
+            "notion_url": notion_res.get("url")
         }
 
     except Exception as e:
-        raise HTTPException(500, f"Error creating goal: {str(e)}")
+        raise HTTPException(500, f"Goal creation failed: {str(e)}")
 
 
 # ============================================================
