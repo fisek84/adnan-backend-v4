@@ -104,7 +104,6 @@ tasks_service.bind_goals_service(goals_service)
 # ============================================================
 notion_service = NotionService(token=NOTION_API_KEY)
 
-# --------------- FIX: SYNC SERVICE INITIALIZED WITHOUT AUTO-START LOOP ---------------
 sync_service = NotionSyncService(
     notion_service=notion_service,
     goals_service=goals_service,
@@ -112,7 +111,6 @@ sync_service = NotionSyncService(
     goals_db_id=NOTION_GOALS_DB_ID,
     tasks_db_id=NOTION_TASKS_DB_ID,
 )
-# ------------------------------------------------------------------------------
 
 agents_service = AgentsService(
     notion_token=NOTION_API_KEY,
@@ -170,6 +168,13 @@ def engine_state():
 @app.get("/engine/progress")
 def engine_progress():
     return engine.check_progress()
+
+# ============================================================
+# STARTUP EVENT  (IMPORTANT FOR SYNC LOOP)
+# ============================================================
+@app.on_event("startup")
+async def startup_event():
+    await sync_service.start()
 
 # ============================================================
 # SHUTDOWN EVENT

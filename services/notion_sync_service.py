@@ -11,19 +11,22 @@ class NotionSyncService:
         self.goals_db_id = goals_db_id
         self.tasks_db_id = tasks_db_id
 
-        # Debounce delay
+        # Delay for debounce
         self._delay = 0.25
 
         # Internal async tasks
         self._goals_task: asyncio.Task | None = None
         self._tasks_task: asyncio.Task | None = None
 
-        # Dedicated sync loop (supports running even if no running loop)
-        try:
-            self.loop = asyncio.get_running_loop()
-        except RuntimeError:
-            self.loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(self.loop)
+        # Loop will be injected on FastAPI startup
+        self.loop = None
+
+    # ============================================================
+    # INITIALIZE LOOP FROM FASTAPI
+    # ============================================================
+    async def start(self):
+        # Take FastAPI's main running event loop
+        self.loop = asyncio.get_running_loop()
 
     # ============================================================
     # SAFE DEBOUNCE for GOALS
@@ -32,7 +35,8 @@ class NotionSyncService:
         if self._goals_task and not self._goals_task.done():
             self._goals_task.cancel()
 
-        self._goals_task = self.loop.create_task(self._debounce(self.sync_goals_up))
+        # Important: Use asyncio.create_task, not a custom loop
+        self._goals_task = asyncio.create_task(self._debounce(self.sync_goals_up))
 
     # ============================================================
     # SAFE DEBOUNCE for TASKS
@@ -41,7 +45,8 @@ class NotionSyncService:
         if self._tasks_task and not self._tasks_task.done():
             self._tasks_task.cancel()
 
-        self._tasks_task = self.loop.create_task(self._debounce(self.sync_tasks_up))
+        # Important: Use asyncio.create_task
+        self._tasks_task = asyncio.create_task(self._debounce(self.sync_tasks_up))
 
     # ============================================================
     # DEBOUNCE CORE
