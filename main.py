@@ -41,6 +41,9 @@ async def startup_event():
 
     print("🔵 Starting backend services...")
 
+    # -------------------------------------------------------------
+    # 1) NOTION CORE SERVICE
+    # -------------------------------------------------------------
     notion_service = NotionService(
         api_key=os.getenv("NOTION_API_KEY"),
         goals_db_id=os.getenv("NOTION_GOALS_DB_ID"),
@@ -48,11 +51,17 @@ async def startup_event():
     )
     print("✅ NotionService initialized")
 
+    # -------------------------------------------------------------
+    # 2) LOCAL SERVICES
+    # -------------------------------------------------------------
     goals_service = GoalsService()
     tasks_service = TasksService()
     print("✅ GoalsService initialized")
     print("✅ TasksService initialized")
 
+    # -------------------------------------------------------------
+    # 3) SYNC LAYER
+    # -------------------------------------------------------------
     notion_sync_service = NotionSyncService(
         notion_service,
         goals_service,
@@ -62,21 +71,34 @@ async def startup_event():
     )
     print("✅ NotionSyncService initialized")
 
+    # -------------------------------------------------------------
+    # 4) AI & AGENTS
+    # -------------------------------------------------------------
     ai_command_service = AICommandService()
-    agents_service = AgentsService()
+
+    agents_service = AgentsService(
+        notion_token=os.getenv("NOTION_API_KEY"),
+        exchange_db_id=os.getenv("NOTION_EXCHANGE_DB_ID"),
+        projects_db_id=os.getenv("NOTION_PROJECTS_DB_ID")
+    )
     print("✅ AICommandService initialized")
     print("✅ AgentsService initialized")
 
+    # -------------------------------------------------------------
+    # 5) CONNECT ROUTER GLOBALS
+    # -------------------------------------------------------------
     goals_service_global = goals_service
     tasks_service_global = tasks_service
 
     print("🔥 Backend fully initialized")
 
 
+# ROUTERS
 app.include_router(goals_router)
 app.include_router(tasks_router)
 
 
+# HEALTH CHECK
 @app.get("/health")
 def health():
     return {"status": "ok"}
