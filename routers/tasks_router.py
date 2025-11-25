@@ -1,24 +1,30 @@
 from fastapi import APIRouter, HTTPException, Depends
 import os
-import json
-import requests
 
 from models.task_create import TaskCreate
 from models.task_update import TaskUpdate
 
 # Injected in main.py
 tasks_service_global = None
+notion_service_global = None  # <-- Added
 
 router = APIRouter(prefix="/tasks", tags=["Tasks"])
 
 # ============================================================
-# DEPENDENCY
+# DEPENDENCIES
 # ============================================================
 
 def get_tasks_service():
     if not tasks_service_global:
         raise HTTPException(500, "TasksService not initialized")
     return tasks_service_global
+
+
+def get_notion_service():
+    if not notion_service_global:
+        raise HTTPException(500, "NotionService not initialized")
+    return notion_service_global
+
 
 # ============================================================
 # RESPONSE TRANSFORMER
@@ -37,65 +43,58 @@ def to_resp(task):
     }
 
 # ============================================================
-# CREATE TASK  (Notion + Local)
+# CREATE TASK (Async, Notion + Local)
 # ============================================================
 
 @router.post("/create")
-def create_task(payload: TaskCreate):
+async def create_task(payload: TaskCreate, tasks_service=Depends(get_tasks_service), notion=Depends(get_notion_service)):
     try:
-        NOTION_API_KEY = os.getenv("NOTION_API_KEY")
-        TASKS_DB_ID = os.getenv("NOTION_TASKS_DB_ID")
-
-        NOTION_HEADERS = {
-            "Authorization": f"Bearer {NOTION_API_KEY}",
-            "Content-Type": "application/json",
-            "Notion-Version": "2022-06-28"
-        }
-
         notion_payload = {
-            "parent": {"database_id": TASKS_DB_ID},
-            "properties": {
-                "Name": {
-                    "title": [{"text": {"content": payload.title}}]
-                }
+            "Name": {
+                "title": [{"text": {"content": payload.title}}]
             }
         }
 
-        notion_resp = requests.post(
-            "https://api.notion.com/v1/pages",
-            headers=NOTION_HEADERS,
-            data=json.dumps(notion_payload)
+        TASKS_DB_ID = os.getenv("NOTION_TASKS_DB_ID")
+
+        # Create in Notion (async)
+        notion_res = await notion.create_page(
+            database_id=TASKS_DB_ID,
+            properties=notion_payload
         )
 
-        if notion_resp.status_code != 200:
-            raise HTTPException(notion_resp.status_code, notion_resp.text)
+        if not notion_res["ok"]:
+            return {
+                "status": "notion_error",
+                "detail": notion_res["error"]
+            }
 
-        notion_data = notion_resp.json()
+        notion_id = notion_res["data"]["id"]
+        notion_url = notion_res["data"]["url"]
 
-        # Local task create
-        if tasks_service_global:
-            local_task = tasks_service_global.create_task(payload)
-            local_data = to_resp(local_task)
-        else:
-            local_data = None
+        # Create locally
+        local_task = tasks_service.create_task(payload)
+        local_data = to_resp(local_task)
 
         return {
             "status": "created",
-            "task_title": payload.title,
             "local": local_data,
-            "notion_page_id": notion_data["id"],
-            "notion_url": notion_data["url"]
+            "notion_page_id": notion_id,
+            "notion_url": notion_url
         }
 
     except Exception as e:
-        raise HTTPException(500, f"Failed to create task: {e}")
+        return {
+            "status": "error",
+            "detail": str(e)
+        }
 
 # ============================================================
 # UPDATE TASK
 # ============================================================
 
 @router.patch("/{task_id}")
-def update_task(task_id: str, updates: TaskUpdate, tasks_service=Depends(get_tasks_service)):
+async def update_task(task_id: str, updates: TaskUpdate, tasks_service=Depends(get_tasks_service)):
     try:
         task = tasks_service.update_task(task_id, updates)
         return {"status": "updated", "task": to_resp(task)}
@@ -107,10 +106,10 @@ def update_task(task_id: str, updates: TaskUpdate, tasks_service=Depends(get_tas
 # ============================================================
 
 @router.get("/all")
-def list_tasks(tasks_service=Depends(get_tasks_service)):
+async def list_tasks(tasks_service=Depends(get_tasks_service)):
     return {"tasks": [to_resp(t) for t in tasks_service.get_all()]}
 
-# AI alias
+
 @router.get("/tasks/all")
 async def get_all_tasks(tasks_service=Depends(get_tasks_service)):
     return {"tasks": [to_resp(t) for t in tasks_service.get_all()]}
@@ -120,7 +119,7 @@ async def get_all_tasks(tasks_service=Depends(get_tasks_service)):
 # ============================================================
 
 @router.delete("/{task_id}")
-def delete_task(task_id: str, tasks_service=Depends(get_tasks_service)):
+async def delete_task(task_id: str, tasks_service=Depends(get_tasks_service)):
     try:
         deleted = tasks_service.delete_task(task_id)
         return {
