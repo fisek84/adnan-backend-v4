@@ -79,7 +79,7 @@ def create_task(payload: TaskCreate):
 
         notion_data = notion_resp.json()
 
-        # Local create
+        # Local task create
         if tasks_service_global:
             local_task = tasks_service_global.create_task(payload)
             local_data = to_resp(local_task)
@@ -112,7 +112,7 @@ def update_task(task_id: str, updates: TaskUpdate, tasks_service=Depends(get_tas
 
 
 # ============================================================
-# GET ALL LOCAL
+# GET ALL LOCAL TASKS
 # ============================================================
 
 @router.get("/all")
@@ -122,7 +122,7 @@ def list_tasks(tasks_service=Depends(get_tasks_service)):
 
 
 # ============================================================
-# AI + PLUGIN ROUTE
+# AI / PLUGIN ROUTE (alias)
 # ============================================================
 
 @router.get("/tasks/all")

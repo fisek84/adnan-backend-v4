@@ -23,7 +23,6 @@ NOTION_HEADERS = {
     "Notion-Version": "2022-06-28"
 }
 
-
 # ============================================================
 # FASTAPI DEPENDENCY
 # ============================================================
@@ -32,7 +31,6 @@ def get_goals_service():
     if not goals_service_global:
         raise HTTPException(500, "GoalsService not initialized")
     return goals_service_global
-
 
 # ============================================================
 # RESPONSE MODEL
@@ -51,7 +49,6 @@ class GoalResponse(BaseModel):
 
     class Config:
         from_attributes = True
-
 
 # ============================================================
 # CREATE GOAL (Notion + Local)
@@ -95,7 +92,6 @@ def create_goal(payload: GoalCreate):
     except Exception as e:
         raise HTTPException(500, f"Failed to create goal: {e}")
 
-
 # ============================================================
 # UPDATE GOAL
 # ============================================================
@@ -108,7 +104,6 @@ def update_goal(goal_id: str, updates: GoalUpdate, goals_service=Depends(get_goa
     except ValueError as e:
         raise HTTPException(404, str(e))
 
-
 # ============================================================
 # GET ALL GOALS (LOCAL BACKEND)
 # ============================================================
@@ -118,7 +113,6 @@ def get_all_local(goals_service=Depends(get_goals_service)):
     goals = goals_service.get_all()
     return {"goals": [g.model_dump() for g in goals]}
 
-
 # ============================================================
 # ALIAS FOR AI + PLUGIN → /goals/all
 # ============================================================
@@ -127,3 +121,18 @@ def get_all_local(goals_service=Depends(get_goals_service)):
 async def get_all_goals(goals_service=Depends(get_goals_service)):
     goals = goals_service.get_all()
     return {"goals": [g.model_dump() for g in goals]}
+
+# ============================================================
+# DELETE GOAL
+# ============================================================
+
+@router.delete("/{goal_id}")
+def delete_goal(goal_id: str, goals_service=Depends(get_goals_service)):
+    try:
+        deleted = goals_service.delete_goal(goal_id)
+        return {
+            "status": "deleted",
+            "goal": deleted.model_dump()
+        }
+    except ValueError as e:
+        raise HTTPException(404, str(e))
