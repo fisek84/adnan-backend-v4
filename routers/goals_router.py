@@ -79,7 +79,7 @@ def create_goal(payload: GoalCreate):
 
         notion_data = resp.json()
 
-        # Optional: local backend goal
+        # Optional: Local backend goal
         if goals_service_global:
             goals_service_global.create_goal(payload)
 
@@ -105,20 +105,11 @@ def update_goal(goal_id: str, updates: GoalUpdate, goals_service=Depends(get_goa
         raise HTTPException(404, str(e))
 
 # ============================================================
-# GET ALL GOALS (LOCAL BACKEND)
+# GET ALL GOALS  (JEDINA PRAVA RUTA)
 # ============================================================
 
 @router.get("/all")
-def get_all_local(goals_service=Depends(get_goals_service)):
-    goals = goals_service.get_all()
-    return {"goals": [g.model_dump() for g in goals]}
-
-# ============================================================
-# ALIAS FOR AI + PLUGIN → /goals/all
-# ============================================================
-
-@router.get("/goals/all")
-async def get_all_goals(goals_service=Depends(get_goals_service)):
+def get_all_goals(goals_service=Depends(get_goals_service)):
     goals = goals_service.get_all()
     return {"goals": [g.model_dump() for g in goals]}
 
