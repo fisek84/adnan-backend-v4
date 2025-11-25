@@ -24,7 +24,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# GLOBAL SERVICES
+# GLOBALS
 notion_service = None
 goals_service = None
 tasks_service = None
@@ -33,9 +33,6 @@ ai_command_service = None
 agents_service = None
 
 
-# -------------------------------------------------------------
-# STARTUP
-# -------------------------------------------------------------
 @app.on_event("startup")
 async def startup_event():
     global notion_service, goals_service, tasks_service, notion_sync_service
@@ -44,7 +41,6 @@ async def startup_event():
 
     print("🔵 Starting backend services...")
 
-    # 1) NOTION CORE SERVICE
     notion_service = NotionService(
         api_key=os.getenv("NOTION_API_KEY"),
         goals_db_id=os.getenv("NOTION_GOALS_DB_ID"),
@@ -52,13 +48,11 @@ async def startup_event():
     )
     print("✅ NotionService initialized")
 
-    # 2) LOCAL IN-MEMORY SERVICES
     goals_service = GoalsService()
     tasks_service = TasksService()
     print("✅ GoalsService initialized")
     print("✅ TasksService initialized")
 
-    # 3) SYNC SERVICE
     notion_sync_service = NotionSyncService(
         notion_service,
         goals_service,
@@ -68,29 +62,21 @@ async def startup_event():
     )
     print("✅ NotionSyncService initialized")
 
-    # 4) Extra services (AI, agents)
     ai_command_service = AICommandService()
     agents_service = AgentsService()
     print("✅ AICommandService initialized")
     print("✅ AgentsService initialized")
 
-    # 5) CONNECT GLOBAL ROUTER SERVICES
     goals_service_global = goals_service
     tasks_service_global = tasks_service
 
     print("🔥 Backend fully initialized")
 
 
-# -------------------------------------------------------------
-# ROUTERS
-# -------------------------------------------------------------
 app.include_router(goals_router)
 app.include_router(tasks_router)
 
 
-# -------------------------------------------------------------
-# HEALTH CHECK
-# -------------------------------------------------------------
 @app.get("/health")
 def health():
     return {"status": "ok"}

@@ -6,22 +6,23 @@ from models.task_update import TaskUpdate
 
 # Injected in main.py
 tasks_service_global = None
-notion_service_global = None  # <-- Added
+notion_service_global = None
 
 router = APIRouter(prefix="/tasks", tags=["Tasks"])
+
 
 # ============================================================
 # DEPENDENCIES
 # ============================================================
 
 def get_tasks_service():
-    if not tasks_service_global:
+    if tasks_service_global is None:
         raise HTTPException(500, "TasksService not initialized")
     return tasks_service_global
 
 
 def get_notion_service():
-    if not notion_service_global:
+    if notion_service_global is None:
         raise HTTPException(500, "NotionService not initialized")
     return notion_service_global
 
@@ -42,64 +43,65 @@ def to_resp(task):
         "order": task.order,
     }
 
+
 # ============================================================
 # CREATE TASK (Async, Notion + Local)
 # ============================================================
 
 @router.post("/create")
-async def create_task(payload: TaskCreate, tasks_service=Depends(get_tasks_service), notion=Depends(get_notion_service)):
+async def create_task(
+    payload: TaskCreate,
+    tasks_service=Depends(get_tasks_service),
+    notion=Depends(get_notion_service)
+):
     try:
+        TASKS_DB_ID = os.getenv("NOTION_TASKS_DB_ID")
+
         notion_payload = {
-            "Name": {
-                "title": [{"text": {"content": payload.title}}]
+            "parent": {"database_id": TASKS_DB_ID},
+            "properties": {
+                "Name": {
+                    "title": [{"text": {"content": payload.title}}]
+                }
             }
         }
 
-        TASKS_DB_ID = os.getenv("NOTION_TASKS_DB_ID")
+        # Create in Notion
+        notion_res = await notion.create_page(notion_payload)
 
-        # Create in Notion (async)
-        notion_res = await notion.create_page(
-            database_id=TASKS_DB_ID,
-            properties=notion_payload
-        )
+        notion_id = notion_res.get("id")
+        notion_url = notion_res.get("url")
 
-        if not notion_res["ok"]:
-            return {
-                "status": "notion_error",
-                "detail": notion_res["error"]
-            }
-
-        notion_id = notion_res["data"]["id"]
-        notion_url = notion_res["data"]["url"]
-
-        # Create locally
+        # Create in local DB
         local_task = tasks_service.create_task(payload)
-        local_data = to_resp(local_task)
 
         return {
             "status": "created",
-            "local": local_data,
+            "local": to_resp(local_task),
             "notion_page_id": notion_id,
             "notion_url": notion_url
         }
 
     except Exception as e:
-        return {
-            "status": "error",
-            "detail": str(e)
-        }
+        raise HTTPException(500, f"Task creation failed: {str(e)}")
+
 
 # ============================================================
 # UPDATE TASK
 # ============================================================
 
 @router.patch("/{task_id}")
-async def update_task(task_id: str, updates: TaskUpdate, tasks_service=Depends(get_tasks_service)):
+async def update_task(
+    task_id: str,
+    updates: TaskUpdate,
+    tasks_service=Depends(get_tasks_service)
+):
     try:
         task = tasks_service.update_task(task_id, updates)
         return {"status": "updated", "task": to_resp(task)}
     except ValueError as e:
         raise HTTPException(404, str(e))
+
 
 # ============================================================
 # LIST TASKS
@@ -110,10 +112,6 @@ async def list_tasks(tasks_service=Depends(get_tasks_service)):
     return {"tasks": [to_resp(t) for t in tasks_service.get_all()]}
 
 
-@router.get("/tasks/all")
-async def get_all_tasks(tasks_service=Depends(get_tasks_service)):
-    return {"tasks": [to_resp(t) for t in tasks_service.get_all()]}
-
 # ============================================================
 # DELETE TASK
 # ============================================================
@@ -122,9 +120,6 @@ async def get_all_tasks(tasks_service=Depends(get_tasks_service)):
 async def delete_task(task_id: str, tasks_service=Depends(get_tasks_service)):
     try:
         deleted = tasks_service.delete_task(task_id)
-        return {
-            "status": "deleted",
-            "task": to_resp(deleted)
-        }
+        return {"status": "deleted", "task": to_resp(deleted)}
     except ValueError as e:
         raise HTTPException(404, str(e))
