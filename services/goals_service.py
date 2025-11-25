@@ -25,7 +25,7 @@ class GoalsService:
         self.sync_service = sync_service
 
     # ============================================================
-    # SAFE ASYNC TRIGGER (FIXED)
+    # SAFE ASYNC TRIGGER
     # ============================================================
     def _trigger_sync(self):
         if not self.sync_service:
@@ -35,7 +35,6 @@ class GoalsService:
             loop = asyncio.get_running_loop()
             loop.create_task(self.sync_service.debounce_goals_sync())
         except RuntimeError:
-            # Safe scheduling even if loop is not running
             asyncio.get_event_loop().create_task(self.sync_service.debounce_goals_sync())
 
     # ============================================================
@@ -59,9 +58,14 @@ class GoalsService:
         return False
 
     # ============================================================
-    # CREATE GOAL
+    # CREATE GOAL (supports notion_id)
     # ============================================================
-    def create_goal(self, data: GoalCreate, forced_id: Optional[str] = None) -> GoalModel:
+    def create_goal(
+        self,
+        data: GoalCreate,
+        forced_id: Optional[str] = None,
+        notion_id: Optional[str] = None
+    ) -> GoalModel:
         now = self._now()
         goal_id = forced_id or uuid4().hex
 
@@ -77,7 +81,9 @@ class GoalsService:
             children=[],
             created_at=now,
             updated_at=now,
-            notion_id=None,
+
+            # ⭐ KLJUČNO — za Notion delete & sync
+            notion_id=notion_id
         )
 
         self.goals[goal_id] = new_goal
@@ -105,17 +111,21 @@ class GoalsService:
         old_parent = goal.parent_id
         new_parent = updates.parent_id
 
+        # basic fields
         for field in ["title", "description", "deadline", "priority", "status", "progress"]:
             val = getattr(updates, field, None)
             if val is not None:
                 setattr(goal, field, val)
 
+        # parent change
         if new_parent is not None and new_parent != old_parent:
+            # remove from old parent
             if old_parent:
                 p = self.goals.get(old_parent)
                 if p and goal_id in p.children:
                     p.children.remove(goal_id)
 
+            # add to new parent
             if new_parent:
                 if self._would_create_cycle(new_parent, goal_id):
                     raise ValueError("Hierarchy cycle detected.")
@@ -131,13 +141,14 @@ class GoalsService:
         return goal
 
     # ============================================================
-    # DELETE GOAL
+    # DELETE GOAL (supports Notion delete)
     # ============================================================
     def delete_goal(self, goal_id: str) -> GoalModel:
         goal = self.goals.get(goal_id)
         if not goal:
             raise ValueError(f"Goal {goal_id} not found")
 
+        # unlink from parent
         if goal.parent_id:
             p = self.goals.get(goal.parent_id)
             if p and goal_id in p.children:
@@ -145,6 +156,7 @@ class GoalsService:
 
         removed = self.goals.pop(goal_id)
 
+        # orphan children become top-level
         for g in self.goals.values():
             if g.parent_id == goal_id:
                 g.parent_id = None
@@ -177,7 +189,7 @@ class GoalsService:
             children=[],
             created_at=now,
             updated_at=now,
-            notion_id=None,
+            notion_id=None
         )
 
         for g in selected:

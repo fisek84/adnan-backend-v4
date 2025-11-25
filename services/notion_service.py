@@ -71,6 +71,14 @@ class NotionService:
         return await self._safe_request("POST", url, {})
 
     # ============================================================
+    # DELETE (ARCHIVE) PAGE IN NOTION
+    # ============================================================
+    async def delete_page(self, page_id: str):
+        url = f"https://api.notion.com/v1/pages/{page_id}"
+        payload = {"archived": True}
+        return await self._safe_request("PATCH", url, payload)
+
+    # ============================================================
     # CLOSE SESSION
     # ============================================================
     async def close(self):

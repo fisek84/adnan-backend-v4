@@ -5,27 +5,31 @@ from typing import Optional
 
 class TaskModel(BaseModel):
     """
-    Core Task model for Evolia Backend v4.
-    - In-memory
-    - Synced with Notion
-    - Validated & structured
+    Task model for Evolia Backend v4.
+    - Safe for in-memory DB
+    - Sync-ready for Notion
+    - Strict validation
     """
 
+    # Core identity
     id: str = Field(..., description="Unique Task ID")
+    notion_id: Optional[str] = Field(
+        None, description="Notion page ID (for delete/archive sync)"
+    )
+
+    # Main fields
     title: str = Field(..., description="Task title")
     description: Optional[str] = Field(
-        "", description="Task description"
+        "", description="Optional task description"
     )
     goal_id: Optional[str] = Field(
         None, description="Linked goal ID"
     )
     deadline: Optional[str] = Field(
-        None,
-        description="Deadline in ISO8601 format (YYYY-MM-DD)"
+        None, description="Deadline (ISO8601 YYYY-MM-DD)"
     )
     priority: Optional[str] = Field(
-        None,
-        description="Priority: low, medium, high"
+        None, description="Task priority: low, medium, high"
     )
     status: str = Field(
         "pending",
@@ -34,11 +38,13 @@ class TaskModel(BaseModel):
     order: int = Field(
         0, description="Sort order for tasks"
     )
+
+    # Timestamps
     created_at: datetime = Field(
-        ..., description="Timestamp when task was created"
+        ..., description="Task creation timestamp"
     )
     updated_at: datetime = Field(
-        ..., description="Timestamp when task was last updated"
+        ..., description="Last update timestamp"
     )
 
     # ---------------------------------------------------------
@@ -50,7 +56,7 @@ class TaskModel(BaseModel):
             return v
         try:
             datetime.fromisoformat(v)
-        except:
+        except Exception:
             raise ValueError("Deadline must be ISO format YYYY-MM-DD")
         return v
 
