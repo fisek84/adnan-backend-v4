@@ -1,39 +1,17 @@
 from fastapi import APIRouter, HTTPException, Depends
 import os
 
-from pydantic import BaseModel
-from typing import List, Optional
-
 from models.goal_create import GoalCreate
 from models.goal_update import GoalUpdate
 
-# ❗ ISPRAVNO — koristimo dependencies.py, NE main.py
 from dependencies import get_goals_service, get_notion_service
+
 
 router = APIRouter(prefix="/goals", tags=["Goals"])
 
 
 # ============================================================
-# RESPONSE MODEL
-# ============================================================
-
-class GoalResponse(BaseModel):
-    id: str
-    title: str
-    description: Optional[str]
-    deadline: Optional[str]
-    parent_id: Optional[str]
-    priority: Optional[str]
-    status: str
-    progress: int
-    children: List[str]
-
-    class Config:
-        from_attributes = True
-
-
-# ============================================================
-# CREATE GOAL
+# CREATE GOAL (FIXED)
 # ============================================================
 
 @router.post("/create")
@@ -45,6 +23,7 @@ async def create_goal(
     try:
         db_id = os.getenv("NOTION_GOALS_DB_ID")
 
+        # 🔵 FIXED — payload now correct Notion format
         notion_payload = {
             "parent": {"database_id": db_id},
             "properties": {
@@ -54,15 +33,16 @@ async def create_goal(
             }
         }
 
-        notion_res = await notion.create_page(notion_payload)
+        res = await notion.create_page(notion_payload)
 
-        local_goal = goals_service.create_goal(payload)
+        # local DB create
+        local = goals_service.create_goal(payload)
 
         return {
             "status": "created",
-            "local": local_goal.model_dump(),
-            "notion_page_id": notion_res.get("id"),
-            "notion_url": notion_res.get("url")
+            "local": local.model_dump(),
+            "notion_page_id": res.get("id"),
+            "notion_url": res.get("url")
         }
 
     except Exception as e:
@@ -74,11 +54,7 @@ async def create_goal(
 # ============================================================
 
 @router.patch("/{goal_id}")
-async def update_goal(
-    goal_id: str,
-    updates: GoalUpdate,
-    goals_service=Depends(get_goals_service)
-):
+async def update_goal(goal_id: str, updates: GoalUpdate, goals_service=Depends(get_goals_service)):
     try:
         updated = goals_service.update_goal(goal_id, updates)
         return {"status": "updated", "goal": updated.model_dump()}

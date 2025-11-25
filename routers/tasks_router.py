@@ -4,14 +4,14 @@ import os
 from models.task_create import TaskCreate
 from models.task_update import TaskUpdate
 
-# ❗ ISPRAVNO — koristimo dependencies.py, NE main.py
 from dependencies import get_tasks_service, get_notion_service
+
 
 router = APIRouter(prefix="/tasks", tags=["Tasks"])
 
 
 # ============================================================
-# TRANSFORMER
+# RESPONSE TRANSFORMER
 # ============================================================
 
 def to_resp(task):
@@ -28,7 +28,7 @@ def to_resp(task):
 
 
 # ============================================================
-# CREATE TASK
+# CREATE TASK (FIXED)
 # ============================================================
 
 @router.post("/create")
@@ -40,6 +40,7 @@ async def create_task(
     try:
         db_id = os.getenv("NOTION_TASKS_DB_ID")
 
+        # 🔵 FIXED — correct Notion API format
         notion_payload = {
             "parent": {"database_id": db_id},
             "properties": {
@@ -49,15 +50,16 @@ async def create_task(
             }
         }
 
-        notion_res = await notion.create_page(notion_payload)
+        res = await notion.create_page(notion_payload)
 
-        local_task = tasks_service.create_task(payload)
+        # local
+        local = tasks_service.create_task(payload)
 
         return {
             "status": "created",
-            "local": to_resp(local_task),
-            "notion_page_id": notion_res.get("id"),
-            "notion_url": notion_res.get("url")
+            "local": to_resp(local),
+            "notion_page_id": res.get("id"),
+            "notion_url": res.get("url")
         }
 
     except Exception as e:
@@ -69,11 +71,7 @@ async def create_task(
 # ============================================================
 
 @router.patch("/{task_id}")
-async def update_task(
-    task_id: str,
-    updates: TaskUpdate,
-    tasks_service=Depends(get_tasks_service)
-):
+async def update_task(task_id: str, updates: TaskUpdate, tasks_service=Depends(get_tasks_service)):
     try:
         task = tasks_service.update_task(task_id, updates)
         return {"status": "updated", "task": to_resp(task)}
