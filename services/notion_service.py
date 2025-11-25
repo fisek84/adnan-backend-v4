@@ -25,13 +25,24 @@ class NotionService:
         return self.session
 
     # ============================================================
-    # GENERIC REQUEST
+    # GENERIC REQUEST (FIXED)
     # ============================================================
     async def _request(self, method: str, url: str, payload: Dict[str, Any] = None):
         session = await self._get_session()
+
         async with session.request(method, url, json=payload) as response:
-            response.raise_for_status()
-            return await response.json()
+
+            # --- FIX: Accept Notion status 200 or 201 (real create response)
+            if response.status not in (200, 201):
+                text = await response.text()
+                return {
+                    "ok": False,
+                    "status": response.status,
+                    "error": text
+                }
+
+            data = await response.json()
+            return {"ok": True, "data": data}
 
     # ============================================================
     # QUERY DATABASE
