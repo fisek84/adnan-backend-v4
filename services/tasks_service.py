@@ -5,7 +5,7 @@ from typing import Dict, Any, Optional, List
 
 from models.task_create import TaskCreate
 from models.task_update import TaskUpdate
-from models.base_model import TaskModel   # ✅ FIX – OVAKO TREBA
+from models.base_model import TaskModel
 
 
 class TasksService:
@@ -25,7 +25,7 @@ class TasksService:
         self.sync_service = sync_service
 
     # ============================================================
-    # FIXED ASYNC TRIGGER
+    # SAFE SYNC TRIGGER
     # ============================================================
     def _trigger_sync(self):
         if not self.sync_service:
@@ -35,7 +35,8 @@ class TasksService:
             loop = asyncio.get_running_loop()
             loop.create_task(self.sync_service.debounce_tasks_sync())
         except RuntimeError:
-            asyncio.run(self.sync_service.debounce_tasks_sync())
+            loop = asyncio.new_event_loop()
+            loop.create_task(self.sync_service.debounce_tasks_sync())
 
     # ============================================================
     # HELPERS
@@ -77,9 +78,9 @@ class TasksService:
             raise ValueError(f"Task {task_id} not found")
 
         for field in ["title", "description", "deadline", "goal_id", "priority", "status", "order"]:
-            val = getattr(updates, field, None)
-            if val is not None:
-                setattr(task, field, val)
+            value = getattr(updates, field, None)
+            if value is not None:
+                setattr(task, field, value)
 
         task.updated_at = self._now()
         self._trigger_sync()
@@ -131,7 +132,6 @@ class TasksService:
         )
 
         new_task.notion_id = task_id
-
         return new_task
 
     # ============================================================
@@ -152,3 +152,10 @@ class TasksService:
             "status": task.status,
             "order": task.order,
         }
+
+    def _replace_id(self, old_id: str, new_id: str):
+        if old_id not in self.tasks:
+            return
+        obj = self.tasks.pop(old_id)
+        obj.id = new_id
+        self.tasks[new_id] = obj

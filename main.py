@@ -4,7 +4,6 @@ from pathlib import Path
 from fastapi import FastAPI, Depends, HTTPException, Header
 from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
-import asyncio
 
 # ============================================================
 # PROJECT ROOT / CLEAN IMPORTS
@@ -71,7 +70,7 @@ import routers.tasks_router as tasks_router_module
 import routers.ai_router as ai_router_module
 import routers.sync_router as sync_router_module
 import routers.agents_router as agents_router_module
-import routers.nlp_router as nlp_router_module   # ✅ ADDED NLP ROUTER
+import routers.nlp_router as nlp_router_module
 
 from core.master_engine import MasterEngine
 
@@ -105,6 +104,7 @@ tasks_service.bind_goals_service(goals_service)
 # ============================================================
 notion_service = NotionService(token=NOTION_API_KEY)
 
+# --------------- FIX: SYNC SERVICE INITIALIZED WITHOUT AUTO-START LOOP ---------------
 sync_service = NotionSyncService(
     notion_service=notion_service,
     goals_service=goals_service,
@@ -112,6 +112,7 @@ sync_service = NotionSyncService(
     goals_db_id=NOTION_GOALS_DB_ID,
     tasks_db_id=NOTION_TASKS_DB_ID,
 )
+# ------------------------------------------------------------------------------
 
 agents_service = AgentsService(
     notion_token=NOTION_API_KEY,
@@ -131,7 +132,7 @@ tasks_router_module.tasks_service_global = tasks_service
 ai_router_module.ai_service_global = ai_service
 sync_router_module.sync_service_global = sync_service
 agents_router_module.agents_service_global = agents_service
-nlp_router_module.ai_service_global = ai_service   # ✅ NLP ROUTER BINDING
+nlp_router_module.ai_service_global = ai_service
 
 protected = [Depends(verify_api_key)]
 
@@ -140,7 +141,7 @@ app.include_router(tasks_router_module.router, dependencies=protected)
 app.include_router(ai_router_module.router, dependencies=protected)
 app.include_router(sync_router_module.router, dependencies=protected)
 app.include_router(agents_router_module.router, dependencies=protected)
-app.include_router(nlp_router_module.router, dependencies=protected)   # ✅ NLP ROUTER ENABLED
+app.include_router(nlp_router_module.router, dependencies=protected)
 
 # ============================================================
 # ENGINE

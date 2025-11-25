@@ -25,7 +25,7 @@ class GoalsService:
         self.sync_service = sync_service
 
     # ============================================================
-    # INTERNAL — SYNC TRIGGER
+    # SAFE SYNC TRIGGER  (NO asyncio.run)
     # ============================================================
     def _trigger_sync(self):
         if not self.sync_service:
@@ -35,7 +35,9 @@ class GoalsService:
             loop = asyncio.get_running_loop()
             loop.create_task(self.sync_service.debounce_goals_sync())
         except RuntimeError:
-            asyncio.run(self.sync_service.debounce_goals_sync())
+            # If no loop — create a new one safely
+            loop = asyncio.new_event_loop()
+            loop.create_task(self.sync_service.debounce_goals_sync())
 
     # ============================================================
     # HELPERS
@@ -45,18 +47,12 @@ class GoalsService:
 
     def _would_create_cycle(self, parent_id: str, child_id: str) -> bool:
         stack = [child_id]
-
         while stack:
             current = stack.pop()
             if current == parent_id:
                 return True
-            children = (
-                self.goals[current].children
-                if current in self.goals
-                else []
-            )
-            stack.extend(children)
-
+            if current in self.goals:
+                stack.extend(self.goals[current].children)
         return False
 
     # ============================================================
@@ -89,7 +85,6 @@ class GoalsService:
             if parent:
                 if self._would_create_cycle(parent.id, goal_id):
                     raise ValueError("Hierarchy cycle detected.")
-
                 parent.children.append(goal_id)
                 parent.updated_at = now
 
@@ -107,29 +102,26 @@ class GoalsService:
         old_parent = goal.parent_id
         new_parent = updates.parent_id
 
-        # Update simple fields
         for field in ["title", "description", "deadline", "priority", "status", "progress"]:
-            val = getattr(updates, field, None)
-            if val is not None:
-                setattr(goal, field, val)
+            value = getattr(updates, field, None)
+            if value is not None:
+                setattr(goal, field, value)
 
         # Handle parent change
         if new_parent is not None and new_parent != old_parent:
 
-            # Remove from old parent
-            if old_parent:
-                parent = self.goals.get(old_parent)
-                if parent and goal_id in parent.children:
+            if old_parent and old_parent in self.goals:
+                parent = self.goals[old_parent]
+                if goal_id in parent.children:
                     parent.children.remove(goal_id)
 
-            # Add to new parent
             if new_parent:
                 if self._would_create_cycle(new_parent, goal_id):
                     raise ValueError("Hierarchy cycle detected.")
-
-                parent = self.goals.get(new_parent)
-                if parent and goal_id not in parent.children:
-                    parent.children.append(goal_id)
+                if new_parent in self.goals:
+                    parent = self.goals[new_parent]
+                    if goal_id not in parent.children:
+                        parent.children.append(goal_id)
 
             goal.parent_id = new_parent
 
@@ -146,14 +138,14 @@ class GoalsService:
             raise ValueError(f"Goal {goal_id} not found")
 
         # Remove from parent
-        if goal.parent_id:
-            parent = self.goals.get(goal.parent_id)
-            if parent and goal_id in parent.children:
+        if goal.parent_id and goal.parent_id in self.goals:
+            parent = self.goals[goal.parent_id]
+            if goal_id in parent.children:
                 parent.children.remove(goal_id)
 
         removed = self.goals.pop(goal_id)
 
-        # Orphan children — unlink them
+        # Orphan children
         for g in self.goals.values():
             if g.parent_id == goal_id:
                 g.parent_id = None
@@ -170,7 +162,6 @@ class GoalsService:
             raise ValueError("At least two goal IDs required")
 
         selected = [self.goals[g] for g in goal_ids if g in self.goals]
-
         now = self._now()
         merged_id = uuid4().hex
 
@@ -189,7 +180,6 @@ class GoalsService:
             notion_id=None,
         )
 
-        # Remove originals
         for g in selected:
             self.goals.pop(g.id, None)
 
@@ -198,7 +188,31 @@ class GoalsService:
         return merged
 
     # ============================================================
-    # GET ALL GOALS  ✅ REQUIRED BY ROUTERS + SYNC
+    # GET ALL GOALS
     # ============================================================
     def get_all(self) -> List[GoalModel]:
         return list(self.goals.values())
+
+    # ============================================================
+    # REQUIRED BY SYNC SERVICE
+    # ============================================================
+    def to_dict(self, g: GoalModel) -> Dict[str, Any]:
+        return {
+            "id": g.id,
+            "title": g.title,
+            "description": g.description,
+            "deadline": g.deadline,
+            "parent_id": g.parent_id,
+            "priority": g.priority,
+            "status": g.status,
+            "progress": g.progress,
+            "children": g.children,
+            "notion_id": g.notion_id,
+        }
+
+    def _replace_id(self, old_id: str, new_id: str):
+        if old_id not in self.goals:
+            return
+        obj = self.goals.pop(old_id)
+        obj.id = new_id
+        self.goals[new_id] = obj
