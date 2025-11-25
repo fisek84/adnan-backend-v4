@@ -6,16 +6,16 @@ from routers.tasks_router import router as tasks_router, tasks_service_global
 
 from services.goals_service import GoalsService
 from services.tasks_service import TasksService
-from services.ai_command_service import AICommandService
 from services.notion_service import NotionService
 from services.notion_sync_service import NotionSyncService
+from services.ai_command_service import AICommandService
 from services.agents_service import AgentsService
 
 import os
 
 app = FastAPI()
 
-# CORS – dopuštamo sve origin-e (privremeno)
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -24,66 +24,57 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# GLOBAL SERVICE INSTANCES
+# GLOBAL SERVICES
 notion_service = None
-notion_sync_service = None
 goals_service = None
 tasks_service = None
+notion_sync_service = None
 ai_command_service = None
 agents_service = None
 
 
 # -------------------------------------------------------------
-# STARTUP — inicijalizacija svih servisa
+# STARTUP
 # -------------------------------------------------------------
 @app.on_event("startup")
 async def startup_event():
-    global (
-        notion_service,
-        notion_sync_service,
-        goals_service,
-        tasks_service,
-        ai_command_service,
-        agents_service,
-        goals_service_global,
-        tasks_service_global
-    )
+    global notion_service, goals_service, tasks_service, notion_sync_service
+    global ai_command_service, agents_service
+    global goals_service_global, tasks_service_global
 
     print("🔵 Starting backend services...")
 
-    # 1) INIT NOTION SERVICE
+    # 1) NOTION CORE SERVICE
     notion_service = NotionService(
         api_key=os.getenv("NOTION_API_KEY"),
         goals_db_id=os.getenv("NOTION_GOALS_DB_ID"),
-        tasks_db_id=os.getenv("NOTION_TASKS_DB_ID"),
+        tasks_db_id=os.getenv("NOTION_TASKS_DB_ID")
     )
     print("✅ NotionService initialized")
 
-    # 2) LOCAL GOALS / TASKS SERVICES
+    # 2) LOCAL IN-MEMORY SERVICES
     goals_service = GoalsService()
     tasks_service = TasksService()
     print("✅ GoalsService initialized")
     print("✅ TasksService initialized")
 
-    # 3) NOTION SYNC SERVICE
+    # 3) SYNC SERVICE
     notion_sync_service = NotionSyncService(
-        notion_service=notion_service,
-        goals_service=goals_service,
-        tasks_service=tasks_service,
-        goals_db_id=os.getenv("NOTION_GOALS_DB_ID"),
-        tasks_db_id=os.getenv("NOTION_TASKS_DB_ID")
+        notion_service,
+        goals_service,
+        tasks_service,
+        os.getenv("NOTION_GOALS_DB_ID"),
+        os.getenv("NOTION_TASKS_DB_ID")
     )
     print("✅ NotionSyncService initialized")
 
-    # 4) AI COMMAND SERVICE
-    ai_command_service = AICommandService(goals_service, tasks_service)
-    print("✅ AICommandService initialized")
-
-    # 5) Agents service (if required)
+    # 4) Extra services (AI, agents)
+    ai_command_service = AICommandService()
     agents_service = AgentsService()
+    print("✅ AICommandService initialized")
     print("✅ AgentsService initialized")
 
-    # 6) CONNECT TO ROUTERS — global injection
+    # 5) CONNECT GLOBAL ROUTER SERVICES
     goals_service_global = goals_service
     tasks_service_global = tasks_service
 
