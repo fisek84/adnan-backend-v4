@@ -1,7 +1,7 @@
 import asyncio
 from uuid import uuid4
 from datetime import datetime, timezone
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Any
 
 from models.goal_create import GoalCreate
 from models.goal_update import GoalUpdate
@@ -30,12 +30,13 @@ class GoalsService:
     def _trigger_sync(self):
         if not self.sync_service:
             return
-
         try:
             loop = asyncio.get_running_loop()
             loop.create_task(self.sync_service.debounce_goals_sync())
         except RuntimeError:
-            asyncio.get_event_loop().create_task(self.sync_service.debounce_goals_sync())
+            asyncio.get_event_loop().create_task(
+                self.sync_service.debounce_goals_sync()
+            )
 
     # ============================================================
     # HELPERS
@@ -58,7 +59,7 @@ class GoalsService:
         return False
 
     # ============================================================
-    # CREATE GOAL (supports notion_id)
+    # CREATE GOAL — PRO VERSION
     # ============================================================
     def create_goal(
         self,
@@ -71,6 +72,7 @@ class GoalsService:
 
         new_goal = GoalModel(
             id=goal_id,
+            notion_id=notion_id,
             title=data.title,
             description=data.description,
             deadline=data.deadline,
@@ -81,14 +83,10 @@ class GoalsService:
             children=[],
             created_at=now,
             updated_at=now,
-
-            # ⭐ KLJUČNO — za Notion delete & sync
-            notion_id=notion_id
         )
 
         self.goals[goal_id] = new_goal
 
-        # Parent linking
         if data.parent_id:
             parent = self.goals.get(data.parent_id)
             if parent:
@@ -111,25 +109,20 @@ class GoalsService:
         old_parent = goal.parent_id
         new_parent = updates.parent_id
 
-        # basic fields
         for field in ["title", "description", "deadline", "priority", "status", "progress"]:
             val = getattr(updates, field, None)
             if val is not None:
                 setattr(goal, field, val)
 
-        # parent change
         if new_parent is not None and new_parent != old_parent:
-            # remove from old parent
             if old_parent:
                 p = self.goals.get(old_parent)
                 if p and goal_id in p.children:
                     p.children.remove(goal_id)
 
-            # add to new parent
             if new_parent:
                 if self._would_create_cycle(new_parent, goal_id):
                     raise ValueError("Hierarchy cycle detected.")
-
                 p = self.goals.get(new_parent)
                 if p and goal_id not in p.children:
                     p.children.append(goal_id)
@@ -141,14 +134,13 @@ class GoalsService:
         return goal
 
     # ============================================================
-    # DELETE GOAL (supports Notion delete)
+    # DELETE GOAL — (local delete only, Notion handled in router)
     # ============================================================
     def delete_goal(self, goal_id: str) -> GoalModel:
         goal = self.goals.get(goal_id)
         if not goal:
             raise ValueError(f"Goal {goal_id} not found")
 
-        # unlink from parent
         if goal.parent_id:
             p = self.goals.get(goal.parent_id)
             if p and goal_id in p.children:
@@ -156,7 +148,6 @@ class GoalsService:
 
         removed = self.goals.pop(goal_id)
 
-        # orphan children become top-level
         for g in self.goals.values():
             if g.parent_id == goal_id:
                 g.parent_id = None
@@ -164,40 +155,6 @@ class GoalsService:
 
         self._trigger_sync()
         return removed
-
-    # ============================================================
-    # MERGE GOALS
-    # ============================================================
-    def merge_goals(self, goal_ids: List[str]) -> GoalModel:
-        if len(goal_ids) < 2:
-            raise ValueError("At least two goal IDs required")
-
-        selected = [self.goals[g] for g in goal_ids if g in self.goals]
-
-        now = self._now()
-        merged_id = uuid4().hex
-
-        merged = GoalModel(
-            id=merged_id,
-            title=" | ".join(g.title for g in selected),
-            description=" | ".join(g.description or "" for g in selected),
-            deadline=None,
-            parent_id=None,
-            priority=None,
-            status="pending",
-            progress=0,
-            children=[],
-            created_at=now,
-            updated_at=now,
-            notion_id=None
-        )
-
-        for g in selected:
-            self.goals.pop(g.id, None)
-
-        self.goals[merged_id] = merged
-        self._trigger_sync()
-        return merged
 
     # ============================================================
     # GET ALL

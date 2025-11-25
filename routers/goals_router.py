@@ -12,15 +12,9 @@ from dependencies import (
 router = APIRouter(prefix="/goals", tags=["Goals"])
 
 
-def to_resp(goal):
-    data = goal.model_dump()
-    data["notion_id"] = getattr(goal, "notion_id", None)
-    return data
-
-
-# ============================================================
+# ================================
 # CREATE GOAL
-# ============================================================
+# ================================
 @router.post("/create")
 async def create_goal(
     payload: GoalCreate,
@@ -42,16 +36,11 @@ async def create_goal(
         notion_res = await notion.create_page(notion_payload)
 
         if not notion_res["ok"]:
-            return {
-                "status": "notion_error",
-                "detail": notion_res["error"]
-            }
+            return {"status": "notion_error", "detail": notion_res["error"]}
 
-        data = notion_res["data"]
-        notion_id = data["id"]
-        notion_url = data["url"]
+        notion_id = notion_res["data"]["id"]
+        notion_url = notion_res["data"]["url"]
 
-        # ⭐ Dodaj goal u lokalni DB sa notion_id
         new_goal = goals_service.create_goal(
             payload,
             notion_id=notion_id
@@ -59,7 +48,7 @@ async def create_goal(
 
         return {
             "status": "created",
-            "local": to_resp(new_goal),
+            "local": new_goal.model_dump(),
             "notion_page_id": notion_id,
             "notion_url": notion_url
         }
@@ -68,9 +57,9 @@ async def create_goal(
         raise HTTPException(500, f"Goal creation failed: {e}")
 
 
-# ============================================================
-# UPDATE GOAL
-# ============================================================
+# ================================
+# UPDATE
+# ================================
 @router.patch("/{goal_id}")
 async def update_goal(
     goal_id: str,
@@ -79,22 +68,22 @@ async def update_goal(
 ):
     try:
         updated = goals_service.update_goal(goal_id, data)
-        return {"status": "updated", "goal": to_resp(updated)}
+        return {"status": "updated", "goal": updated.model_dump()}
     except ValueError as e:
         raise HTTPException(404, str(e))
 
 
-# ============================================================
-# LIST GOALS
-# ============================================================
+# ================================
+# LIST
+# ================================
 @router.get("/all")
 async def list_goals(goals_service=Depends(get_goals_service)):
-    return {"goals": [to_resp(g) for g in goals_service.get_all()]}
+    return {"goals": [g.model_dump() for g in goals_service.get_all()]}
 
 
-# ============================================================
-# DELETE GOAL (LOCAL + NOTION)
-# ============================================================
+# ================================
+# DELETE (WITH NOTION ARCHIVE)
+# ================================
 @router.delete("/{goal_id}")
 async def delete_goal(
     goal_id: str,
@@ -106,7 +95,7 @@ async def delete_goal(
 
         notion_status = "skip"
 
-        if hasattr(deleted, "notion_id") and deleted.notion_id:
+        if deleted.notion_id:
             try:
                 res = await notion.delete_page(deleted.notion_id)
                 notion_status = "archived" if res["ok"] else res["error"]
@@ -115,7 +104,7 @@ async def delete_goal(
 
         return {
             "status": "deleted",
-            "goal": to_resp(deleted),
+            "goal": deleted.model_dump(),
             "notion": notion_status
         }
 
