@@ -14,9 +14,9 @@ tasks_service_global = None
 router = APIRouter(prefix="/tasks", tags=["Tasks"])
 
 
-# ==============================================
+# ============================================================
 # FASTAPI DEPENDENCY
-# ==============================================
+# ============================================================
 
 def get_tasks_service():
     if not tasks_service_global:
@@ -24,9 +24,9 @@ def get_tasks_service():
     return tasks_service_global
 
 
-# ==============================================
+# ============================================================
 # RESPONSE TRANSFORMER
-# ==============================================
+# ============================================================
 
 def to_resp(task):
     return {
@@ -41,9 +41,9 @@ def to_resp(task):
     }
 
 
-# ==============================================
-# CREATE TASK (Notion)
-# ==============================================
+# ============================================================
+# CREATE TASK (Notion + Local)
+# ============================================================
 
 @router.post("/create")
 def create_task(payload: TaskCreate):
@@ -57,7 +57,6 @@ def create_task(payload: TaskCreate):
             "Notion-Version": "2022-06-28"
         }
 
-        # Minimal Notion Task payload
         notion_payload = {
             "parent": {"database_id": TASKS_DB_ID},
             "properties": {
@@ -76,14 +75,11 @@ def create_task(payload: TaskCreate):
         )
 
         if notion_resp.status_code != 200:
-            raise HTTPException(
-                status_code=notion_resp.status_code,
-                detail=notion_resp.text
-            )
+            raise HTTPException(notion_resp.status_code, notion_resp.text)
 
         notion_data = notion_resp.json()
 
-        # Local DB
+        # Local create
         if tasks_service_global:
             local_task = tasks_service_global.create_task(payload)
             local_data = to_resp(local_task)
@@ -99,12 +95,12 @@ def create_task(payload: TaskCreate):
         }
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to create task: {e}")
+        raise HTTPException(500, f"Failed to create task: {e}")
 
 
-# ==============================================
+# ============================================================
 # UPDATE
-# ==============================================
+# ============================================================
 
 @router.patch("/{task_id}")
 def update_task(task_id: str, updates: TaskUpdate, tasks_service=Depends(get_tasks_service)):
@@ -115,20 +111,21 @@ def update_task(task_id: str, updates: TaskUpdate, tasks_service=Depends(get_tas
         raise HTTPException(404, str(e))
 
 
-# ==============================================
+# ============================================================
 # GET ALL LOCAL
-# ==============================================
+# ============================================================
 
 @router.get("/all")
 def list_tasks(tasks_service=Depends(get_tasks_service)):
     tasks = tasks_service.get_all()
-    return [to_resp(t) for t in tasks]
+    return {"tasks": [to_resp(t) for t in tasks]}
 
 
-# ==============================================
-# NEW ROUTE FOR AI + PLUGIN
-# ==============================================
+# ============================================================
+# AI + PLUGIN ROUTE
+# ============================================================
 
 @router.get("/tasks/all")
 async def get_all_tasks(tasks_service=Depends(get_tasks_service)):
-    return {"tasks": tasks_service.get_all()}
+    tasks = tasks_service.get_all()
+    return {"tasks": [to_resp(t) for t in tasks]}
