@@ -13,9 +13,18 @@ from routers.tasks_router import router as tasks_router
 
 import os
 
+# Import dependency instances
+from dependencies import (
+    goals_service_instance,
+    tasks_service_instance,
+    notion_service_instance
+)
+
 app = FastAPI()
 
+# -------------------------------------------------------------------
 # CORS
+# -------------------------------------------------------------------
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -24,33 +33,34 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# -------------------------------------------------------------------
 # GLOBAL INSTANCES
+# -------------------------------------------------------------------
 notion_service: NotionService = None
 goals_service: GoalsService = None
 tasks_service: TasksService = None
+
 notion_sync_service = None
 ai_command_service = None
 agents_service = None
 
 
-# ============================================================
-# DEPENDENCIES
-# ============================================================
+# -------------------------------------------------------------------
+# SET DEPENDENCY INJECTION TARGETS
+# -------------------------------------------------------------------
+def set_dependencies():
+    global goals_service_instance
+    global tasks_service_instance
+    global notion_service_instance
 
-def get_goals_service():
-    return goals_service
-
-def get_tasks_service():
-    return tasks_service
-
-def get_notion_service():
-    return notion_service
+    goals_service_instance = goals_service
+    tasks_service_instance = tasks_service
+    notion_service_instance = notion_service
 
 
-# ============================================================
-# STARTUP EVENT
-# ============================================================
-
+# -------------------------------------------------------------------
+# STARTUP
+# -------------------------------------------------------------------
 @app.on_event("startup")
 async def startup_event():
     global notion_service, goals_service, tasks_service
@@ -58,7 +68,7 @@ async def startup_event():
 
     print("🔵 Starting backend services...")
 
-    # 1. NOTION CORE
+    # 1 — Notion core
     notion_service = NotionService(
         api_key=os.getenv("NOTION_API_KEY"),
         goals_db_id=os.getenv("NOTION_GOALS_DB_ID"),
@@ -66,13 +76,17 @@ async def startup_event():
     )
     print("✅ NotionService initialized")
 
-    # 2. LOCAL DB SERVICES
+    # 2 — Local services
     goals_service = GoalsService()
     tasks_service = TasksService()
+
+    # Inject into dependency holders
+    set_dependencies()
+
     print("✅ GoalsService initialized")
     print("✅ TasksService initialized")
 
-    # 3. SYNC LAYER
+    # 3 — Sync layer
     notion_sync_service = NotionSyncService(
         notion_service,
         goals_service,
@@ -82,9 +96,8 @@ async def startup_event():
     )
     print("✅ NotionSyncService initialized")
 
-    # 4. AI + AGENTS
+    # 4 — AI + Agents
     ai_command_service = AICommandService()
-
     agents_service = AgentsService(
         notion_token=os.getenv("NOTION_API_KEY"),
         exchange_db_id=os.getenv("NOTION_EXCHANGE_DB_ID"),
@@ -96,11 +109,16 @@ async def startup_event():
     print("🔥 Backend fully initialized")
 
 
+# -------------------------------------------------------------------
 # ROUTERS
+# -------------------------------------------------------------------
 app.include_router(goals_router)
 app.include_router(tasks_router)
 
 
+# -------------------------------------------------------------------
+# HEALTH
+# -------------------------------------------------------------------
 @app.get("/health")
 def health():
     return {"status": "ok"}

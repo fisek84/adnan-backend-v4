@@ -7,7 +7,8 @@ from typing import List, Optional
 from models.goal_create import GoalCreate
 from models.goal_update import GoalUpdate
 
-from main import get_goals_service, get_notion_service
+# ❗ ISPRAVNO — koristimo dependencies.py, NE main.py
+from dependencies import get_goals_service, get_notion_service
 
 router = APIRouter(prefix="/goals", tags=["Goals"])
 

@@ -4,7 +4,8 @@ import os
 from models.task_create import TaskCreate
 from models.task_update import TaskUpdate
 
-from main import get_tasks_service, get_notion_service
+# ❗ ISPRAVNO — koristimo dependencies.py, NE main.py
+from dependencies import get_tasks_service, get_notion_service
 
 router = APIRouter(prefix="/tasks", tags=["Tasks"])
 
@@ -68,7 +69,11 @@ async def create_task(
 # ============================================================
 
 @router.patch("/{task_id}")
-async def update_task(task_id: str, updates: TaskUpdate, tasks_service=Depends(get_tasks_service)):
+async def update_task(
+    task_id: str,
+    updates: TaskUpdate,
+    tasks_service=Depends(get_tasks_service)
+):
     try:
         task = tasks_service.update_task(task_id, updates)
         return {"status": "updated", "task": to_resp(task)}
