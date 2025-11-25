@@ -8,7 +8,7 @@ import os
 import json
 import requests
 
-# Will be injected from main.py
+# Injected from main.py
 tasks_service_global = None
 
 router = APIRouter(prefix="/tasks", tags=["Tasks"])
@@ -42,7 +42,7 @@ def to_resp(task):
 
 
 # ============================================================
-# CREATE TASK (Notion + Local)
+# CREATE TASK  (Notion + Local)
 # ============================================================
 
 @router.post("/create")
@@ -57,6 +57,7 @@ def create_task(payload: TaskCreate):
             "Notion-Version": "2022-06-28"
         }
 
+        # Minimal Notion payload
         notion_payload = {
             "parent": {"database_id": TASKS_DB_ID},
             "properties": {
@@ -79,7 +80,7 @@ def create_task(payload: TaskCreate):
 
         notion_data = notion_resp.json()
 
-        # Local task create
+        # Local DB task
         if tasks_service_global:
             local_task = tasks_service_global.create_task(payload)
             local_data = to_resp(local_task)
@@ -99,7 +100,7 @@ def create_task(payload: TaskCreate):
 
 
 # ============================================================
-# UPDATE
+# UPDATE TASK
 # ============================================================
 
 @router.patch("/{task_id}")
@@ -129,3 +130,19 @@ def list_tasks(tasks_service=Depends(get_tasks_service)):
 async def get_all_tasks(tasks_service=Depends(get_tasks_service)):
     tasks = tasks_service.get_all()
     return {"tasks": [to_resp(t) for t in tasks]}
+
+
+# ============================================================
+# DELETE TASK  ✅ FIXED (prevents 405 errors)
+# ============================================================
+
+@router.delete("/{task_id}")
+def delete_task(task_id: str, tasks_service=Depends(get_tasks_service)):
+    try:
+        deleted = tasks_service.delete_task(task_id)
+        return {
+            "status": "deleted",
+            "task": to_resp(deleted)
+        }
+    except ValueError as e:
+        raise HTTPException(404, str(e))
