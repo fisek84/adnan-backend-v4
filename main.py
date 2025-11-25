@@ -16,16 +16,15 @@ from services.agents_service import AgentsService
 
 # DEPENDENCIES
 from dependencies import (
-    goals_service_instance,
-    tasks_service_instance,
-    notion_service_instance
+    get_goals_service,
+    get_tasks_service,
+    get_notion_service,
+    set_notion_service
 )
 
 app = FastAPI()
 
-# ================================
-# CORS (FULL OPEN)
-# ================================
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -34,9 +33,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ================================
 # SERVICE INSTANCES
-# ================================
 notion_service: NotionService = None
 goals_service: GoalsService = None
 tasks_service: TasksService = None
@@ -45,22 +42,6 @@ ai_command_service: AICommandService = None
 agents_service: AgentsService = None
 
 
-# ================================
-# DEPENDENCY INJECTOR
-# ================================
-def set_dependencies():
-    global goals_service_instance
-    global tasks_service_instance
-    global notion_service_instance
-
-    goals_service_instance = goals_service
-    tasks_service_instance = tasks_service
-    notion_service_instance = notion_service
-
-
-# ================================
-# STARTUP EVENT
-# ================================
 @app.on_event("startup")
 async def startup_event():
     global notion_service, goals_service, tasks_service
@@ -68,24 +49,32 @@ async def startup_event():
 
     print("🔵 Starting backend services...")
 
-    # Notion Client V2
+    # ========================
+    # NOTION SERVICE INIT
+    # ========================
     notion_service = NotionService(
         api_key=os.getenv("NOTION_API_KEY"),
         goals_db_id=os.getenv("NOTION_GOALS_DB_ID"),
         tasks_db_id=os.getenv("NOTION_TASKS_DB_ID")
     )
+
+    # REGISTER INTO GLOBAL DEPENDENCIES
+    set_notion_service(notion_service)
+
     print("✅ NotionService initialized")
 
-    # Local in-memory services
+    # ========================
+    # LOCAL DB SERVICES
+    # ========================
     goals_service = GoalsService()
     tasks_service = TasksService()
-
-    # Inject them into dependencies.py
-    set_dependencies()
 
     print("✅ GoalsService initialized")
     print("✅ TasksService initialized")
 
+    # ========================
+    # SYNC SERVICE
+    # ========================
     notion_sync_service = NotionSyncService(
         notion_service,
         goals_service,
@@ -95,9 +84,11 @@ async def startup_event():
     )
     print("✅ NotionSyncService initialized")
 
+    # AI COMMANDS
     ai_command_service = AICommandService()
     print("✅ AICommandService initialized")
 
+    # AGENTS SERVICE
     agents_service = AgentsService(
         notion_token=os.getenv("NOTION_API_KEY"),
         exchange_db_id=os.getenv("NOTION_EXCHANGE_DB_ID"),
@@ -108,16 +99,11 @@ async def startup_event():
     print("🔥 Backend fully initialized")
 
 
-# ================================
 # ROUTERS
-# ================================
 app.include_router(goals_router)
 app.include_router(tasks_router)
 
 
-# ================================
-# HEALTH
-# ================================
 @app.get("/health")
 def health():
     return {"status": "ok"}
