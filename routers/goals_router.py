@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 import requests
 import os
 import json
@@ -8,6 +8,9 @@ from typing import Optional, List
 
 from models.goal_create import GoalCreate
 from models.goal_update import GoalUpdate
+
+# Will be injected from main.py
+goals_service_global = None
 
 router = APIRouter(prefix="/goals", tags=["Goals"])
 
@@ -20,9 +23,18 @@ NOTION_HEADERS = {
     "Notion-Version": "2022-06-28"
 }
 
-# ===========================
+# ==============================================
+# FASTAPI DEPENDENCY
+# ==============================================
+
+def get_goals_service():
+    if not goals_service_global:
+        raise HTTPException(500, "GoalsService not initialized")
+    return goals_service_global
+
+# ==============================================
 # RESPONSE MODEL
-# ===========================
+# ==============================================
 
 class GoalResponse(BaseModel):
     id: str
@@ -39,9 +51,9 @@ class GoalResponse(BaseModel):
         from_attributes = True
 
 
-# ===========================
-# PATCHED CREATE GOAL
-# ===========================
+# ==============================================
+# CREATE GOAL (Notion)
+# ==============================================
 
 @router.post("/create")
 def create_goal(payload: GoalCreate):
@@ -68,6 +80,10 @@ def create_goal(payload: GoalCreate):
 
         notion_data = resp.json()
 
+        # Local create — optional
+        if goals_service_global:
+            goals_service_global.create_goal(payload)
+
         return {
             "status": "created",
             "notion_page_id": notion_data["id"],
@@ -76,3 +92,34 @@ def create_goal(payload: GoalCreate):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to create goal: {e}")
+
+
+# ==============================================
+# UPDATE GOAL
+# ==============================================
+
+@router.patch("/{goal_id}")
+def update_goal(goal_id: str, updates: GoalUpdate, goals_service=Depends(get_goals_service)):
+    try:
+        updated = goals_service.update_goal(goal_id, updates)
+        return {"status": "updated", "goal": updated}
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+
+
+# ==============================================
+# GET ALL GOALS (LOCAL BACKEND)
+# ==============================================
+
+@router.get("/all")
+def get_all_local(goals_service=Depends(get_goals_service)):
+    return {"goals": goals_service.get_all()}
+
+
+# ==============================================
+# NEW ROUTE FOR AI + PLUGIN
+# ==============================================
+
+@router.get("/goals/all")
+async def get_all_goals(goals_service=Depends(get_goals_service)):
+    return {"goals": goals_service.get_all()}

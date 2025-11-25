@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from typing import Optional
 
 from models.task_create import TaskCreate
@@ -13,9 +13,20 @@ tasks_service_global = None
 
 router = APIRouter(prefix="/tasks", tags=["Tasks"])
 
-# ============================================================
-# RESPONSE TRANSFORMER (LOCAL)
-# ============================================================
+
+# ==============================================
+# FASTAPI DEPENDENCY
+# ==============================================
+
+def get_tasks_service():
+    if not tasks_service_global:
+        raise HTTPException(500, "TasksService not initialized")
+    return tasks_service_global
+
+
+# ==============================================
+# RESPONSE TRANSFORMER
+# ==============================================
 
 def to_resp(task):
     return {
@@ -30,9 +41,9 @@ def to_resp(task):
     }
 
 
-# ============================================================
-# TASK CREATE — NOW SENDS TO NOTION TASKS DB
-# ============================================================
+# ==============================================
+# CREATE TASK (Notion)
+# ==============================================
 
 @router.post("/create")
 def create_task(payload: TaskCreate):
@@ -46,7 +57,7 @@ def create_task(payload: TaskCreate):
             "Notion-Version": "2022-06-28"
         }
 
-        # Minimal Notion Task payload (Name property)
+        # Minimal Notion Task payload
         notion_payload = {
             "parent": {"database_id": TASKS_DB_ID},
             "properties": {
@@ -72,7 +83,7 @@ def create_task(payload: TaskCreate):
 
         notion_data = notion_resp.json()
 
-        # (optional) local DB create
+        # Local DB
         if tasks_service_global:
             local_task = tasks_service_global.create_task(payload)
             local_data = to_resp(local_task)
@@ -91,48 +102,33 @@ def create_task(payload: TaskCreate):
         raise HTTPException(status_code=500, detail=f"Failed to create task: {e}")
 
 
-# ============================================================
+# ==============================================
 # UPDATE
-# ============================================================
+# ==============================================
 
 @router.patch("/{task_id}")
-def update_task(task_id: str, updates: TaskUpdate):
-    if not tasks_service_global:
-        raise HTTPException(500, "TasksService not initialized")
-
+def update_task(task_id: str, updates: TaskUpdate, tasks_service=Depends(get_tasks_service)):
     try:
-        task = tasks_service_global.update_task(task_id, updates)
+        task = tasks_service.update_task(task_id, updates)
+        return {"status": "updated", "task": to_resp(task)}
     except ValueError as e:
         raise HTTPException(404, str(e))
 
-    return {"status": "updated", "task": to_resp(task)}
 
-
-# ============================================================
-# GET ALL
-# ============================================================
+# ==============================================
+# GET ALL LOCAL
+# ==============================================
 
 @router.get("/all")
-def list_tasks():
-    if not tasks_service_global:
-        raise HTTPException(500, "TasksService not initialized")
-
-    tasks = tasks_service_global.get_all()
+def list_tasks(tasks_service=Depends(get_tasks_service)):
+    tasks = tasks_service.get_all()
     return [to_resp(t) for t in tasks]
 
 
-# ============================================================
-# DELETE
-# ============================================================
+# ==============================================
+# NEW ROUTE FOR AI + PLUGIN
+# ==============================================
 
-@router.delete("/{task_id}")
-def delete_task(task_id: str):
-    if not tasks_service_global:
-        raise HTTPException(500, "TasksService not initialized")
-
-    try:
-        deleted = tasks_service_global.delete_task(task_id)
-    except ValueError as e:
-        raise HTTPException(404, str(e))
-
-    return {"status": "deleted", "task": to_resp(deleted)}
+@router.get("/tasks/all")
+async def get_all_tasks(tasks_service=Depends(get_tasks_service)):
+    return {"tasks": tasks_service.get_all()}
