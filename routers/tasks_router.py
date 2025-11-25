@@ -12,9 +12,6 @@ from dependencies import (
 router = APIRouter(prefix="/tasks", tags=["Tasks"])
 
 
-# ============================================================
-# TRANSFORMER
-# ============================================================
 def to_resp(task):
     return {
         "id": task.id,
@@ -28,9 +25,6 @@ def to_resp(task):
     }
 
 
-# ============================================================
-# CREATE TASK (SAFE + NOTION V2)
-# ============================================================
 @router.post("/create")
 async def create_task(
     payload: TaskCreate,
@@ -49,59 +43,38 @@ async def create_task(
             }
         }
 
-        # SAFE Notion API
         notion_res = await notion.create_page(notion_payload)
 
         if not notion_res["ok"]:
-            return {
-                "status": "notion_error",
-                "detail": notion_res["error"]
-            }
+            return {"status": "notion_error", "detail": notion_res["error"]}
 
-        notion_id = notion_res["data"]["id"]
-        notion_url = notion_res["data"]["url"]
-
-        # LOCAL DB
-        new_task = tasks_service.create_task(payload)
+        local_task = tasks_service.create_task(payload)
 
         return {
             "status": "created",
-            "local": to_resp(new_task),
-            "notion_page_id": notion_id,
-            "notion_url": notion_url
+            "local": to_resp(local_task),
+            "notion_page_id": notion_res["data"]["id"],
+            "notion_url": notion_res["data"]["url"]
         }
 
     except Exception as e:
         raise HTTPException(500, f"Task creation failed: {e}")
 
 
-# ============================================================
-# UPDATE TASK
-# ============================================================
-@router.patch("/{task_id}")
-async def update_task(
-    task_id: str,
-    data: TaskUpdate,
-    tasks_service=Depends(get_tasks_service)
-):
-    try:
-        updated = tasks_service.update_task(task_id, data)
-        return {"status": "updated", "task": to_resp(updated)}
-    except ValueError as e:
-        raise HTTPException(404, str(e))
-
-
-# ============================================================
-# LIST TASKS
-# ============================================================
 @router.get("/all")
 async def list_tasks(tasks_service=Depends(get_tasks_service)):
     return {"tasks": [to_resp(t) for t in tasks_service.get_all()]}
 
 
-# ============================================================
-# DELETE TASK
-# ============================================================
+@router.patch("/{task_id}")
+async def update_task(task_id: str, updates: TaskUpdate, tasks_service=Depends(get_tasks_service)):
+    try:
+        task = tasks_service.update_task(task_id, updates)
+        return {"status": "updated", "task": to_resp(task)}
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+
+
 @router.delete("/{task_id}")
 async def delete_task(task_id: str, tasks_service=Depends(get_tasks_service)):
     try:

@@ -1,11 +1,10 @@
 # dependencies.py
 
-# globalne instance servisa — postavlja ih main.py u startup_event
+# GLOBAL INSTANCES (set from main.py on startup)
 goals_service_instance = None
 tasks_service_instance = None
 notion_service_instance = None
 
-# dependency funkcije koje koriste routeri
 def get_goals_service():
     return goals_service_instance
 

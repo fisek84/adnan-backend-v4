@@ -12,9 +12,7 @@ from dependencies import (
 router = APIRouter(prefix="/goals", tags=["Goals"])
 
 
-# ============================================================
-# CREATE GOAL (SAFE + NOTION V2)
-# ============================================================
+# CREATE GOAL
 @router.post("/create")
 async def create_goal(
     payload: GoalCreate,
@@ -33,7 +31,6 @@ async def create_goal(
             }
         }
 
-        # SAFE Notion API
         notion_res = await notion.create_page(notion_payload)
 
         if not notion_res["ok"]:
@@ -42,10 +39,10 @@ async def create_goal(
                 "detail": notion_res["error"]
             }
 
-        notion_id = notion_res["data"]["id"]
-        notion_url = notion_res["data"]["url"]
+        data = notion_res["data"]
+        notion_id = data["id"]
+        notion_url = data["url"]
 
-        # LOCAL DB
         new_goal = goals_service.create_goal(payload)
 
         return {
@@ -59,11 +56,13 @@ async def create_goal(
         raise HTTPException(500, f"Goal creation failed: {e}")
 
 
-# ============================================================
 # UPDATE GOAL
-# ============================================================
 @router.patch("/{goal_id}")
-async def update_goal(goal_id: str, data: GoalUpdate, goals_service=Depends(get_goals_service)):
+async def update_goal(
+    goal_id: str,
+    data: GoalUpdate,
+    goals_service=Depends(get_goals_service)
+):
     try:
         updated = goals_service.update_goal(goal_id, data)
         return {"status": "updated", "goal": updated.model_dump()}
@@ -71,17 +70,13 @@ async def update_goal(goal_id: str, data: GoalUpdate, goals_service=Depends(get_
         raise HTTPException(404, str(e))
 
 
-# ============================================================
 # LIST GOALS
-# ============================================================
 @router.get("/all")
 async def list_goals(goals_service=Depends(get_goals_service)):
     return {"goals": [g.model_dump() for g in goals_service.get_all()]}
 
 
-# ============================================================
 # DELETE GOAL
-# ============================================================
 @router.delete("/{goal_id}")
 async def delete_goal(goal_id: str, goals_service=Depends(get_goals_service)):
     try:

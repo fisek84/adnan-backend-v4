@@ -14,7 +14,7 @@ from services.notion_sync_service import NotionSyncService
 from services.ai_command_service import AICommandService
 from services.agents_service import AgentsService
 
-# DEPENDENCIES (GLOBAL INSTANCES)
+# DEPENDENCIES
 from dependencies import (
     goals_service_instance,
     tasks_service_instance,
@@ -23,9 +23,9 @@ from dependencies import (
 
 app = FastAPI()
 
-# ============================================================
-# CORS (FULL OPEN — REQUIRED FOR GPT PLUGIN)
-# ============================================================
+# ================================
+# CORS (FULL OPEN)
+# ================================
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -34,9 +34,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ============================================================
-# IN-MEMORY SERVICES (WILL BE INITIALIZED ON STARTUP)
-# ============================================================
+# ================================
+# SERVICE INSTANCES
+# ================================
 notion_service: NotionService = None
 goals_service: GoalsService = None
 tasks_service: TasksService = None
@@ -45,9 +45,9 @@ ai_command_service: AICommandService = None
 agents_service: AgentsService = None
 
 
-# ============================================================
-# INJECT GLOBAL DEPENDENCY INSTANCES
-# ============================================================
+# ================================
+# DEPENDENCY INJECTOR
+# ================================
 def set_dependencies():
     global goals_service_instance
     global tasks_service_instance
@@ -58,9 +58,9 @@ def set_dependencies():
     notion_service_instance = notion_service
 
 
-# ============================================================
-# STARTUP EVENT — FULL SYSTEM BOOT
-# ============================================================
+# ================================
+# STARTUP EVENT
+# ================================
 @app.on_event("startup")
 async def startup_event():
     global notion_service, goals_service, tasks_service
@@ -68,9 +68,7 @@ async def startup_event():
 
     print("🔵 Starting backend services...")
 
-    # --------------------------------------------------------
-    # NOTION SERVICE (V2 SAFE CLIENT)
-    # --------------------------------------------------------
+    # Notion Client V2
     notion_service = NotionService(
         api_key=os.getenv("NOTION_API_KEY"),
         goals_db_id=os.getenv("NOTION_GOALS_DB_ID"),
@@ -78,21 +76,16 @@ async def startup_event():
     )
     print("✅ NotionService initialized")
 
-    # --------------------------------------------------------
-    # LOCAL GOALS / TASKS SERVICES
-    # --------------------------------------------------------
+    # Local in-memory services
     goals_service = GoalsService()
     tasks_service = TasksService()
 
-    # Inject these instances globally
+    # Inject them into dependencies.py
     set_dependencies()
 
     print("✅ GoalsService initialized")
     print("✅ TasksService initialized")
 
-    # --------------------------------------------------------
-    # SYNC SERVICE (uses Notion + Local DB)
-    # --------------------------------------------------------
     notion_sync_service = NotionSyncService(
         notion_service,
         goals_service,
@@ -102,15 +95,9 @@ async def startup_event():
     )
     print("✅ NotionSyncService initialized")
 
-    # --------------------------------------------------------
-    # AI COMMAND SERVICE
-    # --------------------------------------------------------
     ai_command_service = AICommandService()
     print("✅ AICommandService initialized")
 
-    # --------------------------------------------------------
-    # AGENTS SERVICE (ChatGPT Integration)
-    # --------------------------------------------------------
     agents_service = AgentsService(
         notion_token=os.getenv("NOTION_API_KEY"),
         exchange_db_id=os.getenv("NOTION_EXCHANGE_DB_ID"),
@@ -121,16 +108,16 @@ async def startup_event():
     print("🔥 Backend fully initialized")
 
 
-# ============================================================
+# ================================
 # ROUTERS
-# ============================================================
+# ================================
 app.include_router(goals_router)
 app.include_router(tasks_router)
 
 
-# ============================================================
-# HEALTH ENDPOINT
-# ============================================================
+# ================================
+# HEALTH
+# ================================
 @app.get("/health")
 def health():
     return {"status": "ok"}
