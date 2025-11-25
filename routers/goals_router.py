@@ -9,7 +9,7 @@ from typing import Optional, List
 from models.goal_create import GoalCreate
 from models.goal_update import GoalUpdate
 
-# Will be injected in main.py
+# Injected in main.py
 goals_service_global = None
 
 router = APIRouter(prefix="/goals", tags=["Goals"])
@@ -24,7 +24,7 @@ NOTION_HEADERS = {
 }
 
 # ============================================================
-# FASTAPI DEPENDENCY
+# DEPENDENCY
 # ============================================================
 
 def get_goals_service():
@@ -51,7 +51,7 @@ class GoalResponse(BaseModel):
         from_attributes = True
 
 # ============================================================
-# CREATE GOAL (Notion + Local)
+# CREATE GOAL  (Notion + Local)
 # ============================================================
 
 @router.post("/create")
@@ -61,9 +61,7 @@ def create_goal(payload: GoalCreate):
             "parent": {"database_id": GOALS_DB_ID},
             "properties": {
                 "Name": {
-                    "title": [
-                        {"text": {"content": payload.title}}
-                    ]
+                    "title": [{"text": {"content": payload.title}}]
                 }
             }
         }
@@ -79,7 +77,7 @@ def create_goal(payload: GoalCreate):
 
         notion_data = resp.json()
 
-        # Optional: Local backend goal
+        # Local create
         if goals_service_global:
             goals_service_global.create_goal(payload)
 
@@ -100,18 +98,22 @@ def create_goal(payload: GoalCreate):
 def update_goal(goal_id: str, updates: GoalUpdate, goals_service=Depends(get_goals_service)):
     try:
         updated = goals_service.update_goal(goal_id, updates)
-        return {"status": "updated", "goal": updated}
+        return {"status": "updated", "goal": updated.model_dump()}
     except ValueError as e:
         raise HTTPException(404, str(e))
 
 # ============================================================
-# GET ALL GOALS  (JEDINA PRAVA RUTA)
+# LIST GOALS
 # ============================================================
 
 @router.get("/all")
-def get_all_goals(goals_service=Depends(get_goals_service)):
-    goals = goals_service.get_all()
-    return {"goals": [g.model_dump() for g in goals]}
+def get_all_local(goals_service=Depends(get_goals_service)):
+    return {"goals": [g.model_dump() for g in goals_service.get_all()]}
+
+# AI alias
+@router.get("/goals/all")
+async def get_all_goals(goals_service=Depends(get_goals_service)):
+    return {"goals": [g.model_dump() for g in goals_service.get_all()]}
 
 # ============================================================
 # DELETE GOAL
