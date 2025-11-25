@@ -67,10 +67,11 @@ from services.notion_sync_service import NotionSyncService
 from services.agents_service import AgentsService
 
 import routers.goals_router as goals_router_module
-import routers.tasks_router as tasks_router_module      # ✅ FIXED
+import routers.tasks_router as tasks_router_module
 import routers.ai_router as ai_router_module
 import routers.sync_router as sync_router_module
 import routers.agents_router as agents_router_module
+import routers.nlp_router as nlp_router_module   # ✅ ADDED NLP ROUTER
 
 from core.master_engine import MasterEngine
 
@@ -130,6 +131,7 @@ tasks_router_module.tasks_service_global = tasks_service
 ai_router_module.ai_service_global = ai_service
 sync_router_module.sync_service_global = sync_service
 agents_router_module.agents_service_global = agents_service
+nlp_router_module.ai_service_global = ai_service   # ✅ NLP ROUTER BINDING
 
 protected = [Depends(verify_api_key)]
 
@@ -138,6 +140,7 @@ app.include_router(tasks_router_module.router, dependencies=protected)
 app.include_router(ai_router_module.router, dependencies=protected)
 app.include_router(sync_router_module.router, dependencies=protected)
 app.include_router(agents_router_module.router, dependencies=protected)
+app.include_router(nlp_router_module.router, dependencies=protected)   # ✅ NLP ROUTER ENABLED
 
 # ============================================================
 # ENGINE
