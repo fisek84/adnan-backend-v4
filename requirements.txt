@@ -15,5 +15,4 @@ typing-extensions>=4.8.0
 annotated-types>=0.4.0
 requests
 aiohttp
-
-    
+notion-client

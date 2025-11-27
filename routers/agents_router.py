@@ -30,4 +30,4 @@ async def list_actions():
     if agents_service_global is None:
         raise HTTPException(500, "AgentsService not initialized")
 
-    return {"actions": agents_service_global.available_actions()}
+    return {"actions": agents_service_global.available_actions()}   
