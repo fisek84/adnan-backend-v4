@@ -2,6 +2,32 @@ import aiohttp
 from typing import Dict, Any, Optional
 
 
+# ============================================================
+# GLOBAL NOTION SERVICE REGISTRY (used across entire backend)
+# ============================================================
+_global_notion_service = None
+
+
+def set_notion_service(service):
+    """
+    Called in main.py to register a single NotionService instance.
+    """
+    global _global_notion_service
+    _global_notion_service = service
+
+
+def get_notion_service():
+    """
+    Safe accessor used by GoalsService, TasksService, Sync, Agents.
+    """
+    if _global_notion_service is None:
+        raise RuntimeError("NotionService has not been initialized yet.")
+    return _global_notion_service
+
+
+# ============================================================
+# MAIN NOTION SERVICE CLASS
+# ============================================================
 class NotionService:
     def __init__(self, api_key: str, goals_db_id: str, tasks_db_id: str):
         self.api_key = api_key
@@ -10,7 +36,7 @@ class NotionService:
         self.session: Optional[aiohttp.ClientSession] = None
 
     # ============================================================
-    # SAFE SESSION (Render compatible)
+    # SAFE SESSION (Render-compatible)
     # ============================================================
     async def _get_session(self) -> aiohttp.ClientSession:
         if self.session is None or self.session.closed:
