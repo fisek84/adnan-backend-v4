@@ -1,19 +1,6 @@
 from typing import List
 from datetime import datetime
 
-# =====================================================
-# LEGACY WRAPPER — REQUIRED BY dependencies.py
-# =====================================================
-class TasksService:
-    """
-    Legacy compatibility class.
-    The backend imports this class in dependencies.py,
-    so we provide an empty wrapper to avoid ImportError.
-    Actual logic lives in functional API below.
-    """
-    pass
-
-
 from models.task_model import TaskModel
 from models.task_create import TaskCreate
 from models.task_update import TaskUpdate
@@ -23,9 +10,16 @@ from utils.helpers import generate_uuid
 
 
 # =====================================================
+# REQUIRED DUMMY CLASS (dependencies.py expects it)
+# =====================================================
+class TasksService:
+    pass
+
+
+# =====================================================
 # CREATE SINGLE TASK
 # =====================================================
-def create_task(data: TaskCreate) -> TaskModel:
+async def create_task(data: TaskCreate) -> TaskModel:
     notion = get_notion_service()
 
     task_id = generate_uuid()
@@ -35,7 +29,7 @@ def create_task(data: TaskCreate) -> TaskModel:
         id=task_id,
         notion_id=None,
         title=data.title,
-        description=data.description,
+        description=data.description or "",
         goal_id=data.goal_id,
         deadline=data.deadline,
         priority=data.priority,
@@ -45,8 +39,7 @@ def create_task(data: TaskCreate) -> TaskModel:
         updated_at=now,
     )
 
-    # Notion sync call
-    notion.create_task(task)
+    await notion.create_task(task)
 
     return task
 
@@ -54,33 +47,53 @@ def create_task(data: TaskCreate) -> TaskModel:
 # =====================================================
 # UPDATE TASK
 # =====================================================
-def update_task(task_id: str, data: TaskUpdate):
+async def update_task(page_id: str, data: TaskUpdate):
     notion = get_notion_service()
-    return notion.update_task(task_id, data)
+    return await notion.update_task(page_id, data)
 
 
 # =====================================================
 # DELETE TASK
 # =====================================================
-def delete_task(task_id: str):
+async def delete_task(page_id: str):
     notion = get_notion_service()
-    notion.delete_task(task_id)
+    await notion.delete_task(page_id)
     return {"deleted": True}
 
 
 # =====================================================
 # GET ALL TASKS
 # =====================================================
-def get_all_tasks() -> List[TaskModel]:
+async def get_all_tasks() -> List[TaskModel]:
     notion = get_notion_service()
-    return notion.get_all_tasks()
+    raw = await notion.get_all_tasks()
+
+    tasks = []
+    for item in raw:
+        tasks.append(
+            TaskModel(
+                id=item["id"],
+                notion_id=item["notion_id"],
+                title=item["title"],
+                description=item["description"],
+                goal_id=item["goal_id"],
+                deadline=item["deadline"],
+                priority=item["priority"],
+                status=item["status"],
+                order=item["order"],
+                created_at=datetime.utcnow(),  # Notion nema timestamp
+                updated_at=datetime.utcnow(),
+            )
+        )
+
+    return tasks
 
 
 # =====================================================
 # BATCH CREATE
 # =====================================================
-def create_tasks_batch(tasks: List[TaskCreate]) -> List[TaskModel]:
+async def create_tasks_batch(items: List[TaskCreate]) -> List[TaskModel]:
     created = []
-    for t in tasks:
-        created.append(create_task(t))
+    for t in items:
+        created.append(await create_task(t))
     return created
