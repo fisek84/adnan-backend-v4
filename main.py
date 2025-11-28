@@ -113,6 +113,10 @@ async def startup_event():
 app.include_router(goals_router)
 app.include_router(tasks_router)
 
+from routers.sync_router import router as sync_router
+app.include_router(sync_router)
+
+
 # EXT ROUTERS
 app.include_router(ext_tasks_router, prefix="/ext")
 app.include_router(ext_notion_router, prefix="/ext")
