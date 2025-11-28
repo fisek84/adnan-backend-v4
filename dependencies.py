@@ -1,49 +1,41 @@
-# dependencies.py
+from services.goals_service import GoalsService
+from services.tasks_service import TasksService
+from services.notion_service import NotionService
 
-from typing import Optional
-
-# GLOBAL SINGLETONS (inicijalno prazni — postavljaju se u startup_event)
-_goals_service = None
-_tasks_service = None
-_notion_service = None
-
-
-# ===============================
-# SETTERS — KORISTI SAMO U startup_event
-# ===============================
-
-def set_goals_service(service):
-    global _goals_service
-    _goals_service = service
+# GLOBAL SINGLETON INSTANCES
+_goals: GoalsService | None = None
+_tasks: TasksService | None = None
+_notion: NotionService | None = None
 
 
-def set_tasks_service(service):
-    global _tasks_service
-    _tasks_service = service
+def set_goals_service(instance: GoalsService):
+    global _goals
+    _goals = instance
 
 
-def set_notion_service(service):
-    global _notion_service
-    _notion_service = service
+def set_tasks_service(instance: TasksService):
+    global _tasks
+    _tasks = instance
 
 
-# ===============================
-# GETTERS — KORISTE ROUTERI
-# ===============================
-
-def get_goals_service():
-    if _goals_service is None:
-        raise RuntimeError("GoalsService is not ready yet.")
-    return _goals_service
+def set_notion_service(instance: NotionService):
+    global _notion
+    _notion = instance
 
 
-def get_tasks_service():
-    if _tasks_service is None:
-        raise RuntimeError("TasksService is not ready yet.")
-    return _tasks_service
+def get_goals_service() -> GoalsService:
+    if _goals is None:
+        raise RuntimeError("GoalsService has not been initialized yet.")
+    return _goals
 
 
-def get_notion_service():
-    if _notion_service is None:
-        raise RuntimeError("NotionService is not ready yet.")
-    return _notion_service
+def get_tasks_service() -> TasksService:
+    if _tasks is None:
+        raise RuntimeError("TasksService has not been initialized yet.")
+    return _tasks
+
+
+def get_notion_service() -> NotionService:
+    if _notion is None:
+        raise RuntimeError("NotionService has not been initialized yet.")
+    return _notion

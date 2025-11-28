@@ -17,9 +17,8 @@ from services.agents_service import AgentsService
 
 # DEPENDENCIES
 from dependencies import (
-    get_goals_service,
-    get_tasks_service,
-    get_notion_service,
+    set_goals_service,
+    set_tasks_service,
     set_notion_service
 )
 
@@ -29,18 +28,15 @@ from ext.notion.router import router as ext_notion_router
 from ext.documents.router import router as ext_documents_router
 from ext.agents.router import router as ext_agents_router
 
-# EXT DB init
+# EXT DB
 from ext.tasks.db import init_db
 
-# DEBUG — provjerimo koji fajl se tačno učitava
 import ext.notion.router as _notion_router_module
 print("🔥 EXT NOTION ROUTER LOADED FROM:", _notion_router_module.__file__)
 
 
-# FASTAPI APP
 app = FastAPI()
 
-# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -50,29 +46,14 @@ app.add_middleware(
 )
 
 
-# SERVICE INSTANCES (GLOBAL)
-notion_service: NotionService = None
-goals_service: GoalsService = None
-tasks_service: TasksService = None
-notion_sync_service: NotionSyncService = None
-ai_command_service: AICommandService = None
-agents_service: AgentsService = None
-
-
 @app.on_event("startup")
 async def startup_event():
-    global notion_service, goals_service, tasks_service
-    global notion_sync_service, ai_command_service, agents_service
-
     print("🔵 Starting backend services...")
 
-    # EXT — INIT SQLITE QUEUE
     init_db()
     print("🟦 SQLite Task Queue initialized")
 
-    # -----------------------------
-    # NOTION SERVICE INIT
-    # -----------------------------
+    # === NOTION SERVICE ===
     notion_service = NotionService(
         api_key=os.getenv("NOTION_API_KEY"),
         goals_db_id=os.getenv("NOTION_GOALS_DB_ID"),
@@ -81,23 +62,17 @@ async def startup_event():
     set_notion_service(notion_service)
     print("✅ NotionService initialized")
 
-    # -----------------------------
-    # LOCAL DB SERVICES
-    # -----------------------------
+    # === LOCAL DB SERVICES ===
     goals_service = GoalsService()
     tasks_service = TasksService()
+
+    set_goals_service(goals_service)
+    set_tasks_service(tasks_service)
+
     print("✅ GoalsService initialized")
     print("✅ TasksService initialized")
 
-    # 🔥 REGISTER LOCAL SERVICES AS GLOBAL DEPENDENCIES
-    from dependencies import set_goals_service, set_tasks_service
-    set_goals_service(goals_service)
-    set_tasks_service(tasks_service)
-    print("🔗 Local DB services registered in dependencies")
-
-    # -----------------------------
-    # SYNC SERVICE
-    # -----------------------------
+    # === SYNC SERVICE ===
     notion_sync_service = NotionSyncService(
         notion_service,
         goals_service,
@@ -107,24 +82,19 @@ async def startup_event():
     )
     print("✅ NotionSyncService initialized")
 
-    # CONNECT SYNC ROUTER
+    # Inject sync service
     import routers.sync_router as sync_router_module
     sync_router_module.sync_service_global = notion_sync_service
     print("🔗 Sync router connected to NotionSyncService")
 
-    # -----------------------------
-    # AI SYSTEM
-    # -----------------------------
+    # === AI SERVICES ===
     ai_command_service = AICommandService()
     print("✅ AICommandService initialized")
 
-    # -----------------------------
-    # AGENTS SERVICE
-    # -----------------------------
     agents_service = AgentsService(
         notion_token=os.getenv("NOTION_API_KEY"),
-        exchange_db_id=os.getenv("NOTION_EXCHANGE_DB_ID"),
-        projects_db_id=os.getenv("NOTION_PROJECTS_DB_ID")
+        exchange_db_id=os.getenv("NOTION_AGENT_EXCHANGE_DB_ID"),
+        projects_db_id=os.getenv("NOTION_AGENT_PROJECTS_DB_ID"),
     )
     print("✅ AgentsService initialized")
 
@@ -136,7 +106,6 @@ app.include_router(goals_router)
 app.include_router(tasks_router)
 app.include_router(sync_router)
 
-# EXT ROUTERS
 app.include_router(ext_tasks_router, prefix="/ext")
 app.include_router(ext_notion_router, prefix="/ext")
 app.include_router(ext_documents_router, prefix="/ext")
