@@ -1,46 +1,68 @@
 from services.goals_service import GoalsService
 from services.tasks_service import TasksService
 from services.notion_service import NotionService
-
+import os
 
 # GLOBAL SINGLETONS
-_notion: NotionService | None = None
 _goals: GoalsService | None = None
 _tasks: TasksService | None = None
+_notion: NotionService | None = None
 
 
-# ------------------------------------------------------
-# INITIALIZATION (called from main.py)
-# ------------------------------------------------------
-def init_services():
-    global _notion, _goals, _tasks
-
-    # 1) Create Notion service
-    _notion = NotionService()
-
-    # 2) Create Goals service
-    _goals = GoalsService(_notion)
-
-    # 3) Create Tasks service
-    _tasks = TasksService(_notion)
+# ======================================
+# SETTERS
+# ======================================
+def set_goals_service(instance: GoalsService):
+    global _goals
+    _goals = instance
 
 
-# ------------------------------------------------------
-# GETTERS FOR DEPENDENCY INJECTION
-# ------------------------------------------------------
-def get_notion_service() -> NotionService:
-    if _notion is None:
-        raise RuntimeError("NotionService not initialized.")
-    return _notion
+def set_tasks_service(instance: TasksService):
+    global _tasks
+    _tasks = instance
 
 
-def get_goals_service() -> GoalsService:
+def set_notion_service(instance: NotionService):
+    global _notion
+    _notion = instance
+
+
+# ======================================
+# GETTERS
+# ======================================
+def get_goals_service():
     if _goals is None:
-        raise RuntimeError("GoalsService not initialized.")
+        raise RuntimeError("GoalsService has not been initialized.")
     return _goals
 
 
-def get_tasks_service() -> TasksService:
+def get_tasks_service():
     if _tasks is None:
-        raise RuntimeError("TasksService not initialized.")
+        raise RuntimeError("TasksService has not been initialized.")
     return _tasks
+
+
+def get_notion_service():
+    if _notion is None:
+        raise RuntimeError("NotionService has not been initialized.")
+    return _notion
+
+
+# ======================================
+# INIT SERVICES (CALLED FROM main.py)
+# ======================================
+def init_services():
+    """Called once inside startup_event in main.py"""
+
+    global _notion, _goals, _tasks
+
+    _notion = NotionService(
+        api_key=os.getenv("NOTION_API_KEY"),
+        goals_db_id=os.getenv("NOTION_GOALS_DB_ID"),
+        tasks_db_id=os.getenv("NOTION_TASKS_DB_ID")
+    )
+
+    _goals = GoalsService()
+    _tasks = TasksService()
+
+    print("🔧 Services initialized inside dependencies.py")
