@@ -1,25 +1,49 @@
-from services.goals_service import GoalsService
-from services.tasks_service import TasksService
-from services.notion_service import NotionService
+# dependencies.py
 
-# GLOBAL SINGLETONI
-_goals = GoalsService()
-_tasks = TasksService()
-_notion = None  # inicijaliziramo u startupu
+from typing import Optional
+
+# GLOBAL SINGLETONS (inicijalno prazni — postavljaju se u startup_event)
+_goals_service = None
+_tasks_service = None
+_notion_service = None
 
 
-def set_notion_service(instance: NotionService):
-    global _notion
-    _notion = instance
+# ===============================
+# SETTERS — KORISTI SAMO U startup_event
+# ===============================
 
+def set_goals_service(service):
+    global _goals_service
+    _goals_service = service
+
+
+def set_tasks_service(service):
+    global _tasks_service
+    _tasks_service = service
+
+
+def set_notion_service(service):
+    global _notion_service
+    _notion_service = service
+
+
+# ===============================
+# GETTERS — KORISTE ROUTERI
+# ===============================
 
 def get_goals_service():
-    return _goals
+    if _goals_service is None:
+        raise RuntimeError("GoalsService is not ready yet.")
+    return _goals_service
 
 
 def get_tasks_service():
-    return _tasks
+    if _tasks_service is None:
+        raise RuntimeError("TasksService is not ready yet.")
+    return _tasks_service
 
 
 def get_notion_service():
-    return _notion
+    if _notion_service is None:
+        raise RuntimeError("NotionService is not ready yet.")
+    return _notion_service

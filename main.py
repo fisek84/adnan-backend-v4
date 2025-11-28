@@ -5,7 +5,7 @@ import os
 # ROUTERS
 from routers.goals_router import router as goals_router
 from routers.tasks_router import router as tasks_router
-from routers.sync_router import router as sync_router   # ← DODANO
+from routers.sync_router import router as sync_router
 
 # SERVICES
 from services.goals_service import GoalsService
@@ -50,7 +50,7 @@ app.add_middleware(
 )
 
 
-# SERVICE INSTANCES
+# SERVICE INSTANCES (GLOBAL)
 notion_service: NotionService = None
 goals_service: GoalsService = None
 tasks_service: TasksService = None
@@ -70,7 +70,9 @@ async def startup_event():
     init_db()
     print("🟦 SQLite Task Queue initialized")
 
+    # -----------------------------
     # NOTION SERVICE INIT
+    # -----------------------------
     notion_service = NotionService(
         api_key=os.getenv("NOTION_API_KEY"),
         goals_db_id=os.getenv("NOTION_GOALS_DB_ID"),
@@ -79,13 +81,23 @@ async def startup_event():
     set_notion_service(notion_service)
     print("✅ NotionService initialized")
 
+    # -----------------------------
     # LOCAL DB SERVICES
+    # -----------------------------
     goals_service = GoalsService()
     tasks_service = TasksService()
     print("✅ GoalsService initialized")
     print("✅ TasksService initialized")
 
+    # 🔥 REGISTER LOCAL SERVICES AS GLOBAL DEPENDENCIES
+    from dependencies import set_goals_service, set_tasks_service
+    set_goals_service(goals_service)
+    set_tasks_service(tasks_service)
+    print("🔗 Local DB services registered in dependencies")
+
+    # -----------------------------
     # SYNC SERVICE
+    # -----------------------------
     notion_sync_service = NotionSyncService(
         notion_service,
         goals_service,
@@ -95,16 +107,20 @@ async def startup_event():
     )
     print("✅ NotionSyncService initialized")
 
-    # CONNECT SYNC ROUTER TO SYNC SERVICE ⭐
+    # CONNECT SYNC ROUTER
     import routers.sync_router as sync_router_module
     sync_router_module.sync_service_global = notion_sync_service
     print("🔗 Sync router connected to NotionSyncService")
 
+    # -----------------------------
     # AI SYSTEM
+    # -----------------------------
     ai_command_service = AICommandService()
     print("✅ AICommandService initialized")
 
+    # -----------------------------
     # AGENTS SERVICE
+    # -----------------------------
     agents_service = AgentsService(
         notion_token=os.getenv("NOTION_API_KEY"),
         exchange_db_id=os.getenv("NOTION_EXCHANGE_DB_ID"),
@@ -118,7 +134,7 @@ async def startup_event():
 # ROUTERS
 app.include_router(goals_router)
 app.include_router(tasks_router)
-app.include_router(sync_router)  # ← DODANO: registracija sync ruta
+app.include_router(sync_router)
 
 # EXT ROUTERS
 app.include_router(ext_tasks_router, prefix="/ext")
@@ -132,7 +148,6 @@ def health():
     return {"status": "ok"}
 
 
-# ROOT ROUTA ★
 @app.get("/")
 def root():
     return {"message": "Backend running"}
