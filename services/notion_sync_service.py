@@ -55,24 +55,14 @@ class NotionSyncService:
             await asyncio.sleep(self._delay)
             await fn()
         except asyncio.CancelledError:
-            # Debounced, ignore
             pass
         except Exception:
-            # Swallow errors to avoid killing loop
             pass
 
     # ============================================================
-    # MAP LOCAL → NOTION STRUCTURES
+    # MAP LOCAL → NOTION (GOALS)
     # ============================================================
     def map_local_goal_to_notion(self, g: dict):
-        """
-        Ovdje pretpostavljamo da GoalsService.to_dict(g) vraća:
-        {
-            "id", "notion_id", "title", "description",
-            "deadline", "priority", "status",
-            "progress", "parent_id", "children": [...]
-        }
-        """
         return {
             "Name": {"title": [{"text": {"content": g["title"] or ""}}]},
             "Description": {"rich_text": [{"text": {"content": g.get("description") or ""}}]},
@@ -98,32 +88,18 @@ class NotionSyncService:
             },
         }
 
+    # ============================================================
+    # MAP LOCAL → NOTION (TASKS) — FIXED
+    # ============================================================
     def map_local_task_to_notion(self, t: dict):
-        """
-        Ovdje pretpostavljamo da TasksService._to_dict(t) vraća:
-        {
-            "id", "notion_id", "title", "description",
-            "goal_id", "deadline", "priority",
-            "status", "order", ...
-        }
-        Property imena su usklađena sa Notion Tasks DB:
-        - Title        → title
-        - Description  → rich_text
-        - Deadline     → date
-        - Priority     → select
-        - Status       → select
-        - Goal         → relation
-        - Order        → number
-        - Task ID      → rich_text
-        """
         return {
-            "Title": {
+            "Name": {     # FIXED (was "Title")
                 "title": [{"text": {"content": t["title"] or ""}}]
             },
             "Description": {
                 "rich_text": [{"text": {"content": t.get("description") or ""}}]
             },
-            "Deadline": (
+            "Due Date": (     # FIXED (was "Deadline")
                 {"date": {"start": t["deadline"]}}
                 if t.get("deadline")
                 else {"date": None}
@@ -149,12 +125,6 @@ class NotionSyncService:
     # SYNC GOALS → NOTION
     # ============================================================
     async def sync_goals_up(self):
-        """
-        Goals sync:
-        - self.goals.get_all() → lista lokalnih goal objekata
-        - self.goals.to_dict(g) → dict za mapiranje na Notion
-        - self.goals._replace_id(old, new) → update lokalnih ID-eva kad Notion kreira novi ID
-        """
         for g in self.goals.get_all():
             g_dict = self.goals.to_dict(g)
             props = self.map_local_goal_to_notion(g_dict)
@@ -170,7 +140,6 @@ class NotionSyncService:
                     new_id = created["data"]["id"]
                     old = g.id
                     g.notion_id = new_id
-                    # update lokalnog storage-a
                     self.goals._replace_id(old, new_id)
                 continue
 
@@ -182,12 +151,6 @@ class NotionSyncService:
     # SYNC TASKS → NOTION
     # ============================================================
     async def sync_tasks_up(self):
-        """
-        Tasks sync:
-        - self.tasks.get_all() → lista lokalnih task objekata
-        - self.tasks._to_dict(t) → dict za mapiranje
-        - self.tasks._replace_id(old, new) → update lokalnih ID-eva
-        """
         for t in self.tasks.get_all():
             t_dict = self.tasks._to_dict(t)
             props = self.map_local_task_to_notion(t_dict)

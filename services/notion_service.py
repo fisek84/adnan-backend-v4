@@ -94,7 +94,7 @@ class NotionService:
     async def delete_page(self, page_id: str):
         return await self._safe_request(
             "PATCH",
-            f"https://api.nition.com/v1/pages/{page_id}",
+            f"https://api.notion.com/v1/pages/{page_id}",
             {"archived": True}
         )
 
@@ -107,7 +107,7 @@ class NotionService:
     # ============================================================
     async def create_task(self, task):
         props = {
-            "Title": {
+            "Name": {     # FIXED (was "Title")
                 "title": [{"text": {"content": task.title}}]
             },
             "Description": {
@@ -122,14 +122,15 @@ class NotionService:
             }
         }
 
-        # Optional fields — only include when valid
+        # Optional relation
         if task.goal_id:
             props["Goal"] = {
                 "relation": [{"id": task.goal_id}]
             }
 
+        # FIXED deadline → Due Date
         if task.deadline:
-            props["Deadline"] = {
+            props["Due Date"] = {       # FIXED (was "Deadline")
                 "date": {"start": task.deadline}
             }
 
@@ -146,13 +147,13 @@ class NotionService:
         return await self.create_page(payload)
 
     # ============================================================
-    # TASKS — UPDATE
+    # TASKS — UPDATE (FIXED)
     # ============================================================
     async def update_task(self, page_id: str, data):
         props = {}
 
         if data.title is not None:
-            props["Title"] = {
+            props["Name"] = {   # FIXED
                 "title": [{"text": {"content": data.title}}]
             }
 
@@ -167,7 +168,9 @@ class NotionService:
             }
 
         if data.deadline is not None:
-            props["Deadline"] = {"date": {"start": data.deadline}}
+            props["Due Date"] = {    # FIXED
+                "date": {"start": data.deadline}
+            }
 
         if data.priority is not None:
             props["Priority"] = {"select": {"name": data.priority}}
@@ -178,13 +181,7 @@ class NotionService:
         return await self.update_page(page_id, {"properties": props})
 
     # ============================================================
-    # TASKS — DELETE
-    # ============================================================
-    async def delete_task(self, page_id: str):
-        return await self.delete_page(page_id)
-
-    # ============================================================
-    # TASKS — GET ALL
+    # TASKS — GET ALL (unchanged)
     # ============================================================
     async def get_all_tasks(self) -> List[Dict[str, Any]]:
         response = await self.query_database(self.tasks_db_id)
@@ -204,8 +201,8 @@ class NotionService:
                 ),
                 "notion_id": item["id"],
                 "title": (
-                    props["Title"]["title"][0]["plain_text"]
-                    if props["Title"]["title"]
+                    props["Name"]["title"][0]["plain_text"]   # FIXED
+                    if props["Name"]["title"]
                     else ""
                 ),
                 "description": (
@@ -219,8 +216,8 @@ class NotionService:
                     else None
                 ),
                 "deadline": (
-                    props["Deadline"]["date"]["start"]
-                    if props["Deadline"]["date"]
+                    props["Due Date"]["date"]["start"]    # FIXED
+                    if props["Due Date"]["date"]
                     else None
                 ),
                 "priority": (
