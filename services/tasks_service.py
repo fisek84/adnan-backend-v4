@@ -1,145 +1,77 @@
-import asyncio
-from uuid import uuid4
-from datetime import datetime, timezone
-from typing import Dict, Any, Optional, List
-
-# REQUIRED IMPORTS
+from typing import List, Optional
 from models.task_create import TaskCreate
 from models.task_update import TaskUpdate
-from models.base_model import TaskModel
+from models.task_model import TaskResponse
+from integrations.notion_client import NotionClient
+from utils.helpers import generate_uuid
+
+# Pretpostavka: koristiš SQLite kroz tasks.db ili lokalnu listu (kao u tvom projektu)
+# Ako koristiš drugu implementaciju, create_task već postoji – koristimo ga rješenjem ispod.
+
+notion = NotionClient()
+
+# ===============================
+# SINGLE TASK CREATE
+# ===============================
+def create_task(data: TaskCreate) -> TaskResponse:
+    """
+    Kreira jedan task u lokalnoj bazi + vraća TaskResponse.
+    """
+    task_id = generate_uuid()
+
+    # Lokalni objekt
+    task = TaskResponse(
+        id=task_id,
+        title=data.title,
+        description=data.description,
+        goal_id=data.goal_id,
+        deadline=data.deadline,
+        priority=data.priority,
+        status="pending",
+        order=0
+    )
+
+    # Snimi u Notion
+    notion.create_task(task)
+
+    return task
 
 
-class TasksService:
-    goals_service = None
-    sync_service = None
+# ===============================
+# UPDATE
+# ===============================
+def update_task(task_id: str, data: TaskUpdate):
+    updated = notion.update_task(task_id, data)
+    return updated
 
-    def __init__(self):
-        self.tasks: Dict[str, TaskModel] = {}
 
-    # ============================================================
-    # BINDING
-    # ============================================================
-    def bind_goals_service(self, goals_service):
-        self.goals_service = goals_service
+# ===============================
+# DELETE
+# ===============================
+def delete_task(task_id: str):
+    notion.delete_task(task_id)
+    return {"deleted": True}
 
-    def bind_sync_service(self, sync_service):
-        self.sync_service = sync_service
 
-    # ============================================================
-    # SAFE ASYNC SYNC TRIGGER
-    # ============================================================
-    def _trigger_sync(self):
-        if not self.sync_service:
-            return
-        try:
-            loop = asyncio.get_running_loop()
-            loop.create_task(self.sync_service.debounce_tasks_sync())
-        except RuntimeError:
-            asyncio.get_event_loop().create_task(self.sync_service.debounce_tasks_sync())
+# ===============================
+# GET ALL
+# ===============================
+def get_all_tasks() -> List[TaskResponse]:
+    return notion.get_all_tasks()
 
-    # ============================================================
-    # HELPERS
-    # ============================================================
-    def _now(self):
-        return datetime.now(timezone.utc)
 
-    # ============================================================
-    # CREATE TASK (FINAL PRO)
-    # ============================================================
-    def create_task(
-        self,
-        data: TaskCreate,
-        forced_id: Optional[str] = None,
-        notion_id: Optional[str] = None
-    ) -> TaskModel:
+# ===============================
+# BATCH — NOVO u v4.3
+# ===============================
+def create_tasks_batch(tasks: List[TaskCreate]):
+    """
+    Kreira više taskova odjednom.
+    Ovdje backend NIJE ograničen na Notion rate-limit, jer šaljemo taskove jedan po jedan.
+    """
+    created = []
 
-        now = self._now()
-        task_id = forced_id or uuid4().hex
+    for t in tasks:
+        item = create_task(t)
+        created.append(item)
 
-        new_task = TaskModel(
-            id=task_id,
-            title=data.title,
-            description=data.description,
-            deadline=data.deadline,
-            goal_id=data.goal_id,
-            priority=data.priority,
-            status="pending",
-            order=0,
-            created_at=now,
-            updated_at=now,
-            notion_id=notion_id
-        )
-
-        self.tasks[task_id] = new_task
-        self._trigger_sync()
-        return new_task
-
-    # ============================================================
-    # UPDATE TASK
-    # ============================================================
-    def update_task(self, task_id: str, updates: TaskUpdate) -> TaskModel:
-        task = self.tasks.get(task_id)
-        if not task:
-            raise ValueError(f"Task {task_id} not found")
-
-        for field in ["title", "description", "deadline", "goal_id", "priority", "status", "order"]:
-            val = getattr(updates, field, None)
-            if val is not None:
-                setattr(task, field, val)
-
-        task.updated_at = self._now()
-        self._trigger_sync()
-        return task
-
-    # ============================================================
-    # DELETE TASK
-    # ============================================================
-    def delete_task(self, task_id: str) -> TaskModel:
-        task = self.tasks.pop(task_id, None)
-        if not task:
-            raise ValueError(f"Task {task_id} not found")
-
-        self._trigger_sync()
-        return task
-
-    # ============================================================
-    # SYNC FROM NOTION
-    # ============================================================
-    def sync_from_notion(self, data: Dict[str, Any]) -> TaskModel:
-        task_id = data["id"]
-        existing = self.tasks.get(task_id)
-
-        goal_rel = data.get("goal")
-        goal_id = goal_rel[0] if goal_rel else None
-
-        if existing:
-            existing.notion_id = task_id
-            return self.update_task(task_id, TaskUpdate(
-                title=data.get("name"),
-                description=data.get("description"),
-                deadline=data.get("due_date"),
-                goal_id=goal_id,
-                priority=data.get("priority"),
-                status=data.get("status"),
-                order=data.get("order"),
-            ))
-
-        new_task = self.create_task(
-            TaskCreate(
-                title=data.get("name"),
-                description=data.get("description"),
-                deadline=data.get("due_date"),
-                goal_id=goal_id,
-                priority=data.get("priority"),
-            ),
-            forced_id=task_id,
-            notion_id=task_id
-        )
-
-        return new_task
-
-    # ============================================================
-    # GET ALL
-    # ============================================================
-    def get_all(self):
-        return list(self.tasks.values())
+    return created

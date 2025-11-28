@@ -1,220 +1,6 @@
-openapi: 3.1.0
-
-info:
-  title: Evolia Backend v4 — Notion Sync + AI Agent API
-  version: "4.2"
-  description: |
-    API za Evolia backend:
-    - Upravljanje ciljevima (Goals)
-    - Upravljanje zadacima (Tasks)
-    - Dvosmjerna Notion sinhronizacija
-    - AI komande (AICommandService)
-    - AI Agenti (AgentsService)
-    - GPT kompatibilno za ChatGPT agente
-
-servers:
-  - url: https://adnan-backend-v4.onrender.com
-
-security:
-  - ApiKeyAuth: []
-
-components:
-  securitySchemes:
-    ApiKeyAuth:
-      type: apiKey
-      in: header
-      name: X-API-Key
-
-  schemas:
-
-    GoalResponse:
-      type: object
-      properties:
-        id: { type: string }
-        title: { type: string }
-        description: { type: string, nullable: true }
-        deadline: { type: string, nullable: true }
-        parent_id: { type: string, nullable: true }
-        priority:
-          type: string
-          enum: [low, medium, high]
-          nullable: true
-        status:
-          type: string
-        progress:
-          type: integer
-        children:
-          type: array
-          items: { type: string }
-
-    GoalCreate:
-      type: object
-      required: [title]
-      properties:
-        title: { type: string }
-        description: { type: string, nullable: true }
-        deadline: { type: string, nullable: true }
-        priority:
-          type: string
-          enum: [low, medium, high]
-          nullable: true
-        parent_id: { type: string, nullable: true }
-
-    GoalUpdate:
-      type: object
-      properties:
-        title: { type: string, nullable: true }
-        description: { type: string, nullable: true }
-        deadline: { type: string, nullable: true }
-        priority:
-          type: string
-          enum: [low, medium, high]
-          nullable: true
-        status:
-          type: string
-        progress:
-          type: integer
-        parent_id: { type: string, nullable: true }
-
-    TaskResponse:
-      type: object
-      properties:
-        id: { type: string }
-        title: { type: string }
-        description: { type: string, nullable: true }
-        goal_id: { type: string, nullable: true }
-        deadline: { type: string, nullable: true }
-        priority:
-          type: string
-          enum: [low, medium, high]
-          nullable: true
-        status: { type: string }
-        order: { type: integer }
-
-    TaskCreate:
-      type: object
-      required: [title]
-      properties:
-        title: { type: string }
-        description: { type: string, nullable: true }
-        deadline: { type: string, nullable: true }
-        goal_id: { type: string, nullable: true }
-        priority:
-          type: string
-          enum: [low, medium, high]
-          nullable: true
-
-    TaskUpdate:
-      type: object
-      properties:
-        title: { type: string, nullable: true }
-        description: { type: string, nullable: true }
-        deadline: { type: string, nullable: true }
-        goal_id: { type: string, nullable: true }
-        priority:
-          type: string
-          enum: [low, medium, high]
-          nullable: true
-        status: { type: string }
-        order: { type: integer }
-
-    AIRequest:
-      type: object
-      required: [command]
-      properties:
-        command: { type: string }
-        payload:
-          type: object
-          nullable: true
-
-    AgentRequest:
-      type: object
-      required: [action]
-      properties:
-        action: { type: string }
-        payload:
-          type: object
-          nullable: true
-
-paths:
-
-  # ================================
-  # GOALS
-  # ================================
-  /goals/all:
-    get:
-      summary: Get all goals
-      security:
-        - ApiKeyAuth: []
-      responses:
-        "200":
-          description: List of goals
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  count: { type: integer }
-                  items:
-                    type: array
-                    items:
-                      $ref: "#/components/schemas/GoalResponse"
-
-  /goals/create:
-    post:
-      summary: Create a goal
-      security:
-        - ApiKeyAuth: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/GoalCreate"
-      responses:
-        "200":
-          description: Created goal
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/GoalResponse"
-
-  /goals/{goal_id}:
-    patch:
-      summary: Update a goal
-      security:
-        - ApiKeyAuth: []
-      parameters:
-        - name: goal_id
-          in: path
-          required: true
-          schema: { type: string }
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/GoalUpdate"
-      responses:
-        "200":
-          description: Updated goal
-
-    delete:
-      summary: Delete a goal
-      security:
-        - ApiKeyAuth: []
-      parameters:
-        - name: goal_id
-          in: path
-          required: true
-          schema: { type: string }
-      responses:
-        "200":
-          description: Deleted goal
-
-  # ================================
+  # ======================================
   # TASKS
-  # ================================
+  # ======================================
   /tasks/all:
     get:
       summary: Get all tasks
@@ -232,7 +18,7 @@ paths:
 
   /tasks/create:
     post:
-      summary: Create a task
+      summary: Create a single task
       security:
         - ApiKeyAuth: []
       requestBody:
@@ -244,17 +30,50 @@ paths:
       responses:
         "200":
           description: Created task
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskResponse"
+
+  /tasks/batch:
+    post:
+      summary: Create multiple tasks in batch
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                $ref: "#/components/schemas/TaskCreate"
+      responses:
+        "200":
+          description: Batch created tasks
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count:
+                    type: integer
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/TaskResponse"
 
   /tasks/{task_id}:
     patch:
-      summary: Update a task
+      summary: Update task
       security:
         - ApiKeyAuth: []
       parameters:
         - name: task_id
           in: path
           required: true
-          schema: { type: string }
+          schema:
+            type: string
       requestBody:
         required: true
         content:
@@ -266,95 +85,15 @@ paths:
           description: Updated task
 
     delete:
-      summary: Delete a task
+      summary: Delete task
       security:
         - ApiKeyAuth: []
       parameters:
         - name: task_id
           in: path
           required: true
-          schema: { type: string }
+          schema:
+            type: string
       responses:
         "200":
           description: Deleted task
-
-  # ================================
-  # SYNC
-  # ================================
-  /sync/goals:
-    post:
-      summary: Sync all local goals → Notion
-      security:
-        - ApiKeyAuth: []
-      responses:
-        "200": { description: Sync ok }
-
-  /sync/tasks:
-    post:
-      summary: Sync all local tasks → Notion
-      security:
-        - ApiKeyAuth: []
-      responses:
-        "200": { description: Sync ok }
-
-  /sync/full:
-    post:
-      summary: Sync both goals and tasks
-      security:
-        - ApiKeyAuth: []
-      responses:
-        "200": { description: Full sync }
-
-  # ================================
-  # AI COMMAND SERVICE
-  # ================================
-  /ai/run:
-    post:
-      summary: Execute AI Command
-      security:
-        - ApiKeyAuth: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/AIRequest"
-      responses:
-        "200":
-          description: Command result
-
-  /ai/commands:
-    get:
-      summary: List available AI commands
-      security:
-        - ApiKeyAuth: []
-      responses:
-        "200":
-          description: List
-
-  # ================================
-  # AGENTS
-  # ================================
-  /agents/run:
-    post:
-      summary: Execute agent action
-      security:
-        - ApiKeyAuth: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/AgentRequest"
-      responses:
-        "200":
-          description: Agent result
-
-  /agents/actions:
-    get:
-      summary: List agent actions
-      security:
-        - ApiKeyAuth: []
-      responses:
-        "200":
-          description: List of actions

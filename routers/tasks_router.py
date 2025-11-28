@@ -1,123 +1,73 @@
-from fastapi import APIRouter, HTTPException, Depends
-import os
+from fastapi import APIRouter, HTTPException
+from typing import List
 
 from models.task_create import TaskCreate
 from models.task_update import TaskUpdate
-
-from dependencies import (
-    get_tasks_service,
-    get_notion_service
+from models.task_model import TaskResponse
+from services.tasks_service import (
+    create_task,
+    update_task,
+    delete_task,
+    get_all_tasks,
+    create_tasks_batch
 )
 
-router = APIRouter(prefix="/tasks", tags=["Tasks"])
+router = APIRouter(tags=["Tasks"])
+
+# ===============================
+# GET ALL
+# ===============================
+@router.get("/tasks/all", response_model=List[TaskResponse])
+async def all_tasks():
+    return get_all_tasks()
 
 
-def to_resp(task):
-    return {
-        "id": task.id,
-        "title": task.title,
-        "description": task.description,
-        "goal_id": task.goal_id,
-        "deadline": task.deadline,
-        "priority": task.priority,
-        "status": task.status,
-        "order": task.order,
-        "notion_id": getattr(task, "notion_id", None)
-    }
-
-
-# ============================================================
-# CREATE TASK
-# ============================================================
-@router.post("/create")
-async def create_task(
-    payload: TaskCreate,
-    tasks_service=Depends(get_tasks_service),
-    notion=Depends(get_notion_service)
-):
+# ===============================
+# CREATE SINGLE TASK
+# ===============================
+@router.post("/tasks/create", response_model=TaskResponse)
+async def create_single_task(data: TaskCreate):
     try:
-        db_id = os.getenv("NOTION_TASKS_DB_ID")
-
-        notion_payload = {
-            "parent": {"database_id": db_id},
-            "properties": {
-                "Name": {
-                    "title": [{"text": {"content": payload.title}}]
-                }
-            }
-        }
-
-        notion_res = await notion.create_page(notion_payload)
-
-        if not notion_res["ok"]:
-            return {"status": "notion_error", "detail": notion_res["error"]}
-
-        notion_id = notion_res["data"]["id"]
-        notion_url = notion_res["data"]["url"]
-
-        # ⭐ Dodavanje taska u lokalni DB SA notion_id
-        local_task = tasks_service.create_task(
-            payload,
-            notion_id=notion_id
-        )
-
-        return {
-            "status": "created",
-            "local": to_resp(local_task),
-            "notion_page_id": notion_id,
-            "notion_url": notion_url
-        }
-
+        return create_task(data)
     except Exception as e:
-        raise HTTPException(500, f"Task creation failed: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
 
 
-# ============================================================
-# LIST TASKS
-# ============================================================
-@router.get("/all")
-async def list_tasks(tasks_service=Depends(get_tasks_service)):
-    return {"tasks": [to_resp(t) for t in tasks_service.get_all()]}
-
-
-# ============================================================
-# UPDATE TASK
-# ============================================================
-@router.patch("/{task_id}")
-async def update_task(task_id: str, updates: TaskUpdate, tasks_service=Depends(get_tasks_service)):
+# ===============================
+# UPDATE
+# ===============================
+@router.patch("/tasks/{task_id}")
+async def update_single_task(task_id: str, data: TaskUpdate):
     try:
-        task = tasks_service.update_task(task_id, updates)
-        return {"status": "updated", "task": to_resp(task)}
-    except ValueError as e:
-        raise HTTPException(404, str(e))
+        return update_task(task_id, data)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
-# ============================================================
-# DELETE TASK (LOCAL + NOTION)
-# ============================================================
-@router.delete("/{task_id}")
-async def delete_task(
-    task_id: str,
-    tasks_service=Depends(get_tasks_service),
-    notion=Depends(get_notion_service)
-):
+# ===============================
+# DELETE
+# ===============================
+@router.delete("/tasks/{task_id}")
+async def delete_single_task(task_id: str):
     try:
-        deleted = tasks_service.delete_task(task_id)
+        return delete_task(task_id)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
-        notion_status = "skip"
 
-        if hasattr(deleted, "notion_id") and deleted.notion_id:
-            try:
-                res = await notion.delete_page(deleted.notion_id)
-                notion_status = "archived" if res["ok"] else res["error"]
-            except Exception as e:
-                notion_status = f"failed: {e}"
-
+# ===============================
+# BATCH CREATE (NOVO)
+# ===============================
+@router.post("/tasks/batch")
+async def create_batch_tasks(payload: List[TaskCreate]):
+    """
+    Omogućava GPT agentima da kreiraju 10, 50 ili 200 taskova odjednom.
+    """
+    try:
+        created = create_tasks_batch(payload)
         return {
-            "status": "deleted",
-            "task": to_resp(deleted),
-            "notion": notion_status
+            "count": len(created),
+            "items": created
         }
-
-    except ValueError as e:
-        raise HTTPException(404, str(e))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
