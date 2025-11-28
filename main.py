@@ -8,19 +8,15 @@ from routers.tasks_router import router as tasks_router
 from routers.sync_router import router as sync_router
 
 # SERVICES
+from services.notion_service import NotionService
 from services.goals_service import GoalsService
 from services.tasks_service import TasksService
-from services.notion_service import NotionService
 from services.notion_sync_service import NotionSyncService
 from services.ai_command_service import AICommandService
 from services.agents_service import AgentsService
 
 # DEPENDENCIES
-from dependencies import (
-    set_goals_service,
-    set_tasks_service,
-    set_notion_service
-)
+from dependencies import init_services, get_notion_service, get_goals_service, get_tasks_service
 
 # EXT ROUTERS
 from ext.tasks.router import router as ext_tasks_router
@@ -53,26 +49,21 @@ async def startup_event():
     init_db()
     print("🟦 SQLite Task Queue initialized")
 
-    # === NOTION SERVICE ===
-    notion_service = NotionService(
-        api_key=os.getenv("NOTION_API_KEY"),
-        goals_db_id=os.getenv("NOTION_GOALS_DB_ID"),
-        tasks_db_id=os.getenv("NOTION_TASKS_DB_ID")
-    )
-    set_notion_service(notion_service)
+    # -------------------------
+    # INIT CORE SERVICES
+    # -------------------------
+    init_services()  # creates Notion, Goals, Tasks
+    notion_service = get_notion_service()
+    goals_service = get_goals_service()
+    tasks_service = get_tasks_service()
+
     print("✅ NotionService initialized")
-
-    # === LOCAL DB SERVICES ===
-    goals_service = GoalsService()
-    tasks_service = TasksService()
-
-    set_goals_service(goals_service)
-    set_tasks_service(tasks_service)
-
     print("✅ GoalsService initialized")
     print("✅ TasksService initialized")
 
-    # === SYNC SERVICE ===
+    # -------------------------
+    # SYNC SERVICE
+    # -------------------------
     notion_sync_service = NotionSyncService(
         notion_service,
         goals_service,
@@ -82,12 +73,13 @@ async def startup_event():
     )
     print("✅ NotionSyncService initialized")
 
-    # Inject sync service
     import routers.sync_router as sync_router_module
     sync_router_module.sync_service_global = notion_sync_service
     print("🔗 Sync router connected to NotionSyncService")
 
-    # === AI SERVICES ===
+    # -------------------------
+    # AI SERVICES
+    # -------------------------
     ai_command_service = AICommandService()
     print("✅ AICommandService initialized")
 

@@ -2,40 +2,45 @@ from services.goals_service import GoalsService
 from services.tasks_service import TasksService
 from services.notion_service import NotionService
 
-# GLOBAL SINGLETON INSTANCES
+
+# GLOBAL SINGLETONS
+_notion: NotionService | None = None
 _goals: GoalsService | None = None
 _tasks: TasksService | None = None
-_notion: NotionService | None = None
 
 
-def set_goals_service(instance: GoalsService):
-    global _goals
-    _goals = instance
+# ------------------------------------------------------
+# INITIALIZATION (called from main.py)
+# ------------------------------------------------------
+def init_services():
+    global _notion, _goals, _tasks
+
+    # 1) Create Notion service
+    _notion = NotionService()
+
+    # 2) Create Goals service
+    _goals = GoalsService(_notion)
+
+    # 3) Create Tasks service
+    _tasks = TasksService(_notion)
 
 
-def set_tasks_service(instance: TasksService):
-    global _tasks
-    _tasks = instance
-
-
-def set_notion_service(instance: NotionService):
-    global _notion
-    _notion = instance
+# ------------------------------------------------------
+# GETTERS FOR DEPENDENCY INJECTION
+# ------------------------------------------------------
+def get_notion_service() -> NotionService:
+    if _notion is None:
+        raise RuntimeError("NotionService not initialized.")
+    return _notion
 
 
 def get_goals_service() -> GoalsService:
     if _goals is None:
-        raise RuntimeError("GoalsService has not been initialized yet.")
+        raise RuntimeError("GoalsService not initialized.")
     return _goals
 
 
 def get_tasks_service() -> TasksService:
     if _tasks is None:
-        raise RuntimeError("TasksService has not been initialized yet.")
+        raise RuntimeError("TasksService not initialized.")
     return _tasks
-
-
-def get_notion_service() -> NotionService:
-    if _notion is None:
-        raise RuntimeError("NotionService has not been initialized yet.")
-    return _notion
