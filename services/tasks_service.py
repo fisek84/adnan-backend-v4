@@ -1,77 +1,72 @@
-from typing import List, Optional
+from typing import List
+from datetime import datetime
+
+from models.task_model import TaskModel
 from models.task_create import TaskCreate
 from models.task_update import TaskUpdate
-from models.task_model import TaskResponse
+
 from integrations.notion_client import NotionClient
 from utils.helpers import generate_uuid
 
-# Pretpostavka: koristiš SQLite kroz tasks.db ili lokalnu listu (kao u tvom projektu)
-# Ako koristiš drugu implementaciju, create_task već postoji – koristimo ga rješenjem ispod.
 
 notion = NotionClient()
 
-# ===============================
-# SINGLE TASK CREATE
-# ===============================
-def create_task(data: TaskCreate) -> TaskResponse:
-    """
-    Kreira jedan task u lokalnoj bazi + vraća TaskResponse.
-    """
-    task_id = generate_uuid()
 
-    # Lokalni objekt
-    task = TaskResponse(
+# =====================================================
+# CREATE SINGLE TASK
+# =====================================================
+def create_task(data: TaskCreate) -> TaskModel:
+    task_id = generate_uuid()
+    now = datetime.utcnow()
+
+    task = TaskModel(
         id=task_id,
+        notion_id=None,
         title=data.title,
         description=data.description,
         goal_id=data.goal_id,
         deadline=data.deadline,
         priority=data.priority,
         status="pending",
-        order=0
+        order=0,
+        created_at=now,
+        updated_at=now,
     )
 
-    # Snimi u Notion
     notion.create_task(task)
 
     return task
 
 
-# ===============================
-# UPDATE
-# ===============================
+# =====================================================
+# UPDATE TASK
+# =====================================================
 def update_task(task_id: str, data: TaskUpdate):
     updated = notion.update_task(task_id, data)
     return updated
 
 
-# ===============================
-# DELETE
-# ===============================
+# =====================================================
+# DELETE TASK
+# =====================================================
 def delete_task(task_id: str):
     notion.delete_task(task_id)
     return {"deleted": True}
 
 
-# ===============================
-# GET ALL
-# ===============================
-def get_all_tasks() -> List[TaskResponse]:
+# =====================================================
+# GET ALL TASKS
+# =====================================================
+def get_all_tasks() -> List[TaskModel]:
     return notion.get_all_tasks()
 
 
-# ===============================
-# BATCH — NOVO u v4.3
-# ===============================
-def create_tasks_batch(tasks: List[TaskCreate]):
-    """
-    Kreira više taskova odjednom.
-    Ovdje backend NIJE ograničen na Notion rate-limit, jer šaljemo taskove jedan po jedan.
-    """
+# =====================================================
+# BATCH CREATE — V4.3
+# =====================================================
+def create_tasks_batch(tasks: List[TaskCreate]) -> List[TaskModel]:
     created = []
-
     for t in tasks:
         item = create_task(t)
         created.append(item)
-
     return created
