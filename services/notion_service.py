@@ -94,7 +94,7 @@ class NotionService:
     async def delete_page(self, page_id: str):
         return await self._safe_request(
             "PATCH",
-            f"https://api.notion.com/v1/pages/{page_id}",
+            f"https://api.nition.com/v1/pages/{page_id}",
             {"archived": True}
         )
 
@@ -103,35 +103,44 @@ class NotionService:
             await self.session.close()
 
     # ============================================================
-    # TASKS — CREATE
+    # TASKS — CREATE (FIXED)
     # ============================================================
     async def create_task(self, task):
+        props = {
+            "Title": {
+                "title": [{"text": {"content": task.title}}]
+            },
+            "Description": {
+                "rich_text": [{"text": {"content": task.description or ""}}]
+            },
+            "Status": {
+                "select": {"name": task.status}
+            },
+            "Order": {"number": task.order},
+            "Task ID": {
+                "rich_text": [{"text": {"content": task.id}}]
+            }
+        }
+
+        # Optional fields — only include when valid
+        if task.goal_id:
+            props["Goal"] = {
+                "relation": [{"id": task.goal_id}]
+            }
+
+        if task.deadline:
+            props["Deadline"] = {
+                "date": {"start": task.deadline}
+            }
+
+        if task.priority:
+            props["Priority"] = {
+                "select": {"name": task.priority}
+            }
+
         payload = {
             "parent": {"database_id": self.tasks_db_id},
-            "properties": {
-                "Title": {
-                    "title": [{"text": {"content": task.title}}]
-                },
-                "Description": {
-                    "rich_text": [{"text": {"content": task.description or ""}}]
-                },
-                "Goal": {
-                    "relation": [{"id": task.goal_id}] if task.goal_id else []
-                },
-                "Deadline": {
-                    "date": {"start": task.deadline} if task.deadline else None
-                },
-                "Priority": {
-                    "select": {"name": task.priority} if task.priority else None
-                },
-                "Status": {
-                    "select": {"name": task.status}
-                },
-                "Order": {"number": task.order},
-                "Task ID": {
-                    "rich_text": [{"text": {"content": task.id}}]
-                }
-            }
+            "properties": props
         }
 
         return await self.create_page(payload)
