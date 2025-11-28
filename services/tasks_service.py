@@ -5,22 +5,18 @@ from models.task_model import TaskModel
 from models.task_create import TaskCreate
 from models.task_update import TaskUpdate
 
-from services.notion_service import get_notion_service
+from dependencies import get_notion_service   # ← OVO JE KLJUČ !!!
 from utils.helpers import generate_uuid
 
 
-# =====================================================
-# REQUIRED DUMMY CLASS (dependencies.py expects it)
-# =====================================================
 class TasksService:
     pass
 
 
-# =====================================================
-# CREATE SINGLE TASK
-# =====================================================
 async def create_task(data: TaskCreate) -> TaskModel:
     notion = get_notion_service()
+    if notion is None:
+        raise RuntimeError("NotionService not registered (DI error).")
 
     task_id = generate_uuid()
     now = datetime.utcnow()
@@ -40,35 +36,34 @@ async def create_task(data: TaskCreate) -> TaskModel:
     )
 
     await notion.create_task(task)
-
     return task
 
 
-# =====================================================
-# UPDATE TASK
-# =====================================================
 async def update_task(page_id: str, data: TaskUpdate):
     notion = get_notion_service()
+    if notion is None:
+        raise RuntimeError("NotionService not registered (DI error).")
+
     return await notion.update_task(page_id, data)
 
 
-# =====================================================
-# DELETE TASK
-# =====================================================
 async def delete_task(page_id: str):
     notion = get_notion_service()
+    if notion is None:
+        raise RuntimeError("NotionService not registered (DI error).")
+
     await notion.delete_task(page_id)
     return {"deleted": True}
 
 
-# =====================================================
-# GET ALL TASKS
-# =====================================================
 async def get_all_tasks() -> List[TaskModel]:
     notion = get_notion_service()
-    raw = await notion.get_all_tasks()
+    if notion is None:
+        raise RuntimeError("NotionService not registered (DI error).")
 
+    raw = await notion.get_all_tasks()
     tasks = []
+
     for item in raw:
         tasks.append(
             TaskModel(
@@ -81,7 +76,7 @@ async def get_all_tasks() -> List[TaskModel]:
                 priority=item["priority"],
                 status=item["status"],
                 order=item["order"],
-                created_at=datetime.utcnow(),  # Notion nema timestamp
+                created_at=datetime.utcnow(),
                 updated_at=datetime.utcnow(),
             )
         )
@@ -89,11 +84,5 @@ async def get_all_tasks() -> List[TaskModel]:
     return tasks
 
 
-# =====================================================
-# BATCH CREATE
-# =====================================================
 async def create_tasks_batch(items: List[TaskCreate]) -> List[TaskModel]:
-    created = []
-    for t in items:
-        created.append(await create_task(t))
-    return created
+    return [await create_task(t) for t in items]
