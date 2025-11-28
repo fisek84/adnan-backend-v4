@@ -1,6 +1,19 @@
 from typing import List
 from datetime import datetime
 
+# =====================================================
+# LEGACY WRAPPER — REQUIRED BY dependencies.py
+# =====================================================
+class TasksService:
+    """
+    Legacy compatibility class.
+    The backend imports this class in dependencies.py,
+    so we provide an empty wrapper to avoid ImportError.
+    Actual logic lives in functional API below.
+    """
+    pass
+
+
 from models.task_model import TaskModel
 from models.task_create import TaskCreate
 from models.task_update import TaskUpdate
@@ -32,6 +45,7 @@ def create_task(data: TaskCreate) -> TaskModel:
         updated_at=now,
     )
 
+    # Notion sync call
     notion.create_task(task)
 
     return task
@@ -63,7 +77,7 @@ def get_all_tasks() -> List[TaskModel]:
 
 
 # =====================================================
-# BATCH CREATE — V4.3
+# BATCH CREATE
 # =====================================================
 def create_tasks_batch(tasks: List[TaskCreate]) -> List[TaskModel]:
     created = []
