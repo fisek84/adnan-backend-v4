@@ -33,10 +33,9 @@ COPY --from=builder /install /usr/local
 
 COPY . .
 
-# 🔥 KLJUČNO — Render ti daje $PORT
+# Render PORT
 ENV PORT=10000
 
-EXPOSE ${PORT}
+EXPOSE $PORT
 
-# 🔥 Uvijek koristi $PORT, ne hardkodirani broj
 CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port $PORT"]
