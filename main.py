@@ -5,6 +5,7 @@ import os
 # ROUTERS
 from routers.goals_router import router as goals_router
 from routers.tasks_router import router as tasks_router
+from routers.sync_router import router as sync_router   # ← DODANO
 
 # SERVICES
 from services.goals_service import GoalsService
@@ -78,13 +79,13 @@ async def startup_event():
     set_notion_service(notion_service)
     print("✅ NotionService initialized")
 
-    # LOCAL DB
+    # LOCAL DB SERVICES
     goals_service = GoalsService()
     tasks_service = TasksService()
     print("✅ GoalsService initialized")
     print("✅ TasksService initialized")
 
-    # SYNC
+    # SYNC SERVICE
     notion_sync_service = NotionSyncService(
         notion_service,
         goals_service,
@@ -94,11 +95,16 @@ async def startup_event():
     )
     print("✅ NotionSyncService initialized")
 
+    # CONNECT SYNC ROUTER TO SYNC SERVICE ⭐
+    import routers.sync_router as sync_router_module
+    sync_router_module.sync_service_global = notion_sync_service
+    print("🔗 Sync router connected to NotionSyncService")
+
     # AI SYSTEM
     ai_command_service = AICommandService()
     print("✅ AICommandService initialized")
 
-    # AGENTS
+    # AGENTS SERVICE
     agents_service = AgentsService(
         notion_token=os.getenv("NOTION_API_KEY"),
         exchange_db_id=os.getenv("NOTION_EXCHANGE_DB_ID"),
@@ -112,10 +118,7 @@ async def startup_event():
 # ROUTERS
 app.include_router(goals_router)
 app.include_router(tasks_router)
-
-from routers.sync_router import router as sync_router
-app.include_router(sync_router)
-
+app.include_router(sync_router)  # ← DODANO: registracija sync ruta
 
 # EXT ROUTERS
 app.include_router(ext_tasks_router, prefix="/ext")
