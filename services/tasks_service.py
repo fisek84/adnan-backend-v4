@@ -12,7 +12,7 @@ from utils.helpers import generate_uuid
 class TasksService:
     def __init__(self, notion_service: NotionService):
         self.notion = notion_service
-        self.local_tasks = {}  # used only for sync compatibility
+        self.local_tasks = {}  # required for sync service
 
     # ------------------------------------------------------
     # CREATE
@@ -35,7 +35,7 @@ class TasksService:
             updated_at=now,
         )
 
-        # save locally (required for sync service)
+        # save locally for sync
         self.local_tasks[task_id] = task
 
         await self.notion.create_task(task)
@@ -64,8 +64,32 @@ class TasksService:
         """Returns local in-memory tasks for sync."""
         return list(self.local_tasks.values())
 
+    def _to_dict(self, task: TaskModel) -> dict:
+        """Required by sync service to map task to dict."""
+        return {
+            "id": task.id,
+            "notion_id": task.notion_id,
+            "title": task.title,
+            "description": task.description,
+            "goal_id": task.goal_id,
+            "deadline": task.deadline,
+            "priority": task.priority,
+            "status": task.status,
+            "order": task.order,
+            "created_at": task.created_at,
+            "updated_at": task.updated_at,
+        }
+
+    def _replace_id(self, old_id: str, new_id: str):
+        """Required for sync—update local primary key after Notion creates a page."""
+        if old_id in self.local_tasks:
+            task = self.local_tasks.pop(old_id)
+            task.id = new_id
+            task.notion_id = new_id
+            self.local_tasks[new_id] = task
+
     # ------------------------------------------------------
-    # GET ALL FROM NOTION (normal use)
+    # GET ALL FROM NOTION (normal API use)
     # ------------------------------------------------------
     async def get_all_tasks(self) -> List[TaskModel]:
         raw = await self.notion.get_all_tasks()
