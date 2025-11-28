@@ -1,11 +1,18 @@
-  # ======================================
-  # TASKS
-  # ======================================
+openapi: "3.0.3"
+info:
+  title: "Adnan Backend API"
+  version: "1.0.0"
+  description: "OpenAPI schema for Tasks endpoints (FastAPI auto-generates the full schema)."
+
+servers:
+  - url: "https://adnan-backend-v4.onrender.com"
+    description: "Production server"
+
+paths:
   /tasks/all:
     get:
       summary: Get all tasks
-      security:
-        - ApiKeyAuth: []
+      tags: [Tasks]
       responses:
         "200":
           description: All tasks
@@ -18,9 +25,8 @@
 
   /tasks/create:
     post:
-      summary: Create a single task
-      security:
-        - ApiKeyAuth: []
+      summary: Create a task
+      tags: [Tasks]
       requestBody:
         required: true
         content:
@@ -37,9 +43,8 @@
 
   /tasks/batch:
     post:
-      summary: Create multiple tasks in batch
-      security:
-        - ApiKeyAuth: []
+      summary: Create multiple tasks
+      tags: [Tasks]
       requestBody:
         required: true
         content:
@@ -65,15 +70,14 @@
 
   /tasks/{task_id}:
     patch:
-      summary: Update task
-      security:
-        - ApiKeyAuth: []
+      summary: Update a task
+      tags: [Tasks]
       parameters:
-        - name: task_id
-          in: path
-          required: true
+        - in: path
+          name: task_id
           schema:
             type: string
+          required: true
       requestBody:
         required: true
         content:
@@ -83,17 +87,87 @@
       responses:
         "200":
           description: Updated task
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskResponse"
 
     delete:
-      summary: Delete task
-      security:
-        - ApiKeyAuth: []
+      summary: Delete a task
+      tags: [Tasks]
       parameters:
-        - name: task_id
-          in: path
-          required: true
+        - in: path
+          name: task_id
           schema:
             type: string
+          required: true
       responses:
         "200":
           description: Deleted task
+
+components:
+  schemas:
+
+    TaskCreate:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+          nullable: true
+        due_date:
+          type: string
+          format: date
+          nullable: true
+        priority:
+          type: string
+          nullable: true
+        goal:
+          type: array
+          items:
+            type: string
+
+    TaskUpdate:
+      type: object
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+          nullable: true
+        status:
+          type: string
+        priority:
+          type: string
+        due_date:
+          type: string
+          format: date
+          nullable: true
+
+    TaskResponse:
+      type: object
+      properties:
+        id:
+          type: string
+        notion_id:
+          type: string
+          nullable: true
+        name:
+          type: string
+        description:
+          type: string
+          nullable: true
+        status:
+          type: string
+        priority:
+          type: string
+        due_date:
+          type: string
+          format: date
+          nullable: true
+        goal:
+          type: array
+          items:
+            type: string

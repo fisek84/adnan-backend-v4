@@ -106,3 +106,4 @@ def append_text(page_id: str, text: str):
             raise e
 
         time.sleep(0.3)
+    
