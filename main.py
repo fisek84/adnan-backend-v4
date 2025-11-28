@@ -130,3 +130,9 @@ app.include_router(ext_agents_router, prefix="/ext")
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+# ROOT ROUTA ★
+@app.get("/")
+def root():
+    return {"message": "Backend running"}
