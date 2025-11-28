@@ -1,8 +1,6 @@
 from typing import List
 from datetime import datetime
 
-from fastapi import Depends
-
 from models.task_model import TaskModel
 from models.task_create import TaskCreate
 from models.task_update import TaskUpdate
@@ -14,6 +12,7 @@ from utils.helpers import generate_uuid
 class TasksService:
     def __init__(self, notion_service: NotionService):
         self.notion = notion_service
+        self.local_tasks = {}  # used only for sync compatibility
 
     # ------------------------------------------------------
     # CREATE
@@ -36,6 +35,9 @@ class TasksService:
             updated_at=now,
         )
 
+        # save locally (required for sync service)
+        self.local_tasks[task_id] = task
+
         await self.notion.create_task(task)
         return task
 
@@ -49,11 +51,21 @@ class TasksService:
     # DELETE
     # ------------------------------------------------------
     async def delete_task(self, page_id: str):
+        if page_id in self.local_tasks:
+            self.local_tasks.pop(page_id)
+
         await self.notion.delete_task(page_id)
         return {"deleted": True}
 
     # ------------------------------------------------------
-    # GET ALL
+    # REQUIRED BY SYNC SERVICE
+    # ------------------------------------------------------
+    def get_all(self) -> List[TaskModel]:
+        """Returns local in-memory tasks for sync."""
+        return list(self.local_tasks.values())
+
+    # ------------------------------------------------------
+    # GET ALL FROM NOTION (normal use)
     # ------------------------------------------------------
     async def get_all_tasks(self) -> List[TaskModel]:
         raw = await self.notion.get_all_tasks()

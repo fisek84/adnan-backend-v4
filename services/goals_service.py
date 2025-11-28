@@ -1,7 +1,7 @@
 import asyncio
 from uuid import uuid4
 from datetime import datetime, timezone
-from typing import Dict, Optional, List, Any
+from typing import Dict, Optional, List
 
 from models.goal_create import GoalCreate
 from models.goal_update import GoalUpdate
@@ -44,6 +44,29 @@ class GoalsService:
     def _now(self):
         return datetime.now(timezone.utc)
 
+    # ============================================================
+    # REQUIRED BY SYNC SERVICE
+    # ============================================================
+    def to_dict(self, goal: GoalModel) -> dict:
+        """Used by NotionSyncService.map_local_goal_to_notion()"""
+        return {
+            "id": goal.id,
+            "notion_id": goal.notion_id,
+            "title": goal.title,
+            "description": goal.description,
+            "deadline": goal.deadline,
+            "parent_id": goal.parent_id,
+            "priority": goal.priority,
+            "status": goal.status,
+            "progress": goal.progress,
+            "children": goal.children,
+            "created_at": goal.created_at,
+            "updated_at": goal.updated_at,
+        }
+
+    # ============================================================
+    # DETECT CYCLES
+    # ============================================================
     def _would_create_cycle(self, parent_id: str, child_id: str) -> bool:
         stack = [child_id]
         while stack:
@@ -59,7 +82,7 @@ class GoalsService:
         return False
 
     # ============================================================
-    # CREATE GOAL — PRO VERSION
+    # CREATE GOAL
     # ============================================================
     def create_goal(
         self,
@@ -134,7 +157,7 @@ class GoalsService:
         return goal
 
     # ============================================================
-    # DELETE GOAL — (local delete only, Notion handled in router)
+    # DELETE GOAL
     # ============================================================
     def delete_goal(self, goal_id: str) -> GoalModel:
         goal = self.goals.get(goal_id)
