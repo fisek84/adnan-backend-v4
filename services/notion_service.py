@@ -84,11 +84,11 @@ class NotionService:
             payload
         )
 
-    async def query_database(self, db_id: str):
+    async def query_database(self, db_id: str, filter_payload=None):
         return await self._safe_request(
             "POST",
             f"https://api.notion.com/v1/databases/{db_id}/query",
-            {}
+            filter_payload or {}
         )
 
     async def delete_page(self, page_id: str):
@@ -103,11 +103,39 @@ class NotionService:
             await self.session.close()
 
     # ============================================================
-    # TASKS — CREATE (FIXED)
+    # HELPER: FIND NOTION PAGE BY INTERNAL TASK ID
+    # ============================================================
+    async def _resolve_page_id(self, internal_task_id: str) -> Optional[str]:
+        """
+        Ako backend šalje 'Task ID' (interni ID), ovdje lookup-ujemo
+        pravi Notion page ID preko property 'Task ID'.
+        """
+
+        filter_payload = {
+            "filter": {
+                "property": "Task ID",
+                "rich_text": {"equals": internal_task_id}
+            }
+        }
+
+        res = await self.query_database(self.tasks_db_id, filter_payload)
+
+        if not res["ok"]:
+            return None
+
+        results = res["data"].get("results", [])
+        if len(results) == 0:
+            return None
+
+        # Notion page ID
+        return results[0]["id"]
+
+    # ============================================================
+    # TASKS — CREATE (unchanged)
     # ============================================================
     async def create_task(self, task):
         props = {
-            "Name": {     # FIXED (was "Title")
+            "Name": {
                 "title": [{"text": {"content": task.title}}]
             },
             "Description": {
@@ -122,15 +150,13 @@ class NotionService:
             }
         }
 
-        # Optional relation
         if task.goal_id:
             props["Goal"] = {
                 "relation": [{"id": task.goal_id}]
             }
 
-        # FIXED deadline → Due Date
         if task.deadline:
-            props["Due Date"] = {       # FIXED (was "Deadline")
+            props["Due Date"] = {
                 "date": {"start": task.deadline}
             }
 
@@ -150,10 +176,17 @@ class NotionService:
     # TASKS — UPDATE (FIXED)
     # ============================================================
     async def update_task(self, page_id: str, data):
+        # ---------- FIX: convert backend internal ID -> Notion page ID ----------
+        if len(page_id) != 36 or "-" not in page_id:
+            resolved = await self._resolve_page_id(page_id)
+            if resolved:
+                page_id = resolved
+        # -------------------------------------------------------------------------
+
         props = {}
 
         if data.title is not None:
-            props["Name"] = {   # FIXED
+            props["Name"] = {
                 "title": [{"text": {"content": data.title}}]
             }
 
@@ -168,7 +201,7 @@ class NotionService:
             }
 
         if data.deadline is not None:
-            props["Due Date"] = {    # FIXED
+            props["Due Date"] = {
                 "date": {"start": data.deadline}
             }
 
@@ -181,7 +214,7 @@ class NotionService:
         return await self.update_page(page_id, {"properties": props})
 
     # ============================================================
-    # TASKS — GET ALL (unchanged)
+    # TASKS — GET ALL
     # ============================================================
     async def get_all_tasks(self) -> List[Dict[str, Any]]:
         response = await self.query_database(self.tasks_db_id)
@@ -201,7 +234,7 @@ class NotionService:
                 ),
                 "notion_id": item["id"],
                 "title": (
-                    props["Name"]["title"][0]["plain_text"]   # FIXED
+                    props["Name"]["title"][0]["plain_text"]
                     if props["Name"]["title"]
                     else ""
                 ),
@@ -216,7 +249,7 @@ class NotionService:
                     else None
                 ),
                 "deadline": (
-                    props["Due Date"]["date"]["start"]    # FIXED
+                    props["Due Date"]["date"]["start"]
                     if props["Due Date"]["date"]
                     else None
                 ),
