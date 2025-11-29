@@ -7,6 +7,9 @@ from routers.goals_router import router as goals_router
 from routers.tasks_router import router as tasks_router
 from routers.sync_router import router as sync_router
 
+# NEW — AI OPS ROUTER (SMART MODE)
+from routers.ai_ops_router import ai_ops_router
+
 # SERVICES
 from services.notion_service import NotionService
 from services.goals_service import GoalsService
@@ -27,15 +30,19 @@ from ext.agents.router import router as ext_agents_router
 # EXT DB
 from ext.tasks.db import init_db
 
-# NEW — NOTION OPS
+# NEW — NOTION OPS (STRUCTURED)
 from services.notion_ops.ops_router import notion_ops_router
 
-import ext.notion.router as _notion_router_module
-print("🔥 EXT NOTION ROUTER LOADED FROM:", _notion_router_module.__file__)
 
-
+# ----------------------------------------------------------
+# CREATE APP (THIS MUST COME BEFORE include_router)
+# ----------------------------------------------------------
 app = FastAPI()
 
+
+# ----------------------------------------------------------
+# MIDDLEWARE
+# ----------------------------------------------------------
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -45,6 +52,9 @@ app.add_middleware(
 )
 
 
+# ----------------------------------------------------------
+# STARTUP
+# ----------------------------------------------------------
 @app.on_event("startup")
 async def startup_event():
     print("🔵 Starting backend services...")
@@ -52,10 +62,8 @@ async def startup_event():
     init_db()
     print("🟦 SQLite Task Queue initialized")
 
-    # -------------------------
-    # INIT CORE SERVICES
-    # -------------------------
-    init_services()  # creates Notion, Goals, Tasks
+    # Init core services
+    init_services()
     notion_service = get_notion_service()
     goals_service = get_goals_service()
     tasks_service = get_tasks_service()
@@ -64,9 +72,7 @@ async def startup_event():
     print("✅ GoalsService initialized")
     print("✅ TasksService initialized")
 
-    # -------------------------
-    # SYNC SERVICE
-    # -------------------------
+    # Sync service
     notion_sync_service = NotionSyncService(
         notion_service,
         goals_service,
@@ -74,15 +80,12 @@ async def startup_event():
         os.getenv("NOTION_GOALS_DB_ID"),
         os.getenv("NOTION_TASKS_DB_ID")
     )
-    print("✅ NotionSyncService initialized")
 
     import routers.sync_router as sync_router_module
     sync_router_module.sync_service_global = notion_sync_service
     print("🔗 Sync router connected to NotionSyncService")
 
-    # -------------------------
-    # AI SERVICES
-    # -------------------------
+    # AI command service
     ai_command_service = AICommandService()
     print("✅ AICommandService initialized")
 
@@ -96,17 +99,23 @@ async def startup_event():
     print("🔥 Backend fully initialized")
 
 
-# ROUTERS
+# ----------------------------------------------------------
+# ROUTERS (CORRECT ORDER)
+# ----------------------------------------------------------
 app.include_router(goals_router)
 app.include_router(tasks_router)
 app.include_router(sync_router)
 
+# External
 app.include_router(ext_tasks_router, prefix="/ext")
 app.include_router(ext_notion_router, prefix="/ext")
 app.include_router(ext_documents_router, prefix="/ext")
 app.include_router(ext_agents_router, prefix="/ext")
 
-# NEW — NOTION OPS ROUTER
+# NEW — SMART AI OPS (natural language)
+app.include_router(ai_ops_router)
+
+# NEW — STRUCTURED OPS (technical)
 app.include_router(notion_ops_router, prefix="/ext")
 
 
@@ -118,4 +127,3 @@ def health():
 @app.get("/")
 def root():
     return {"message": "Backend running"}
-    
