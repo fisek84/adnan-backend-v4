@@ -98,3 +98,9 @@ def structure_check(body: Dict[str, Any]):
 
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# ============================================================
+# REQUIRED BY main.py
+# ============================================================
+notion_ops_router = router
