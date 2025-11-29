@@ -27,6 +27,9 @@ from ext.agents.router import router as ext_agents_router
 # EXT DB
 from ext.tasks.db import init_db
 
+# NEW — NOTION OPS
+from services.notion_ops.ops_router import notion_ops_router
+
 import ext.notion.router as _notion_router_module
 print("🔥 EXT NOTION ROUTER LOADED FROM:", _notion_router_module.__file__)
 
@@ -103,6 +106,9 @@ app.include_router(ext_notion_router, prefix="/ext")
 app.include_router(ext_documents_router, prefix="/ext")
 app.include_router(ext_agents_router, prefix="/ext")
 
+# NEW — NOTION OPS ROUTER
+app.include_router(notion_ops_router, prefix="/ext")
+
 
 @app.get("/health")
 def health():
@@ -112,3 +118,4 @@ def health():
 @app.get("/")
 def root():
     return {"message": "Backend running"}
+    
