@@ -54,7 +54,9 @@ class TasksService:
         if page_id in self.local_tasks:
             self.local_tasks.pop(page_id)
 
-        await self.notion.delete_task(page_id)
+        # FIX: NotionService has delete_page(), not delete_task()
+        await self.notion.delete_page(page_id)
+
         return {"deleted": True}
 
     # ------------------------------------------------------
