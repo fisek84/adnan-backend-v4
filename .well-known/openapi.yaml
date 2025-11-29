@@ -2,13 +2,14 @@ openapi: "3.0.3"
 info:
   title: "Adnan Backend API"
   version: "1.0.0"
-  description: "OpenAPI schema for Tasks endpoints (FastAPI auto-generates the full schema)."
+  description: "OpenAPI schema for Evolia Backend."
 
 servers:
   - url: "https://adnan-backend-v4.onrender.com"
     description: "Production server"
 
 paths:
+
   /tasks/all:
     get:
       summary: Get all tasks
@@ -105,6 +106,70 @@ paths:
         "200":
           description: Deleted task
 
+  ######################################################################
+  # NEW: AI OPS ROUTE
+  ######################################################################
+  /ai-ops/run:
+    post:
+      summary: Run natural language Notion Ops command
+      tags: [AI Ops]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                text:
+                  type: string
+      responses:
+        "200":
+          description: AI Ops result
+
+  ######################################################################
+  # NEW: NOTION OPS ROUTES
+  ######################################################################
+  /ext/notion-ops/execute:
+    post:
+      summary: Execute structured Notion Ops command
+      tags: [Notion Ops]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                command:
+                  type: string
+                payload:
+                  type: object
+      responses:
+        "200":
+          description: Execution result
+
+  /ext/notion-ops/structure-check:
+    post:
+      summary: Validate structure of Notion database
+      tags: [Notion Ops]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                db_key:
+                  type: string
+                expected_properties:
+                  type: object
+      responses:
+        "200":
+          description: Structure validation result
+
+######################################################################
+# COMPONENTS — MUST BE LAST BLOCK
+######################################################################
 components:
   schemas:
 
