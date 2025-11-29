@@ -39,6 +39,10 @@ from services.notion_ops.ops_router import notion_ops_router
 # ----------------------------------------------------------
 app = FastAPI()
 
+from fastapi.staticfiles import StaticFiles
+
+# SERVE .well-known FOR CHATGPT PLUGIN
+app.mount("/.well-known", StaticFiles(directory=".well-known"), name="well-known")
 
 # ----------------------------------------------------------
 # MIDDLEWARE
