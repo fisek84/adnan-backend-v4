@@ -139,7 +139,7 @@ class NotionSyncService:
     # ------------------------------------------------------
     # BACKEND → NOTION SYNC (PROJECTS)
     # ------------------------------------------------------
-    def map_local_project_to_nion(self, p: dict):
+    def map_local_project_to_notion(self, p: dict):
         def wrap(x):
             return {"rich_text": [{"text": {"content": x or ""}}]}
 
@@ -209,7 +209,7 @@ class NotionSyncService:
                     "select": {"name": g_dict.get("status") or "Active"}
                 },
                 "Category": (
-                    {"select": {"name": g_dict.get("category")}}
+                    {"select": {"name": g_dict.get("category")} }
                     if g_dict.get("category") else None
                 ),
                 "Priority": (
@@ -217,7 +217,7 @@ class NotionSyncService:
                     if g_dict.get("priority") else None
                 ),
                 "Deadline": (
-                    {"date": {"start": g_dict.get("deadline")} }
+                    {"date": {"start": g_dict.get("deadline")}}
                     if g_dict.get("deadline") else {"date": None}
                 ),
                 "Parent Goal": (
