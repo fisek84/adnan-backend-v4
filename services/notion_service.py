@@ -82,6 +82,9 @@ class NotionService:
         except Exception as e:
             return {"ok": False, "status": 500, "error": str(e)}
 
+    # ============================================================
+    # CORE HTTP WRAPPERS
+    # ============================================================
     async def create_page(self, payload: Dict[str, Any]):
         return await self._safe_request("POST", "https://api.notion.com/v1/pages", payload)
 
@@ -89,10 +92,21 @@ class NotionService:
         return await self._safe_request("PATCH", f"https://api.notion.com/v1/pages/{page_id}", payload)
 
     async def query_database(self, db_id: str, filter_payload=None):
-        return await self._safe_request("POST", f"https://api.notion.com/v1/databases/{db_id}/query", filter_payload or {})
+        return await self._safe_request(
+            "POST",
+            f"https://api.notion.com/v1/databases/{db_id}/query",
+            filter_payload or {}
+        )
 
-    async def delete_page(self, page_id: str):
-        return await self._safe_request("PATCH", f"https://api.notion.com/v1/pages/{page_id}", {"archived": True})
+    # ============================================================
+    # ARCHIVE PAGE (REAL DELETE IN NOTION)
+    # ============================================================
+    async def archive_page(self, page_id: str):
+        return await self._safe_request(
+            "PATCH",
+            f"https://api.notion.com/v1/pages/{page_id}",
+            {"archived": True}
+        )
 
     async def close(self):
         if self.session and not self.session.closed:
@@ -104,6 +118,9 @@ class NotionService:
             return []
         return res["data"].get("results", [])
 
+    # ============================================================
+    # INTERNAL — RESOLVE PAGE
+    # ============================================================
     async def _resolve_page_id(self, internal_task_id: str) -> Optional[str]:
         filter_payload = {
             "filter": {
@@ -144,6 +161,9 @@ class NotionService:
         }
         return await self.create_page(payload)
 
+    # ============================================================
+    # TASKS — UPDATE
+    # ============================================================
     async def update_task(self, page_id: str, data):
         if len(page_id) != 36 or "-" not in page_id:
             resolved = await self._resolve_page_id(page_id)
@@ -167,6 +187,9 @@ class NotionService:
 
         return await self.update_page(page_id, {"properties": props})
 
+    # ============================================================
+    # TASKS — GET ALL
+    # ============================================================
     async def get_all_tasks(self) -> List[Dict[str, Any]]:
         response = await self.query_database(self.tasks_db_id)
         if not response["ok"]:
@@ -175,6 +198,7 @@ class NotionService:
         tasks = []
         for item in response["data"].get("results", []):
             props = item["properties"]
+
             tasks.append({
                 "id": props["Task ID"]["rich_text"][0]["plain_text"] if props["Task ID"]["rich_text"] else None,
                 "notion_id": item["id"],

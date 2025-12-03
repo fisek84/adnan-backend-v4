@@ -49,7 +49,7 @@ class TasksService:
             task.notion_id = notion_page_id
             self.local_tasks[task_id] = task
 
-        # AUTO-ASSIGN SYSTEM (3-layer engine)
+        # AUTO-ASSIGN SYSTEM
         if task.notion_id:
             await self._auto_assign_goal_if_missing(task.notion_id)
             await self._auto_assign_project_if_missing(task.notion_id)
@@ -77,26 +77,31 @@ class TasksService:
         return result
 
     # ------------------------------------------------------
-    # DELETE
+    # DELETE  (FIXED & WORKING VERSION)
     # ------------------------------------------------------
     async def delete_task(self, task_id: str):
 
-        # delete locally
+        notion_id = None
+
+        # A) direct match by local id
         if task_id in self.local_tasks:
+            notion_id = self.local_tasks[task_id].notion_id
             self.local_tasks.pop(task_id)
 
         else:
-            found = None
-            for tid, t in self.local_tasks.items():
-                if t.notion_id == task_id or t.id == task_id:
-                    found = tid
+            # B) maybe the user sent the notion_id directly
+            for tid, t in list(self.local_tasks.items()):
+                if t.notion_id == task_id:
+                    notion_id = t.notion_id
+                    self.local_tasks.pop(tid)
                     break
 
-            if found:
-                self.local_tasks.pop(found)
+        # fallback (if nothing found)
+        if not notion_id:
+            notion_id = task_id
 
-        # delete in notion
-        await self.notion.delete_page(task_id)
+        # Archive in Notion = REAL delete
+        await self.notion.archive_page(notion_id)
 
         return {"deleted": True}
 
@@ -129,7 +134,7 @@ class TasksService:
             self.local_tasks[new_id] = task
 
     # ------------------------------------------------------
-    # GET ALL FROM NOTION (unchanged)
+    # GET ALL FROM NOTION
     # ------------------------------------------------------
     async def get_all_tasks(self) -> List[TaskModel]:
         raw = await self.notion.get_all_tasks()
@@ -171,7 +176,6 @@ class TasksService:
         if not page or "properties" not in page:
             return
 
-        # already has a goal
         goal_prop = page["properties"].get("Goal", {})
         if goal_prop.get("relation"):
             return
@@ -191,7 +195,6 @@ class TasksService:
         if not page or "properties" not in page:
             return
 
-        # already has project
         proj_prop = page["properties"].get("Project", {})
         if proj_prop.get("relation"):
             return
@@ -204,14 +207,13 @@ class TasksService:
         await self.update_task(page_id, update)
 
     # ======================================================================
-    # AUTO ASSIGN — GOAL VIA PROJECT (BASIC FALLBACK)
+    # AUTO ASSIGN — GOAL FROM PROJECT BASIC
     # ======================================================================
     async def _auto_assign_goal_from_project_if_missing(self, page_id: str):
         page = await self.notion.get_page(page_id)
         if not page:
             return
 
-        # already has goal
         if AutoAssignEngine.get_goal_id_for_task(page):
             return
 
@@ -231,7 +233,7 @@ class TasksService:
         await self.update_task(page_id, update)
 
     # ======================================================================
-    # ADVANCED AUTO-ASSIGN — PROJECT BY SEARCHING PROJECT DB
+    # AUTO ASSIGN — PROJECT ADVANCED
     # ======================================================================
     async def _auto_assign_project_if_missing_advanced(self, page_id: str):
         if not self.projects_db_id:
@@ -257,7 +259,7 @@ class TasksService:
                 return
 
     # ======================================================================
-    # ADVANCED AUTO-ASSIGN — GOAL FROM PROJECT ADVANCED
+    # AUTO ASSIGN — GOAL FROM PROJECT ADVANCED
     # ======================================================================
     async def _auto_assign_goal_from_project_advanced(self, page_id: str):
         page = await self.notion.get_page(page_id)
