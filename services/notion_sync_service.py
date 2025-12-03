@@ -34,11 +34,14 @@ class NotionSyncService:
 
         try:
             loop = asyncio.get_running_loop()
-            if self._sync_projects_task and not self._sync_projects_task.done():
-                self._sync_projects_task.cancel()
-            self._sync_projects_task = loop.create_task(schedule_sync())
         except RuntimeError:
-            print("⚠️ No running event loop — skipping sync task.")
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+        if self._sync_projects_task and not self._sync_projects_task.done():
+            self._sync_projects_task.cancel()
+
+        self._sync_projects_task = loop.create_task(schedule_sync())
 
     async def _debounce(self, fn):
         try:
@@ -164,7 +167,6 @@ class NotionSyncService:
             p_dict = self.projects.to_dict(p)
             props = self.map_local_project_to_notion(p_dict)
 
-            # NEW PAGE
             if not p.notion_id:
                 print("📌 Creating new Notion page:", p.title)
                 created = await self.notion.create_page({
@@ -176,7 +178,6 @@ class NotionSyncService:
                     self.projects._replace_id(p.id, new_id)
                 continue
 
-            # UPDATE
             print("♻️ Updating page:", p.title)
             await self.notion.update_page(p.notion_id, {"properties": props})
 
