@@ -1,14 +1,33 @@
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, validator  # Dodajemo validator import
 from typing import Optional
 from datetime import datetime
-import logging  # Dodajemo logovanje
+import logging
 
 # Inicijalizujemo logger
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 # ============================================================
-# TASK MODEL (FINAL)
+# GOAL MODEL (Final)
+# ============================================================
+class GoalModel(BaseModel):
+    id: str
+    notion_id: Optional[str] = None
+    title: str
+    description: Optional[str] = None
+    deadline: Optional[str] = None
+    priority: Optional[str] = None
+    status: str
+    progress: int
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True  # Menjamo 'orm_mode' u 'from_attributes'
+
+
+# ============================================================
+# TASK MODEL (Final)
 # ============================================================
 class TaskModel(BaseModel):
     id: str
@@ -66,16 +85,3 @@ class TaskModel(BaseModel):
             raise ValueError(f"Status must be one of: {allowed}")
         logger.info(f"Valid status value: {v}")
         return v
-
-    # --------------------------------------------------------
-    # LOGGING METHODS
-    # --------------------------------------------------------
-    @classmethod
-    def log_task_creation(cls, task: "TaskModel"):
-        logger.info(f"Creating task: {task.title} with ID: {task.id}")
-        logger.debug(f"Task details: {task.dict()}")
-
-    @classmethod
-    def log_task_update(cls, task: "TaskModel"):
-        logger.info(f"Updating task: {task.title} with ID: {task.id}")
-        logger.debug(f"Updated task details: {task.dict()}")
