@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, validator
 from typing import Optional
 from datetime import datetime
 import logging  # Dodajemo logovanje
@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 # ============================================================
-# TASK MODEL (FINAL — OVO JE NEDOSTAJALO)
+# TASK MODEL (FINAL)
 # ============================================================
 class TaskModel(BaseModel):
     id: str
@@ -32,6 +32,44 @@ class TaskModel(BaseModel):
         from_attributes = True
         validate_assignment = True
 
+    # --------------------------------------------------------
+    # VALIDATORS
+    # --------------------------------------------------------
+    @validator("deadline")
+    def validate_deadline(cls, v):
+        if v is None:
+            return v
+        try:
+            datetime.fromisoformat(v)
+        except ValueError:
+            logger.error(f"Invalid deadline format: {v}")
+            raise ValueError("Deadline must be ISO format YYYY-MM-DD")
+        logger.info(f"Valid deadline format: {v}")
+        return v
+
+    @validator("priority")
+    def validate_priority(cls, v):
+        if v is None:
+            return v
+        allowed = {"low", "medium", "high"}
+        if v not in allowed:
+            logger.error(f"Invalid priority value: {v}. Must be one of: {allowed}")
+            raise ValueError(f"Priority must be one of: {allowed}")
+        logger.info(f"Valid priority value: {v}")
+        return v
+
+    @validator("status")
+    def validate_status(cls, v):
+        allowed = {"pending", "in_progress", "completed"}
+        if v not in allowed:
+            logger.error(f"Invalid status value: {v}. Must be one of: {allowed}")
+            raise ValueError(f"Status must be one of: {allowed}")
+        logger.info(f"Valid status value: {v}")
+        return v
+
+    # --------------------------------------------------------
+    # LOGGING METHODS
+    # --------------------------------------------------------
     @classmethod
     def log_task_creation(cls, task: "TaskModel"):
         logger.info(f"Creating task: {task.title} with ID: {task.id}")
