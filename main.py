@@ -1,12 +1,12 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi import HTTPException
+from fastapi.staticfiles import StaticFiles
 
 import os
 from dotenv import load_dotenv
-import logging  # Dodajemo logovanje
+import logging
 
-# Učitavanje .env fajla
+# Load .env
 load_dotenv()
 
 # ROUTERS
@@ -42,9 +42,7 @@ from dependencies import (
     get_sync_service
 )
 
-from fastapi.staticfiles import StaticFiles
-
-# Inicijalizujemo logger
+# Logger
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
@@ -53,7 +51,7 @@ app = FastAPI()
 # Serve .well-known
 app.mount("/.well-known", StaticFiles(directory=".well-known"), name="well-known")
 
-# CORS Middleware
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -62,23 +60,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ====================================================================================
+# ============================================================
 # STARTUP
-# ====================================================================================
+# ============================================================
 @app.on_event("startup")
 async def startup_event():
     try:
         logger.info("🔵 Starting backend services...")
 
-        # 1) Init SQLite queue
+        # Init SQLite queue
         init_db()
         logger.info("🟦 SQLite Task Queue initialized")
 
-        # 2) Init all services (includes NotionSyncService)
+        # Init core services
         init_services()
         logger.info("🟩 All services initialized.")
 
-        # 3) Retrieve instances
+        # Retrieve instances
         notion_service = get_notion_service()
         goals_service = get_goals_service()
         tasks_service = get_tasks_service()
@@ -91,20 +89,20 @@ async def startup_event():
         logger.info("✅ ProjectsService initialized")
         logger.info("🔗 ProjectsService linked to NotionSyncService")
 
-        # 4) Connect sync router
+        # Connect sync router
         import routers.sync_router as sync_router_module
         sync_router_module.set_sync_service(sync_service)
         logger.info("🔗 Sync router connected to NotionSyncService")
 
-        # 5) Load Notion → backend
+        # Load Notion → backend
         await sync_service.load_projects_into_backend()
         logger.info("📁 Projects loaded from Notion → backend OK")
 
-        # 6) AI Command System
+        # AI Command System
         ai_command_service = AICommandService()
         logger.info("✅ AICommandService initialized")
 
-        # 7) Agents System
+        # Agents System
         agents_service = AgentsService(
             notion_token=os.getenv("NOTION_API_KEY"),
             exchange_db_id=os.getenv("NOTION_AGENT_EXCHANGE_DB_ID"),
@@ -115,8 +113,9 @@ async def startup_event():
         logger.info("🔥 Backend fully initialized")
 
     except Exception as e:
-        logger.error(f"Error during startup: {e}")
-        raise HTTPException(500, f"Backend startup failed: {e}")
+        print(f"ERROR during startup: {e}")
+        raise e
+
 
 # ROUTERS
 app.include_router(goals_router)
@@ -146,22 +145,15 @@ def root():
     logger.info("Root endpoint hit.")
     return {"message": "Backend running"}
 
-# NEW ROUTE FOR DELETING A TASK
+# DELETE TASK
 @app.delete("/tasks/{task_id}")
 async def delete_task(task_id: str):
-    """
-    Endpoint to delete a task from Notion by its task_id.
-    """
     notion_service = get_notion_service()
+    logger.info(f"Request received to delete task {task_id}")
 
-    logger.info(f"Request received to delete task with ID: {task_id}")
-
-    # Call delete_task function from NotionService
     response = await notion_service.delete_task(task_id)
 
     if response["ok"]:
-        logger.info(f"Task {task_id} successfully deleted from Notion.")
-        return {"message": f"Task {task_id} successfully deleted."}
+        return {"message": f"Task {task_id} successfully deleted"}
     else:
-        logger.error(f"Failed to delete task {task_id}. Error: {response['error']}")
-        return {"error": f"Failed to delete task {task_id}. Error: {response['error']}"}
+        return {"error": response["error"]}
