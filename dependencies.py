@@ -92,7 +92,7 @@ def init_services():
     # 2. Local backend services
     # ----------------------------------------------------
     _goals = GoalsService()
-    _tasks = TasksService()      # <──  FIXED: NEMA ARGUMENTA!
+    _tasks = TasksService(_notion)
     _projects = ProjectsService()
 
     # Bind services between each other

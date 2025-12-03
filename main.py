@@ -1,5 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi import HTTPException
+
 import os
 from dotenv import load_dotenv
 import logging  # Dodajemo logovanje
