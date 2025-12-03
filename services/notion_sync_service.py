@@ -139,7 +139,7 @@ class NotionSyncService:
     # ------------------------------------------------------
     # BACKEND → NOTION SYNC (PROJECTS)
     # ------------------------------------------------------
-    def map_local_project_to_notion(self, p: dict):
+    def map_local_project_to_nion(self, p: dict):
         def wrap(x):
             return {"rich_text": [{"text": {"content": x or ""}}]}
 
@@ -217,7 +217,7 @@ class NotionSyncService:
                     if g_dict.get("priority") else None
                 ),
                 "Deadline": (
-                    {"date": {"start": g_dict.get("deadline")}}
+                    {"date": {"start": g_dict.get("deadline")} }
                     if g_dict.get("deadline") else {"date": None}
                 ),
                 "Parent Goal": (
@@ -254,8 +254,57 @@ class NotionSyncService:
     # SAFE PLACEHOLDERS — so router does NOT crash
     # ------------------------------------------------------
     async def sync_tasks_up(self):
-        print("⚠️ sync_tasks_up() not implemented yet")
-        return
+        print("🚀 SYNC: Uploading tasks to Notion...")
+
+        all_tasks = self.tasks.get_all()
+        if not all_tasks:
+            print("⚠️ No tasks found in backend.")
+            return
+
+        for task in all_tasks:
+            task_dict = self.tasks.to_dict(task)
+
+            props = {
+                "Task Name": {
+                    "title": [{"text": {"content": task_dict.get("title") or ""}}]
+                },
+                "Description": {
+                    "rich_text": [{"text": {"content": task_dict.get("description") or ""}}]
+                },
+                "Status": {
+                    "select": {"name": task_dict.get("status") or "Pending"}
+                },
+                "Priority": (
+                    {"select": {"name": task_dict.get("priority")}}
+                    if task_dict.get("priority") else None
+                ),
+                "Due Date": (
+                    {"date": {"start": task_dict.get("due_date")}}
+                    if task_dict.get("due_date") else {"date": None}
+                ),
+                "Assigned To": (
+                    {"relation": [{"id": task_dict.get("assigned_to")}]}
+                    if task_dict.get("assigned_to") else {"relation": []}
+                ),
+            }
+
+            if not task.notion_id:
+                print(f"📌 Creating new Notion task: {task.title}")
+                created = await self.notion.create_page({
+                    "parent": {"database_id": self.tasks_db_id},
+                    "properties": props
+                })
+
+                if created.get("ok"):
+                    new_id = created["data"]["id"]
+                    self.tasks._replace_id(task.id, new_id)
+
+                continue
+
+            print(f"♻️ Updating task: {task.title}")
+            await self.notion.update_page(task.notion_id, {"properties": props})
+
+        print("✅ TASKS SYNC COMPLETE")
 
     async def sync_tasks_down(self):
         print("⚠️ sync_tasks_down() not implemented yet")
