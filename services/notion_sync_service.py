@@ -29,7 +29,7 @@ class NotionSyncService:
         # Debounce task handlers
         self._sync_projects_task = None
         self._goals_debounce_task = None
-        self._tasks_debounce_task = None  # required by TasksService
+        self._tasks_debounce_task = None
 
         # Logger
         self.logger = logging.getLogger(__name__)
@@ -48,11 +48,8 @@ class NotionSyncService:
     # ------------------------------------------------------
     # ADD PROJECT FOR SYNC
     # ------------------------------------------------------
-    def add_project_for_sync(self, project, delete=False):
+    async def add_project_for_sync(self, project, delete=False):
         self.logger.info(f"🔄 [SYNC] Queued project: {project.title}")
-
-        async def schedule_sync():
-            await self._debounce(self.sync_projects_up)
 
         try:
             loop = asyncio.get_running_loop()
@@ -60,11 +57,12 @@ class NotionSyncService:
             if self._sync_projects_task and not self._sync_projects_task.done():
                 self._sync_projects_task.cancel()
 
-            self._sync_projects_task = loop.create_task(schedule_sync())
+            self._sync_projects_task = loop.create_task(
+                self._debounce(self.sync_projects_up)
+            )
 
         except RuntimeError:
-            self.logger.warning("⚠️ No running event loop — running sync directly.")
-            asyncio.run(self._debounce(self.sync_projects_up))
+            await self._debounce(self.sync_projects_up)
 
     # ------------------------------------------------------
     # LOAD PROJECTS FROM NOTION
@@ -205,13 +203,10 @@ class NotionSyncService:
         self.logger.info("✅ PROJECT SYNC COMPLETE")
 
     # ============================================================
-    #  GOALS SYNC — DEBOUNCE
+    # GOALS SYNC — DEBOUNCE
     # ============================================================
-    def debounce_goals_sync(self):
+    async def debounce_goals_sync(self):
         self.logger.info("⏳ Debounce: goals sync triggered")
-
-        async def schedule():
-            await self._debounce(self.sync_goals_up)
 
         try:
             loop = asyncio.get_running_loop()
@@ -219,13 +214,15 @@ class NotionSyncService:
             if self._goals_debounce_task and not self._goals_debounce_task.done():
                 self._goals_debounce_task.cancel()
 
-            self._goals_debounce_task = loop.create_task(schedule())
+            self._goals_debounce_task = loop.create_task(
+                self._debounce(self.sync_goals_up)
+            )
 
         except RuntimeError:
-            asyncio.run(self._debounce(self.sync_goals_up))
+            await self._debounce(self.sync_goals_up)
 
     # ============================================================
-    #  GOALS SYNC — REAL SYNC UP
+    # GOALS SYNC — REAL SYNC
     # ============================================================
     async def sync_goals_up(self):
         self.logger.info("🚀 SYNC: Uploading goals to Notion...")
@@ -233,7 +230,6 @@ class NotionSyncService:
         try:
             for goal in self.goals.get_all():
 
-                # CREATE NEW GOAL
                 if not goal.notion_id:
                     self.logger.info(f"📌 Creating new Notion goal: {goal.title}")
 
@@ -255,9 +251,6 @@ class NotionSyncService:
 
                     continue
 
-                # UPDATE EXISTING GOAL
-                self.logger.info(f"♻️ Updating goal in Notion: {goal.title}")
-
                 update_payload = {
                     "properties": {
                         "Name": {"title": [{"text": {"content": goal.title}}]},
@@ -275,13 +268,10 @@ class NotionSyncService:
             self.logger.error(f"❌ Goal sync error: {e}")
 
     # ============================================================
-    #  TASKS SYNC — DEBOUNCE
+    # TASKS SYNC — DEBOUNCE
     # ============================================================
-    def debounce_tasks_sync(self):
+    async def debounce_tasks_sync(self):
         self.logger.info("⏳ Debounce: tasks sync triggered")
-
-        async def schedule():
-            await self._debounce(self.sync_tasks_up)
 
         try:
             loop = asyncio.get_running_loop()
@@ -289,13 +279,15 @@ class NotionSyncService:
             if self._tasks_debounce_task and not self._tasks_debounce_task.done():
                 self._tasks_debounce_task.cancel()
 
-            self._tasks_debounce_task = loop.create_task(schedule())
+            self._tasks_debounce_task = loop.create_task(
+                self._debounce(self.sync_tasks_up)
+            )
 
         except RuntimeError:
-            asyncio.run(self._debounce(self.sync_tasks_up))
+            await self._debounce(self.sync_tasks_up)
 
     # ============================================================
-    # TASKS SYNC — REAL SYNC UP
+    # TASKS SYNC — REAL SYNC
     # ============================================================
     async def sync_tasks_up(self):
         self.logger.info("🚀 SYNC: Uploading tasks to Notion...")
@@ -303,7 +295,6 @@ class NotionSyncService:
         try:
             for task in self.tasks.get_all_tasks():
 
-                # CREATE NEW TASK
                 if not task.notion_id:
                     self.logger.info(f"📌 Creating new Notion task: {task.title}")
 
@@ -325,9 +316,6 @@ class NotionSyncService:
                         self.logger.info(f"🆕 Task synced to Notion with ID: {task.notion_id}")
 
                     continue
-
-                # UPDATE EXISTING TASK
-                self.logger.info(f"♻️ Updating Notion task: {task.title}")
 
                 update_payload = {
                     "properties": {
