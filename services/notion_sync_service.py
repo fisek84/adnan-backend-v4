@@ -1,6 +1,5 @@
 import asyncio
 
-
 class NotionSyncService:
     def __init__(
         self,
@@ -24,13 +23,22 @@ class NotionSyncService:
         self._delay = 0.3
         self._sync_projects_task = None
 
+    # ------------------------------------------------------
+    # DEBOUNCE QUEUE FOR PROJECT SYNC
+    # ------------------------------------------------------
     def add_project_for_sync(self, project, delete=False):
         print(f"🔄 [SYNC] Queued project: {project.title}")
-        if self._sync_projects_task and not self._sync_projects_task.done():
-            self._sync_projects_task.cancel()
-        self._sync_projects_task = asyncio.create_task(
-            self._debounce(self.sync_projects_up)
-        )
+
+        async def schedule_sync():
+            await self._debounce(self.sync_projects_up)
+
+        try:
+            loop = asyncio.get_running_loop()
+            if self._sync_projects_task and not self._sync_projects_task.done():
+                self._sync_projects_task.cancel()
+            self._sync_projects_task = loop.create_task(schedule_sync())
+        except RuntimeError:
+            print("⚠️ No running event loop — skipping sync task.")
 
     async def _debounce(self, fn):
         try:
@@ -39,6 +47,9 @@ class NotionSyncService:
         except asyncio.CancelledError:
             pass
 
+    # ------------------------------------------------------
+    # LOAD PROJECTS FROM NOTION → BACKEND
+    # ------------------------------------------------------
     async def get_all_projects_from_notion(self):
         return await self.notion.query_database(self.projects_db_id)
 
@@ -121,6 +132,9 @@ class NotionSyncService:
 
         print(f"📁 Loaded {len(results)} projects from Notion")
 
+    # ------------------------------------------------------
+    # BACKEND → NOTION SYNC
+    # ------------------------------------------------------
     def map_local_project_to_notion(self, p: dict):
         def wrap(x):
             return {"rich_text": [{"text": {"content": x or ""}}]}
@@ -150,16 +164,19 @@ class NotionSyncService:
             p_dict = self.projects.to_dict(p)
             props = self.map_local_project_to_notion(p_dict)
 
-            # NOVA STRANICA
+            # NEW PAGE
             if not p.notion_id:
                 print("📌 Creating new Notion page:", p.title)
-                created = await self.notion.create_project(p)
+                created = await self.notion.create_page({
+                    "parent": {"database_id": self.projects_db_id},
+                    "properties": props
+                })
                 if created.get("ok"):
                     new_id = created["data"]["id"]
                     self.projects._replace_id(p.id, new_id)
                 continue
 
-            # AŽURIRANJE
+            # UPDATE
             print("♻️ Updating page:", p.title)
             await self.notion.update_page(p.notion_id, {"properties": props})
 
