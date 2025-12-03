@@ -10,7 +10,6 @@ from dependencies import get_tasks_service
 
 router = APIRouter(prefix="/tasks", tags=["Tasks"])
 
-
 # =====================================================
 # GET ALL
 # =====================================================
