@@ -1,7 +1,11 @@
 from datetime import datetime
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional
+import logging  # Dodajemo logovanje
 
+# Inicijalizujemo logger
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 class GoalCreate(BaseModel):
     """
@@ -55,7 +59,9 @@ class GoalCreate(BaseModel):
         try:
             datetime.fromisoformat(v)
         except ValueError:
+            logger.error(f"Invalid deadline format: {v}")
             raise ValueError("Deadline must be ISO format YYYY-MM-DD")
+        logger.info(f"Valid deadline format: {v}")
         return v
 
     @field_validator("priority")
@@ -64,7 +70,9 @@ class GoalCreate(BaseModel):
             return v
         allowed = {"low", "medium", "high"}
         if v not in allowed:
+            logger.error(f"Invalid priority value: {v}. Must be one of: {allowed}")
             raise ValueError(f"Priority must be one of: {allowed}")
+        logger.info(f"Valid priority value: {v}")
         return v
 
     class Config:

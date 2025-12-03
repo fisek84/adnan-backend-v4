@@ -1,7 +1,11 @@
 from datetime import datetime
 from pydantic import BaseModel, Field, validator
 from typing import Optional
+import logging  # Dodajemo logovanje
 
+# Inicijalizujemo logger
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 class TaskModel(BaseModel):
     """
@@ -64,7 +68,9 @@ class TaskModel(BaseModel):
         try:
             datetime.fromisoformat(v)
         except Exception:
+            logger.error(f"Invalid deadline format: {v}")
             raise ValueError("Deadline must be ISO format YYYY-MM-DD")
+        logger.info(f"Valid deadline format: {v}")
         return v
 
     @validator("priority")
@@ -73,14 +79,18 @@ class TaskModel(BaseModel):
             return v
         allowed = {"low", "medium", "high"}
         if v not in allowed:
+            logger.error(f"Invalid priority value: {v}. Must be one of: {allowed}")
             raise ValueError(f"Priority must be one of: {allowed}")
+        logger.info(f"Valid priority value: {v}")
         return v
 
     @validator("status")
     def validate_status(cls, v):
         allowed = {"pending", "in_progress", "completed"}
         if v not in allowed:
+            logger.error(f"Invalid status value: {v}. Must be one of: {allowed}")
             raise ValueError(f"Status must be one of: {allowed}")
+        logger.info(f"Valid status value: {v}")
         return v
 
     class Config:

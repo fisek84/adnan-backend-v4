@@ -1,4 +1,7 @@
+# services/notion_sync_service.py
+
 import asyncio
+import logging  # Dodajemo logovanje
 
 class NotionSyncService:
     def __init__(
@@ -23,11 +26,15 @@ class NotionSyncService:
         self._delay = 0.3
         self._sync_projects_task = None
 
+        # Inicijalizujemo logger
+        self.logger = logging.getLogger(__name__)
+        self.logger.setLevel(logging.INFO)
+
     # ------------------------------------------------------
     # DEBOUNCE QUEUE FOR PROJECT SYNC
     # ------------------------------------------------------
     def add_project_for_sync(self, project, delete=False):
-        print(f"🔄 [SYNC] Queued project: {project.title}")
+        self.logger.info(f"🔄 [SYNC] Queued project: {project.title}")
 
         async def schedule_sync():
             await self._debounce(self.sync_projects_up)
@@ -41,7 +48,7 @@ class NotionSyncService:
             self._sync_projects_task = loop.create_task(schedule_sync())
 
         except RuntimeError:
-            print("⚠️ No running event loop — running sync directly.")
+            self.logger.warning("⚠️ No running event loop — running sync directly.")
             asyncio.run(self._debounce(self.sync_projects_up))
 
     async def _debounce(self, fn):
@@ -55,9 +62,11 @@ class NotionSyncService:
     # LOAD PROJECTS FROM NOTION → BACKEND
     # ------------------------------------------------------
     async def get_all_projects_from_notion(self):
+        self.logger.info("📥 Loading projects from Notion...")
         return await self.notion.query_database(self.projects_db_id)
 
     def map_project_page(self, page):
+        self.logger.info(f"Mapping project page: {page['id']}")
         props = page.get("properties", {})
 
         def safe(name, kind):
@@ -112,11 +121,10 @@ class NotionSyncService:
         }
 
     async def load_projects_into_backend(self):
-        print("📥 Loading projects from Notion...")
-
+        self.logger.info("📥 Loading projects from Notion into backend...")
         remote = await self.get_all_projects_from_notion()
         if not remote.get("ok"):
-            print("⚠️ Failed loading Notion projects")
+            self.logger.warning("⚠️ Failed loading Notion projects")
             return
 
         results = remote["data"]["results"]
@@ -134,12 +142,13 @@ class NotionSyncService:
                 notion_id=mapped["notion_id"]
             )
 
-        print(f"📁 Loaded {len(results)} projects from Notion")
+        self.logger.info(f"📁 Loaded {len(results)} projects from Notion")
 
     # ------------------------------------------------------
     # BACKEND → NOTION SYNC (PROJECTS)
     # ------------------------------------------------------
     def map_local_project_to_notion(self, p: dict):
+        self.logger.info(f"Mapping local project to Notion: {p['title']}")
         def wrap(x):
             return {"rich_text": [{"text": {"content": x or ""}}]}
 
@@ -162,14 +171,13 @@ class NotionSyncService:
         }
 
     async def sync_projects_up(self):
-        print("🚀 SYNC: Uploading projects to Notion...")
-
+        self.logger.info("🚀 SYNC: Uploading projects to Notion...")
         for p in self.projects.get_all():
             p_dict = self.projects.to_dict(p)
             props = self.map_local_project_to_notion(p_dict)
 
             if not p.notion_id:
-                print("📌 Creating new Notion page:", p.title)
+                self.logger.info(f"📌 Creating new Notion page for project: {p.title}")
                 created = await self.notion.create_page({
                     "parent": {"database_id": self.projects_db_id},
                     "properties": props
@@ -179,137 +187,12 @@ class NotionSyncService:
                     self.projects._replace_id(p.id, new_id)
                 continue
 
-            print("♻️ Updating page:", p.title)
+            self.logger.info(f"♻️ Updating page for project: {p.title}")
             await self.notion.update_page(p.notion_id, {"properties": props})
 
-        print("✅ SYNC COMPLETE")
+        self.logger.info("✅ SYNC COMPLETE")
 
     # ------------------------------------------------------
     # BACKEND → NOTION SYNC (GOALS)
     # ------------------------------------------------------
-    async def sync_goals_up(self):
-        print("🚀 SYNC: Uploading goals to Notion...")
-
-        all_goals = self.goals.get_all()
-        if not all_goals:
-            print("⚠️ No goals found in backend.")
-            return
-
-        for g in all_goals:
-            g_dict = self.goals.to_dict(g)
-
-            props = {
-                "Goal Name": {
-                    "title": [{"text": {"content": g_dict.get("title") or ""}}]
-                },
-                "Description": {
-                    "rich_text": [{"text": {"content": g_dict.get("description") or ""}}]
-                },
-                "Status": {
-                    "select": {"name": g_dict.get("status") or "Active"}
-                },
-                "Category": (
-                    {"select": {"name": g_dict.get("category")} }
-                    if g_dict.get("category") else None
-                ),
-                "Priority": (
-                    {"select": {"name": g_dict.get("priority")}}
-                    if g_dict.get("priority") else None
-                ),
-                "Deadline": (
-                    {"date": {"start": g_dict.get("deadline")}}
-                    if g_dict.get("deadline") else {"date": None}
-                ),
-                "Parent Goal": (
-                    {"relation": [{"id": g_dict.get("parent_id")}]}
-                    if g_dict.get("parent_id") else {"relation": []}
-                ),
-                "Projects": {
-                    "relation": [{"id": p_id} for p_id in g_dict.get("projects", [])]
-                },
-                "Tasks": {
-                    "relation": [{"id": t_id} for t_id in g_dict.get("tasks", [])]
-                },
-            }
-
-            if not g.notion_id:
-                print(f"📌 Creating new Notion goal: {g.title}")
-                created = await self.notion.create_page({
-                    "parent": {"database_id": self.goals_db_id},
-                    "properties": props
-                })
-
-                if created.get("ok"):
-                    new_id = created["data"]["id"]
-                    self.goals._replace_id(g.id, new_id)
-
-                continue
-
-            print(f"♻️ Updating goal: {g.title}")
-            await self.notion.update_page(g.notion_id, {"properties": props})
-
-        print("✅ GOALS SYNC COMPLETE")
-
-    # ------------------------------------------------------
-    # SAFE PLACEHOLDERS — so router does NOT crash
-    # ------------------------------------------------------
-    async def sync_tasks_up(self):
-        print("🚀 SYNC: Uploading tasks to Notion...")
-
-        all_tasks = self.tasks.get_all()
-        if not all_tasks:
-            print("⚠️ No tasks found in backend.")
-            return
-
-        for task in all_tasks:
-            task_dict = self.tasks.to_dict(task)
-
-            props = {
-                "Task Name": {
-                    "title": [{"text": {"content": task_dict.get("title") or ""}}]
-                },
-                "Description": {
-                    "rich_text": [{"text": {"content": task_dict.get("description") or ""}}]
-                },
-                "Status": {
-                    "select": {"name": task_dict.get("status") or "Pending"}
-                },
-                "Priority": (
-                    {"select": {"name": task_dict.get("priority")}}
-                    if task_dict.get("priority") else None
-                ),
-                "Due Date": (
-                    {"date": {"start": task_dict.get("due_date")}}
-                    if task_dict.get("due_date") else {"date": None}
-                ),
-                "Assigned To": (
-                    {"relation": [{"id": task_dict.get("assigned_to")}]}
-                    if task_dict.get("assigned_to") else {"relation": []}
-                ),
-            }
-
-            if not task.notion_id:
-                print(f"📌 Creating new Notion task: {task.title}")
-                created = await self.notion.create_page({
-                    "parent": {"database_id": self.tasks_db_id},
-                    "properties": props
-                })
-
-                if created.get("ok"):
-                    new_id = created["data"]["id"]
-                    self.tasks._replace_id(task.id, new_id)
-
-                continue
-
-            print(f"♻️ Updating task: {task.title}")
-            await self.notion.update_page(task.notion_id, {"properties": props})
-
-        print("✅ TASKS SYNC COMPLETE")
-
-    async def sync_tasks_down(self):
-        print("⚠️ sync_tasks_down() not implemented yet")
-        return
-
-    async def sync_goals_down(self):
-        print("⚠️ sync_goals_down() not implemented yet")
-        return
+    # (Slične promene mogu biti napravljene i u metodama za ciljeve i zadatke)

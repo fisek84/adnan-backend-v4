@@ -1,6 +1,10 @@
 from pydantic import BaseModel, validator
 from typing import Optional, List
+import logging  # Dodajemo logovanje
 
+# Inicijalizujemo logger
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 class ProjectCreate(BaseModel):
     title: str
@@ -35,5 +39,33 @@ class ProjectCreate(BaseModel):
     @validator("title")
     def title_cannot_be_empty(cls, v):
         if not v or v.strip() == "":
+            logger.error("Project title cannot be empty.")
             raise ValueError("Project must have a title.")
+        logger.info(f"Project title validated: {v}")
         return v
+
+    @validator("priority")
+    def validate_priority(cls, v):
+        if v is None:
+            return v
+        allowed = {"low", "medium", "high"}
+        if v not in allowed:
+            logger.error(f"Invalid priority value: {v}. Must be one of: {allowed}")
+            raise ValueError(f"Priority must be one of: {allowed}")
+        logger.info(f"Valid priority value: {v}")
+        return v
+
+    @validator("deadline")
+    def validate_deadline(cls, v):
+        if v is None:
+            return v
+        try:
+            datetime.fromisoformat(v)
+        except ValueError:
+            logger.error(f"Invalid deadline format: {v}")
+            raise ValueError("Deadline must be in ISO format YYYY-MM-DD")
+        logger.info(f"Valid deadline format: {v}")
+        return v
+
+    class Config:
+        extra = "forbid"

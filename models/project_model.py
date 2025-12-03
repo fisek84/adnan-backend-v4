@@ -1,7 +1,11 @@
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime
+import logging  # Dodajemo logovanje
 
+# Inicijalizujemo logger
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 class ProjectModel(BaseModel):
     id: str
@@ -35,3 +39,24 @@ class ProjectModel(BaseModel):
 
     created_at: datetime
     updated_at: datetime
+
+    # ------------------------------------------------------
+    # CONFIGURATION
+    # ------------------------------------------------------
+    class Config:
+        orm_mode = True
+        validate_assignment = True
+        extra = "forbid"
+        json_encoders = {
+            datetime: lambda v: v.isoformat()
+        }
+
+    @classmethod
+    def log_project_creation(cls, project: "ProjectModel"):
+        logger.info(f"Creating project: {project.title} with ID: {project.id}")
+        logger.debug(f"Project details: {project.dict()}")
+
+    @classmethod
+    def log_project_update(cls, project: "ProjectModel"):
+        logger.info(f"Updating project: {project.title} with ID: {project.id}")
+        logger.debug(f"Updated project details: {project.dict()}")

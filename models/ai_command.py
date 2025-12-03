@@ -1,6 +1,10 @@
 from pydantic import BaseModel, Field
 from typing import Optional, Any, Dict
+import logging  # Dodajemo logovanje
 
+# Inicijalizujemo logger
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 class AICommand(BaseModel):
     """
@@ -37,3 +41,22 @@ class AICommand(BaseModel):
     class Config:
         extra = "forbid"
         validate_assignment = True
+
+    # Logovanje komandi
+    @classmethod
+    def log_command(cls, command: "AICommand"):
+        logger.info(f"Received AI command: {command.command}")
+        logger.debug(f"Command input: {command.input}")
+        logger.debug(f"Command agent: {command.agent}")
+        logger.debug(f"Command params: {command.params}")
+        logger.debug(f"Command metadata: {command.metadata}")
+
+    # Logovanje grešaka pri izvršenju komandi
+    @classmethod
+    def log_command_error(cls, command: "AICommand", error: str):
+        logger.error(f"Error executing AI command: {command.command}")
+        logger.error(f"Error details: {error}")
+        logger.debug(f"Failed command input: {command.input}")
+        logger.debug(f"Command agent: {command.agent}")
+        logger.debug(f"Command params: {command.params}")
+        logger.debug(f"Command metadata: {command.metadata}")
