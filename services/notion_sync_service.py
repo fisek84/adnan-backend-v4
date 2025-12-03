@@ -34,14 +34,15 @@ class NotionSyncService:
 
         try:
             loop = asyncio.get_running_loop()
+
+            if self._sync_projects_task and not self._sync_projects_task.done():
+                self._sync_projects_task.cancel()
+
+            self._sync_projects_task = loop.create_task(schedule_sync())
+
         except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-        if self._sync_projects_task and not self._sync_projects_task.done():
-            self._sync_projects_task.cancel()
-
-        self._sync_projects_task = loop.create_task(schedule_sync())
+            print("⚠️ No running event loop — running sync directly.")
+            asyncio.run(self._debounce(self.sync_projects_up))
 
     async def _debounce(self, fn):
         try:
@@ -136,7 +137,7 @@ class NotionSyncService:
         print(f"📁 Loaded {len(results)} projects from Notion")
 
     # ------------------------------------------------------
-    # BACKEND → NOTION SYNC
+    # BACKEND → NOTION SYNC (PROJECTS)
     # ------------------------------------------------------
     def map_local_project_to_notion(self, p: dict):
         def wrap(x):
@@ -182,3 +183,84 @@ class NotionSyncService:
             await self.notion.update_page(p.notion_id, {"properties": props})
 
         print("✅ SYNC COMPLETE")
+
+    # ------------------------------------------------------
+    # BACKEND → NOTION SYNC (GOALS)
+    # ------------------------------------------------------
+    async def sync_goals_up(self):
+        print("🚀 SYNC: Uploading goals to Notion...")
+
+        all_goals = self.goals.get_all()
+        if not all_goals:
+            print("⚠️ No goals found in backend.")
+            return
+
+        for g in all_goals:
+            g_dict = self.goals.to_dict(g)
+
+            props = {
+                "Goal Name": {
+                    "title": [{"text": {"content": g_dict.get("title") or ""}}]
+                },
+                "Description": {
+                    "rich_text": [{"text": {"content": g_dict.get("description") or ""}}]
+                },
+                "Status": {
+                    "select": {"name": g_dict.get("status") or "Active"}
+                },
+                "Category": (
+                    {"select": {"name": g_dict.get("category")}}
+                    if g_dict.get("category") else None
+                ),
+                "Priority": (
+                    {"select": {"name": g_dict.get("priority")}}
+                    if g_dict.get("priority") else None
+                ),
+                "Deadline": (
+                    {"date": {"start": g_dict.get("deadline")}}
+                    if g_dict.get("deadline") else {"date": None}
+                ),
+                "Parent Goal": (
+                    {"relation": [{"id": g_dict.get("parent_id")}]}
+                    if g_dict.get("parent_id") else {"relation": []}
+                ),
+                "Projects": {
+                    "relation": [{"id": p_id} for p_id in g_dict.get("projects", [])]
+                },
+                "Tasks": {
+                    "relation": [{"id": t_id} for t_id in g_dict.get("tasks", [])]
+                },
+            }
+
+            if not g.notion_id:
+                print(f"📌 Creating new Notion goal: {g.title}")
+                created = await self.notion.create_page({
+                    "parent": {"database_id": self.goals_db_id},
+                    "properties": props
+                })
+
+                if created.get("ok"):
+                    new_id = created["data"]["id"]
+                    self.goals._replace_id(g.id, new_id)
+
+                continue
+
+            print(f"♻️ Updating goal: {g.title}")
+            await self.notion.update_page(g.notion_id, {"properties": props})
+
+        print("✅ GOALS SYNC COMPLETE")
+
+    # ------------------------------------------------------
+    # SAFE PLACEHOLDERS — so router does NOT crash
+    # ------------------------------------------------------
+    async def sync_tasks_up(self):
+        print("⚠️ sync_tasks_up() not implemented yet")
+        return
+
+    async def sync_tasks_down(self):
+        print("⚠️ sync_tasks_down() not implemented yet")
+        return
+
+    async def sync_goals_down(self):
+        print("⚠️ sync_goals_down() not implemented yet")
+        return
