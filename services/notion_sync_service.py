@@ -29,7 +29,7 @@ class NotionSyncService:
         # Debounce task handlers
         self._sync_projects_task = None
         self._goals_debounce_task = None
-        self._tasks_debounce_task = None  # NEW — required by TasksService
+        self._tasks_debounce_task = None  # required by TasksService
 
         # Logger
         self.logger = logging.getLogger(__name__)
@@ -164,7 +164,7 @@ class NotionSyncService:
         return {
             "Project Name": {"title": [{"text": {"content": p.get("title") or ""}}]},
             "Description": wrap(p.get("description")),
-            "Status": {"select": {"name": p.get("status")}},
+            "Status": {"select": {"name": p.get("status")}} if p.get("status") else None,
             "Category": {"select": {"name": p.get("category")}} if p.get("category") else None,
             "Priority": {"select": {"name": p.get("priority")}} if p.get("priority") else None,
             "Start Date": {"date": {"start": p.get("start_date")}} if p.get("start_date") else {"date": None},
@@ -176,7 +176,8 @@ class NotionSyncService:
             "Parent Project": {"relation": [{"id": p.get("parent_id")}]} if p.get("parent_id") else {"relation": []},
             "Agent Exchange DB": {"relation": [{"id": a} for a in p.get("agents", [])]},
             "Tasks DB": {"relation": [{"id": t} for t in p.get("tasks", [])]},
-            "Handled By": wrap(p.get("handled_by"))},
+            "Handled By": wrap(p.get("handled_by")),
+        }
 
     async def sync_projects_up(self):
         self.logger.info("🚀 SYNC: Uploading projects to Notion...")

@@ -142,9 +142,8 @@ class NotionService:
         if response["ok"]:
             notion_page_id = response["data"]["id"]
             self.logger.info(f"Task created successfully in Notion with ID: {notion_page_id}")
-            return notion_page_id
         else:
             self.logger.error(f"Failed to create task in Notion: {response['error']}")
-            return response["error"]
 
-    # ... (Ostale metode ostaju iste)
+        # VAŽNO: uvijek vraćamo standardizirani dict (ok / data / error)
+        return response

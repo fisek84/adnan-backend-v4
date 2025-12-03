@@ -2,7 +2,7 @@
 
 import asyncio
 from uuid import uuid4
-from datetime import datetime, timezone
+from datetime.datetime import datetime, timezone
 from typing import Dict, Optional, List
 
 from models.task_create import TaskCreate
