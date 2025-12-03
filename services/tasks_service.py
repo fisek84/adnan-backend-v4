@@ -92,8 +92,27 @@ class TasksService:
 
         # Notion create
         res = await self.notion.create_task(task)
+        print("DEBUG RES:", res, type(res))
 
-        if res["ok"]:
+        # ====================================================
+        # NORMALIZACIJA RESPONSE-A (rješava TypeError problem)
+        # ====================================================
+        if isinstance(res, str):
+            res = {"ok": False, "error": res}
+
+        if not isinstance(res, dict):
+            res = {"ok": False, "error": "Invalid response from Notion"}
+
+        # Osiguramo da 'ok' postoji
+        res.setdefault("ok", False)
+
+        # Osiguramo da 'data' postoji i bude dict
+        if "data" not in res or not isinstance(res.get("data"), dict):
+            res["data"] = {}
+
+        # ====================================================
+        # Ako je task uspješno kreiran u Notion → upiši ID
+        if res["ok"] and "id" in res["data"]:
             task.notion_id = res["data"]["id"]
 
         # Trigger sync
