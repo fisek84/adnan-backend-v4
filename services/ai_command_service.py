@@ -1,6 +1,6 @@
 import json
-import openai
 import os
+from openai import OpenAI
 from services.identity_loader import load_adnan_identity
 
 
@@ -11,14 +11,12 @@ class AICommandService:
         if not api_key:
             raise RuntimeError("OPENAI_API_KEY is missing in environment variables.")
 
-        openai.api_key = api_key
-
-        # Official v2 client
-        self.client = openai.OpenAI()
+        # Correct new OpenAI client (v1+ SDK)
+        self.client = OpenAI(api_key=api_key)
         self.model = "gpt-4.1-mini"
 
         # Load full Adnan.AI identity (JSON)
-        self.identity = load_adnan_identity()     # ✅ PRAVILNA FUNKCIJA
+        self.identity = load_adnan_identity()
 
         # Map structured commands
         self._commands = {
@@ -65,10 +63,10 @@ class AICommandService:
         # Normalizacija dijakritike
         t = (
             t.replace("ć", "c")
-            .replace("č", "c")
-            .replace("š", "s")
-            .replace("ž", "z")
-            .replace("đ", "dj")
+             .replace("č", "c")
+             .replace("š", "s")
+             .replace("ž", "z")
+             .replace("đ", "dj")
         )
 
         # Goals list
@@ -126,7 +124,7 @@ class AICommandService:
         return {
             "type": "natural",
             "input": text,
-            "output": response.choices[0].message.content,   # ✅ FIXED
+            "output": response.choices[0].message.content,
         }
 
     # ---------------------------------------------------------
