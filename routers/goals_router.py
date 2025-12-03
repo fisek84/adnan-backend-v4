@@ -1,3 +1,4 @@
+# routers/goals_router.py
 from fastapi import APIRouter, HTTPException, Depends
 import os
 import logging  # Dodajemo logovanje
@@ -68,7 +69,7 @@ async def create_goal(
 
 
 # ================================
-# UPDATE
+# UPDATE GOAL
 # ================================
 @router.patch("/{goal_id}")
 async def update_goal(
@@ -87,7 +88,7 @@ async def update_goal(
 
 
 # ================================
-# LIST
+# LIST ALL GOALS
 # ================================
 @router.get("/all")
 async def list_goals(goals_service=Depends(get_goals_service)):
@@ -98,7 +99,7 @@ async def list_goals(goals_service=Depends(get_goals_service)):
 
 
 # ================================
-# DELETE (WITH NOTION ARCHIVE)
+# DELETE GOAL
 # ================================
 @router.delete("/{goal_id}")
 async def delete_goal(

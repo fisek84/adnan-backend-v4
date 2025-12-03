@@ -1,73 +1,128 @@
-# services/tasks_service.py
+import asyncio
+from uuid import uuid4
+from datetime import datetime, timezone
+from typing import Dict, Optional, List
 
-from typing import List
-from datetime import datetime
-import logging  # Dodajemo logovanje
-
-from models.task_model import TaskModel
 from models.task_create import TaskCreate
 from models.task_update import TaskUpdate
+from models.task_model import TaskModel
+from services.notion_service import get_notion_service
 
-from services.notion_service import NotionService
-from utils.helpers import generate_uuid
-from services.auto_assign_engine import AutoAssignEngine
-
-# Inicijalizujemo logger
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)  # Možemo promeniti nivo logovanja (INFO, DEBUG, ERROR)
 
 class TasksService:
-    def __init__(self, notion_service: NotionService):
-        self.notion = notion_service
-        self.local_tasks = {}  # required for sync service
-        self.projects_db_id = None   # sync će postaviti ovo kasnije
+    goals_service = None
+    sync_service = None
 
-    # ------------------------------------------------------
+    def __init__(self):
+        self.tasks: Dict[str, TaskModel] = {}
+
+    # ============================================================
+    # BIND
+    # ============================================================
+    def bind_goals_service(self, goals_service):
+        self.goals_service = goals_service
+
+    def bind_sync_service(self, sync_service):
+        self.sync_service = sync_service
+
+    # ============================================================
+    # HELPERS
+    # ============================================================
+    def _now(self):
+        return datetime.now(timezone.utc)
+
+    # ============================================================
+    # TO_DICT (EXPORTED TO SYNC)
+    # ============================================================
+    def to_dict(self, task: TaskModel) -> dict:
+        return {
+            "id": task.id,
+            "notion_id": task.notion_id,
+            "title": task.title,
+            "description": task.description,
+            "goal_id": task.goal_id,
+            "deadline": task.deadline,
+            "priority": task.priority,
+            "status": task.status,
+            "order": task.order,
+            "created_at": task.created_at,
+            "updated_at": task.updated_at,
+        }
+
+    # ============================================================
     # CREATE
-    # ------------------------------------------------------
+    # ============================================================
     async def create_task(self, data: TaskCreate) -> TaskModel:
-        task_id = generate_uuid()
-        now = datetime.utcnow()
+        now = self._now()
+        task_id = uuid4().hex
 
         task = TaskModel(
             id=task_id,
             notion_id=None,
             title=data.title,
-            description=data.description or "",
+            description=data.description,
             goal_id=data.goal_id,
             deadline=data.deadline,
             priority=data.priority,
-            status="pending",
+            status=data.status or "pending",
             order=0,
             created_at=now,
             updated_at=now,
         )
 
-        # save locally
-        self.local_tasks[task_id] = task
+        # Save locally
+        self.tasks[task_id] = task
 
-        # create in notion → returns page_id
-        try:
-            notion_page_id = await self.notion.create_task(task)
-            logger.info(f"Task {task_id} created in Notion with page ID: {notion_page_id}")
+        # Create in Notion
+        notion = get_notion_service()
+        res = await notion.create_task(task)
 
-            if isinstance(notion_page_id, str):
-                task.notion_id = notion_page_id
-                self.local_tasks[task_id] = task
-            else:
-                logger.error(f"Failed to create task {task_id} in Notion: {notion_page_id['error']}")
-
-        except Exception as e:
-            logger.error(f"Error creating task {task_id} in Notion: {str(e)}")
-
-        # AUTO-ASSIGN SYSTEM
-        if task.notion_id:
-            await self._auto_assign_goal_if_missing(task.notion_id)
-            await self._auto_assign_project_if_missing(task.notion_id)
-            await self._auto_assign_goal_from_project_if_missing(task.notion_id)
-            await self._auto_assign_project_if_missing_advanced(task.notion_id)
-            await self._auto_assign_goal_from_project_advanced(task.notion_id)
+        if res["ok"]:
+            notion_id = res["data"]["id"]
+            task.notion_id = notion_id
 
         return task
 
-    # ... (Ostale metode ostaju iste)
+    # ============================================================
+    # UPDATE
+    # ============================================================
+    async def update_task(self, task_id: str, updates: TaskUpdate):
+        task = self.tasks.get(task_id)
+        if not task:
+            raise ValueError("Task not found")
+
+        # Apply local changes
+        for field in updates.model_fields:
+            val = getattr(updates, field)
+            if val is not None:
+                setattr(task, field, val)
+
+        task.updated_at = self._now()
+
+        # Push update to Notion
+        notion = get_notion_service()
+        await notion.update_task(task.notion_id, updates)
+
+        return task
+
+    # ============================================================
+    # DELETE
+    # ============================================================
+    async def delete_task(self, task_id: str):
+        task = self.tasks.get(task_id)
+        if not task:
+            return {"ok": False, "error": "Task not found"}
+
+        # Remove locally
+        self.tasks.pop(task_id)
+
+        return {
+            "ok": True,
+            "notion_id": task.notion_id,
+        }
+
+    # ============================================================
+    # GET ALL
+    # ============================================================
+    def get_all_tasks(self) -> List[TaskModel]:
+        return list(self.tasks.values())
