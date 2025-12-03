@@ -22,9 +22,16 @@ class TaskModel(BaseModel):
     description: Optional[str] = Field(
         "", description="Optional task description"
     )
+
     goal_id: Optional[str] = Field(
         None, description="Linked goal ID"
     )
+
+    # 🔥 REQUIRED FOR PROJECT ↔ TASK RELATION
+    project_id: Optional[str] = Field(
+        None, description="Linked project ID"
+    )
+
     deadline: Optional[str] = Field(
         None, description="Deadline (ISO8601 YYYY-MM-DD)"
     )

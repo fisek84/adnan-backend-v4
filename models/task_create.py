@@ -21,7 +21,13 @@ class TaskCreate(BaseModel):
 
     goal_id: Optional[str] = Field(
         None,
-        description="Goal ID this task is associated with (optional)"
+        description="Goal ID this task is associated with"
+    )
+
+    # 🔥 REQUIRED BY Projects → Tasks relation
+    project_id: Optional[str] = Field(
+        None,
+        description="Project ID this task belongs to"
     )
 
     deadline: Optional[str] = Field(
@@ -32,6 +38,12 @@ class TaskCreate(BaseModel):
     priority: Optional[str] = Field(
         None,
         description="Task priority: low, medium, high"
+    )
+
+    # Backend will assign default status ("pending") unless provided
+    status: Optional[str] = Field(
+        None,
+        description="Task status (optional; backend sets default)"
     )
 
     # -------------------------------------------
@@ -58,4 +70,4 @@ class TaskCreate(BaseModel):
         return v
 
     class Config:
-        extra = "forbid"  # prevent unknown fields
+        extra = "forbid"

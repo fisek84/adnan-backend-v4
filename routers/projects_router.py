@@ -3,7 +3,7 @@ from typing import List
 
 from models.project_create import ProjectCreate
 from models.project_update import ProjectUpdate
-from models.base_model import ProjectModel
+from models.project_model import ProjectModel   # ✅ FIXED
 
 from services.projects_service import ProjectsService
 from dependencies import get_projects_service

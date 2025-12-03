@@ -10,31 +10,63 @@ services:
 
     autoDeploy: true
 
-    # === Health check (sprječava gašenje nakon prvog GET) ===
+    # ============================
+    # HEALTH CHECK
+    # ============================
     healthCheckPath: "/health"
     healthCheckInterval: 30
-    healthCheckTimeout: 200
+    healthCheckTimeout: 10     # Render max allowed
 
-    # === Osiguraj da Render NE ubije proces prerano ===
-    serviceTimeout: 600      # 10 min timeout umjesto 5 sec default
-    numInstances: 1          # sigurnije na starter planu
+    # ============================
+    # RUNTIME SETTINGS
+    # ============================
+    serviceTimeout: 500        # enough for long requests
+    numInstances: 1
 
-    # === Retry strategija — Render neće rušiti nakon malog kašnjenja ===
+    resources:
+      cpu: 0.5
+      memory: 512Mi
+
+    # ============================
+    # ENVIRONMENT VARIABLES
+    # (ADD ALL NOTION / SYSTEM VARS HERE)
+    # ============================
+    envVars:
+      - key: NOTION_API_KEY
+        sync: false
+
+      - key: NOTION_GOALS_DB_ID
+        sync: false
+
+      - key: NOTION_TASKS_DB_ID
+        sync: false
+
+      - key: NOTION_PROJECTS_DB_ID
+        sync: false
+
+      - key: NOTION_AGENT_EXCHANGE_DB_ID
+        sync: false
+
+      - key: NOTION_AGENT_PROJECTS_DB_ID
+        sync: false
+
+    # ============================
+    # DEPLOY TRIGGER SETTINGS
+    # ============================
+    buildFilter:
+      paths:
+        - Dockerfile
+        - requirements.txt
+        - render.yaml
+        - main.py
+        - routers/**
+        - services/**
+        - models/**
+        - ext/**
+        - dependencies.py
+
     autoRetry:
       enabled: true
       maxRetries: 5
       delay: 10
       factor: 2
-
-    # === CPU/RAM limita — stabilnije za uvicorn container ===
-    resources:
-      cpu: 0.5
-      memory: 512Mi
-
-    # === Build filter — Render deploya samo kad je relevantno ===
-    buildFilter:
-      paths:
-        - Dockerfile
-        - requirements.txt
-        - main.py
-        - render.yaml

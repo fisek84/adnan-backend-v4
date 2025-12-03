@@ -111,7 +111,7 @@ class ProjectsService:
         return removed
 
     # ------------------------------------------------------
-    # GET ALL
+    # GET / LIST
     # ------------------------------------------------------
     def get_all(self) -> List[ProjectModel]:
         return list(self.projects.values())
@@ -120,7 +120,7 @@ class ProjectsService:
         return self.projects.get(project_id)
 
     # ------------------------------------------------------
-    # USED BY AUTO-ASSIGN
+    # AUTO-ASSIGN HELP
     # ------------------------------------------------------
     def get_all_tasks_for_project(self, project_id: str):
         project = self.projects.get(project_id)
@@ -129,7 +129,7 @@ class ProjectsService:
         return project.tasks
 
     # ------------------------------------------------------
-    # HELPERS FOR NOTION SYNC (REQUIRED)
+    # NOTION SYNC HELPERS
     # ------------------------------------------------------
     def to_dict(self, p: ProjectModel) -> dict:
         return {
@@ -147,16 +147,12 @@ class ProjectsService:
         }
 
     def to_create_model(self, mapped: dict) -> ProjectCreate:
-        """
-        Pretvara mapped Notion projekt → ProjectCreate model.
-        Ovo koristi NotionSyncService.load_projects_into_backend().
-        """
         return ProjectCreate(
             title=mapped["title"],
             description=mapped["description"],
             deadline=mapped["deadline"],
             primary_goal_id=mapped["primary_goal_id"],
             status=mapped["status"],
-            progress=mapped["progress"],
+            progress=mapped.get("progress", 0),  # SAFE FIX ✔️
             tasks=mapped.get("tasks", []),
         )

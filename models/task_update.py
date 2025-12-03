@@ -1,13 +1,12 @@
 from pydantic import BaseModel, Field, validator
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime
 
 
 class TaskUpdate(BaseModel):
     """
     Update model for Task objects.
-    All fields are optional — 
-    only provided ones will be updated.
+    All fields optional — only provided ones will be updated.
     """
 
     title: Optional[str] = Field(
@@ -16,26 +15,41 @@ class TaskUpdate(BaseModel):
     description: Optional[str] = Field(
         None, description="Updated task description"
     )
+
     goal_id: Optional[str] = Field(
-        None, description="Goal to which this task is assigned"
+        None, description="Updated goal ID the task is linked to"
     )
+
+    # 🔥 Needed for project -> task link updates
+    project_id: Optional[str] = Field(
+        None, description="Updated project ID the task belongs to"
+    )
+
     deadline: Optional[str] = Field(
         None,
-        description="Updated deadline in ISO8601 format (YYYY-MM-DD)"
+        description="Updated deadline (ISO8601 YYYY-MM-DD)"
     )
     priority: Optional[str] = Field(
         None,
-        description="Task priority level",
+        description="Task priority: low, medium, high",
     )
     status: Optional[str] = Field(
         None,
-        description="Task status: pending, in_progress, or completed",
+        description="Task status: pending, in_progress, completed",
     )
 
-    # -------------------------------------------
-    # VALIDATIONS
-    # -------------------------------------------
+    # 🔥 Needed for sortable task lists
+    order: Optional[int] = Field(
+        None, description="Updated task sort order"
+    )
 
+    handled_by: Optional[str] = Field(
+        None, description="Updated responsible person (optional)"
+    )
+
+    # -------------------------------
+    # VALIDATIONS
+    # -------------------------------
     @validator("deadline")
     def validate_deadline(cls, value):
         if value is None:

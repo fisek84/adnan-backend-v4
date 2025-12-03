@@ -1,13 +1,13 @@
 from services.goals_service import GoalsService
 from services.tasks_service import TasksService
-from services.projects_service import ProjectsService      # ⬅️ DODANO
+from services.projects_service import ProjectsService
 from services.notion_service import NotionService
 import os
 
 # GLOBAL SINGLETON INSTANCES
 _goals: GoalsService | None = None
 _tasks: TasksService | None = None
-_projects: ProjectsService | None = None     # ⬅️ DODANO
+_projects: ProjectsService | None = None
 _notion: NotionService | None = None
 
 
@@ -24,7 +24,7 @@ def set_tasks_service(instance: TasksService):
     _tasks = instance
 
 
-def set_projects_service(instance: ProjectsService):      # ⬅️ DODANO
+def set_projects_service(instance: ProjectsService):
     global _projects
     _projects = instance
 
@@ -49,7 +49,7 @@ def get_tasks_service():
     return _tasks
 
 
-def get_projects_service():                               # ⬅️ DODANO
+def get_projects_service():
     if _projects is None:
         raise RuntimeError("ProjectsService has not been initialized.")
     return _projects
@@ -72,20 +72,28 @@ def init_services():
 
     global _notion, _goals, _tasks, _projects
 
-    # Create Notion service
+    # -----------------------------
+    # 1. Create Notion service
+    # -----------------------------
     _notion = NotionService(
         api_key=os.getenv("NOTION_API_KEY"),
         goals_db_id=os.getenv("NOTION_GOALS_DB_ID"),
         tasks_db_id=os.getenv("NOTION_TASKS_DB_ID")
     )
 
-    # Local DB services
+    # -----------------------------
+    # 2. Local DB services
+    # -----------------------------
     _goals = GoalsService()
-
-    # TasksService *requires* NotionService
     _tasks = TasksService(_notion)
 
-    # NEW — ProjectsService global instance
-    _projects = ProjectsService()                          # ⬅️ DODANO
+    # -----------------------------
+    # 3. Projects Service
+    # -----------------------------
+    _projects = ProjectsService()
+
+    # BIND RELATIONS IMMEDIATELY
+    _projects.bind_goals_service(_goals)
+    _projects.bind_tasks_service(_tasks)
 
     print("🔧 Services initialized inside dependencies.py")
