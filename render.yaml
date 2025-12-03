@@ -1,0 +1,40 @@
+services:
+  - type: web
+    name: adnan-backend-v4
+    env: docker
+    plan: starter
+    region: frankfurt
+
+    dockerfilePath: Dockerfile
+    dockerContext: .
+
+    autoDeploy: true
+
+    # === Health check (sprječava gašenje nakon prvog GET) ===
+    healthCheckPath: "/health"
+    healthCheckInterval: 30
+    healthCheckTimeout: 200
+
+    # === Osiguraj da Render NE ubije proces prerano ===
+    serviceTimeout: 600      # 10 min timeout umjesto 5 sec default
+    numInstances: 1          # sigurnije na starter planu
+
+    # === Retry strategija — Render neće rušiti nakon malog kašnjenja ===
+    autoRetry:
+      enabled: true
+      maxRetries: 5
+      delay: 10
+      factor: 2
+
+    # === CPU/RAM limita — stabilnije za uvicorn container ===
+    resources:
+      cpu: 0.5
+      memory: 512Mi
+
+    # === Build filter — Render deploya samo kad je relevantno ===
+    buildFilter:
+      paths:
+        - Dockerfile
+        - requirements.txt
+        - main.py
+        - render.yaml
