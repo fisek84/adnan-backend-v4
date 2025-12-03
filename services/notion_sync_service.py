@@ -1,5 +1,4 @@
 import asyncio
-import aiohttp
 
 
 class NotionSyncService:
@@ -22,18 +21,16 @@ class NotionSyncService:
         self.tasks_db_id = tasks_db_id
         self.projects_db_id = projects_db_id
 
-        self._delay = 0.25
-        self._goals_task = None
-        self._tasks_task = None
-        self._projects_task = None
+        self._delay = 0.3
+        self._sync_projects_task = None
 
-        self.loop = None
-
-    # =====================================================================
-    # DEBOUNCE HELPERS
-    # =====================================================================
-    async def start(self):
-        self.loop = asyncio.get_running_loop()
+    def add_project_for_sync(self, project, delete=False):
+        print(f"🔄 [SYNC] Queued project: {project.title}")
+        if self._sync_projects_task and not self._sync_projects_task.done():
+            self._sync_projects_task.cancel()
+        self._sync_projects_task = asyncio.create_task(
+            self._debounce(self.sync_projects_up)
+        )
 
     async def _debounce(self, fn):
         try:
@@ -41,114 +38,76 @@ class NotionSyncService:
             await fn()
         except asyncio.CancelledError:
             pass
-        except Exception:
-            pass
 
-    async def debounce_goals_sync(self):
-        if self._goals_task and not self._goals_task.done():
-            self._goals_task.cancel()
-        self._goals_task = asyncio.create_task(self._debounce(self.sync_goals_up))
-
-    async def debounce_tasks_sync(self):
-        if self._tasks_task and not self._tasks_task.done():
-            self._tasks_task.cancel()
-        self._tasks_task = asyncio.create_task(self._debounce(self.sync_tasks_up))
-
-    async def debounce_projects_sync(self):
-        if self._projects_task and not self._projects_task.done():
-            self._projects_task.cancel()
-        self._projects_task = asyncio.create_task(self._debounce(self.sync_projects_up))
-
-    # =====================================================================
-    # PROJECTS — NOTION → BACKEND
-    # =====================================================================
     async def get_all_projects_from_notion(self):
         return await self.notion.query_database(self.projects_db_id)
 
     def map_project_page(self, page):
         props = page.get("properties", {})
 
-        def safe(prop_name, kind):
-            prop = props.get(prop_name)
+        def safe(name, kind):
+            prop = props.get(name)
             if not prop:
                 return None
             try:
                 if kind == "title":
-                    return prop["title"][0]["plain_text"] if prop.get("title") else ""
+                    return prop["title"][0]["plain_text"] if prop["title"] else ""
                 if kind == "text":
-                    return prop["rich_text"][0]["plain_text"] if prop.get("rich_text") else ""
+                    return prop["rich_text"][0]["plain_text"] if prop["rich_text"] else ""
                 if kind == "select":
-                    return prop["select"]["name"] if prop.get("select") else None
+                    return prop["select"]["name"] if prop["select"] else None
                 if kind == "date":
-                    return prop["date"]["start"] if prop.get("date") else None
+                    return prop["date"]["start"] if prop["date"] else None
                 if kind == "relation":
                     rel = prop.get("relation") or []
                     return [r["id"].replace("-", "") for r in rel]
-            except Exception:
+            except:
                 return None
             return None
 
-        # ================================================
-        # 🔥 AUTOMATSKA VALIDACIJA NASLOVA (TVOJ ZAHTJEV)
-        # ================================================
         title = safe("Project Name", "title")
         if not title or title.strip() == "":
-            raise ValueError(
-                f"Project in Notion (ID: {page['id']}) has no title. Please add a title."
-            )
+            raise ValueError(f"Project in Notion has no title: {page['id']}")
 
         return {
             "id": page["id"].replace("-", ""),
             "notion_id": page["id"],
-
             "title": title,
             "description": safe("Description", "text"),
-            "status": safe("Status", "select") or "active",
+            "status": safe("Status", "select") or "Active",
             "category": safe("Category", "select"),
             "priority": safe("Priority", "select"),
-
             "start_date": safe("Start Date", "date"),
             "deadline": safe("Target Deadline", "date"),
-
             "project_type": safe("Project Type", "select"),
             "summary": safe("Summary", "text"),
             "next_step": safe("Next Step", "text"),
-
             "primary_goal_id": (
                 safe("Primary Goal", "relation")[0]
                 if safe("Primary Goal", "relation") else None
             ),
-
             "parent_id": (
                 safe("Parent Project", "relation")[0]
                 if safe("Parent Project", "relation") else None
             ),
-
             "agents": safe("Agent Exchange DB", "relation") or [],
             "tasks": safe("Tasks DB", "relation") or [],
-
             "handled_by": safe("Handled By", "text"),
-
-            # SAFE DEFAULT
             "progress": 0,
         }
 
     async def load_projects_into_backend(self):
+        print("📥 Loading projects from Notion...")
 
         remote = await self.get_all_projects_from_notion()
         if not remote.get("ok"):
-            print("⚠️ Could not load projects from Notion")
+            print("⚠️ Failed loading Notion projects")
             return
 
         results = remote["data"]["results"]
 
         for page in results:
-            try:
-                mapped = self.map_project_page(page)
-            except ValueError as e:
-                # 🔥 UMJESTO RUŠENJA — SAMO UPOZORI
-                print(f"⚠️ Notion sync warning: {str(e)}")
-                continue
+            mapped = self.map_project_page(page)
 
             if mapped["id"] in self.projects.projects:
                 self.projects.projects[mapped["id"]].tasks = mapped["tasks"]
@@ -160,13 +119,9 @@ class NotionSyncService:
                 notion_id=mapped["notion_id"]
             )
 
-        print(f"📁 Loaded {len(results)} projects into backend")
+        print(f"📁 Loaded {len(results)} projects from Notion")
 
-    # =====================================================================
-    # PROJECTS — BACKEND → NOTION
-    # =====================================================================
     def map_local_project_to_notion(self, p: dict):
-
         def wrap(x):
             return {"rich_text": [{"text": {"content": x or ""}}]}
 
@@ -189,27 +144,23 @@ class NotionSyncService:
         }
 
     async def sync_projects_up(self):
+        print("🚀 SYNC: Uploading projects to Notion...")
+
         for p in self.projects.get_all():
             p_dict = self.projects.to_dict(p)
             props = self.map_local_project_to_notion(p_dict)
 
+            # NOVA STRANICA
             if not p.notion_id:
-                created = await self.notion.create_page({
-                    "parent": {"database_id": self.projects_db_id},
-                    "properties": props
-                })
+                print("📌 Creating new Notion page:", p.title)
+                created = await self.notion.create_project(p)
                 if created.get("ok"):
                     new_id = created["data"]["id"]
                     self.projects._replace_id(p.id, new_id)
                 continue
 
+            # AŽURIRANJE
+            print("♻️ Updating page:", p.title)
             await self.notion.update_page(p.notion_id, {"properties": props})
 
-    # =====================================================================
-    # UNUSED (BUT REQUIRED FOR API CONTRACT)
-    # =====================================================================
-    async def sync_goals_up(self):
-        pass
-
-    async def sync_tasks_up(self):
-        pass
+        print("✅ SYNC COMPLETE")

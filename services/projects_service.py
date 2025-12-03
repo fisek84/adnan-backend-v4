@@ -26,13 +26,23 @@ class ProjectsService:
         self.sync_service = sync_service
 
     # ------------------------------------------------------
-    # INTERNAL HELPERS
+    # HELPERS
     # ------------------------------------------------------
     def _now(self):
         return datetime.now(timezone.utc)
 
+    def _replace_id(self, old_id: str, new_notion_id: str):
+        if old_id not in self.projects:
+            return
+
+        project = self.projects.pop(old_id)
+        clean_id = new_notion_id.replace("-", "")
+        project.id = clean_id
+        project.notion_id = new_notion_id
+        self.projects[clean_id] = project
+
     # ------------------------------------------------------
-    # PUBLIC — CREATE
+    # CREATE
     # ------------------------------------------------------
     def create_project(
         self,
@@ -49,27 +59,37 @@ class ProjectsService:
             notion_id=notion_id,
             title=data.title,
             description=data.description,
+            status=data.status or "Active",
+            category=data.category,
+            priority=data.priority,
+            start_date=data.start_date,
             deadline=data.deadline,
-            primary_goal_id=data.primary_goal_id,
-            status=data.status or "active",
-            progress=data.progress or 0,
+            project_type=data.project_type,
+            summary=data.summary,
+            next_step=data.next_step,
+            goal_id=getattr(data, "primary_goal_id", None),
+            parent_id=data.parent_id,
+            agents=data.agents or [],
             tasks=data.tasks or [],
+            handled_by=data.handled_by,
+            progress=data.progress or 0,
             created_at=now,
             updated_at=now,
         )
 
         self.projects[project_id] = project
 
+        # 🔥 NEW SYNC TRIGGER
         if self.sync_service:
             try:
-                self.sync_service.debounce_projects_sync()
-            except:
-                pass
+                self.sync_service.add_project_for_sync(project)
+            except Exception as e:
+                print("SYNC ERROR (create):", e)
 
         return project
 
     # ------------------------------------------------------
-    # PUBLIC — UPDATE
+    # UPDATE
     # ------------------------------------------------------
     def update_project(self, project_id: str, updates: ProjectUpdate) -> ProjectModel:
         project = self.projects.get(project_id)
@@ -77,12 +97,10 @@ class ProjectsService:
             raise ValueError("Project not found")
 
         for field in [
-            "title",
-            "description",
-            "deadline",
-            "primary_goal_id",
-            "status",
-            "progress",
+            "title", "description", "status", "category", "priority",
+            "start_date", "deadline", "project_type", "summary",
+            "next_step", "goal_id", "parent_id", "agents",
+            "tasks", "handled_by",
         ]:
             val = getattr(updates, field, None)
             if val is not None:
@@ -91,12 +109,15 @@ class ProjectsService:
         project.updated_at = self._now()
 
         if self.sync_service:
-            self.sync_service.debounce_projects_sync()
+            try:
+                self.sync_service.add_project_for_sync(project)
+            except Exception as e:
+                print("SYNC ERROR (update):", e)
 
         return project
 
     # ------------------------------------------------------
-    # PUBLIC — DELETE
+    # DELETE
     # ------------------------------------------------------
     def delete_project(self, project_id: str):
         proj = self.projects.get(project_id)
@@ -106,12 +127,15 @@ class ProjectsService:
         removed = self.projects.pop(project_id)
 
         if self.sync_service:
-            self.sync_service.debounce_projects_sync()
+            try:
+                self.sync_service.add_project_for_sync(removed, delete=True)
+            except Exception as e:
+                print("SYNC ERROR (delete):", e)
 
         return removed
 
     # ------------------------------------------------------
-    # GET / LIST
+    # GETTERS
     # ------------------------------------------------------
     def get_all(self) -> List[ProjectModel]:
         return list(self.projects.values())
@@ -120,16 +144,7 @@ class ProjectsService:
         return self.projects.get(project_id)
 
     # ------------------------------------------------------
-    # AUTO-ASSIGN HELP
-    # ------------------------------------------------------
-    def get_all_tasks_for_project(self, project_id: str):
-        project = self.projects.get(project_id)
-        if not project:
-            return []
-        return project.tasks
-
-    # ------------------------------------------------------
-    # NOTION SYNC HELPERS
+    # MAPPERS
     # ------------------------------------------------------
     def to_dict(self, p: ProjectModel) -> dict:
         return {
@@ -137,11 +152,20 @@ class ProjectsService:
             "notion_id": p.notion_id,
             "title": p.title,
             "description": p.description,
-            "deadline": p.deadline,
-            "primary_goal_id": p.primary_goal_id,
             "status": p.status,
-            "progress": p.progress,
+            "category": p.category,
+            "priority": p.priority,
+            "start_date": p.start_date,
+            "deadline": p.deadline,
+            "project_type": p.project_type,
+            "summary": p.summary,
+            "next_step": p.next_step,
+            "primary_goal_id": p.goal_id,
+            "parent_id": p.parent_id,
+            "agents": p.agents,
             "tasks": p.tasks,
+            "handled_by": p.handled_by,
+            "progress": p.progress,
             "created_at": p.created_at,
             "updated_at": p.updated_at,
         }
@@ -149,10 +173,19 @@ class ProjectsService:
     def to_create_model(self, mapped: dict) -> ProjectCreate:
         return ProjectCreate(
             title=mapped["title"],
-            description=mapped["description"],
-            deadline=mapped["deadline"],
-            primary_goal_id=mapped["primary_goal_id"],
-            status=mapped["status"],
-            progress=mapped.get("progress", 0),  # SAFE FIX ✔️
+            description=mapped.get("description", ""),
+            status=mapped.get("status", "Active"),
+            category=mapped.get("category"),
+            priority=mapped.get("priority"),
+            start_date=mapped.get("start_date"),
+            deadline=mapped.get("deadline"),
+            project_type=mapped.get("project_type"),
+            summary=mapped.get("summary", ""),
+            next_step=mapped.get("next_step", ""),
+            primary_goal_id=mapped.get("primary_goal_id"),
+            parent_id=mapped.get("parent_id"),
+            agents=mapped.get("agents", []),
             tasks=mapped.get("tasks", []),
+            handled_by=mapped.get("handled_by"),
+            progress=mapped.get("progress", 0),
         )
