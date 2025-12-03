@@ -177,7 +177,6 @@ class NotionSyncService:
             "Agent Exchange DB": {"relation": [{"id": a} for a in p.get("agents", [])]},
             "Tasks DB": {"relation": [{"id": t} for t in p.get("tasks", [])]},
             "Handled By": wrap(p.get("handled_by"))},
-        }
 
     async def sync_projects_up(self):
         self.logger.info("🚀 SYNC: Uploading projects to Notion...")
