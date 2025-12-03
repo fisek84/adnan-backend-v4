@@ -1,7 +1,8 @@
 # services/notion_sync_service.py
 
 import asyncio
-import logging  # Dodajemo logovanje
+import logging
+
 
 class NotionSyncService:
     def __init__(
@@ -24,14 +25,28 @@ class NotionSyncService:
         self.projects_db_id = projects_db_id
 
         self._delay = 0.3
-        self._sync_projects_task = None
 
-        # Inicijalizujemo logger
+        # Debounce task handlers
+        self._sync_projects_task = None
+        self._goals_debounce_task = None
+        self._tasks_debounce_task = None  # NEW — required by TasksService
+
+        # Logger
         self.logger = logging.getLogger(__name__)
         self.logger.setLevel(logging.INFO)
 
     # ------------------------------------------------------
-    # DEBOUNCE QUEUE FOR PROJECT SYNC
+    # DEBOUNCE WRAPPER
+    # ------------------------------------------------------
+    async def _debounce(self, fn):
+        try:
+            await asyncio.sleep(self._delay)
+            await fn()
+        except asyncio.CancelledError:
+            pass
+
+    # ------------------------------------------------------
+    # ADD PROJECT FOR SYNC
     # ------------------------------------------------------
     def add_project_for_sync(self, project, delete=False):
         self.logger.info(f"🔄 [SYNC] Queued project: {project.title}")
@@ -51,15 +66,8 @@ class NotionSyncService:
             self.logger.warning("⚠️ No running event loop — running sync directly.")
             asyncio.run(self._debounce(self.sync_projects_up))
 
-    async def _debounce(self, fn):
-        try:
-            await asyncio.sleep(self._delay)
-            await fn()
-        except asyncio.CancelledError:
-            pass
-
     # ------------------------------------------------------
-    # LOAD PROJECTS FROM NOTION → BACKEND
+    # LOAD PROJECTS FROM NOTION
     # ------------------------------------------------------
     async def get_all_projects_from_notion(self):
         self.logger.info("📥 Loading projects from Notion...")
@@ -145,10 +153,11 @@ class NotionSyncService:
         self.logger.info(f"📁 Loaded {len(results)} projects from Notion")
 
     # ------------------------------------------------------
-    # BACKEND → NOTION SYNC (PROJECTS)
+    # PROJECT SYNC UP
     # ------------------------------------------------------
     def map_local_project_to_notion(self, p: dict):
         self.logger.info(f"Mapping local project to Notion: {p['title']}")
+
         def wrap(x):
             return {"rich_text": [{"text": {"content": x or ""}}]}
 
@@ -167,21 +176,24 @@ class NotionSyncService:
             "Parent Project": {"relation": [{"id": p.get("parent_id")}]} if p.get("parent_id") else {"relation": []},
             "Agent Exchange DB": {"relation": [{"id": a} for a in p.get("agents", [])]},
             "Tasks DB": {"relation": [{"id": t} for t in p.get("tasks", [])]},
-            "Handled By": wrap(p.get("handled_by")),
+            "Handled By": wrap(p.get("handled_by"))},
         }
 
     async def sync_projects_up(self):
         self.logger.info("🚀 SYNC: Uploading projects to Notion...")
+
         for p in self.projects.get_all():
             p_dict = self.projects.to_dict(p)
             props = self.map_local_project_to_notion(p_dict)
 
             if not p.notion_id:
                 self.logger.info(f"📌 Creating new Notion page for project: {p.title}")
+
                 created = await self.notion.create_page({
                     "parent": {"database_id": self.projects_db_id},
                     "properties": props
                 })
+
                 if created.get("ok"):
                     new_id = created["data"]["id"]
                     self.projects._replace_id(p.id, new_id)
@@ -190,9 +202,146 @@ class NotionSyncService:
             self.logger.info(f"♻️ Updating page for project: {p.title}")
             await self.notion.update_page(p.notion_id, {"properties": props})
 
-        self.logger.info("✅ SYNC COMPLETE")
+        self.logger.info("✅ PROJECT SYNC COMPLETE")
 
-    # ------------------------------------------------------
-    # BACKEND → NOTION SYNC (GOALS)
-    # ------------------------------------------------------
-    # (Slične promene mogu biti napravljene i u metodama za ciljeve i zadatke)
+    # ============================================================
+    #  GOALS SYNC — DEBOUNCE
+    # ============================================================
+    def debounce_goals_sync(self):
+        self.logger.info("⏳ Debounce: goals sync triggered")
+
+        async def schedule():
+            await self._debounce(self.sync_goals_up)
+
+        try:
+            loop = asyncio.get_running_loop()
+
+            if self._goals_debounce_task and not self._goals_debounce_task.done():
+                self._goals_debounce_task.cancel()
+
+            self._goals_debounce_task = loop.create_task(schedule())
+
+        except RuntimeError:
+            asyncio.run(self._debounce(self.sync_goals_up))
+
+    # ============================================================
+    #  GOALS SYNC — REAL SYNC UP
+    # ============================================================
+    async def sync_goals_up(self):
+        self.logger.info("🚀 SYNC: Uploading goals to Notion...")
+
+        try:
+            for goal in self.goals.get_all():
+
+                # CREATE NEW GOAL
+                if not goal.notion_id:
+                    self.logger.info(f"📌 Creating new Notion goal: {goal.title}")
+
+                    payload = {
+                        "parent": {"database_id": self.goals_db_id},
+                        "properties": {
+                            "Name": {"title": [{"text": {"content": goal.title}}]},
+                            "Status": {"select": {"name": goal.status}},
+                            "Priority": {"select": {"name": goal.priority}} if goal.priority else None,
+                            "Deadline": {"date": {"start": goal.deadline}} if goal.deadline else {"date": None},
+                        }
+                    }
+
+                    created = await self.notion.create_page(payload)
+
+                    if created.get("ok"):
+                        goal.notion_id = created["data"]["id"]
+                        self.logger.info(f"🆕 Goal synced to Notion with ID: {goal.notion_id}")
+
+                    continue
+
+                # UPDATE EXISTING GOAL
+                self.logger.info(f"♻️ Updating goal in Notion: {goal.title}")
+
+                update_payload = {
+                    "properties": {
+                        "Name": {"title": [{"text": {"content": goal.title}}]},
+                        "Status": {"select": {"name": goal.status}},
+                        "Priority": {"select": {"name": goal.priority}} if goal.priority else None,
+                        "Deadline": {"date": {"start": goal.deadline}} if goal.deadline else {"date": None},
+                    }
+                }
+
+                await self.notion.update_page(goal.notion_id, update_payload)
+
+            self.logger.info("✅ GOALS SYNC COMPLETE")
+
+        except Exception as e:
+            self.logger.error(f"❌ Goal sync error: {e}")
+
+    # ============================================================
+    #  TASKS SYNC — DEBOUNCE
+    # ============================================================
+    def debounce_tasks_sync(self):
+        self.logger.info("⏳ Debounce: tasks sync triggered")
+
+        async def schedule():
+            await self._debounce(self.sync_tasks_up)
+
+        try:
+            loop = asyncio.get_running_loop()
+
+            if self._tasks_debounce_task and not self._tasks_debounce_task.done():
+                self._tasks_debounce_task.cancel()
+
+            self._tasks_debounce_task = loop.create_task(schedule())
+
+        except RuntimeError:
+            asyncio.run(self._debounce(self.sync_tasks_up))
+
+    # ============================================================
+    # TASKS SYNC — REAL SYNC UP
+    # ============================================================
+    async def sync_tasks_up(self):
+        self.logger.info("🚀 SYNC: Uploading tasks to Notion...")
+
+        try:
+            for task in self.tasks.get_all_tasks():
+
+                # CREATE NEW TASK
+                if not task.notion_id:
+                    self.logger.info(f"📌 Creating new Notion task: {task.title}")
+
+                    payload = {
+                        "parent": {"database_id": self.tasks_db_id},
+                        "properties": {
+                            "Name": {"title": [{"text": {"content": task.title}}]},
+                            "Status": {"select": {"name": task.status}},
+                            "Priority": {"select": {"name": task.priority}} if task.priority else None,
+                            "Deadline": {"date": {"start": task.deadline}} if task.deadline else {"date": None},
+                            "Goal": {"relation": [{"id": task.goal_id}]} if task.goal_id else {"relation": []},
+                        }
+                    }
+
+                    created = await self.notion.create_page(payload)
+
+                    if created.get("ok"):
+                        task.notion_id = created["data"]["id"]
+                        self.logger.info(f"🆕 Task synced to Notion with ID: {task.notion_id}")
+
+                    continue
+
+                # UPDATE EXISTING TASK
+                self.logger.info(f"♻️ Updating Notion task: {task.title}")
+
+                update_payload = {
+                    "properties": {
+                        "Name": {"title": [{"text": {"content": task.title}}]},
+                        "Status": {"select": {"name": task.status}},
+                        "Priority": {"select": {"name": task.priority}} if task.priority else None,
+                        "Deadline": {"date": {"start": task.deadline}} if task.deadline else {"date": None},
+                        "Goal": {"relation": [{"id": task.goal_id}]} if task.goal_id else {"relation": []},
+                    }
+                }
+
+                await self.notion.update_page(task.notion_id, update_payload)
+
+            self.logger.info("✅ TASKS SYNC COMPLETE")
+
+        except Exception as e:
+            self.logger.error(f"❌ Task sync error: {e}")

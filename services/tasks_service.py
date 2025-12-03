@@ -1,3 +1,5 @@
+# services/tasks_service.py
+
 import asyncio
 from uuid import uuid4
 from datetime import datetime, timezone
@@ -6,18 +8,19 @@ from typing import Dict, Optional, List
 from models.task_create import TaskCreate
 from models.task_update import TaskUpdate
 from models.task_model import TaskModel
-from services.notion_service import get_notion_service
+from services.notion_service import NotionService
 
 
 class TasksService:
     goals_service = None
     sync_service = None
 
-    def __init__(self):
+    def __init__(self, notion_service: NotionService):
         self.tasks: Dict[str, TaskModel] = {}
+        self.notion = notion_service   # ✅ PRIMAMO NotionService
 
     # ============================================================
-    # BIND
+    # BINDINGS
     # ============================================================
     def bind_goals_service(self, goals_service):
         self.goals_service = goals_service
@@ -31,8 +34,23 @@ class TasksService:
     def _now(self):
         return datetime.now(timezone.utc)
 
+    def _trigger_sync(self):
+        """
+        Pokreće debounce sync ako postoji sync_service.
+        """
+        if not self.sync_service:
+            return
+
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(self.sync_service.debounce_tasks_sync())
+        except RuntimeError:
+            asyncio.get_event_loop().create_task(
+                self.sync_service.debounce_tasks_sync()
+            )
+
     # ============================================================
-    # TO_DICT (EXPORTED TO SYNC)
+    # TO_DICT
     # ============================================================
     def to_dict(self, task: TaskModel) -> dict:
         return {
@@ -50,7 +68,7 @@ class TasksService:
         }
 
     # ============================================================
-    # CREATE
+    # CREATE TASK
     # ============================================================
     async def create_task(self, data: TaskCreate) -> TaskModel:
         now = self._now()
@@ -70,16 +88,16 @@ class TasksService:
             updated_at=now,
         )
 
-        # Save locally
         self.tasks[task_id] = task
 
-        # Create in Notion
-        notion = get_notion_service()
-        res = await notion.create_task(task)
+        # Notion create
+        res = await self.notion.create_task(task)
 
         if res["ok"]:
-            notion_id = res["data"]["id"]
-            task.notion_id = notion_id
+            task.notion_id = res["data"]["id"]
+
+        # Trigger sync
+        self._trigger_sync()
 
         return task
 
@@ -91,7 +109,7 @@ class TasksService:
         if not task:
             raise ValueError("Task not found")
 
-        # Apply local changes
+        # Local updates
         for field in updates.model_fields:
             val = getattr(updates, field)
             if val is not None:
@@ -99,9 +117,10 @@ class TasksService:
 
         task.updated_at = self._now()
 
-        # Push update to Notion
-        notion = get_notion_service()
-        await notion.update_task(task.notion_id, updates)
+        # Sync to Notion
+        await self.notion.update_task(task.notion_id, updates)
+
+        self._trigger_sync()
 
         return task
 
@@ -113,13 +132,13 @@ class TasksService:
         if not task:
             return {"ok": False, "error": "Task not found"}
 
-        # Remove locally
+        notion_id = task.notion_id
+
         self.tasks.pop(task_id)
 
-        return {
-            "ok": True,
-            "notion_id": task.notion_id,
-        }
+        self._trigger_sync()
+
+        return {"ok": True, "notion_id": notion_id}
 
     # ============================================================
     # GET ALL

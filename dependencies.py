@@ -10,7 +10,7 @@ _goals: GoalsService | None = None
 _tasks: TasksService | None = None
 _projects: ProjectsService | None = None
 _notion: NotionService | None = None
-_sync: NotionSyncService | None = None  # DODANO
+_sync: NotionSyncService | None = None
 
 
 # ======================================
@@ -32,7 +32,7 @@ def set_notion_service(instance: NotionService):
     global _notion
     _notion = instance
 
-def set_sync_service(instance: NotionSyncService):  # DODANO
+def set_sync_service(instance: NotionSyncService):
     global _sync
     _sync = instance
 
@@ -41,28 +41,18 @@ def set_sync_service(instance: NotionSyncService):  # DODANO
 # GETTERS
 # ======================================
 def get_goals_service():
-    if _goals is None:
-        raise RuntimeError("GoalsService has not been initialized.")
     return _goals
 
 def get_tasks_service():
-    if _tasks is None:
-        raise RuntimeError("TasksService has not been initialized.")
     return _tasks
 
 def get_projects_service():
-    if _projects is None:
-        raise RuntimeError("ProjectsService has not been initialized.")
     return _projects
 
 def get_notion_service():
-    if _notion is None:
-        raise RuntimeError("NotionService has not been initialized.")
     return _notion
 
-def get_sync_service():  # DODANO
-    if _sync is None:
-        raise RuntimeError("NotionSyncService has not been initialized.")
+def get_sync_service():
     return _sync
 
 
@@ -71,21 +61,20 @@ def get_sync_service():  # DODANO
 # ======================================
 def init_services():
     """
-    Called once inside startup_event() in main.py.
-    Creates and registers NotionService, GoalsService, TasksService, ProjectsService, SyncService.
+    Initializes all services ONE TIME on startup.
     """
     global _notion, _goals, _tasks, _projects, _sync
 
-    # -----------------------------
-    # 1. Notion API Service
-    # -----------------------------
+    # ----------------------------------------------------
+    # 1. NOTION SERVICE
+    # ----------------------------------------------------
     _notion = NotionService(
         api_key=os.getenv("NOTION_API_KEY"),
         goals_db_id=os.getenv("NOTION_GOALS_DB_ID"),
         tasks_db_id=os.getenv("NOTION_TASKS_DB_ID"),
-        projects_db_id=os.getenv("NOTION_PROJECTS_DB_ID"),  # ✅ DODANO — KRITIČNO!
-        
-        # Ako želiš da odmah registrujemo ostale baze, možeš dodati:
+        projects_db_id=os.getenv("NOTION_PROJECTS_DB_ID"),
+
+        # Optional:
         active_goals_db_id=os.getenv("NOTION_ACTIVE_GOALS_DB_ID"),
         agent_exchange_db_id=os.getenv("NOTION_AGENT_EXCHANGE_DB_ID"),
         agent_projects_db_id=os.getenv("NOTION_AGENT_PROJECTS_DB_ID"),
@@ -97,19 +86,26 @@ def init_services():
         flp_db_id=os.getenv("NOTION_FLP_DB_ID"),
     )
 
-    # -----------------------------
-    # 2. Local services
-    # -----------------------------
+    set_notion_service(_notion)
+
+    # ----------------------------------------------------
+    # 2. Local backend services
+    # ----------------------------------------------------
     _goals = GoalsService()
-    _tasks = TasksService(_notion)
+    _tasks = TasksService()      # <──  FIXED: NEMA ARGUMENTA!
     _projects = ProjectsService()
 
+    # Bind services between each other
     _projects.bind_goals_service(_goals)
     _projects.bind_tasks_service(_tasks)
 
-    # -----------------------------
+    set_goals_service(_goals)
+    set_tasks_service(_tasks)
+    set_projects_service(_projects)
+
+    # ----------------------------------------------------
     # 3. Notion Sync Service
-    # -----------------------------
+    # ----------------------------------------------------
     _sync = NotionSyncService(
         notion_service=_notion,
         goals_service=_goals,
@@ -117,10 +113,12 @@ def init_services():
         projects_service=_projects,
         goals_db_id=os.getenv("NOTION_GOALS_DB_ID"),
         tasks_db_id=os.getenv("NOTION_TASKS_DB_ID"),
-        projects_db_id=os.getenv("NOTION_PROJECTS_DB_ID"),  # ❗MORA BITI ISTI KAO GORE
+        projects_db_id=os.getenv("NOTION_PROJECTS_DB_ID"),
     )
 
-    _projects.bind_sync_service(_sync)  # obavezno da sync radi
+    _projects.bind_sync_service(_sync)
+    _goals.bind_sync_service(_sync)
+    _tasks.bind_sync_service(_sync)
 
     set_sync_service(_sync)
 

@@ -65,50 +65,56 @@ app.add_middleware(
 # ====================================================================================
 @app.on_event("startup")
 async def startup_event():
-    logger.info("🔵 Starting backend services...")
+    try:
+        logger.info("🔵 Starting backend services...")
 
-    # 1) Init SQLite queue
-    init_db()
-    logger.info("🟦 SQLite Task Queue initialized")
+        # 1) Init SQLite queue
+        init_db()
+        logger.info("🟦 SQLite Task Queue initialized")
 
-    # 2) Init all services (includes NotionSyncService)
-    init_services()
+        # 2) Init all services (includes NotionSyncService)
+        init_services()
+        logger.info("🟩 All services initialized.")
 
-    # 3) Retrieve instances
-    notion_service = get_notion_service()
-    goals_service = get_goals_service()
-    tasks_service = get_tasks_service()
-    projects_service = get_projects_service()
-    sync_service = get_sync_service()
+        # 3) Retrieve instances
+        notion_service = get_notion_service()
+        goals_service = get_goals_service()
+        tasks_service = get_tasks_service()
+        projects_service = get_projects_service()
+        sync_service = get_sync_service()
 
-    logger.info("✅ NotionService initialized")
-    logger.info("✅ GoalsService initialized")
-    logger.info("✅ TasksService initialized")
-    logger.info("✅ ProjectsService initialized")
-    logger.info("🔗 ProjectsService linked to NotionSyncService")
+        logger.info("✅ NotionService initialized")
+        logger.info("✅ GoalsService initialized")
+        logger.info("✅ TasksService initialized")
+        logger.info("✅ ProjectsService initialized")
+        logger.info("🔗 ProjectsService linked to NotionSyncService")
 
-    # 4) Connect sync router
-    import routers.sync_router as sync_router_module
-    sync_router_module.set_sync_service(sync_service)
-    logger.info("🔗 Sync router connected to NotionSyncService")
+        # 4) Connect sync router
+        import routers.sync_router as sync_router_module
+        sync_router_module.set_sync_service(sync_service)
+        logger.info("🔗 Sync router connected to NotionSyncService")
 
-    # 5) Load Notion → backend
-    await sync_service.load_projects_into_backend()
-    logger.info("📁 Projects loaded from Notion → backend OK")
+        # 5) Load Notion → backend
+        await sync_service.load_projects_into_backend()
+        logger.info("📁 Projects loaded from Notion → backend OK")
 
-    # 6) AI Command System
-    ai_command_service = AICommandService()
-    logger.info("✅ AICommandService initialized")
+        # 6) AI Command System
+        ai_command_service = AICommandService()
+        logger.info("✅ AICommandService initialized")
 
-    # 7) Agents System
-    agents_service = AgentsService(
-        notion_token=os.getenv("NOTION_API_KEY"),
-        exchange_db_id=os.getenv("NOTION_AGENT_EXCHANGE_DB_ID"),
-        projects_db_id=os.getenv("NOTION_AGENT_PROJECTS_DB_ID"),
-    )
-    logger.info("✅ AgentsService initialized")
+        # 7) Agents System
+        agents_service = AgentsService(
+            notion_token=os.getenv("NOTION_API_KEY"),
+            exchange_db_id=os.getenv("NOTION_AGENT_EXCHANGE_DB_ID"),
+            projects_db_id=os.getenv("NOTION_AGENT_PROJECTS_DB_ID"),
+        )
+        logger.info("✅ AgentsService initialized")
 
-    logger.info("🔥 Backend fully initialized")
+        logger.info("🔥 Backend fully initialized")
+
+    except Exception as e:
+        logger.error(f"Error during startup: {e}")
+        raise HTTPException(500, f"Backend startup failed: {e}")
 
 # ROUTERS
 app.include_router(goals_router)
@@ -131,7 +137,7 @@ app.include_router(adnan_ai_router)
 @app.get("/health")
 def health():
     logger.info("Health check received.")
-    return {"status": "ok"}
+    return {"status": "ok", "message": "Backend is healthy"}
 
 @app.get("/")
 def root():
