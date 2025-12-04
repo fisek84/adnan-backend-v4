@@ -17,7 +17,7 @@ class TasksService:
 
     def __init__(self, notion_service: NotionService):
         self.tasks: Dict[str, TaskModel] = {}
-        self.notion = notion_service   # NotionService injection
+        self.notion = notion_service  # NotionService injection
 
     # ------------------------------------------------------------
     # BINDINGS
