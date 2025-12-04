@@ -1,5 +1,3 @@
-# routers/tasks_router.py
-
 from fastapi import APIRouter, Depends, HTTPException
 from typing import List
 import logging
@@ -38,12 +36,17 @@ async def create_task(
     logger.info(f"Creating task: {payload.title}")
     logger.info(f"Payload: title={payload.title}, goal_id={payload.goal_id}, project_id={payload.project_id}, deadline={payload.deadline}, priority={payload.priority}, status={payload.status}")
 
+    # Provjera da li title postoji u payloadu
+    if not payload.title:
+        logger.error("Title is required to create a task.")
+        raise HTTPException(status_code=400, detail="Title is required to create a task.")
+
     # Provjera da li goal_id postoji i je li ispravno postavljen
     if not payload.goal_id:
         logger.warning("Goal ID is not provided, creating a new goal.")
         # Ovdje možeš dodati logiku za automatsko stvaranje cilja ako nije poslan goal_id
 
-    # Provjeri format datuma
+    # Provjera formata datuma
     try:
         logger.info(f"Valid deadline format: {payload.deadline}")
     except Exception as e:

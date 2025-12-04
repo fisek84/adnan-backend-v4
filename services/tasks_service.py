@@ -59,6 +59,11 @@ class TasksService:
             logger.error("Goals service is not initialized. Please bind goals service before using.")
             raise ValueError("Goals service is not initialized. Please bind goals service before using.")
 
+        # Provjera da li 'title' postoji
+        if not data.title:
+            logger.error("Title is required to create a task.")
+            raise ValueError("Title is required to create a task.")
+
         # Ako goal_id nije validan UUID, konvertiraj ga
         if data.goal_id:
             try:
