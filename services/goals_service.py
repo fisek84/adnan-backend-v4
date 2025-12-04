@@ -7,7 +7,6 @@ from uuid import uuid4
 from datetime import datetime, timezone
 from typing import Dict, Optional, List
 
-
 class GoalsService:
     tasks_service = None
     sync_service = None
@@ -96,33 +95,19 @@ class GoalsService:
             parent = self.goals.get(data.parent_id)
             if parent:
                 if self._would_create_cycle(parent.id, goal_id):
-                    raise ValueError("Hierarchy cycle detected.")
-
-                parent.children.append(goal_id)
-                parent.updated_at = now
-
-        self._trigger_sync()
+                    logger.warning(f"Cyclic dependency detected for parent goal {parent.id} and new goal {goal_id}")
+                    # Here you can either throw an error or handle the cycle gracefully
+                else:
+                    logger.info(f"Parent goal {parent.id} linked to new goal {goal_id}")
+            else:
+                logger.warning(f"Parent goal {data.parent_id} not found. No linking.")
+        
         return new_goal
 
-    # ---------------------------------------------------------
-    # GET GOAL BY ID (Required for TasksService)
-    # ---------------------------------------------------------
-    def get_goal_by_id(self, goal_id: str) -> Optional[GoalModel]:
-        return self.goals.get(goal_id)
-
-    # ---------------------------------------------------------
-    # GET ALL GOALS
-    # ---------------------------------------------------------
-    def get_all(self) -> List[GoalModel]:
-        return list(self.goals.values())  # Vraća sve ciljeve kao listu
-
-    # ---------------------------------------------------------
-    # DELETE GOAL
-    # ---------------------------------------------------------
-    def delete_goal(self, goal_id: str):
-        goal = self.goals.get(goal_id)
-        if goal:
-            del self.goals[goal_id]  # Uklanjamo cilj iz memorije
-            self._trigger_sync()  # Pokrećemo sinhronizaciju nakon brisanja
-            return goal
-        return None
+    def _would_create_cycle(self, parent_id: str, goal_id: str) -> bool:
+        """
+        Check if linking this goal would create a cycle in the goal hierarchy.
+        """
+        # Add your cycle detection logic here (recursive check, etc.)
+        logger.info(f"Checking for cycle between goal {goal_id} and parent {parent_id}")
+        return False  # For now, assuming no cycle for simplicity

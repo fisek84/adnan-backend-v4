@@ -1,6 +1,7 @@
 from pydantic import BaseModel, Field, validator
 from typing import Optional
 from datetime import datetime
+from uuid import UUID  # Import UUID here
 import logging  # Add logging
 
 # Initialize logger

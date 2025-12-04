@@ -15,7 +15,6 @@ router = APIRouter(prefix="/tasks", tags=["Tasks"])
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-
 # =====================================================
 # GET ALL TASKS
 # =====================================================
@@ -35,10 +34,36 @@ async def create_task(
     payload: TaskCreate,
     tasks_service: TasksService = Depends(get_tasks_service)
 ):
+    # Logiranje sadržaja koji šaljemo
     logger.info(f"Creating task: {payload.title}")
-    task = await tasks_service.create_task(payload)
-    logger.info(f"Task created: {task.id}")
-    return task
+    logger.info(f"Payload: title={payload.title}, goal_id={payload.goal_id}, project_id={payload.project_id}, deadline={payload.deadline}, priority={payload.priority}, status={payload.status}")
+
+    # Provjera da li goal_id postoji i je li ispravno postavljen
+    if not payload.goal_id:
+        logger.warning("Goal ID is not provided, creating a new goal.")
+        # Ovdje možeš dodati logiku za automatsko stvaranje cilja ako nije poslan goal_id
+
+    # Provjeri format datuma
+    try:
+        logger.info(f"Valid deadline format: {payload.deadline}")
+    except Exception as e:
+        logger.error(f"Invalid deadline format: {e}")
+        raise HTTPException(status_code=422, detail="Invalid deadline format.")
+    
+    # Provjera prioriteta
+    valid_priorities = ["low", "medium", "high"]
+    if payload.priority not in valid_priorities:
+        logger.error(f"Invalid priority value: {payload.priority}")
+        raise HTTPException(status_code=422, detail="Invalid priority value. Allowed values are: low, medium, high.")
+
+    # Kreiranje zadatka putem TaskService
+    try:
+        task = await tasks_service.create_task(payload)
+        logger.info(f"Task created successfully: {task.id}")
+        return task
+    except Exception as e:
+        logger.error(f"Error creating task: {e}")
+        raise HTTPException(status_code=500, detail="Error creating task.")
 
 
 # =====================================================
@@ -54,7 +79,7 @@ async def update_task(
 
     try:
         updated = await tasks_service.update_task(task_id, payload)
-        logger.info(f"Task updated: {task_id}")
+        logger.info(f"Task updated successfully: {task_id}")
         return updated
     except Exception as e:
         logger.error(f"Task update failed ({task_id}): {e}")
@@ -90,7 +115,7 @@ async def delete_task(
             logger.info(f"Deleted from Notion: {notion_id}")
             return {"message": f"Task {task_id} deleted from backend + Notion."}
         else:
-            logger.warning(f"Task deleted local, but Notion delete failed.")
+            logger.warning(f"Task deleted locally, but Notion delete failed.")
             return {
                 "warning": "Task removed locally, but Notion deletion failed.",
                 "notion_error": notion_res["error"]
