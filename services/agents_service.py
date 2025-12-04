@@ -1,5 +1,10 @@
 import httpx
+import logging
 import asyncio
+
+# Inicijalizacija loggera
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
 class AgentsService:
     """
@@ -18,7 +23,7 @@ class AgentsService:
                 "Notion-Version": "2022-06-28",
                 "Content-Type": "application/json",
             },
-            timeout=20.0,
+            timeout=60.0,  # Povećaj timeout na 60 sekundi za stabilnost
         )
 
         self._actions = {
@@ -33,26 +38,53 @@ class AgentsService:
         return list(self._actions.keys())
 
     async def execute(self, action: str, payload: dict):
+        logger.info(f"Executing action: {action} with payload: {payload}")
+
         if action not in self._actions:
+            logger.error(f"Unknown agent action: {action}")
             raise ValueError(f"Unknown agent action: {action}")
 
         handler = self._actions[action]
 
+        # Logovanje pre slanja HTTP zahteva
+        logger.info(f"Sending request to backend with action: {action}, payload: {payload}")
+
+        # Poslati HTTP zahtev prema backendu
         if asyncio.iscoroutinefunction(handler):
-            return await handler(payload)
+            try:
+                response = await self._client.post("http://127.0.0.1:8000/tasks", json=payload)
+                logger.info(f"Response from backend: {response.text}")
+                response.raise_for_status()  # Ako je status greška, podiže HTTPError
+                return await handler(payload)
+            except httpx.HTTPStatusError as e:
+                logger.error(f"HTTP error occurred while communicating with backend: {e}")
+                return {"error": f"HTTP error: {e.response.status_code}"}
+            except Exception as e:
+                logger.error(f"Error while sending request to backend: {e}")
+                return {"error": str(e)}
+
         return handler(payload)
 
     # ============================================================
     # HANDLERS
     # ============================================================
     async def _ping(self, payload: dict):
-        resp = await self._client.get("https://api.notion.com/v1/users/me")
         try:
-            return resp.json()
-        except:
-            return {"raw": resp.text}
+            logger.info("Pinging Notion API...")
+            resp = await self._client.get("https://api.notion.com/v1/users/me")
+            resp.raise_for_status()  # Ako je status greška, podiže HTTPError
+            resp_data = resp.json()
+            logger.info(f"Ping successful, response: {resp_data}")
+            return resp_data
+        except httpx.HTTPStatusError as e:
+            logger.error(f"HTTP error occurred while pinging Notion: {e}")
+            return {"error": f"HTTP error: {e.response.status_code}"}
+        except Exception as e:
+            logger.error(f"Error while pinging Notion API: {e}")
+            return {"error": str(e)}
 
     async def _info(self, payload: dict):
+        logger.info(f"Returning info for exchange_db_id: {self.exchange_db_id} and projects_db_id: {self.projects_db_id}")
         return {
             "exchange_db_id": self.exchange_db_id,
             "projects_db_id": self.projects_db_id,
@@ -64,6 +96,8 @@ class AgentsService:
     # ============================================================
     async def close(self):
         try:
+            logger.info("Closing HTTP client...")
             await self._client.aclose()
-        except:
+        except Exception as e:
+            logger.error(f"Error while closing client: {e}")
             pass

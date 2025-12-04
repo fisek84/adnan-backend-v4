@@ -95,6 +95,18 @@ async def create_goal(goal: Goal):
     logger.info(f"Goal created: {goal.goal_name} with deadline {goal.deadline}")
     return {"goal_name": goal.goal_name, "deadline": goal.deadline}
 
+# POST: ADD TASK
+class Task(BaseModel):
+    task_name: str
+    description: str
+    due_date: str
+
+@app.post("/tasks")
+async def create_task(task: Task):
+    # Ovdje dodaj logiku za kreiranje taska (npr. čuvanje u bazi)
+    logger.info(f"Task created: {task.task_name} with due date {task.due_date}")
+    return {"task_name": task.task_name, "description": task.description, "due_date": task.due_date}
+
 # STARTUP
 @app.on_event("startup")
 async def startup_event():
