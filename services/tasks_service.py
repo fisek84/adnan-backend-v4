@@ -1,7 +1,7 @@
 import asyncio
 from uuid import uuid4
 from datetime import datetime, timezone
-from typing import Dict
+from typing import Dict, List
 import logging
 
 from models.task_create import TaskCreate
@@ -120,3 +120,57 @@ class TasksService:
 
         self._trigger_sync()  # Sinhronizacija sa Notion-om
         return task
+
+    # ------------------------------------------------------------
+    # GET ALL TASKS
+    # ------------------------------------------------------------
+    def get_all_tasks(self) -> List[TaskModel]:
+        """
+        Vraća sve zadatke.
+        """
+        logger.info(f"[TASKS] Total tasks in service: {len(self.tasks)}")
+        return list(self.tasks.values())  # Vraća sve zadatke kao listu
+
+    # ------------------------------------------------------------
+    # UPDATE TASK
+    # ------------------------------------------------------------
+    def update_task(self, task_id: str, data: dict) -> TaskModel:
+        """
+        Ažurira zadatak na osnovu prosleđenog task_id i podataka.
+        """
+        if task_id not in self.tasks:  
+            logger.error(f"Task with id {task_id} not found")
+            raise ValueError(f"Task with id {task_id} not found")
+
+        task = self.tasks[task_id]
+
+        # Ažuriranje zadatka sa novim podacima
+        task.title = data.get('title', task.title)
+        task.description = data.get('description', task.description)
+        task.deadline = data.get('deadline', task.deadline)
+        task.priority = data.get('priority', task.priority)
+        task.status = data.get('status', task.status)
+
+        # Ažuriraj datum poslednje izmene
+        task.updated_at = self._now()
+
+        logger.info(f"Task with id {task_id} updated successfully")
+
+        # Vraćanje ažuriranog zadatka
+        return task
+
+    # ------------------------------------------------------------
+    # DELETE TASK
+    # ------------------------------------------------------------
+    async def delete_task(self, task_id: str) -> dict:
+        """
+        Briše zadatak sa zadatim task_id.
+        """
+        if task_id not in self.tasks:
+            logger.error(f"Task with id {task_id} not found")
+            raise ValueError(f"Task with id {task_id} not found")
+
+        task = self.tasks.pop(task_id)  # Uklanjamo zadatak iz self.tasks
+        logger.info(f"Task with id {task_id} deleted locally")
+
+        return {"ok": True, "task": task}

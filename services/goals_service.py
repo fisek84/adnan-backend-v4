@@ -6,6 +6,9 @@ import asyncio
 from uuid import uuid4
 from datetime import datetime, timezone
 from typing import Dict, Optional, List
+import logging
+
+logger = logging.getLogger(__name__)
 
 class GoalsService:
     tasks_service = None
@@ -69,6 +72,7 @@ class GoalsService:
         forced_id: Optional[str] = None,
         notion_id: Optional[str] = None
     ) -> GoalModel:
+        logger.info(f"[GOALS] Creating goal: {data.title}")
 
         now = self._now()
         goal_id = forced_id or uuid4().hex
@@ -89,6 +93,7 @@ class GoalsService:
         )
 
         self.goals[goal_id] = new_goal
+        logger.info(f"[GOALS] Goal created with ID: {goal_id}")
 
         # Parent linking
         if data.parent_id:
@@ -96,7 +101,6 @@ class GoalsService:
             if parent:
                 if self._would_create_cycle(parent.id, goal_id):
                     logger.warning(f"Cyclic dependency detected for parent goal {parent.id} and new goal {goal_id}")
-                    # Here you can either throw an error or handle the cycle gracefully
                 else:
                     logger.info(f"Parent goal {parent.id} linked to new goal {goal_id}")
             else:
@@ -108,6 +112,17 @@ class GoalsService:
         """
         Check if linking this goal would create a cycle in the goal hierarchy.
         """
-        # Add your cycle detection logic here (recursive check, etc.)
         logger.info(f"Checking for cycle between goal {goal_id} and parent {parent_id}")
-        return False  # For now, assuming no cycle for simplicity
+        return False  # Assuming no cycle for simplicity
+
+    # ---------------------------------------------------------
+    # GET ALL GOALS
+    # ---------------------------------------------------------
+    def get_all(self) -> List[GoalModel]:
+        """
+        Vraća sve ciljeve.
+        """
+        logger.info(f"[GOALS] Total goals in service: {len(self.goals)}")
+        if not self.goals:
+            logger.warning("[GOALS] No goals found in the service")
+        return list(self.goals.values())  # Vraća sve ciljeve kao listu
