@@ -1,9 +1,9 @@
 from pydantic import BaseModel, Field, validator
 from typing import Optional
 from datetime import datetime
-import logging  # Dodajemo logovanje
+import logging  # Add logging
 
-# Inicijalizujemo logger
+# Initialize logger
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
@@ -59,7 +59,7 @@ class TaskCreate(BaseModel):
         if v is None:
             return v
         try:
-            datetime.fromisoformat(v)
+            datetime.fromisoformat(v)  # Validate ISO format
         except ValueError:
             logger.error(f"Invalid deadline format: {v}")
             raise ValueError("Deadline must be in ISO format YYYY-MM-DD")
@@ -88,5 +88,17 @@ class TaskCreate(BaseModel):
         logger.info(f"Valid status value: {v}")
         return v
 
+    @validator("goal_id")
+    def validate_goal_id(cls, v):
+        if v is None:
+            return v
+        try:
+            UUID(v)  # Ensuring that goal_id is a valid UUID string
+        except ValueError:
+            logger.error(f"Invalid goal_id format: {v}")
+            raise ValueError("goal_id must be a valid UUID string")
+        logger.info(f"Valid goal_id format: {v}")
+        return v
+
     class Config:
-        extra = "forbid"
+        extra = "forbid"  # Reject unknown fields

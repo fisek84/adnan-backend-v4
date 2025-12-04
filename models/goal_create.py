@@ -1,18 +1,13 @@
 from datetime import datetime
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional
-import logging  # Dodajemo logovanje
+import logging
 
 # Inicijalizujemo logger
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 class GoalCreate(BaseModel):
-    """
-    Input model for creating new Goal entries.
-    Fully validated and safe for API + Notion sync.
-    """
-
     title: str = Field(
         ...,
         description="Short title of the goal"
