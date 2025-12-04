@@ -1,11 +1,14 @@
+# ext/notion/writer.py
+
 import time
+import logging
 from ext.notion.client import notion
 from ext.notion.chunker import chunk_text
 
+logger = logging.getLogger(__name__)
 
 def normalize_id(id: str) -> str:
     return id.replace("-", "")
-
 
 # -------------------------------------------------
 #  CREATE PAGE IN DATABASE
@@ -105,4 +108,30 @@ def append_text(page_id: str, text: str):
                 print("🔍 RAW RESPONSE:", e.response)
             raise e
 
-        time.sleep(0.3)
+        # Reduce sleep time if the content size is smaller, for faster performance
+        time.sleep(0.3)  # You can adjust this value for optimization
+
+# -------------------------------------------------
+#  DELETE PAGE FROM NOTION
+# -------------------------------------------------
+async def delete_page(page_id: str):
+    """
+    Funkcija za brisanje stranice u Notion-u.
+    """
+    try:
+        logger.info(f"Brisanje stranice sa Notion ID: {page_id}")
+        
+        # Poziv za brisanje stranice
+        res = await notion.delete_page(page_id)
+        
+        if res.get("ok"):
+            logger.info(f"Stranica sa ID: {page_id} uspješno obrisana.")
+        else:
+            logger.error(f"Greška pri brisanju stranice sa Notion ID: {page_id}.")
+            return {"ok": False, "error": res.get("error")}
+        
+        return {"ok": True, "message": f"Page {page_id} deleted successfully"}
+    
+    except Exception as e:
+        logger.error(f"Greška prilikom brisanja stranice {page_id}: {str(e)}")
+        return {"ok": False, "error": str(e)}
