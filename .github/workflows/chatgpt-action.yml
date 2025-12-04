@@ -1,0 +1,17 @@
+name: ChatGPT Integration
+
+on:
+  pull_request:
+    paths:
+      - '**.py'  # Možete promeniti ekstenzije ako želite da analizirate i druge fajlove
+
+jobs:
+  chatgpt-integration:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+
+      - name: ChatGPT Integration
+        uses: kxxt/chatgpt-action@v0.3
