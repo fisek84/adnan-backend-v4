@@ -1,36 +1,40 @@
 # routers/goals_router.py
+
 from fastapi import APIRouter, HTTPException, Depends
 import os
-import logging  # Dodajemo logovanje
+import logging
 
 from models.goal_create import GoalCreate
 from models.goal_update import GoalUpdate
+from models.base_model import GoalModel
 
-from dependencies import (
-    get_goals_service,
-    get_notion_service
-)
-
-# Inicijalizujemo logger
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
+from dependencies import get_goals_service, get_notion_service
 
 router = APIRouter(prefix="/goals", tags=["Goals"])
 
-# ================================
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+
+# ===============================================================
 # CREATE GOAL
-# ================================
-@router.post("/create")
+# ===============================================================
+@router.post("/create", response_model=dict)
 async def create_goal(
     payload: GoalCreate,
     goals_service=Depends(get_goals_service),
     notion=Depends(get_notion_service)
 ):
     try:
-        logger.info(f"Creating goal with title: {payload.title}")
-        
-        db_id = os.getenv("NOTION_GOALS_DB_ID")
+        logger.info(f"[GOALS] Creating goal: {payload.title}")
 
+        db_id = os.getenv("NOTION_GOALS_DB_ID")
+        if not db_id:
+            raise HTTPException(500, "NOTION_GOALS_DB_ID missing in environment")
+
+        # -----------------------------
+        # 1. CREATE IN NOTION
+        # -----------------------------
         notion_payload = {
             "parent": {"database_id": db_id},
             "properties": {
@@ -43,18 +47,21 @@ async def create_goal(
         notion_res = await notion.create_page(notion_payload)
 
         if not notion_res["ok"]:
-            logger.error(f"Notion error: {notion_res['error']}")
-            return {"status": "notion_error", "detail": notion_res["error"]}
+            logger.error(f"[GOALS] Notion error: {notion_res['error']}")
+            raise HTTPException(500, f"Notion error: {notion_res['error']}")
 
         notion_id = notion_res["data"]["id"]
-        notion_url = notion_res["data"]["url"]
+        notion_url = notion_res["data"].get("url")
 
+        # -----------------------------
+        # 2. CREATE LOCAL GOAL
+        # -----------------------------
         new_goal = goals_service.create_goal(
             payload,
             notion_id=notion_id
         )
 
-        logger.info(f"Goal created successfully with ID: {notion_id}")
+        logger.info(f"[GOALS] Created successfully: {new_goal.id}")
 
         return {
             "status": "created",
@@ -64,65 +71,79 @@ async def create_goal(
         }
 
     except Exception as e:
-        logger.error(f"Goal creation failed: {e}")
+        logger.error(f"[GOALS] Goal creation failed: {e}")
         raise HTTPException(500, f"Goal creation failed: {e}")
 
 
-# ================================
+# ===============================================================
 # UPDATE GOAL
-# ================================
-@router.patch("/{goal_id}")
+# ===============================================================
+@router.patch("/{goal_id}", response_model=dict)
 async def update_goal(
     goal_id: str,
-    data: GoalUpdate,
-    goals_service=Depends(get_goals_service)
+    payload: GoalUpdate,
+    goals_service=Depends(get_goals_service),
 ):
     try:
-        logger.info(f"Updating goal with ID: {goal_id}")
-        updated = goals_service.update_goal(goal_id, data)
-        logger.info(f"Goal with ID: {goal_id} updated successfully.")
-        return {"status": "updated", "goal": updated.model_dump()}
+        logger.info(f"[GOALS] Updating: {goal_id}")
+
+        updated = goals_service.update_goal(goal_id, payload)
+
+        return {
+            "status": "updated",
+            "goal": updated.model_dump()
+        }
+
     except ValueError as e:
-        logger.error(f"Goal with ID: {goal_id} not found for update. Error: {str(e)}")
+        logger.error(f"[GOALS] Update error: {e}")
         raise HTTPException(404, str(e))
 
 
-# ================================
-# LIST ALL GOALS
-# ================================
-@router.get("/all")
+# ===============================================================
+# LIST GOALS
+# ===============================================================
+@router.get("/all", response_model=dict)
 async def list_goals(goals_service=Depends(get_goals_service)):
-    logger.info("Fetching all goals.")
+    logger.info("[GOALS] Fetching all goals")
+
     goals = [g.model_dump() for g in goals_service.get_all()]
-    logger.info(f"Fetched {len(goals)} goals.")
+
     return {"goals": goals}
 
 
-# ================================
+# ===============================================================
 # DELETE GOAL
-# ================================
-@router.delete("/{goal_id}")
+# ===============================================================
+@router.delete("/{goal_id}", response_model=dict)
 async def delete_goal(
     goal_id: str,
     goals_service=Depends(get_goals_service),
     notion=Depends(get_notion_service)
 ):
     try:
-        logger.info(f"Deleting goal with ID: {goal_id}")
+        logger.info(f"[GOALS] Deleting: {goal_id}")
+
         deleted = goals_service.delete_goal(goal_id)
+        notion_status = "skipped"
 
-        notion_status = "skip"
-
+        # -------------------------------------------------------
+        # SAFELY DELETE FROM NOTION — only if you have delete API
+        # -------------------------------------------------------
         if deleted.notion_id:
             try:
-                logger.info(f"Attempting to delete Notion page for goal ID: {goal_id}")
-                # Correct method for deleting Notion page
-                res = await notion.delete_page(deleted.notion_id)  # Use delete_page for goal deletion
+                logger.info(f"[GOALS] Deleting Notion page: {deleted.notion_id}")
+
+                # You MUST add this to your NotionService for real deletion:
+                # async def delete_page(self, page_id):
+                #     return await self._safe_request("DELETE", f"https://api.notion.com/v1/blocks/{page_id}")
+
+                res = await notion.delete_page(deleted.notion_id)
+
                 notion_status = "deleted" if res["ok"] else res["error"]
-                logger.info(f"Notion deletion status: {notion_status}")
+
             except Exception as e:
                 notion_status = f"failed: {e}"
-                logger.error(f"Failed to delete goal from Notion. Error: {str(e)}")
+                logger.error(f"[GOALS] Notion delete error: {e}")
 
         return {
             "status": "deleted",
@@ -131,5 +152,5 @@ async def delete_goal(
         }
 
     except ValueError as e:
-        logger.error(f"Goal with ID: {goal_id} not found for deletion. Error: {str(e)}")
+        logger.error(f"[GOALS] Delete error: {e}")
         raise HTTPException(404, str(e))

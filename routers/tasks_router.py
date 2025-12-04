@@ -1,103 +1,101 @@
-from fastapi import APIRouter, Depends
+# routers/tasks_router.py
+
+from fastapi import APIRouter, Depends, HTTPException
 from typing import List
-import logging  # Dodajemo logovanje
+import logging
 
 from models.task_create import TaskCreate
 from models.task_update import TaskUpdate
 from models.task_model import TaskModel
 
 from services.tasks_service import TasksService
-from dependencies import get_tasks_service
-from dependencies import get_notion_service  # Importuj get_notion_service
+from dependencies import get_tasks_service, get_notion_service
 
-# Inicijalizujemo logger
+router = APIRouter(prefix="/tasks", tags=["Tasks"])
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-router = APIRouter(prefix="/tasks", tags=["Tasks"])
 
 # =====================================================
-# GET ALL
+# GET ALL TASKS
 # =====================================================
 @router.get("/all", response_model=List[TaskModel])
-async def all_tasks(tasks_service: TasksService = Depends(get_tasks_service)):
-    logger.info("Fetching all tasks.")
-    tasks = await tasks_service.get_all_tasks()
+async def get_all_tasks(tasks_service: TasksService = Depends(get_tasks_service)):
+    logger.info("Fetching all tasks...")
+    tasks = tasks_service.get_all_tasks()  # ← FIX (no await)
     logger.info(f"Fetched {len(tasks)} tasks.")
     return tasks
 
 
 # =====================================================
-# CREATE SINGLE
+# CREATE TASK
 # =====================================================
 @router.post("/create", response_model=TaskModel)
-async def create_task_endpoint(
+async def create_task(
     payload: TaskCreate,
     tasks_service: TasksService = Depends(get_tasks_service)
 ):
-    logger.info(f"Creating task with title: {payload.title}")
+    logger.info(f"Creating task: {payload.title}")
     task = await tasks_service.create_task(payload)
-    logger.info(f"Task created with ID: {task.id}")
+    logger.info(f"Task created: {task.id}")
     return task
 
 
 # =====================================================
-# BATCH CREATE
+# UPDATE TASK
 # =====================================================
-@router.post("/batch")
-async def batch_create_endpoint(
-    payload: List[TaskCreate],
-    tasks_service: TasksService = Depends(get_tasks_service)
-):
-    logger.info(f"Creating batch of {len(payload)} tasks.")
-    items = await tasks_service.create_tasks_batch(payload)
-    logger.info(f"Batch created with {len(items)} tasks.")
-    return {"count": len(items), "items": items}
-
-
-# =====================================================
-# UPDATE
-# =====================================================
-@router.patch("/{task_id}")
-async def update_task_endpoint(
+@router.patch("/{task_id}", response_model=TaskModel)
+async def update_task(
     task_id: str,
     payload: TaskUpdate,
     tasks_service: TasksService = Depends(get_tasks_service)
 ):
-    logger.info(f"Updating task with ID: {task_id}")
-    result = await tasks_service.update_task(task_id, payload)
-    logger.info(f"Task with ID: {task_id} updated.")
-    return result
+    logger.info(f"Updating task ID: {task_id}")
+
+    try:
+        updated = await tasks_service.update_task(task_id, payload)
+        logger.info(f"Task updated: {task_id}")
+        return updated
+    except Exception as e:
+        logger.error(f"Task update failed ({task_id}): {e}")
+        raise HTTPException(400, str(e))
 
 
 # =====================================================
-# DELETE
+# DELETE TASK
 # =====================================================
 @router.delete("/{task_id}")
-async def delete_task_endpoint(
+async def delete_task(
     task_id: str,
     tasks_service: TasksService = Depends(get_tasks_service),
-    notion=Depends(get_notion_service)  # Dodajemo get_notion_service kao zavisnost
+    notion=Depends(get_notion_service)
 ):
-    logger.info(f"Deleting task with ID: {task_id}")
-    
-    # Call the delete_task function from TasksService which is calling NotionService
+    logger.info(f"Deleting task ID: {task_id}")
+
     result = await tasks_service.delete_task(task_id)
 
-    if result["ok"]:
-        # If task is deleted from the service, now delete from Notion
-        if result.get("notion_id"):
-            logger.info(f"Deleting task with Notion ID: {result['notion_id']}")
-            notion_res = await notion.delete_page(result["notion_id"])  # Use delete_page for task deletion
-            if notion_res["ok"]:
-                logger.info(f"Task {task_id} successfully deleted from Notion and Backend.")
-                return {"message": f"Task {task_id} successfully deleted from Notion and Backend."}
-            else:
-                logger.error(f"Failed to delete task {task_id} from Notion. Error: {notion_res['error']}")
-                return {"error": f"Failed to delete task {task_id} from Notion. Error: {notion_res['error']}"}
+    if not result["ok"]:
+        raise HTTPException(404, f"Task {task_id} not found.")
+
+    notion_id = result.get("notion_id")
+
+    if notion_id:
+        logger.info(f"Deleting Notion page: {notion_id}")
+        notion_res = await notion._safe_request(
+            "DELETE",
+            f"https://api.notion.com/v1/pages/{notion_id}"
+        )
+
+        if notion_res["ok"]:
+            logger.info(f"Deleted from Notion: {notion_id}")
+            return {"message": f"Task {task_id} deleted from backend + Notion."}
         else:
-            logger.warning(f"Task {task_id} not found in Notion, deleted only from Backend.")
-            return {"message": f"Task {task_id} successfully deleted from Backend, but not found in Notion."}
-    else:
-        logger.error(f"Failed to delete task {task_id}. Error: {result['error']}")
-        return {"error": f"Failed to delete task {task_id}. Error: {result['error']}"}
+            logger.warning(f"Task deleted local, but Notion delete failed.")
+            return {
+                "warning": "Task removed locally, but Notion deletion failed.",
+                "notion_error": notion_res["error"]
+            }
+
+    # Task had no notion_id → only local deletion
+    logger.info(f"Task deleted locally only: {task_id}")
+    return {"message": f"Task {task_id} deleted locally (no Notion page)."}

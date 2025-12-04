@@ -1,116 +1,106 @@
+# routers/sync_router.py
+
 from fastapi import APIRouter, HTTPException
 from typing import Optional
-import logging  # Dodajemo logovanje
+import logging
+
 from services.notion_sync_service import NotionSyncService
 
-# Injected from main.py
+# Global instance injected in main.py
 sync_service_global: Optional[NotionSyncService] = None
 
-# NEW — SAFE setter function
+
 def set_sync_service(service: NotionSyncService):
+    """
+    Safe setter used in main.py during startup.
+    """
     global sync_service_global
     sync_service_global = service
 
 
 router = APIRouter(prefix="/sync", tags=["Sync"])
 
-# Inicijalizujemo logger
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-def check_sync():
+
+def require_sync():
     if sync_service_global is None:
         logger.error("SyncService not initialized")
-        raise HTTPException(500, "SyncService not initialized")
+        raise HTTPException(status_code=500, detail="SyncService not initialized")
 
 
 # ============================================================
-# FRIENDLY ENDPOINTS
+# FRIENDLY SYNC ENDPOINTS
 # ============================================================
 
 @router.post("/goals")
 async def sync_goals():
-    check_sync()
-    logger.info("Syncing goals...")
+    require_sync()
+    logger.info("Manual sync: GOALS")
     await sync_service_global.sync_goals_up()
-    logger.info("Goals synced successfully.")
     return {"status": "ok", "synced": "goals"}
 
 
 @router.post("/tasks")
 async def sync_tasks():
-    check_sync()
-    logger.info("Syncing tasks...")
+    require_sync()
+    logger.info("Manual sync: TASKS")
     await sync_service_global.sync_tasks_up()
-    logger.info("Tasks synced successfully.")
     return {"status": "ok", "synced": "tasks"}
+
+
+@router.post("/projects")
+async def sync_projects():
+    require_sync()
+    logger.info("Manual sync: PROJECTS")
+    await sync_service_global.sync_projects_up()
+    return {"status": "ok", "synced": "projects"}
 
 
 @router.post("/full")
 async def sync_full():
-    check_sync()
-    logger.info("Syncing all...")
+    require_sync()
+    logger.info("Manual FULL SYNC triggered")
     await sync_service_global.sync_goals_up()
     await sync_service_global.sync_tasks_up()
-    logger.info("Full sync completed (goals and tasks).")
+    await sync_service_global.sync_projects_up()
     return {"status": "ok", "synced": "full"}
 
 
 # ============================================================
-# RAW ENDPOINTS (KEEP)
+# RAW UPLOAD ENDPOINTS (KEEP)
 # ============================================================
 
 @router.post("/goals/up")
 async def sync_goals_up():
-    check_sync()
-    logger.info("Syncing goals up...")
+    require_sync()
+    logger.info("Sync UP: GOALS")
     await sync_service_global.sync_goals_up()
-    logger.info("Goals synced up.")
     return {"status": "ok", "action": "goals_sync_up"}
-
-
-@router.post("/goals/down")
-async def sync_goals_down():
-    check_sync()
-    logger.info("Syncing goals down...")
-    await sync_service_global.sync_goals_down()
-    logger.info("Goals synced down.")
-    return {"status": "ok", "action": "goals_sync_down"}
 
 
 @router.post("/tasks/up")
 async def sync_tasks_up():
-    check_sync()
-    logger.info("Syncing tasks up...")
+    require_sync()
+    logger.info("Sync UP: TASKS")
     await sync_service_global.sync_tasks_up()
-    logger.info("Tasks synced up.")
     return {"status": "ok", "action": "tasks_sync_up"}
 
 
-@router.post("/tasks/down")
-async def sync_tasks_down():
-    check_sync()
-    logger.info("Syncing tasks down...")
-    await sync_service_global.sync_tasks_down()
-    logger.info("Tasks synced down.")
-    return {"status": "ok", "action": "tasks_sync_down"}
+@router.post("/projects/up")
+async def sync_projects_up():
+    require_sync()
+    logger.info("Sync UP: PROJECTS")
+    await sync_service_global.sync_projects_up()
+    return {"status": "ok", "action": "projects_sync_up"}
 
 
 @router.post("/all/up")
 async def sync_all_up():
-    check_sync()
-    logger.info("Syncing all (goals and tasks) up...")
+    require_sync()
+    logger.info("Sync UP: ALL (goals + tasks + projects)")
     await sync_service_global.sync_goals_up()
     await sync_service_global.sync_tasks_up()
-    logger.info("Full sync up completed (goals and tasks).")
+    await sync_service_global.sync_projects_up()
     return {"status": "ok", "action": "all_sync_up"}
-
-
-@router.post("/all/down")
-async def sync_all_down():
-    check_sync()
-    logger.info("Syncing all (goals and tasks) down...")
-    await sync_service_global.sync_goals_down()
-    await sync_service_global.sync_tasks_down()
-    logger.info("Full sync down completed (goals and tasks).")
-    return {"status": "ok", "action": "all_sync_down"}

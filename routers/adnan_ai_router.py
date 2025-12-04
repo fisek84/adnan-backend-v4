@@ -1,10 +1,14 @@
-from services.adnan_state_service import get_adnan_state
+# routers/adnan_ai_router.py
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-import logging  # Dodajemo logovanje
+import logging
+
 from services.prompt_builder import PromptBuilder
 from services.ai_command_service import AICommandService
-from services.identity_loader import load_adnan_identity   # ✅ FIXED IMPORT
+
+from services.identity_loader import load_adnan_identity
+from services.adnan_state_service import get_adnan_state
 from services.adnan_kernel_service import get_adnan_kernel
 from services.adnan_mode_service import get_adnan_mode
 from services.adnan_decision_service import get_decision_engine_signature
@@ -13,111 +17,122 @@ from services.adnan_analyze_service import analyze_text
 
 router = APIRouter(prefix="/adnan-ai", tags=["Adnan.AI"])
 
-# Inicijalizujemo logger
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
+
+# ============================================================
+# MODELS
+# ============================================================
 class QueryModel(BaseModel):
     text: str
 
+
+# ============================================================
+# GLOBAL SERVICES
+# ============================================================
 prompt_builder = PromptBuilder()
 ai_service = AICommandService()
 
-# ==========================================================
-# Main AI Query Endpoint
-# ==========================================================
-@router.post("/")
-def query_adnan_ai(request: QueryModel):
-    logger.info(f"🟦 REQUEST RECEIVED: {request.text}")
 
-    prompt = prompt_builder.build_prompt(request.text)
-    logger.info(f"🟪 GENERATED PROMPT: {prompt}")
+# ============================================================
+# MAIN AI QUERY ENDPOINT
+# ============================================================
+@router.post("/")
+async def query_adnan_ai(request: QueryModel):
+    logger.info(f"[ADNAN.AI] Request received: {request.text}")
 
     try:
-        response = ai_service.execute(prompt, {})
-        logger.info(f"🟥 RAW RESPONSE: {response}")
+        prompt = prompt_builder.build_prompt(request.text)
+        logger.info(f"[ADNAN.AI] Prompt built: {prompt}")
     except Exception as e:
-        logger.error(f"Error during AI execution: {str(e)}")
+        logger.error(f"[ADNAN.AI] Prompt build error: {str(e)}")
+        raise HTTPException(500, f"Prompt build error: {str(e)}")
+
+    try:
+        # Keeping sync call for now, but safe for async expansion
+        response = ai_service.execute(prompt, {})
+        logger.info(f"[ADNAN.AI] Response: {response}")
+    except Exception as e:
+        logger.error(f"[ADNAN.AI] AI execution error: {str(e)}")
         raise HTTPException(500, f"AI Execution error: {str(e)}")
 
-    return {"response": response}
+    return {"ok": True, "response": response}
 
 
-# ==========================================================
-# Identity Endpoint — Safe and Functional
-# ==========================================================
+# ============================================================
+# IDENTITY ENDPOINT
+# ============================================================
 @router.get("/identity")
 def get_identity():
     try:
-        identity = load_adnan_identity()
-        logger.info("🟩 IDENTITY LOADED")
-        return identity
+        data = load_adnan_identity()
+        logger.info("[ADNAN.AI] Identity loaded")
+        return data
     except Exception as e:
-        logger.error(f"Error loading identity: {str(e)}")
-        return {"error": str(e)}
+        logger.error(f"[ADNAN.AI] Identity load error: {str(e)}")
+        raise HTTPException(500, f"Identity load error: {str(e)}")
 
 
-# ==========================================================
-# State Endpoint — Returns full safe system snapshot
-# ==========================================================
+# ============================================================
+# STATE — FULL SNAPSHOT
+# ============================================================
 @router.get("/state")
 def adnan_state():
-    logger.info("🟩 Fetching Adnan state snapshot")
-    state = get_adnan_state()
-    logger.info("🟩 Adnan state fetched successfully")
-    return state
+    logger.info("[ADNAN.AI] Loading system state...")
+    return get_adnan_state()
 
 
-# ==========================================================
-# Kernel Endpoint — Returns core identity data
-# ==========================================================
+# ============================================================
+# KERNEL
+# ============================================================
 @router.get("/kernel")
 def adnan_kernel():
-    logger.info("🟩 Fetching Adnan kernel data")
-    kernel = get_adnan_kernel()
-    logger.info("🟩 Adnan kernel fetched successfully")
-    return kernel
+    logger.info("[ADNAN.AI] Loading kernel...")
+    return get_adnan_kernel()
 
 
-# ==========================================================
-# Mode Endpoint — Returns current Evolia Mode
-# ==========================================================
+# ============================================================
+# MODE (Evolia Mode)
+# ============================================================
 @router.get("/mode")
 def adnan_mode():
-    logger.info("🟩 Fetching current Evolia mode")
-    mode = get_adnan_mode()
-    logger.info("🟩 Evolia mode fetched successfully")
-    return mode
+    logger.info("[ADNAN.AI] Loading mode...")
+    return get_adnan_mode()
 
 
-# ==========================================================
-# Decision Engine Endpoint — Returns engine structure
-# ==========================================================
+# ============================================================
+# DECISION ENGINE SIGNATURE
+# ============================================================
 @router.get("/decision-engine")
 def decision_engine():
-    logger.info("🟩 Fetching decision engine signature")
-    engine_signature = get_decision_engine_signature()
-    logger.info("🟩 Decision engine signature fetched successfully")
-    return engine_signature
+    logger.info("[ADNAN.AI] Loading decision engine signature...")
+    return get_decision_engine_signature()
 
 
-# ==========================================================
-# Eval Endpoint — Safe text evaluation
-# ==========================================================
+# ============================================================
+# EVAL — SAFE EVALUATION
+# ============================================================
 @router.post("/eval")
 def adnan_eval(request: QueryModel):
-    logger.info(f"🟩 Evaluating text: {request.text}")
-    result = evaluate_text(request.text)
-    logger.info(f"🟩 Text evaluation result: {result}")
-    return result
+    try:
+        logger.info(f"[ADNAN.AI] Evaluating: {request.text}")
+        result = evaluate_text(request.text)
+        return {"ok": True, "evaluation": result}
+    except Exception as e:
+        logger.error(f"[ADNAN.AI] Evaluation error: {str(e)}")
+        raise HTTPException(500, f"Evaluation error: {str(e)}")
 
 
-# ==========================================================
-# Analyze Endpoint — AI interpretation without actions
-# ==========================================================
+# ============================================================
+# ANALYZE — INTERPRET WITHOUT EXECUTION
+# ============================================================
 @router.post("/analyze")
 def adnan_analyze(request: QueryModel):
-    logger.info(f"🟩 Analyzing text: {request.text}")
-    result = analyze_text(request.text)
-    logger.info(f"🟩 Text analysis result: {result}")
-    return result
+    try:
+        logger.info(f"[ADNAN.AI] Analyzing: {request.text}")
+        result = analyze_text(request.text)
+        return {"ok": True, "analysis": result}
+    except Exception as e:
+        logger.error(f"[ADNAN.AI] Analysis error: {str(e)}")
+        raise HTTPException(500, f"Analysis error: {str(e)}")
