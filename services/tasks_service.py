@@ -65,14 +65,6 @@ class TasksService:
     # ------------------------------------------------------------
     # CREATE TASK
     # ------------------------------------------------------------
-    def convert_to_uuid(self, goal_id):
-        try:
-            # Pokušaj da se goal_id konvertuje u UUID
-            return UUID(goal_id)
-        except ValueError:
-            # Ako nije validan UUID, generiši novi UUID
-            return uuid4()
-
     async def create_task(self, data: TaskCreate) -> TaskModel:
         now = self._now()
         task_id = uuid4().hex
@@ -83,7 +75,8 @@ class TasksService:
 
         # Ako goal_id nije validan UUID, konvertuj ga
         if data.goal_id:
-            data.goal_id = self.convert_to_uuid(data.goal_id)
+            # Konvertiraj UUID u string ako je potrebno
+            data.goal_id = str(data.goal_id)  # Ovo osigurava da goal_id bude string
         else:
             # Ako goal_id nije prosleđen, kreiraj novi cilj
             new_goal = await self.goals_service.create_goal({
@@ -99,7 +92,7 @@ class TasksService:
             notion_id=None,
             title=data.title,
             description=data.description,
-            goal_id=data.goal_id,
+            goal_id=data.goal_id,  # goal_id je sada string
             deadline=data.deadline,
             priority=data.priority,
             status=data.status or "pending",
