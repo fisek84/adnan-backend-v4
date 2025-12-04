@@ -76,7 +76,7 @@ class TasksService:
             notion_id=None,
             title=data.title,
             description=data.description,
-            goal_id=data.goal_id,
+            goal_id=data.goal_id,  # Ovdje povezujući zadatak sa ciljem
             deadline=data.deadline,
             priority=data.priority,
             status=data.status or "pending",
@@ -87,10 +87,17 @@ class TasksService:
 
         self.tasks[task_id] = task
 
-        # Call Notion
+        # Provjerite da li goal_id postoji i povezivanje s notion_id cilja
+        if data.goal_id:
+            goal = self.goals_service.get_goal_by_id(data.goal_id)  # Provjerite da li goal_id odgovara notion_id cilja
+            if not goal:
+                raise ValueError(f"Goal with ID {data.goal_id} not found.")
+            task.goal_notion_id = goal.notion_id  # Spremanje notion_id cilja u zadatak
+
+        # Call Notion API za kreiranje zadatka
         res = await self.notion.create_task(task)
 
-        # Normalizacija outputa
+        # Obrada odgovora od Notion API-a
         if isinstance(res, str):
             res = {"ok": False, "error": res}
 
@@ -100,11 +107,10 @@ class TasksService:
         res.setdefault("ok", False)
         res.setdefault("data", {})
 
-        # Ako Notion vrati ID
         if res["ok"] and "id" in res["data"]:
-            task.notion_id = res["data"]["id"]
+            task.notion_id = res["data"]["id"]  # Pohranjivanje notion_id
 
-        self._trigger_sync()
+        self._trigger_sync()  # Sinhronizacija sa Notion-om
         return task
 
     # ------------------------------------------------------------
@@ -139,16 +145,19 @@ class TasksService:
 
         notion_id = task.notion_id
 
-        # First, delete from Notion (this is the key part that was missing)
-        if notion_id:
-            res = await self.notion.delete_task(notion_id)
-            if not res.get("ok", False):
-                return {"ok": False, "error": "Failed to delete task from Notion"}
+        # Provjerite da li notion_id postoji i je li ispravan
+        if not notion_id:
+            return {"ok": False, "error": "No notion_id available for task"}
 
-        # Remove from local storage
+        # Prvo, pokušajte obrisati zadatak iz Notion-a
+        res = await self.notion.delete_task(notion_id)
+        if not res.get("ok", False):
+            return {"ok": False, "error": "Failed to delete task from Notion"}
+
+        # Uklonite zadatak iz lokalne baze podataka
         self.tasks.pop(task_id)
 
-        # Trigger sync
+        # Sinhronizacija sa Notion-om
         self._trigger_sync()
 
         return {"ok": True, "notion_id": notion_id}
