@@ -139,10 +139,18 @@ class TasksService:
 
         notion_id = task.notion_id
 
-        # Remove local
+        # First, delete from Notion (this is the key part that was missing)
+        if notion_id:
+            res = await self.notion.delete_task(notion_id)
+            if not res.get("ok", False):
+                return {"ok": False, "error": "Failed to delete task from Notion"}
+
+        # Remove from local storage
         self.tasks.pop(task_id)
 
+        # Trigger sync
         self._trigger_sync()
+
         return {"ok": True, "notion_id": notion_id}
 
     # ------------------------------------------------------------

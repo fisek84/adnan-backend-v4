@@ -5,7 +5,7 @@ def _canonicalize_notion_id(id_str: str) -> str:
     """
     Pretvara ID u canonical Notion UUID format ako je već u skraćenom obliku.
     Primjer:
-    '2b95873bd84a81e59a15fea6a570c652' ->
+    '2b95873bd84a81e59a15fea6a570c652' -> 
     '2b95873b-d84a-81e5-9a15-fea6a570c652'
     """
 
