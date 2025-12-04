@@ -1,4 +1,5 @@
 # services/notion_sync_service.py
+
 import asyncio
 import logging
 
@@ -25,14 +26,18 @@ class NotionSyncService:
 
         self._delay = 0.25
 
+        # Debounce task holders
         self._project_sync_task = None
         self._goal_sync_task = None
         self._task_sync_task = None
 
+        # Logger
         self.logger = logging.getLogger(__name__)
         self.logger.setLevel(logging.INFO)
 
-    # DEBOUNCE WRAPPER
+    # ------------------------------------------------------
+    # INTERNAL DEBOUNCE WRAPPER
+    # ------------------------------------------------------
     async def _debounce(self, fn):
         try:
             await asyncio.sleep(self._delay)
@@ -40,9 +45,12 @@ class NotionSyncService:
         except asyncio.CancelledError:
             pass
 
+    # ------------------------------------------------------
     # PROJECT SYNC DEBOUNCE
+    # ------------------------------------------------------
     async def debounce_projects_sync(self):
         loop = asyncio.get_running_loop()
+
         if self._project_sync_task and not self._project_sync_task.done():
             self._project_sync_task.cancel()
 
@@ -50,9 +58,12 @@ class NotionSyncService:
             self._debounce(self.sync_projects_up)
         )
 
+    # ------------------------------------------------------
     # GOALS SYNC DEBOUNCE
+    # ------------------------------------------------------
     async def debounce_goals_sync(self):
         loop = asyncio.get_running_loop()
+
         if self._goal_sync_task and not self._goal_sync_task.done():
             self._goal_sync_task.cancel()
 
@@ -60,9 +71,12 @@ class NotionSyncService:
             self._debounce(self.sync_goals_up)
         )
 
+    # ------------------------------------------------------
     # TASKS SYNC DEBOUNCE
+    # ------------------------------------------------------
     async def debounce_tasks_sync(self):
         loop = asyncio.get_running_loop()
+
         if self._task_sync_task and not self._task_sync_task.done():
             self._task_sync_task.cancel()
 
@@ -70,36 +84,150 @@ class NotionSyncService:
             self._debounce(self.sync_tasks_up)
         )
 
-    # ------------------------
-    # SYNC PROJECTS
-    # ------------------------
+    # ------------------------------------------------------
+    # LOAD PROJECTS FROM NOTION → BACKEND (REQUIRED BY main.py)
+    # ------------------------------------------------------
+    async def load_projects_into_backend(self):
+        self.logger.info("📥 Loading projects from Notion into backend...")
+
+        response = await self.notion.query_database(self.projects_db_id)
+
+        if not response.get("ok"):
+            self.logger.error("Failed to load projects from Notion")
+            return
+
+        pages = response["data"]["results"]
+
+        for page in pages:
+            mapped = self.map_project_page(page)
+            if not mapped:
+                continue
+
+            project_id = mapped["id"]
+
+            # If backend already has this project → update tasks
+            if project_id in self.projects.projects:
+                self.projects.projects[project_id].tasks = mapped["tasks"]
+                continue
+
+            # Otherwise create new project in backend
+            self.projects.create_project(
+                data=self.projects.to_create_model(mapped),
+                forced_id=project_id,
+                notion_id=mapped["notion_id"]
+            )
+
+        self.logger.info(f"📁 Loaded {len(pages)} projects from Notion → backend OK")
+
+    # ------------------------------------------------------
+    # MAP NOTION PROJECT PAGE → PYTHON STRUCTURE
+    # ------------------------------------------------------
+    def map_project_page(self, page):
+        props = page.get("properties", {})
+
+        def safe(name, kind):
+            prop = props.get(name)
+            if not prop:
+                return None
+
+            try:
+                if kind == "title":
+                    return prop["title"][0]["plain_text"] if prop["title"] else ""
+                if kind == "text":
+                    return prop["rich_text"][0]["plain_text"] if prop["rich_text"] else ""
+                if kind == "select":
+                    return prop["select"]["name"] if prop["select"] else None
+                if kind == "date":
+                    return prop["date"]["start"] if prop["date"] else None
+                if kind == "relation":
+                    rel = prop.get("relation") or []
+                    return [r["id"].replace("-", "") for r in rel]
+            except:
+                return None
+
+            return None
+
+        title = safe("Project Name", "title")
+        if not title:
+            return None
+
+        return {
+            "id": page["id"].replace("-", ""),
+            "notion_id": page["id"],
+            "title": title,
+            "description": safe("Description", "text"),
+            "status": safe("Status", "select") or "Active",
+            "category": safe("Category", "select"),
+            "priority": safe("Priority", "select"),
+            "start_date": safe("Start Date", "date"),
+            "deadline": safe("Target Deadline", "date"),
+            "project_type": safe("Project Type", "select"),
+            "summary": safe("Summary", "text"),
+            "next_step": safe("Next Step", "text"),
+            "primary_goal_id": (
+                safe("Primary Goal", "relation")[0]
+                if safe("Primary Goal", "relation") else None
+            ),
+            "parent_id": (
+                safe("Parent Project", "relation")[0]
+                if safe("Parent Project", "relation") else None
+            ),
+            "agents": safe("Agent Exchange DB", "relation") or [],
+            "tasks": safe("Tasks DB", "relation") or [],
+            "handled_by": safe("Handled By", "text"),
+            "progress": 0,
+        }
+
+    # ------------------------------------------------------
+    # SYNC PROJECTS UP → NOTION
+    # ------------------------------------------------------
     async def sync_projects_up(self):
         for p in self.projects.get_all():
             props = self.map_local_project_to_notion(self.projects.to_dict(p))
 
+            # NEW NOTION PAGE
             if not p.notion_id:
                 created = await self.notion.create_page({
                     "parent": {"database_id": self.projects_db_id},
                     "properties": props
                 })
+
                 if created.get("ok"):
                     self.projects._replace_id(p.id, created["data"]["id"])
+
                 continue
 
+            # UPDATE EXISTING
             await self.notion.update_page(p.notion_id, {"properties": props})
 
-    # ------------------------
+    # ------------------------------------------------------
+    # PROJECT MAPPING PYTHON → NOTION
+    # ------------------------------------------------------
+    def map_local_project_to_notion(self, p):
+        def wrap(x):
+            return {"rich_text": [{"text": {"content": x or ""}}]}
+
+        return {
+            "Project Name": {"title": [{"text": {"content": p.get("title")}}]},
+            "Description": wrap(p.get("description")),
+            "Status": {"select": {"name": p.get("status")}},
+        }
+
+    # ------------------------------------------------------
     # SYNC GOALS
-    # ------------------------
+    # ------------------------------------------------------
     async def sync_goals_up(self):
         for goal in self.goals.get_all():
+
             props = {
                 "Name": {"title": [{"text": {"content": goal.title}}]},
                 "Status": {"select": {"name": goal.status}},
                 "Progress": {"number": goal.progress},
             }
+
             if goal.priority:
                 props["Priority"] = {"select": {"name": goal.priority}}
+
             if goal.deadline:
                 props["Deadline"] = {"date": {"start": goal.deadline}}
 
@@ -108,52 +236,49 @@ class NotionSyncService:
                     "parent": {"database_id": self.goals_db_id},
                     "properties": props
                 })
+
                 if created.get("ok"):
                     goal.notion_id = created["data"]["id"]
+
                 continue
 
             await self.notion.update_page(goal.notion_id, {"properties": props})
 
-    # ------------------------
+    # ------------------------------------------------------
     # SYNC TASKS
-    # ------------------------
+    # ------------------------------------------------------
     async def sync_tasks_up(self):
         for task in self.tasks.get_all_tasks():
+
             props = {
                 "Name": {"title": [{"text": {"content": task.title}}]},
                 "Status": {"select": {"name": task.status}},
                 "Order": {"number": task.order},
             }
+
             if task.priority:
                 props["Priority"] = {"select": {"name": task.priority}}
+
             if task.deadline:
                 props["Due Date"] = {"date": {"start": task.deadline}}
 
-            # relation
-            if task.goal_id:
-                props["Goal"] = {"relation": [{"id": task.goal_id}]}
-            else:
-                props["Goal"] = {"relation": []}
+            props["Goal"] = (
+                {"relation": [{"id": task.goal_id}]}
+                if task.goal_id
+                else {"relation": []}
+            )
 
+            # CREATE
             if not task.notion_id:
                 created = await self.notion.create_page({
                     "parent": {"database_id": self.tasks_db_id},
                     "properties": props
                 })
+
                 if created.get("ok"):
                     task.notion_id = created["data"]["id"]
+
                 continue
 
+            # UPDATE
             await self.notion.update_page(task.notion_id, {"properties": props})
-
-
-    # (ako koristiš map_local_project_to_notion, ostavi i taj helper)
-    def map_local_project_to_notion(self, p):
-        def wrap(x):
-            return {"rich_text": [{"text": {"content": x or ''}}]}
-
-        return {
-            "Project Name": {"title": [{"text": {"content": p.get("title")}}]},
-            "Description": wrap(p.get("description")),
-            "Status": {"select": {"name": p.get("status")}},
-        }
