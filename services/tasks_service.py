@@ -51,6 +51,7 @@ class TasksService:
     # CREATE TASK
     # ------------------------------------------------------------
     async def create_task(self, data: TaskCreate) -> TaskModel:
+        logger.info("Starting task creation...")
         now = self._now()
         task_id = uuid4().hex
 
@@ -64,27 +65,19 @@ class TasksService:
             logger.error("Title is required to create a task.")
             raise ValueError("Title is required to create a task.")
 
+        logger.info(f"Creating task with title: {data.title}")
+
         # Ako goal_id postoji, konvertiraj ga u string
         if data.goal_id:
             try:
-                data.goal_id = str(data.goal_id)  # Osiguraj da goal_id bude string
+                # Osiguraj da goal_id bude string, bez obzira na to je li poslan kao UUID ili string
+                data.goal_id = str(data.goal_id)  
                 logger.info(f"Using existing goal_id: {data.goal_id}")
             except Exception as e:
                 logger.error(f"Error converting goal_id: {e}")
                 raise ValueError("Invalid goal_id format.")
         else:
-            logger.info("No goal_id provided, creating a new goal.")
-            try:
-                new_goal = await self.goals_service.create_goal({
-                    'title': data.title,
-                    'priority': data.priority,
-                    'deadline': data.deadline
-                })
-                data.goal_id = str(new_goal.id)  # Osiguraj da goal_id bude string
-                logger.info(f"Created new goal with ID: {data.goal_id}")
-            except Exception as e:
-                logger.error(f"Error creating new goal: {e}")
-                raise ValueError("Error creating new goal.")
+            logger.info("No goal_id provided, task is being created without goal.")
 
         # Kreiranje taska
         task = TaskModel(
@@ -92,7 +85,7 @@ class TasksService:
             notion_id=None,
             title=data.title,
             description=data.description,
-            goal_id=data.goal_id,
+            goal_id=str(data.goal_id) if data.goal_id else None,  # goal_id može biti None ako nije poslan
             deadline=data.deadline,
             priority=data.priority,
             status=data.status or "pending",
@@ -101,11 +94,14 @@ class TasksService:
             updated_at=now,
         )
 
+        logger.info(f"Task created with ID: {task.id}")
+
         self.tasks[task_id] = task
 
         # Povezivanje sa Notion-om
         try:
             res = await self.notion.create_task(task)
+            logger.info(f"Notion response: {res}")
         except Exception as e:
             logger.error(f"Error connecting to Notion: {e}")
             raise ValueError("Failed to create task in Notion.")
@@ -120,6 +116,7 @@ class TasksService:
 
         if res["ok"] and "id" in res["data"]:
             task.notion_id = res["data"]["id"]
+            logger.info(f"Task successfully created in Notion with Notion ID: {task.notion_id}")
 
         self._trigger_sync()  # Sinhronizacija sa Notion-om
         return task
