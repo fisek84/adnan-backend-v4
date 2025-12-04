@@ -64,7 +64,7 @@ class TasksService:
             logger.error("Title is required to create a task.")
             raise ValueError("Title is required to create a task.")
 
-        # Ako goal_id nije validan UUID, konvertiraj ga
+        # Ako goal_id postoji, konvertiraj ga u string
         if data.goal_id:
             try:
                 data.goal_id = str(data.goal_id)  # Osiguraj da goal_id bude string
@@ -80,12 +80,13 @@ class TasksService:
                     'priority': data.priority,
                     'deadline': data.deadline
                 })
-                data.goal_id = new_goal.id  # Postavi novo kreirani goal_id kao string
+                data.goal_id = str(new_goal.id)  # Osiguraj da goal_id bude string
                 logger.info(f"Created new goal with ID: {data.goal_id}")
             except Exception as e:
                 logger.error(f"Error creating new goal: {e}")
                 raise ValueError("Error creating new goal.")
 
+        # Kreiranje taska
         task = TaskModel(
             id=task_id,
             notion_id=None,
