@@ -1,7 +1,5 @@
-# services/tasks_service.py
-
 import asyncio
-from uuid import uuid4
+from uuid import uuid4, UUID
 from datetime import datetime, timezone
 from typing import Dict, Optional, List
 
@@ -67,16 +65,41 @@ class TasksService:
     # ------------------------------------------------------------
     # CREATE TASK
     # ------------------------------------------------------------
+    def convert_to_uuid(self, goal_id):
+        try:
+            # Pokušaj da se goal_id konvertuje u UUID
+            return UUID(goal_id)
+        except ValueError:
+            # Ako nije validan UUID, generiši novi UUID
+            return uuid4()
+
     async def create_task(self, data: TaskCreate) -> TaskModel:
         now = self._now()
         task_id = uuid4().hex
 
+        # Provjera da li je goals_service inicijaliziran
+        if not self.goals_service:
+            raise ValueError("Goals service is not initialized. Please bind goals service before using.")
+
+        # Ako goal_id nije validan UUID, konvertuj ga
+        if data.goal_id:
+            data.goal_id = self.convert_to_uuid(data.goal_id)
+        else:
+            # Ako goal_id nije prosleđen, kreiraj novi cilj
+            new_goal = await self.goals_service.create_goal({
+                'title': data.title,  # Koristi naziv zadatka za kreiranje cilja
+                'priority': data.priority,
+                'deadline': data.deadline
+            })
+            data.goal_id = new_goal.id  # Postavi novo kreirani goal_id
+
+        # Kreiraj zadatak sa goal_id
         task = TaskModel(
             id=task_id,
             notion_id=None,
             title=data.title,
             description=data.description,
-            goal_id=data.goal_id,  # Ovdje povezujući zadatak sa ciljem
+            goal_id=data.goal_id,
             deadline=data.deadline,
             priority=data.priority,
             status=data.status or "pending",
@@ -87,17 +110,9 @@ class TasksService:
 
         self.tasks[task_id] = task
 
-        # Provjerite da li goal_id postoji i povezivanje s notion_id cilja
-        if data.goal_id:
-            goal = self.goals_service.get_goal_by_id(data.goal_id)  # Provjerite da li goal_id odgovara notion_id cilja
-            if not goal:
-                raise ValueError(f"Goal with ID {data.goal_id} not found.")
-            task.goal_notion_id = goal.notion_id  # Spremanje notion_id cilja u zadatak
-
-        # Call Notion API za kreiranje zadatka
+        # Povezivanje sa Notion-om
         res = await self.notion.create_task(task)
 
-        # Obrada odgovora od Notion API-a
         if isinstance(res, str):
             res = {"ok": False, "error": res}
 
@@ -141,7 +156,7 @@ class TasksService:
     async def delete_task(self, task_id: str):
         task = self.tasks.get(task_id)
         if not task:
-            return {"ok": False, "error": "Task not found"}
+            return {"ok": False, "error": "Task not found"}  # Provjerite da li zadatak postoji
 
         notion_id = task.notion_id
 

@@ -1,8 +1,7 @@
-# services/notion_service.py
-
 import aiohttp
 from typing import Dict, Any, Optional
 import logging
+from uuid import UUID, uuid4
 
 # ============================================================
 # GLOBAL REGISTRY
@@ -171,6 +170,13 @@ class NotionService:
     # ============================================================
     async def create_task(self, task):
         self.logger.info(f"Creating Notion task: {task.title}")
+
+        # Validacija goal_id (ako nije validan UUID, generišemo novi UUID)
+        if task.goal_id:
+            try:
+                task.goal_id = UUID(task.goal_id)
+            except ValueError:
+                task.goal_id = uuid4()  # Generišemo novi UUID ako nije validan
 
         props = {
             "Name": {"title": [{"text": {"content": task.title}}]},

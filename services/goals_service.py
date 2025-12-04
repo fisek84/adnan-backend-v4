@@ -1,5 +1,3 @@
-# services/goals_service.py
-
 from models.base_model import GoalModel
 from models.goal_create import GoalCreate
 from models.goal_update import GoalUpdate
@@ -111,3 +109,20 @@ class GoalsService:
     # ---------------------------------------------------------
     def get_goal_by_id(self, goal_id: str) -> Optional[GoalModel]:
         return self.goals.get(goal_id)
+
+    # ---------------------------------------------------------
+    # GET ALL GOALS
+    # ---------------------------------------------------------
+    def get_all(self) -> List[GoalModel]:
+        return list(self.goals.values())  # Vraća sve ciljeve kao listu
+
+    # ---------------------------------------------------------
+    # DELETE GOAL
+    # ---------------------------------------------------------
+    def delete_goal(self, goal_id: str):
+        goal = self.goals.get(goal_id)
+        if goal:
+            del self.goals[goal_id]  # Uklanjamo cilj iz memorije
+            self._trigger_sync()  # Pokrećemo sinhronizaciju nakon brisanja
+            return goal
+        return None

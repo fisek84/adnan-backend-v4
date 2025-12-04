@@ -83,6 +83,10 @@ async def startup_event():
         projects_service = get_projects_service()
         sync_service = get_sync_service()
 
+        # Bind services together
+        tasks_service.bind_goals_service(goals_service)  # Add this line
+        logger.info("✅ GoalsService bound to TasksService")
+
         logger.info("✅ NotionService initialized")
         logger.info("✅ GoalsService initialized")
         logger.info("✅ TasksService initialized")

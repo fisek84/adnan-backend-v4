@@ -1,5 +1,3 @@
-# routers/goals_router.py
-
 from fastapi import APIRouter, HTTPException, Depends
 import os
 import logging
@@ -134,9 +132,6 @@ async def delete_goal(
                 logger.info(f"[GOALS] Deleting Notion page: {deleted.notion_id}")
 
                 # You MUST add this to your NotionService for real deletion:
-                # async def delete_page(self, page_id):
-                #     return await self._safe_request("DELETE", f"https://api.notion.com/v1/blocks/{page_id}")
-
                 res = await notion.delete_page(deleted.notion_id)
 
                 notion_status = "deleted" if res["ok"] else res["error"]
