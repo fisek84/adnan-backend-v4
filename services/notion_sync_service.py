@@ -1,191 +1,159 @@
-# services/goals_service.py
-from models.base_model import GoalModel
-from models.goal_create import GoalCreate
-from models.goal_update import GoalUpdate
-
+# services/notion_sync_service.py
 import asyncio
-from uuid import uuid4
-from datetime import datetime, timezone
-from typing import Dict, Optional, List
+import logging
 
 
-class GoalsService:
-    tasks_service = None
-    sync_service = None
-
-    def __init__(self):
-        self.goals: Dict[str, GoalModel] = {}
-
-    # ---------------------------------------------------------
-    # BINDING
-    # ---------------------------------------------------------
-    def bind_tasks_service(self, tasks_service):
-        self.tasks_service = tasks_service
-
-    def bind_sync_service(self, sync_service):
-        self.sync_service = sync_service
-
-    # ---------------------------------------------------------
-    # INTERNAL HELPERS
-    # ---------------------------------------------------------
-    def _now(self):
-        return datetime.now(timezone.utc)
-
-    def _trigger_sync(self):
-        """
-        Safe async sync trigger
-        """
-        if not self.sync_service:
-            return
-
-        try:
-            loop = asyncio.get_running_loop()
-            loop.create_task(self.sync_service.debounce_goals_sync())
-        except RuntimeError:
-            asyncio.get_event_loop().create_task(
-                self.sync_service.debounce_goals_sync()
-            )
-
-    def to_dict(self, goal: GoalModel) -> dict:
-        return {
-            "id": goal.id,
-            "notion_id": goal.notion_id,
-            "title": goal.title,
-            "description": goal.description,
-            "deadline": goal.deadline,
-            "parent_id": goal.parent_id,
-            "priority": goal.priority,
-            "status": goal.status,
-            "progress": goal.progress,
-            "children": goal.children,
-            "created_at": goal.created_at,
-            "updated_at": goal.updated_at,
-        }
-
-    # ---------------------------------------------------------
-    # VALIDATION OF CYCLE
-    # ---------------------------------------------------------
-    def _would_create_cycle(self, parent_id: str, child_id: str) -> bool:
-        stack = [child_id]
-
-        while stack:
-            current = stack.pop()
-            if current == parent_id:
-                return True
-
-            children = self.goals[current].children if current in self.goals else []
-            stack.extend(children)
-
-        return False
-
-    # ---------------------------------------------------------
-    # CREATE GOAL
-    # ---------------------------------------------------------
-    def create_goal(
+class NotionSyncService:
+    def __init__(
         self,
-        data: GoalCreate,
-        forced_id: Optional[str] = None,
-        notion_id: Optional[str] = None
-    ) -> GoalModel:
+        notion_service,
+        goals_service,
+        tasks_service,
+        projects_service,
+        goals_db_id,
+        tasks_db_id,
+        projects_db_id
+    ):
+        self.notion = notion_service
+        self.goals = goals_service
+        self.tasks = tasks_service
+        self.projects = projects_service
 
-        now = self._now()
-        goal_id = forced_id or uuid4().hex
+        self.goals_db_id = goals_db_id
+        self.tasks_db_id = tasks_db_id
+        self.projects_db_id = projects_db_id
 
-        new_goal = GoalModel(
-            id=goal_id,
-            notion_id=notion_id,
-            title=data.title,
-            description=data.description,
-            deadline=data.deadline,
-            parent_id=data.parent_id,
-            priority=data.priority,
-            status="pending",
-            progress=0,
-            children=[],
-            created_at=now,
-            updated_at=now,
+        self._delay = 0.25
+
+        self._project_sync_task = None
+        self._goal_sync_task = None
+        self._task_sync_task = None
+
+        self.logger = logging.getLogger(__name__)
+        self.logger.setLevel(logging.INFO)
+
+    # DEBOUNCE WRAPPER
+    async def _debounce(self, fn):
+        try:
+            await asyncio.sleep(self._delay)
+            await fn()
+        except asyncio.CancelledError:
+            pass
+
+    # PROJECT SYNC DEBOUNCE
+    async def debounce_projects_sync(self):
+        loop = asyncio.get_running_loop()
+        if self._project_sync_task and not self._project_sync_task.done():
+            self._project_sync_task.cancel()
+
+        self._project_sync_task = loop.create_task(
+            self._debounce(self.sync_projects_up)
         )
 
-        self.goals[goal_id] = new_goal
+    # GOALS SYNC DEBOUNCE
+    async def debounce_goals_sync(self):
+        loop = asyncio.get_running_loop()
+        if self._goal_sync_task and not self._goal_sync_task.done():
+            self._goal_sync_task.cancel()
 
-        # Parent linking
-        if data.parent_id:
-            parent = self.goals.get(data.parent_id)
-            if parent:
-                if self._would_create_cycle(parent.id, goal_id):
-                    raise ValueError("Hierarchy cycle detected.")
+        self._goal_sync_task = loop.create_task(
+            self._debounce(self.sync_goals_up)
+        )
 
-                parent.children.append(goal_id)
-                parent.updated_at = now
+    # TASKS SYNC DEBOUNCE
+    async def debounce_tasks_sync(self):
+        loop = asyncio.get_running_loop()
+        if self._task_sync_task and not self._task_sync_task.done():
+            self._task_sync_task.cancel()
 
-        self._trigger_sync()
-        return new_goal
+        self._task_sync_task = loop.create_task(
+            self._debounce(self.sync_tasks_up)
+        )
 
-    # ---------------------------------------------------------
-    # UPDATE GOAL
-    # ---------------------------------------------------------
-    def update_goal(self, goal_id: str, updates: GoalUpdate) -> GoalModel:
-        goal = self.goals.get(goal_id)
-        if not goal:
-            raise ValueError(f"Goal {goal_id} not found")
+    # ------------------------
+    # SYNC PROJECTS
+    # ------------------------
+    async def sync_projects_up(self):
+        for p in self.projects.get_all():
+            props = self.map_local_project_to_notion(self.projects.to_dict(p))
 
-        old_parent = goal.parent_id
-        new_parent = updates.parent_id
+            if not p.notion_id:
+                created = await self.notion.create_page({
+                    "parent": {"database_id": self.projects_db_id},
+                    "properties": props
+                })
+                if created.get("ok"):
+                    self.projects._replace_id(p.id, created["data"]["id"])
+                continue
 
-        # Update fields
-        for field in ["title", "description", "deadline", "priority", "status", "progress"]:
-            val = getattr(updates, field, None)
-            if val is not None:
-                setattr(goal, field, val)
+            await self.notion.update_page(p.notion_id, {"properties": props})
 
-        # Parent update
-        if new_parent is not None and new_parent != old_parent:
+    # ------------------------
+    # SYNC GOALS
+    # ------------------------
+    async def sync_goals_up(self):
+        for goal in self.goals.get_all():
+            props = {
+                "Name": {"title": [{"text": {"content": goal.title}}]},
+                "Status": {"select": {"name": goal.status}},
+                "Progress": {"number": goal.progress},
+            }
+            if goal.priority:
+                props["Priority"] = {"select": {"name": goal.priority}}
+            if goal.deadline:
+                props["Deadline"] = {"date": {"start": goal.deadline}}
 
-            if old_parent:
-                p = self.goals.get(old_parent)
-                if p and goal_id in p.children:
-                    p.children.remove(goal_id)
+            if not goal.notion_id:
+                created = await self.notion.create_page({
+                    "parent": {"database_id": self.goals_db_id},
+                    "properties": props
+                })
+                if created.get("ok"):
+                    goal.notion_id = created["data"]["id"]
+                continue
 
-            if new_parent:
-                if self._would_create_cycle(new_parent, goal_id):
-                    raise ValueError("Hierarchy cycle detected.")
+            await self.notion.update_page(goal.notion_id, {"properties": props})
 
-                p = self.goals.get(new_parent)
-                if p and goal_id not in p.children:
-                    p.children.append(goal_id)
+    # ------------------------
+    # SYNC TASKS
+    # ------------------------
+    async def sync_tasks_up(self):
+        for task in self.tasks.get_all_tasks():
+            props = {
+                "Name": {"title": [{"text": {"content": task.title}}]},
+                "Status": {"select": {"name": task.status}},
+                "Order": {"number": task.order},
+            }
+            if task.priority:
+                props["Priority"] = {"select": {"name": task.priority}}
+            if task.deadline:
+                props["Due Date"] = {"date": {"start": task.deadline}}
 
-            goal.parent_id = new_parent
+            # relation
+            if task.goal_id:
+                props["Goal"] = {"relation": [{"id": task.goal_id}]}
+            else:
+                props["Goal"] = {"relation": []}
 
-        goal.updated_at = self._now()
-        self._trigger_sync()
-        return goal
+            if not task.notion_id:
+                created = await self.notion.create_page({
+                    "parent": {"database_id": self.tasks_db_id},
+                    "properties": props
+                })
+                if created.get("ok"):
+                    task.notion_id = created["data"]["id"]
+                continue
 
-    # ---------------------------------------------------------
-    # DELETE GOAL
-    # ---------------------------------------------------------
-    def delete_goal(self, goal_id: str) -> GoalModel:
-        goal = self.goals.get(goal_id)
-        if not goal:
-            raise ValueError(f"Goal {goal_id} not found")
+            await self.notion.update_page(task.notion_id, {"properties": props})
 
-        if goal.parent_id:
-            p = self.goals.get(goal.parent_id)
-            if p and goal_id in p.children:
-                p.children.remove(goal_id)
 
-        removed = self.goals.pop(goal_id)
+    # (ako koristiš map_local_project_to_notion, ostavi i taj helper)
+    def map_local_project_to_notion(self, p):
+        def wrap(x):
+            return {"rich_text": [{"text": {"content": x or ''}}]}
 
-        # Detach child goals
-        for g in self.goals.values():
-            if g.parent_id == goal_id:
-                g.parent_id = None
-                g.updated_at = self._now()
-
-        self._trigger_sync()
-        return removed
-
-    # ---------------------------------------------------------
-    # GET ALL GOALS
-    # ---------------------------------------------------------
-    def get_all(self) -> List[GoalModel]:
-        return list(self.goals.values())
+        return {
+            "Project Name": {"title": [{"text": {"content": p.get("title")}}]},
+            "Description": wrap(p.get("description")),
+            "Status": {"select": {"name": p.get("status")}},
+        }
