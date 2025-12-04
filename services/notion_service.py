@@ -1,22 +1,25 @@
 # services/notion_service.py
 
 import aiohttp
-from typing import Dict, Any, Optional, List
-import logging  # Dodajemo logovanje
+from typing import Dict, Any, Optional
+import logging
 
 # ============================================================
 # GLOBAL REGISTRY
 # ============================================================
 _global_notion_service = None
 
+
 def set_notion_service(instance):
     global _global_notion_service
     _global_notion_service = instance
+
 
 def get_notion_service():
     if _global_notion_service is None:
         raise RuntimeError("NotionService has not been initialized yet.")
     return _global_notion_service
+
 
 # ============================================================
 # MAIN NOTION SERVICE
@@ -43,7 +46,7 @@ class NotionService:
         self.tasks_db_id = tasks_db_id
         self.projects_db_id = projects_db_id
 
-        # dodatne baze
+        # Additional DBs
         self.active_goals_db_id = active_goals_db_id
         self.agent_exchange_db_id = agent_exchange_db_id
         self.agent_projects_db_id = agent_projects_db_id
@@ -56,10 +59,12 @@ class NotionService:
 
         self.session: Optional[aiohttp.ClientSession] = None
 
-        # Inicijalizujemo logger
         self.logger = logging.getLogger(__name__)
         self.logger.setLevel(logging.INFO)
 
+    # ============================================================
+    # SESSION HANDLING
+    # ============================================================
     async def _get_session(self) -> aiohttp.ClientSession:
         if self.session is None or self.session.closed:
             self.session = aiohttp.ClientSession(
@@ -75,36 +80,42 @@ class NotionService:
         session = await self._get_session()
         try:
             async with session.request(method, url, json=payload) as response:
-                if response.status not in (200, 201):
-                    self.logger.error(f"Notion API Error - Status: {response.status}, URL: {url}")
+                status = response.status
+                text = await response.text()
+
+                if status not in (200, 201, 202):
+                    self.logger.error(
+                        f"Notion API Error {status} - URL: {url} - Response: {text}"
+                    )
                     return {
                         "ok": False,
-                        "status": response.status,
-                        "error": await response.text()
+                        "status": status,
+                        "error": text
                     }
-                self.logger.info(f"Notion API Success - Status: {response.status}, URL: {url}")
+
+                self.logger.info(f"Notion API Success {status}: {url}")
+                data = await response.json() if text else {}
+
                 return {
                     "ok": True,
-                    "status": response.status,
-                    "data": await response.json()
+                    "status": status,
+                    "data": data
                 }
+
         except Exception as e:
-            self.logger.error(f"Exception during Notion API request: {str(e)}")
+            self.logger.error(f"Notion API Exception: {str(e)}")
             return {"ok": False, "status": 500, "error": str(e)}
 
     # ============================================================
-    # CORE HTTP WRAPPERS
+    # WRAPPERS
     # ============================================================
     async def create_page(self, payload: Dict[str, Any]):
-        self.logger.info("Creating page in Notion...")
         return await self._safe_request("POST", "https://api.notion.com/v1/pages", payload)
 
     async def update_page(self, page_id: str, payload: Dict[str, Any]):
-        self.logger.info(f"Updating page in Notion: {page_id}")
         return await self._safe_request("PATCH", f"https://api.notion.com/v1/pages/{page_id}", payload)
 
     async def query_database(self, db_id: str, filter_payload=None):
-        self.logger.info(f"Querying database in Notion: {db_id}")
         return await self._safe_request(
             "POST",
             f"https://api.notion.com/v1/databases/{db_id}/query",
@@ -112,22 +123,69 @@ class NotionService:
         )
 
     # ============================================================
+    # DELETE / ARCHIVE PAGE  (KRITIČNO ZA GOALS/TASKS)
+    # ============================================================
+    async def delete_page(self, page_id: str):
+        """
+        NOTION NE BRIŠE STRANICE — samo 'archived': True.
+        Ova metoda se koristi u: goals_router, tasks_router, sync.
+        """
+        self.logger.info(f"Archiving Notion page: {page_id}")
+
+        url = f"https://api.notion.com/v1/pages/{page_id}"
+        payload = {"archived": True}
+
+        session = await self._get_session()
+
+        try:
+            async with session.patch(url, json=payload) as response:
+                status = response.status
+                text = await response.text()
+
+                if status not in (200, 202):
+                    self.logger.error(
+                        f"Failed archive for page {page_id}: {text}"
+                    )
+                    return {
+                        "ok": False,
+                        "status": status,
+                        "error": text
+                    }
+
+                self.logger.info(f"Page {page_id} archived successfully.")
+                return {
+                    "ok": True,
+                    "status": status
+                }
+
+        except Exception as e:
+            self.logger.error(f"Error archiving Notion page {page_id}: {str(e)}")
+            return {
+                "ok": False,
+                "status": 500,
+                "error": str(e)
+            }
+
+    # ============================================================
     # TASKS — CREATE
     # ============================================================
     async def create_task(self, task):
-        self.logger.info(f"Creating task in Notion: {task.title}")
+        self.logger.info(f"Creating Notion task: {task.title}")
+
         props = {
             "Name": {"title": [{"text": {"content": task.title}}]},
             "Description": {"rich_text": [{"text": {"content": task.description or ""}}]},
             "Status": {"select": {"name": task.status}},
             "Order": {"number": task.order},
-            "Task ID": {"rich_text": [{"text": {"content": task.id}}]}
+            "Task ID": {"rich_text": [{"text": {"content": task.id}}]},
         }
 
         if task.goal_id:
             props["Goal"] = {"relation": [{"id": task.goal_id}]}
+
         if task.deadline:
             props["Due Date"] = {"date": {"start": task.deadline}}
+
         if task.priority:
             props["Priority"] = {"select": {"name": task.priority}}
 
@@ -137,13 +195,10 @@ class NotionService:
         }
 
         response = await self.create_page(payload)
-        
-        # Log response
-        if response["ok"]:
-            notion_page_id = response["data"]["id"]
-            self.logger.info(f"Task created successfully in Notion with ID: {notion_page_id}")
-        else:
-            self.logger.error(f"Failed to create task in Notion: {response['error']}")
 
-        # VAŽNO: uvijek vraćamo standardizirani dict (ok / data / error)
+        if response["ok"]:
+            self.logger.info(f"Task synced to Notion with ID: {response['data']['id']}")
+        else:
+            self.logger.error(f"Failed to create task in Notion: {response}")
+
         return response
