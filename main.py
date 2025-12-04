@@ -1,6 +1,7 @@
 import os
 from fastapi import FastAPI
 import logging
+from pydantic import BaseModel
 
 # Inicijalizacija loggera
 logger = logging.getLogger(__name__)
@@ -82,6 +83,17 @@ async def delete_task(task_id: str):
         return {"message": f"Task {task_id} successfully deleted"}
     else:
         return {"error": response["error"]}
+
+# POST: ADD GOAL
+class Goal(BaseModel):
+    goal_name: str
+    deadline: str
+
+@app.post("/goals")
+async def create_goal(goal: Goal):
+    # Ovdje dodaj logiku za kreiranje cilja (npr. čuvanje u bazi)
+    logger.info(f"Goal created: {goal.goal_name} with deadline {goal.deadline}")
+    return {"goal_name": goal.goal_name, "deadline": goal.deadline}
 
 # STARTUP
 @app.on_event("startup")
