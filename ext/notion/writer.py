@@ -111,6 +111,7 @@ def append_text(page_id: str, text: str):
         # Reduce sleep time if the content size is smaller, for faster performance
         time.sleep(0.3)  # You can adjust this value for optimization
 
+
 # -------------------------------------------------
 #  DELETE PAGE FROM NOTION
 # -------------------------------------------------
