@@ -1,7 +1,7 @@
-# main.py
-
 from fastapi import FastAPI, Depends
 import logging
+import os
+from dotenv import load_dotenv
 
 # Import services
 from services.notion_service import NotionService
@@ -27,6 +27,9 @@ from dependencies import (
     get_sync_service,
 )
 
+# Load environment variables from .env file
+load_dotenv()
+
 # Initialize FastAPI app
 app = FastAPI()
 
@@ -40,13 +43,23 @@ async def startup_event():
     try:
         logger.info("🔵 Starting backend services...")
 
+        # Fetch API key from environment variables
+        api_key = os.getenv("NOTION_API_KEY")
+        if not api_key:
+            logger.error("API Key is missing or invalid!")
+            raise ValueError("API Key is missing or invalid!")
+
+        # Log the API key (for testing, should be removed after)
+        logger.info(f"API Key is loaded: {api_key[:5]}...")  # Log only part of the key for security reasons
+
         # Initialize NotionService
         notion_service = NotionService(
-            api_key="YOUR_NOTION_API_KEY",
-            goals_db_id="YOUR_GOALS_DB_ID",
-            tasks_db_id="YOUR_TASKS_DB_ID",
-            projects_db_id="YOUR_PROJECTS_DB_ID"
+            api_key=api_key,
+            goals_db_id=os.getenv("NOTION_GOALS_DB_ID"),
+            tasks_db_id=os.getenv("NOTION_TASKS_DB_ID"),
+            projects_db_id=os.getenv("NOTION_PROJECTS_DB_ID")
         )
+
         # Initialize GoalsService, TasksService, ProjectsService
         goals_service = GoalsService()
         tasks_service = TasksService(notion_service)
@@ -63,9 +76,9 @@ async def startup_event():
             goals_service,
             tasks_service,
             projects_service,
-            "YOUR_GOALS_DB_ID",
-            "YOUR_TASKS_DB_ID",
-            "YOUR_PROJECTS_DB_ID"
+            os.getenv("NOTION_GOALS_DB_ID"),
+            os.getenv("NOTION_TASKS_DB_ID"),
+            os.getenv("NOTION_PROJECTS_DB_ID")
         )
 
         # Manually initialize sync_service if it's not already initialized
