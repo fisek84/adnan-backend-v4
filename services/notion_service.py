@@ -1,11 +1,7 @@
 import aiohttp
 from typing import Dict, Any, Optional
 import logging
-from uuid import UUID, uuid4
 
-# ============================================================
-# GLOBAL REGISTRY
-# ============================================================
 _global_notion_service = None
 
 
@@ -20,9 +16,6 @@ def get_notion_service():
     return _global_notion_service
 
 
-# ============================================================
-# MAIN NOTION SERVICE
-# ============================================================
 class NotionService:
     def __init__(
         self,
@@ -45,7 +38,6 @@ class NotionService:
         self.tasks_db_id = tasks_db_id
         self.projects_db_id = projects_db_id
 
-        # Additional DBs
         self.active_goals_db_id = active_goals_db_id
         self.agent_exchange_db_id = agent_exchange_db_id
         self.agent_projects_db_id = agent_projects_db_id
@@ -61,9 +53,9 @@ class NotionService:
         self.logger = logging.getLogger(__name__)
         self.logger.setLevel(logging.INFO)
 
-    # ============================================================
+    # ------------------------------------------------------------
     # SESSION HANDLING
-    # ============================================================
+    # ------------------------------------------------------------
     async def _get_session(self) -> aiohttp.ClientSession:
         if self.session is None or self.session.closed:
             self.session = aiohttp.ClientSession(
@@ -92,7 +84,6 @@ class NotionService:
                         "error": text
                     }
 
-                self.logger.info(f"Notion API Success {status}: {url}")
                 data = await response.json() if text else {}
 
                 return {
@@ -102,12 +93,11 @@ class NotionService:
                 }
 
         except Exception as e:
-            self.logger.error(f"Notion API Exception: {str(e)}")
             return {"ok": False, "status": 500, "error": str(e)}
 
-    # ============================================================
+    # ------------------------------------------------------------
     # WRAPPERS
-    # ============================================================
+    # ------------------------------------------------------------
     async def create_page(self, payload: Dict[str, Any]):
         return await self._safe_request("POST", "https://api.notion.com/v1/pages", payload)
 
@@ -121,12 +111,10 @@ class NotionService:
             filter_payload or {}
         )
 
-    # ============================================================
+    # ------------------------------------------------------------
     # DELETE / ARCHIVE PAGE
-    # ============================================================
+    # ------------------------------------------------------------
     async def delete_page(self, page_id: str):
-        self.logger.info(f"Archiving Notion page: {page_id}")
-
         url = f"https://api.notion.com/v1/pages/{page_id}"
         payload = {"archived": True}
 
@@ -138,28 +126,23 @@ class NotionService:
                 text = await response.text()
 
                 if status not in (200, 202):
-                    self.logger.error(f"Failed archive for page {page_id}: {text}")
                     return {"ok": False, "status": status, "error": text}
 
-                self.logger.info(f"Page {page_id} archived successfully.")
                 return {"ok": True, "status": status}
 
         except Exception as e:
-            self.logger.error(f"Error archiving Notion page {page_id}: {str(e)}")
             return {"ok": False, "status": 500, "error": str(e)}
 
-    # ============================================================
-    # TASKS — CREATE
-    # ============================================================
-    async def create_task(self, task):
+    # ------------------------------------------------------------
+    # TASKS — CREATE (FIXED)
+    # ------------------------------------------------------------
+    async def create_task(self, task, notion_goal_id: Optional[str] = None):
         self.logger.info(f"Creating Notion task: {task.title}")
 
-        # Build relation if goal_id exists
         goal_relation = None
-        if task.goal_id:
-            goal_relation = [{"id": str(task.goal_id)}]
+        if notion_goal_id:
+            goal_relation = [{"id": notion_goal_id}]
 
-        # Base Notion properties
         props = {
             "Name": {"title": [{"text": {"content": task.title}}]},
             "Description": {"rich_text": [{"text": {"content": task.description or ""}}]},
@@ -168,15 +151,12 @@ class NotionService:
             "Task ID": {"rich_text": [{"text": {"content": task.id}}]},
         }
 
-        # Add relation
         if goal_relation:
             props["Goal"] = {"relation": goal_relation}
 
-        # Deadline (FIXED — replaced Due Date → Deadline)
         if task.deadline:
             props["Deadline"] = {"date": {"start": task.deadline}}
 
-        # Priority
         if task.priority:
             props["Priority"] = {"select": {"name": task.priority}}
 

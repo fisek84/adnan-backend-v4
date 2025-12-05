@@ -63,18 +63,35 @@ class TasksService:
             logger.error("Title is required to create a task.")
             raise ValueError("Title is required to create a task.")
 
+        # --------------------------------------------------------
+        # FIX: Resolve LOCAL goal_id -> NOTION goal_id
+        # --------------------------------------------------------
+        notion_goal_id = None
+
         if data.goal_id:
             try:
-                data.goal_id = str(data.goal_id)
+                local_goal_id = str(data.goal_id)
+                goal = self.goals_service.goals.get(local_goal_id)
+
+                if goal and goal.notion_id:
+                    notion_goal_id = goal.notion_id
+                    logger.info(f"Resolved Notion goal_id: {notion_goal_id}")
+                else:
+                    logger.warning("Goal exists locally but has no notion_id. Task will be created without relation.")
+
+                data.goal_id = local_goal_id
+
             except Exception:
                 raise ValueError("Invalid goal_id format.")
+        else:
+            logger.info("Task has no goal relation.")
 
         task = TaskModel(
             id=task_id,
             notion_id=None,
             title=data.title,
             description=data.description,
-            goal_id=str(data.goal_id) if data.goal_id else None,
+            goal_id=data.goal_id,
             deadline=data.deadline,
             priority=data.priority,
             status=data.status or "pending",
@@ -85,8 +102,11 @@ class TasksService:
 
         self.tasks[task_id] = task
 
+        # --------------------------------------------------------
+        # SEND NOTION PAYLOAD WITH PROPER notion_goal_id
+        # --------------------------------------------------------
         try:
-            res = await self.notion.create_task(task)
+            res = await self.notion.create_task(task, notion_goal_id=notion_goal_id)
         except Exception:
             raise ValueError("Failed to create task in Notion.")
 
@@ -104,7 +124,7 @@ class TasksService:
         return list(self.tasks.values())
 
     # ------------------------------------------------------------
-    # UPDATE TASK (ORIGINAL – NE DIRAMO)
+    # UPDATE TASK
     # ------------------------------------------------------------
     def update_task(self, task_id: str, data: dict) -> TaskModel:
         if task_id not in self.tasks:
@@ -122,12 +142,9 @@ class TasksService:
         return task
 
     # ------------------------------------------------------------
-    # UPDATE TASK (MODEL VERSION – ZA ROUTER)
+    # UPDATE MODEL VERSION
     # ------------------------------------------------------------
     async def update_task_model(self, task_id: str, data: TaskUpdate) -> TaskModel:
-        """
-        OVO JE FUNKCIJA KOJU ROUTER TREBA DA KORISTI.
-        """
         if task_id not in self.tasks:
             raise ValueError(f"Task {task_id} not found")
 
@@ -157,5 +174,4 @@ class TasksService:
             raise ValueError(f"Task with id {task_id} not found")
 
         task = self.tasks.pop(task_id)
-
         return {"ok": True, "task": task}
