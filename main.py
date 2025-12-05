@@ -66,9 +66,13 @@ async def startup_event():
             "YOUR_PROJECTS_DB_ID"
         )
 
-        # Set sync service globally
+        # Get sync service and check if it is initialized
         sync_service = get_sync_service()
-        sync_service.set_sync_service(notion_sync_service)
+        if sync_service is not None:
+            sync_service.set_sync_service(notion_sync_service)
+        else:
+            logger.error("sync_service is not initialized.")
+            raise Exception("Failed to initialize sync_service.")
 
         # Sync services with Notion
         await notion_sync_service.load_projects_into_backend()
