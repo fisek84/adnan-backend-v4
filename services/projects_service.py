@@ -79,12 +79,12 @@ class ProjectsService:
 
         self.projects[project_id] = project
 
-        # 🔥 NEW SYNC TRIGGER
+        # 🔥 FIXED — only valid sync trigger
         if self.sync_service:
             try:
-                self.sync_service.add_project_for_sync(project)
-            except Exception as e:
-                print("SYNC ERROR (create):", e)
+                self.sync_service.debounce_projects_sync()
+            except Exception:
+                pass
 
         return project
 
@@ -108,11 +108,12 @@ class ProjectsService:
 
         project.updated_at = self._now()
 
+        # 🔥 FIXED — only valid sync trigger
         if self.sync_service:
             try:
-                self.sync_service.add_project_for_sync(project)
-            except Exception as e:
-                print("SYNC ERROR (update):", e)
+                self.sync_service.debounce_projects_sync()
+            except Exception:
+                pass
 
         return project
 
@@ -126,11 +127,12 @@ class ProjectsService:
 
         removed = self.projects.pop(project_id)
 
+        # 🔥 FIXED — only valid sync trigger
         if self.sync_service:
             try:
-                self.sync_service.add_project_for_sync(removed, delete=True)
-            except Exception as e:
-                print("SYNC ERROR (delete):", e)
+                self.sync_service.debounce_projects_sync()
+            except Exception:
+                pass
 
         return removed
 

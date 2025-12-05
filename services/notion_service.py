@@ -172,9 +172,9 @@ class NotionService:
         if goal_relation:
             props["Goal"] = {"relation": goal_relation}
 
-        # Deadline
+        # Deadline (FIXED — replaced Due Date → Deadline)
         if task.deadline:
-            props["Due Date"] = {"date": {"start": task.deadline}}
+            props["Deadline"] = {"date": {"start": task.deadline}}
 
         # Priority
         if task.priority:

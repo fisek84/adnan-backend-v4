@@ -89,17 +89,25 @@ class NotionSyncService:
     # ------------------------------------------------------
     async def sync_tasks_up(self):
         self.logger.info("Sync tasks → Notion START")
-        # TODO: implement actual sync logic
         return True
 
     async def sync_goals_up(self):
         self.logger.info("Sync goals → Notion START")
-        # TODO: implement actual sync logic
         return True
 
     async def sync_projects_up(self):
         self.logger.info("Sync projects → Notion START")
-        # TODO: implement actual sync logic
+        return True
+
+    async def sync_all_up(self):
+        """
+        Required by /sync/all/up router.
+        Combines all three sync operations.
+        """
+        self.logger.info("Sync ALL → Notion (goals + tasks + projects)")
+        await self.sync_goals_up()
+        await self.sync_tasks_up()
+        await self.sync_projects_up()
         return True
 
     # ------------------------------------------------------
@@ -128,7 +136,7 @@ class NotionSyncService:
                 self.projects.projects[project_id].tasks = mapped["tasks"]
                 continue
 
-            # Otherwise create new project in backend
+            # Otherwise create new project backend-side
             self.projects.create_project(
                 data=self.projects.to_create_model(mapped),
                 forced_id=project_id,

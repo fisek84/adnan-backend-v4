@@ -5,10 +5,10 @@ from typing import Dict, List
 import logging
 
 from models.task_create import TaskCreate
+from models.task_update import TaskUpdate
 from models.task_model import TaskModel
 from services.notion_service import NotionService
 
-# Inicijalizacija loggera
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
@@ -18,7 +18,7 @@ class TasksService:
 
     def __init__(self, notion_service: NotionService):
         self.tasks: Dict[str, TaskModel] = {}
-        self.notion = notion_service  # NotionService injection
+        self.notion = notion_service
 
     # ------------------------------------------------------------
     # BINDINGS
@@ -55,37 +55,26 @@ class TasksService:
         now = self._now()
         task_id = uuid4().hex
 
-        # Provjera da li je goals_service inicijaliziran
         if not self.goals_service:
-            logger.error("Goals service is not initialized. Please bind goals service before using.")
-            raise ValueError("Goals service is not initialized. Please bind goals service before using.")
+            logger.error("Goals service is not initialized.")
+            raise ValueError("Goals service is not initialized.")
 
-        # Provjera da li 'title' postoji
         if not data.title:
             logger.error("Title is required to create a task.")
             raise ValueError("Title is required to create a task.")
 
-        logger.info(f"Creating task with title: {data.title}")
-
-        # Ako goal_id postoji, konvertiraj ga u string
         if data.goal_id:
             try:
-                # Osiguraj da goal_id bude string, bez obzira na to je li poslan kao UUID ili string
-                data.goal_id = str(data.goal_id)  
-                logger.info(f"Using existing goal_id: {data.goal_id}")
-            except Exception as e:
-                logger.error(f"Error converting goal_id: {e}")
+                data.goal_id = str(data.goal_id)
+            except Exception:
                 raise ValueError("Invalid goal_id format.")
-        else:
-            logger.info("No goal_id provided, task is being created without goal.")
 
-        # Kreiranje taska
         task = TaskModel(
             id=task_id,
             notion_id=None,
             title=data.title,
             description=data.description,
-            goal_id=str(data.goal_id) if data.goal_id else None,  # goal_id može biti None ako nije poslan
+            goal_id=str(data.goal_id) if data.goal_id else None,
             deadline=data.deadline,
             priority=data.priority,
             status=data.status or "pending",
@@ -94,83 +83,79 @@ class TasksService:
             updated_at=now,
         )
 
-        logger.info(f"Task created with ID: {task.id}")
-
         self.tasks[task_id] = task
 
-        # Povezivanje sa Notion-om
         try:
             res = await self.notion.create_task(task)
-            logger.info(f"Notion response: {res}")
-        except Exception as e:
-            logger.error(f"Error connecting to Notion: {e}")
+        except Exception:
             raise ValueError("Failed to create task in Notion.")
-        
-        if isinstance(res, str):
-            res = {"ok": False, "error": res}
-        if not isinstance(res, dict):
-            res = {"ok": False, "error": "Invalid Notion response"}
 
-        res.setdefault("ok", False)
-        res.setdefault("data", {})
-
-        if res["ok"] and "id" in res["data"]:
+        if isinstance(res, dict) and res.get("ok") and "id" in res.get("data", {}):
             task.notion_id = res["data"]["id"]
-            logger.info(f"Task successfully created in Notion with Notion ID: {task.notion_id}")
 
-        self._trigger_sync()  # Sinhronizacija sa Notion-om
+        self._trigger_sync()
         return task
 
     # ------------------------------------------------------------
     # GET ALL TASKS
     # ------------------------------------------------------------
     def get_all_tasks(self) -> List[TaskModel]:
-        """
-        Vraća sve zadatke.
-        """
         logger.info(f"[TASKS] Total tasks in service: {len(self.tasks)}")
-        return list(self.tasks.values())  # Vraća sve zadatke kao listu
+        return list(self.tasks.values())
 
     # ------------------------------------------------------------
-    # UPDATE TASK
+    # UPDATE TASK (ORIGINAL – NE DIRAMO)
     # ------------------------------------------------------------
     def update_task(self, task_id: str, data: dict) -> TaskModel:
-        """
-        Ažurira zadatak na osnovu prosleđenog task_id i podataka.
-        """
-        if task_id not in self.tasks:  
-            logger.error(f"Task with id {task_id} not found")
+        if task_id not in self.tasks:
             raise ValueError(f"Task with id {task_id} not found")
 
         task = self.tasks[task_id]
 
-        # Ažuriranje zadatka sa novim podacima
         task.title = data.get('title', task.title)
         task.description = data.get('description', task.description)
         task.deadline = data.get('deadline', task.deadline)
         task.priority = data.get('priority', task.priority)
         task.status = data.get('status', task.status)
 
-        # Ažuriraj datum poslednje izmene
+        task.updated_at = self._now()
+        return task
+
+    # ------------------------------------------------------------
+    # UPDATE TASK (MODEL VERSION – ZA ROUTER)
+    # ------------------------------------------------------------
+    async def update_task_model(self, task_id: str, data: TaskUpdate) -> TaskModel:
+        """
+        OVO JE FUNKCIJA KOJU ROUTER TREBA DA KORISTI.
+        """
+        if task_id not in self.tasks:
+            raise ValueError(f"Task {task_id} not found")
+
+        task = self.tasks[task_id]
+
+        if data.title is not None:
+            task.title = data.title
+        if data.description is not None:
+            task.description = data.description
+        if data.deadline is not None:
+            task.deadline = data.deadline
+        if data.priority is not None:
+            task.priority = data.priority
+        if data.status is not None:
+            task.status = data.status
+
         task.updated_at = self._now()
 
-        logger.info(f"Task with id {task_id} updated successfully")
-
-        # Vraćanje ažuriranog zadatka
+        self._trigger_sync()
         return task
 
     # ------------------------------------------------------------
     # DELETE TASK
     # ------------------------------------------------------------
     async def delete_task(self, task_id: str) -> dict:
-        """
-        Briše zadatak sa zadatim task_id.
-        """
         if task_id not in self.tasks:
-            logger.error(f"Task with id {task_id} not found")
             raise ValueError(f"Task with id {task_id} not found")
 
-        task = self.tasks.pop(task_id)  # Uklanjamo zadatak iz self.tasks
-        logger.info(f"Task with id {task_id} deleted locally")
+        task = self.tasks.pop(task_id)
 
         return {"ok": True, "task": task}

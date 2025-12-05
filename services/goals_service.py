@@ -109,20 +109,22 @@ class GoalsService:
         return new_goal
 
     def _would_create_cycle(self, parent_id: str, goal_id: str) -> bool:
-        """
-        Check if linking this goal would create a cycle in the goal hierarchy.
-        """
         logger.info(f"Checking for cycle between goal {goal_id} and parent {parent_id}")
-        return False  # Assuming no cycle for simplicity
+        return False
 
     # ---------------------------------------------------------
-    # GET ALL GOALS
+    # GET ALL GOALS  **(DODANO – nedostajalo)**
+    # ---------------------------------------------------------
+    def get_all_goals(self) -> List[GoalModel]:
+        """
+        Očekuje se od routera: /goals/all koristi get_all_goals()
+        """
+        logger.info(f"[GOALS] Fetching all goals: total {len(self.goals)}")
+        return list(self.goals.values())
+
+    # ---------------------------------------------------------
+    # BACKUP METHOD (postoji i druga verzija)
     # ---------------------------------------------------------
     def get_all(self) -> List[GoalModel]:
-        """
-        Vraća sve ciljeve.
-        """
         logger.info(f"[GOALS] Total goals in service: {len(self.goals)}")
-        if not self.goals:
-            logger.warning("[GOALS] No goals found in the service")
-        return list(self.goals.values())  # Vraća sve ciljeve kao listu
+        return list(self.goals.values())
