@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 import logging
 from dotenv import load_dotenv
 
@@ -13,10 +14,13 @@ from routers.sync_router import router as sync_router
 from routers.ai_ops_router import router as ai_ops_router
 from routers.adnan_ai_router import router as adnan_ai_router
 from routers.adnan_ai_data_router import router as adnan_ai_data_router
-from routers.adnan_ai_query_router import router as adnan_ai_query_router   # ← DODANO
+from routers.adnan_ai_query_router import router as adnan_ai_query_router
 
 
 app = FastAPI()
+
+# Static hosting for .well-known (REQUIRED for ActionsGPT)
+app.mount("/.well-known", StaticFiles(directory=".well-known"), name="well-known")
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -36,7 +40,7 @@ app.include_router(sync_router)
 app.include_router(ai_ops_router)
 app.include_router(adnan_ai_router)
 app.include_router(adnan_ai_data_router)
-app.include_router(adnan_ai_query_router)     # ← DODANO
+app.include_router(adnan_ai_query_router)
 
 
 @app.get("/health")
