@@ -10,6 +10,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
 class GoalsService:
     tasks_service = None
     sync_service = None
@@ -105,7 +106,7 @@ class GoalsService:
                     logger.info(f"Parent goal {parent.id} linked to new goal {goal_id}")
             else:
                 logger.warning(f"Parent goal {data.parent_id} not found. No linking.")
-        
+
         return new_goal
 
     def _would_create_cycle(self, parent_id: str, goal_id: str) -> bool:
@@ -113,18 +114,39 @@ class GoalsService:
         return False
 
     # ---------------------------------------------------------
-    # GET ALL GOALS  **(DODANO – nedostajalo)**
+    # GET ALL GOALS (router uses this)
     # ---------------------------------------------------------
     def get_all_goals(self) -> List[GoalModel]:
-        """
-        Očekuje se od routera: /goals/all koristi get_all_goals()
-        """
         logger.info(f"[GOALS] Fetching all goals: total {len(self.goals)}")
         return list(self.goals.values())
 
     # ---------------------------------------------------------
-    # BACKUP METHOD (postoji i druga verzija)
+    # BACKUP METHOD
     # ---------------------------------------------------------
     def get_all(self) -> List[GoalModel]:
         logger.info(f"[GOALS] Total goals in service: {len(self.goals)}")
         return list(self.goals.values())
+
+    # ---------------------------------------------------------
+    # DELETE GOAL — FIX ADDED
+    # ---------------------------------------------------------
+    async def delete_goal(self, goal_id: str) -> dict:
+        """
+        Minimal deletion logic required by router.
+        - Remove from internal memory
+        - Return dict with notion_id (router expects this)
+        """
+
+        goal = self.goals.get(goal_id)
+        if not goal:
+            logger.warning(f"[GOALS] Attempted to delete non-existent goal {goal_id}")
+            return {"notion_id": None}
+
+        notion_id = goal.notion_id
+
+        # Remove from internal memory
+        del self.goals[goal_id]
+
+        logger.info(f"[GOALS] Deleted goal {goal_id} (notion_id={notion_id})")
+
+        return {"notion_id": notion_id}

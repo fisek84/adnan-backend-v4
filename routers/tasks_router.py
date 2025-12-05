@@ -110,16 +110,17 @@ async def delete_task(
 
     result = await tasks_service.delete_task(task_id)
 
+    # FIX: Proper 404 handling
     if not result["ok"]:
         raise HTTPException(404, f"Task {task_id} not found.")
 
+    # Extract notion_id
     notion_id = result.get("notion_id")
+
+    # Delete from Notion if exists
     if notion_id:
         logger.info(f"Deleting Notion page: {notion_id}")
-        notion_res = await notion._safe_request(
-            "DELETE",
-            f"https://api.notion.com/v1/pages/{notion_id}"
-        )
+        notion_res = await notion.delete_page(notion_id)
 
         if notion_res["ok"]:
             logger.info(f"Deleted from Notion: {notion_id}")
@@ -131,11 +132,12 @@ async def delete_task(
                 "notion_error": notion_res["error"]
             }
 
+    # Deleted locally only
     return {"message": f"Task {task_id} deleted locally (no Notion page)."}
 
 
 # ================================
-# LIST TASKS  (DODANO)
+# LIST TASKS 
 # ================================
 @router.get("/all")
 async def list_tasks(tasks_service=Depends(get_tasks_service)):

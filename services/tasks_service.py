@@ -12,6 +12,7 @@ from services.notion_service import NotionService
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
+
 class TasksService:
     goals_service = None
     sync_service = None
@@ -167,11 +168,23 @@ class TasksService:
         return task
 
     # ------------------------------------------------------------
-    # DELETE TASK
+    # DELETE TASK  — FIXED
     # ------------------------------------------------------------
     async def delete_task(self, task_id: str) -> dict:
+        """
+        Returns:
+        {
+            "ok": True/False,
+            "notion_id": str | None
+        }
+        """
         if task_id not in self.tasks:
-            raise ValueError(f"Task with id {task_id} not found")
+            logger.warning(f"[TASKS] Delete failed — {task_id} not found")
+            return {"ok": False, "notion_id": None}
 
         task = self.tasks.pop(task_id)
-        return {"ok": True, "task": task}
+        notion_id = task.notion_id
+
+        logger.info(f"[TASKS] Deleted task {task_id} (notion_id={notion_id})")
+
+        return {"ok": True, "notion_id": notion_id}

@@ -18,7 +18,7 @@ router = APIRouter(prefix="/goals", tags=["Goals"])
 @router.get("/all")
 async def get_all_goals(goals_service=Depends(get_goals_service)):
     try:
-        goals = goals_service.get_all()   # ← FIX OVDE (bilo get_all_goals())
+        goals = goals_service.get_all()   # koristi postojecu get_all()
         return {"status": "ok", "goals": [g.model_dump() for g in goals]}
     except Exception as e:
         logger.error(f"Failed to list goals: {e}")
@@ -68,10 +68,13 @@ async def update_goal(goal_id: str, payload: GoalUpdate, goals_service=Depends(g
 # ================================
 @router.delete("/{goal_id}")
 async def delete_goal(goal_id: str, goals_service=Depends(get_goals_service), notion=Depends(get_notion_service)):
+    # Delete from local store
     result = await goals_service.delete_goal(goal_id)
 
     notion_id = result.get("notion_id")
+
+    # Delete (archive) in Notion if exists
     if notion_id:
-        await notion._safe_request("DELETE", f"https://api.notion.com/v1/pages/{notion_id}")
+        await notion.delete_page(notion_id)
 
     return {"status": "deleted", "goal_id": goal_id}
