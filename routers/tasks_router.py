@@ -4,6 +4,7 @@ import logging
 from models.task_create import TaskCreate
 from models.task_update import TaskUpdate
 from models.task_model import TaskModel
+from services.tasks_service import TasksService  # Dodajemo import za TasksService
 
 from dependencies import (
     get_tasks_service,
@@ -25,21 +26,43 @@ async def create_task(
     tasks_service=Depends(get_tasks_service),
     notion=Depends(get_notion_service)
 ):
+    # Validacija za title i description
+    if not payload.title or not payload.description:
+        raise HTTPException(status_code=400, detail="Title and description are required.")
+
     logger.info(f"Creating task with title: {payload.title}")
     try:
         task = await tasks_service.create_task(payload)
         
+        # Provjeri goal_id i konvertuj ga u string ako je UUID
+        goal_id_str = str(payload.goal_id) if isinstance(payload.goal_id, UUID) else payload.goal_id
+        
+        # Konfiguracija za Notion payload
         notion_payload = {
             "parent": {"database_id": os.getenv("NOTION_TASKS_DB_ID")},
             "properties": {
                 "Name": {
                     "title": [{"text": {"content": payload.title}}]
+                },
+                "Description": {
+                    "rich_text": [{"text": {"content": payload.description}}]
+                },
+                "Deadline": {
+                    "date": {"start": payload.deadline}
+                },
+                "Priority": {
+                    "select": {"name": payload.priority}
+                },
+                "Goal": {
+                    "relation": [{"id": goal_id_str}]  # goal_id mora biti string
                 }
             }
         }
         
+        # Slanje zahtjeva za kreiranje zadatka u Notion
         notion_res = await notion.create_page(notion_payload)
 
+        # Provjera odgovora od Notion-a
         if notion_res["ok"]:
             task.notion_id = notion_res["data"]["id"]
             task.notion_url = notion_res["data"]["url"]
