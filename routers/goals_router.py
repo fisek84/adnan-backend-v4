@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException, Depends
 import os
-import logging  # Dodajemo logovanje
+import logging
 
 from models.goal_create import GoalCreate
 from models.goal_update import GoalUpdate
@@ -10,11 +10,11 @@ from dependencies import (
     get_notion_service
 )
 
-# Inicijalizujemo logger
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 router = APIRouter(prefix="/goals", tags=["Goals"])
+
 
 # ================================
 # CREATE GOAL
@@ -27,7 +27,7 @@ async def create_goal(
 ):
     try:
         logger.info(f"Creating goal with title: {payload.title}")
-        
+
         db_id = os.getenv("NOTION_GOALS_DB_ID")
         if not db_id:
             logger.error("NOTION_GOALS_DB_ID is not set in environment variables.")
@@ -69,6 +69,7 @@ async def create_goal(
         logger.error(f"Goal creation failed: {e}")
         raise HTTPException(500, f"Goal creation failed: {e}")
 
+
 # ================================
 # UPDATE GOAL
 # ================================
@@ -85,6 +86,7 @@ async def update_goal(
     except Exception as e:
         logger.error(f"Goal update failed ({goal_id}): {e}")
         raise HTTPException(400, str(e))
+
 
 # ================================
 # DELETE GOAL
@@ -122,3 +124,16 @@ async def delete_goal(
 
     logger.info(f"Goal deleted locally only: {goal_id}")
     return {"message": f"Goal {goal_id} deleted locally (no Notion page)."}
+
+
+# ================================
+# LIST GOALS  (DODANO)
+# ================================
+@router.get("/all")
+async def list_goals(goals_service=Depends(get_goals_service)):
+    try:
+        goals = goals_service.get_all_goals()
+        return goals
+    except Exception as e:
+        logger.error(f"Failed to list goals: {e}")
+        raise HTTPException(500, "Failed to list goals")

@@ -1,5 +1,3 @@
-# routers/sync_router.py
-
 from fastapi import APIRouter, HTTPException
 from typing import Optional
 import logging
@@ -28,6 +26,38 @@ def require_sync():
     if sync_service_global is None:
         logger.error("SyncService not initialized")
         raise HTTPException(status_code=500, detail="SyncService not initialized")
+
+
+# ============================================================
+# STATUS ENDPOINT (ADDED)
+# ============================================================
+
+@router.get("/status")
+async def sync_status():
+    """
+    Returns basic sync metadata if available.
+    Safe fallback: returns minimal structure even if backend does not track sync info.
+    """
+    if sync_service_global is None:
+        return {"status": "not_initialized"}
+
+    status = {}
+
+    # Safe-access "last sync" timestamps if the service maintains them
+    if hasattr(sync_service_global, "last_goals_sync"):
+        status["goals"] = sync_service_global.last_goals_sync
+
+    if hasattr(sync_service_global, "last_tasks_sync"):
+        status["tasks"] = sync_service_global.last_tasks_sync
+
+    if hasattr(sync_service_global, "last_projects_sync"):
+        status["projects"] = sync_service_global.last_projects_sync
+
+    if not status:
+        # fallback when service doesn't track timestamps
+        return {"status": "no_sync_metadata"}
+
+    return {"status": "ok", "metadata": status}
 
 
 # ============================================================

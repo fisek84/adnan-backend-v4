@@ -13,7 +13,6 @@ from dependencies import (
     get_notion_service
 )
 
-# Inicijalizujemo logger
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
@@ -29,20 +28,16 @@ async def create_task(
     tasks_service=Depends(get_tasks_service),
     notion=Depends(get_notion_service)
 ):
-    # Validacija za title i description
     if not payload.title or not payload.description:
         raise HTTPException(status_code=400, detail="Title and description are required.")
 
     logger.info(f"Creating task with title: {payload.title}")
 
     try:
-        # 1. Kreiraj lokalni task
         task = await tasks_service.create_task(payload)
 
-        # 2. goal_id string safe conversion
         goal_id_str = str(payload.goal_id) if isinstance(payload.goal_id, UUID) else payload.goal_id
 
-        # 3. Notion payload
         notion_payload = {
             "parent": {"database_id": os.getenv("NOTION_TASKS_DB_ID")},
             "properties": {
@@ -53,7 +48,6 @@ async def create_task(
             }
         }
 
-        # Optional fields
         if payload.deadline:
             notion_payload["properties"]["Deadline"] = {
                 "date": {"start": payload.deadline}
@@ -69,7 +63,6 @@ async def create_task(
                 "relation": [{"id": goal_id_str}]
             }
 
-        # 4. Kreiranje u Notionu
         notion_res = await notion.create_page(notion_payload)
 
         if notion_res["ok"]:
@@ -139,3 +132,16 @@ async def delete_task(
             }
 
     return {"message": f"Task {task_id} deleted locally (no Notion page)."}
+
+
+# ================================
+# LIST TASKS  (DODANO)
+# ================================
+@router.get("/all")
+async def list_tasks(tasks_service=Depends(get_tasks_service)):
+    try:
+        tasks = tasks_service.get_all_tasks()
+        return tasks
+    except Exception as e:
+        logger.error(f"Failed to list tasks: {e}")
+        raise HTTPException(500, "Failed to list tasks")
