@@ -28,7 +28,10 @@ async def create_goal(
     try:
         logger.info(f"Creating goal with title: {payload.title}")
         
-        db_id = os.getenv("NOTION_GOALS_DB_ID")  # Provjeri da li je ovo postavljeno ispravno
+        db_id = os.getenv("NOTION_GOALS_DB_ID")
+        if not db_id:
+            logger.error("NOTION_GOALS_DB_ID is not set in environment variables.")
+            raise HTTPException(500, "NOTION_GOALS_DB_ID is not set.")
 
         notion_payload = {
             "parent": {"database_id": db_id},
