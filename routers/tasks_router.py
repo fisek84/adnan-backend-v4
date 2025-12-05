@@ -4,6 +4,7 @@ import logging
 from models.task_create import TaskCreate
 from models.task_update import TaskUpdate
 from models.task_model import TaskModel
+from services.tasks_service import TasksService  # Dodajemo import za TasksService
 
 from dependencies import (
     get_tasks_service,
