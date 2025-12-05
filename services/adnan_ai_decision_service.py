@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 BASE_PATH = Path(__file__).resolve().parent.parent / "adnan_ai"
+MEMORY_FILE = BASE_PATH / "memory.json"
 
 
 class AdnanAIDecisionService:
@@ -12,18 +13,27 @@ class AdnanAIDecisionService:
         self.state = self._load("state.json")
         self.decision_engine = self._load("decision_engine.json")
 
-        # ------------------------------------------
-        # KORAK 7.11 — Session Consistency Memory
-        # ------------------------------------------
-        self.session_memory = {
-            "last_mode": None,
-            "last_state": None,
-            "trace": []
-        }
+        # ---------------------------
+        # LOAD PERSISTENT MEMORY
+        # ---------------------------
+        if MEMORY_FILE.exists():
+            with open(MEMORY_FILE, "r", encoding="utf-8-sig") as f:
+                self.session_memory = json.load(f)
+        else:
+            self.session_memory = {
+                "last_mode": None,
+                "last_state": None,
+                "trace": [],
+                "notes": []
+            }
+            self._save_memory()
+
+    def _save_memory(self):
+        with open(MEMORY_FILE, "w", encoding="utf-8") as f:
+            json.dump(self.session_memory, f, ensure_ascii=False, indent=2)
 
     def _load(self, filename: str):
         path = BASE_PATH / filename
-        # FIX: UTF-8 BOM error → use utf-8-sig
         with open(path, "r", encoding="utf-8-sig") as f:
             return json.load(f)
 
@@ -35,12 +45,14 @@ class AdnanAIDecisionService:
             "input": user_input,
         }
 
-    # ------------------------------------------
-    # KORAK 7.4 — Glavni decision pipeline
-    # ------------------------------------------
     def process(self, user_input: str) -> dict:
         directives = []
         mode_switch = None
+
+        memory_flag = False
+        memory_keywords = ["zapamti", "zapisi", "remember", "save note"]
+        if any(k.lower() in user_input.lower() for k in memory_keywords):
+            memory_flag = True
 
         engine_rules = self.decision_engine.get("rules", [])
 
@@ -48,7 +60,6 @@ class AdnanAIDecisionService:
             keywords = rule.get("keywords", [])
             if any(kw.lower() in user_input.lower() for kw in keywords):
                 directives.append(rule.get("action"))
-
                 if "set_mode" in rule:
                     mode_switch = rule["set_mode"]
 
@@ -63,34 +74,18 @@ class AdnanAIDecisionService:
             "state": self.state.get("current_state"),
             "directives": directives,
             "kernel": self.kernel.get("core_directives", []),
+            "memory_flag": memory_flag
         }
 
-        # ------------------------------------------
-        # KORAK 7.10 — AUTO-TRANSITION MODE/STATE
-        # ------------------------------------------
         snapshot = self.auto_transition(snapshot)
-
-        # ------------------------------------------
-        # KORAK 7.11 — Memory Update
-        # ------------------------------------------
         self.update_memory(snapshot)
-
-        # ------------------------------------------
-        # KORAK 7.13 — Priority Reasoning Layer
-        # ------------------------------------------
         snapshot["priority_context"] = self.prioritize(snapshot)
 
-        # ------------------------------------------
-        # KORAK 9.3 — Memory–Decision Fusion Layer
-        # ------------------------------------------
         memory_context = self.get_memory_context()
         snapshot["fusion_context"] = self.fuse(snapshot, memory_context)
 
         return snapshot
 
-    # ------------------------------------------
-    # KORAK 7.8 — Execution Alignment Layer
-    # ------------------------------------------
     def enforce(self, gpt_output: str, snapshot: dict) -> str:
         mode = snapshot.get("mode")
         directives = snapshot.get("directives", [])
@@ -124,9 +119,6 @@ class AdnanAIDecisionService:
         correction_note = "\n\n[Alignment Note]: " + " | ".join(corrections)
         return gpt_output + correction_note
 
-    # ------------------------------------------
-    # KORAK 7.9 — Refinement & Stability Layer
-    # ------------------------------------------
     def refine(self, output: str, snapshot: dict) -> str:
         mode = snapshot.get("mode")
 
@@ -164,9 +156,6 @@ class AdnanAIDecisionService:
 
         return output
 
-    # ------------------------------------------
-    # KORAK 7.10 — Mode & State Auto-Transition Layer
-    # ------------------------------------------
     def auto_transition(self, snapshot: dict) -> dict:
         current_mode = snapshot.get("mode")
         current_state = snapshot.get("state")
@@ -177,7 +166,6 @@ class AdnanAIDecisionService:
         for rule in engine_rules:
             action = rule.get("action")
             if action in directives:
-
                 if "set_state" in rule:
                     new_state = rule["set_state"]
                     self.state["current_state"] = new_state
@@ -192,9 +180,6 @@ class AdnanAIDecisionService:
         snapshot["state"] = current_state
         return snapshot
 
-    # ------------------------------------------
-    # KORAK 7.11 — Session Consistency Memory
-    # ------------------------------------------
     def update_memory(self, snapshot: dict):
         self.session_memory["last_mode"] = snapshot.get("mode")
         self.session_memory["last_state"] = snapshot.get("state")
@@ -208,15 +193,25 @@ class AdnanAIDecisionService:
 
         self.session_memory["trace"].append(trace_entry)
 
+        if snapshot.get("memory_flag"):
+            self.session_memory["notes"].append(snapshot.get("input"))
+
         if len(self.session_memory["trace"]) > 20:
             self.session_memory["trace"].pop(0)
 
-    def get_memory_context(self) -> dict:
-        return self.session_memory
+        # ---------------------------
+        # SAVE PERSISTENT MEMORY
+        # ---------------------------
+        self._save_memory()
 
-    # ------------------------------------------
-    # KORAK 7.13 — Priority Reasoning Layer
-    # ------------------------------------------
+    def get_memory_context(self) -> dict:
+        return {
+            "last_mode": self.session_memory.get("last_mode"),
+            "last_state": self.session_memory.get("last_state"),
+            "trace": self.session_memory.get("trace", []),
+            "notes": list(self.session_memory.get("notes", []))
+        }
+
     def prioritize(self, snapshot: dict) -> dict:
         directives = snapshot.get("directives", [])
         kernel = snapshot.get("kernel", [])
@@ -245,9 +240,6 @@ class AdnanAIDecisionService:
             "high_risk_items": high_risk,
         }
 
-    # ------------------------------------------
-    # KORAK 7.14 — Strategic Compression Layer
-    # ------------------------------------------
     def compress(self, output: str) -> str:
         lines = [l.strip() for l in output.split("\n") if l.strip()]
 
@@ -264,9 +256,6 @@ class AdnanAIDecisionService:
         compressed = unique_lines[:5]
         return "\n".join(compressed)
 
-    # ------------------------------------------
-    # KORAK 7.15 — Executive Consistency Layer
-    # ------------------------------------------
     def executive_consistency(self, output: str, snapshot: dict) -> str:
         weak_phrases = [
             "možda", "pokušaću", "ukoliko je moguće",
@@ -282,9 +271,6 @@ class AdnanAIDecisionService:
 
         return output
 
-    # ------------------------------------------
-    # KORAK 9.3 — Balanced Memory–Decision Fusion Layer
-    # ------------------------------------------
     def fuse(self, snapshot: dict, memory_context: dict) -> dict:
         mode = snapshot.get("mode")
         state = snapshot.get("state")
@@ -294,6 +280,7 @@ class AdnanAIDecisionService:
         last_mode = memory_context.get("last_mode")
         last_state = memory_context.get("last_state")
         trace = memory_context.get("trace", [])
+        notes = memory_context.get("notes", [])
 
         recent_trace = trace[-3:] if len(trace) > 3 else trace
 
@@ -304,22 +291,18 @@ class AdnanAIDecisionService:
             "history_depth": min(len(recent_trace) / 3, 1.0),
         }
 
-        fused = {
+        return {
             "current_mode": mode,
             "current_state": state,
             "last_mode": last_mode,
             "last_state": last_state,
             "active_directives": directives,
             "recent_trace": recent_trace,
+            "notes": notes,
             "priority_order": priority.get("priority_order", []),
             "fusion_score": fusion_score,
         }
 
-        return fused
-
-    # ------------------------------------------
-    # KORAK 9.4 — Fusion Guided Response Layer
-    # ------------------------------------------
     def fusion_guided(self, output: str, fusion_context: dict) -> str:
         score = fusion_context.get("fusion_score", {})
 
@@ -339,11 +322,7 @@ class AdnanAIDecisionService:
 
         return output
 
-    # ------------------------------------------
-    # KORAK 9.5 — Multi-Layer Output Assembly
-    # ------------------------------------------
     def assemble_output(self, gpt_output: str, snapshot: dict) -> str:
-
         step1 = self.enforce(gpt_output, snapshot)
         step2 = self.refine(step1, snapshot)
         step3 = self.compress(step2)
@@ -351,5 +330,11 @@ class AdnanAIDecisionService:
 
         fusion_context = snapshot.get("fusion_context", {})
         step5 = self.fusion_guided(step4, fusion_context)
+
+        notes = fusion_context.get("notes", [])
+        if notes:
+            step5 += "\n\nSession Memory Notes:\n- " + "\n- ".join(notes)
+        else:
+            step5 += "\n\nSession Memory Notes:\n- Nema zapisanih bilješki u ovoj sesiji."
 
         return step5
