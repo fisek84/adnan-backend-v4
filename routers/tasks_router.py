@@ -26,21 +26,37 @@ async def create_task(
     tasks_service=Depends(get_tasks_service),
     notion=Depends(get_notion_service)
 ):
+    # Validacija za title i description
+    if not payload.title or not payload.description:
+        raise HTTPException(status_code=400, detail="Title and description are required.")
+
     logger.info(f"Creating task with title: {payload.title}")
     try:
         task = await tasks_service.create_task(payload)
         
+        # Konfiguracija za Notion payload
         notion_payload = {
-            "parent": {"database_id": os.getenv("NOTION_TASKS_DB_ID")},
+            "parent": {"database_id": os.getenv("NOTION_TASKS_DB_ID")},  # Provjeri da li je ova varijabla postavljena
             "properties": {
                 "Name": {
                     "title": [{"text": {"content": payload.title}}]
+                },
+                "Description": {
+                    "rich_text": [{"text": {"content": payload.description}}]
+                },
+                "Deadline": {
+                    "date": {"start": payload.deadline}
+                },
+                "Priority": {
+                    "select": {"name": payload.priority}
                 }
             }
         }
         
+        # Slanje zahtjeva za kreiranje zadatka u Notion
         notion_res = await notion.create_page(notion_payload)
 
+        # Provjera odgovora od Notion-a
         if notion_res["ok"]:
             task.notion_id = notion_res["data"]["id"]
             task.notion_url = notion_res["data"]["url"]
