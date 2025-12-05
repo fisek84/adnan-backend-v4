@@ -2,7 +2,7 @@ from fastapi import FastAPI
 import logging
 from dotenv import load_dotenv
 
-# Load environment variables
+# Load env variables
 load_dotenv()
 
 # Import DI initialization
@@ -15,11 +15,13 @@ from routers.projects_router import router as projects_router
 from routers.sync_router import router as sync_router
 from routers.ai_ops_router import router as ai_ops_router
 from routers.adnan_ai_router import router as adnan_ai_router
+from routers.adnan_ai_data_router import router as adnan_ai_data_router
+from routers.adnan_ai_query_router import router as adnan_ai_query_router   # <-- DODANO
 
-# App init
+# Initialize app
 app = FastAPI()
 
-# Logging
+# Logger
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
@@ -28,26 +30,30 @@ logger.setLevel(logging.INFO)
 async def startup_event():
     logger.info("🔵 Starting backend services...")
 
-    # Central initialization → dependencies.py
+    # Initialize core services (DI container)
     init_services()
 
     logger.info("🟩 All services initialized successfully.")
 
 
-# Routers
+# REGISTER ROUTERS
 app.include_router(goals_router)
 app.include_router(tasks_router)
 app.include_router(projects_router)
 app.include_router(sync_router)
 app.include_router(ai_ops_router)
 app.include_router(adnan_ai_router)
+app.include_router(adnan_ai_data_router)
+app.include_router(adnan_ai_query_router)   # <-- DODANO
 
 
+# HEALTH CHECK
 @app.get("/health")
 async def health_check():
-    return {"status": "ok"}
+    return {"status": "ok", "message": "Backend is healthy"}
 
 
+# ROOT ENDPOINT
 @app.get("/")
 async def root():
     return {"message": "Backend is running"}

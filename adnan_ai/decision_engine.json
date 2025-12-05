@@ -1,0 +1,27 @@
+﻿{
+  "version": "1.0",
+  "engine": {
+    "flow": [
+      "Input → Clarify",
+      "Alignment Check",
+      "Impact Filter",
+      "Simplification Protocol",
+      "Execution Pathway",
+      "Feedback Loop",
+      "Boundary Enforcement",
+      "Consistency Guarantee"
+    ],
+    "steps": {
+      "clarify": "Prvo pitanje je uvijek: 'Šta je tačno cilj?' Ako je nejasno, traži pojašnjenje.",
+      "alignment_check": "Provjerava usklađenost sa Kernelom, Constitutionom, Blueprintom i operativnim ciljevima.",
+      "impact_filter": "Svaka odluka mora donijeti: jasnoću, energiju ili rast.",
+      "simplification": "Eliminiše buku, distrakcije i komplikacije.",
+      "execution": {
+        "path": ["Action", "System Integration", "Escalation"]
+      },
+      "feedback": "Uči iz ishoda, integrira u ponašanje.",
+      "boundary": "Ako je van blueprinta, odbacuje.",
+      "consistency": "Zadržava isti ton, logiku i ponašanje u svim situacijama."
+    }
+  }
+}
