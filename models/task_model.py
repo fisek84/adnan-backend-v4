@@ -1,24 +1,23 @@
 from datetime import datetime
 from pydantic import BaseModel, Field, validator
 from typing import Optional
-import logging  # Dodajemo logovanje
+import logging
 
-# Inicijalizujemo logger
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 class TaskModel(BaseModel):
     """
     Task model for Evolia Backend v4.
-    - Safe for in-memory DB
-    - Sync-ready for Notion
-    - Strict validation
     """
 
     # Core identity
     id: str = Field(..., description="Unique Task ID")
     notion_id: Optional[str] = Field(
-        None, description="Notion page ID (for delete/archive sync)"
+        None, description="Notion page ID"
+    )
+    notion_url: Optional[str] = Field(
+        None, description="Public Notion URL of the task"
     )
 
     # Main fields
@@ -31,7 +30,6 @@ class TaskModel(BaseModel):
         None, description="Linked goal ID"
     )
 
-    # 🔥 REQUIRED FOR PROJECT ↔ TASK RELATION
     project_id: Optional[str] = Field(
         None, description="Linked project ID"
     )
@@ -50,7 +48,6 @@ class TaskModel(BaseModel):
         0, description="Sort order for tasks"
     )
 
-    # Timestamps
     created_at: datetime = Field(
         ..., description="Task creation timestamp"
     )
@@ -58,9 +55,6 @@ class TaskModel(BaseModel):
         ..., description="Last update timestamp"
     )
 
-    # ---------------------------------------------------------
-    # VALIDATIONS
-    # ---------------------------------------------------------
     @validator("deadline")
     def validate_deadline(cls, v):
         if v is None:
@@ -70,7 +64,6 @@ class TaskModel(BaseModel):
         except Exception:
             logger.error(f"Invalid deadline format: {v}")
             raise ValueError("Deadline must be ISO format YYYY-MM-DD")
-        logger.info(f"Valid deadline format: {v}")
         return v
 
     @validator("priority")
@@ -79,22 +72,18 @@ class TaskModel(BaseModel):
             return v
         allowed = {"low", "medium", "high"}
         if v not in allowed:
-            logger.error(f"Invalid priority value: {v}. Must be one of: {allowed}")
             raise ValueError(f"Priority must be one of: {allowed}")
-        logger.info(f"Valid priority value: {v}")
         return v
 
     @validator("status")
     def validate_status(cls, v):
         allowed = {"pending", "in_progress", "completed"}
         if v not in allowed:
-            logger.error(f"Invalid status value: {v}. Must be one of: {allowed}")
             raise ValueError(f"Status must be one of: {allowed}")
-        logger.info(f"Valid status value: {v}")
         return v
 
     class Config:
-        orm_mode = True
+        from_attributes = True
         validate_assignment = True
         extra = "forbid"
         json_encoders = {

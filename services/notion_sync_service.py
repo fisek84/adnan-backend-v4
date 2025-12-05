@@ -85,6 +85,24 @@ class NotionSyncService:
         )
 
     # ------------------------------------------------------
+    # SYNC METHODS (REQUIRED BY ROUTERS)
+    # ------------------------------------------------------
+    async def sync_tasks_up(self):
+        self.logger.info("Sync tasks → Notion START")
+        # TODO: implement actual sync logic
+        return True
+
+    async def sync_goals_up(self):
+        self.logger.info("Sync goals → Notion START")
+        # TODO: implement actual sync logic
+        return True
+
+    async def sync_projects_up(self):
+        self.logger.info("Sync projects → Notion START")
+        # TODO: implement actual sync logic
+        return True
+
+    # ------------------------------------------------------
     # LOAD PROJECTS FROM NOTION → BACKEND (REQUIRED BY main.py)
     # ------------------------------------------------------
     async def load_projects_into_backend(self):
@@ -142,7 +160,7 @@ class NotionSyncService:
                 if kind == "relation":
                     rel = prop.get("relation") or []
                     return [r["id"].replace("-", "") for r in rel]
-            except:
+            except Exception:
                 return None
 
             return None

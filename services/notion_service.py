@@ -122,13 +122,9 @@ class NotionService:
         )
 
     # ============================================================
-    # DELETE / ARCHIVE PAGE  (KRITIČNO ZA GOALS/TASKS)
+    # DELETE / ARCHIVE PAGE
     # ============================================================
     async def delete_page(self, page_id: str):
-        """
-        NOTION NE BRIŠE STRANICE — samo 'archived': True.
-        Ova metoda se koristi u: goals_router, tasks_router, sync.
-        """
         self.logger.info(f"Archiving Notion page: {page_id}")
 
         url = f"https://api.notion.com/v1/pages/{page_id}"
@@ -142,28 +138,15 @@ class NotionService:
                 text = await response.text()
 
                 if status not in (200, 202):
-                    self.logger.error(
-                        f"Failed archive for page {page_id}: {text}"
-                    )
-                    return {
-                        "ok": False,
-                        "status": status,
-                        "error": text
-                    }
+                    self.logger.error(f"Failed archive for page {page_id}: {text}")
+                    return {"ok": False, "status": status, "error": text}
 
                 self.logger.info(f"Page {page_id} archived successfully.")
-                return {
-                    "ok": True,
-                    "status": status
-                }
+                return {"ok": True, "status": status}
 
         except Exception as e:
             self.logger.error(f"Error archiving Notion page {page_id}: {str(e)}")
-            return {
-                "ok": False,
-                "status": 500,
-                "error": str(e)
-            }
+            return {"ok": False, "status": 500, "error": str(e)}
 
     # ============================================================
     # TASKS — CREATE
@@ -171,13 +154,12 @@ class NotionService:
     async def create_task(self, task):
         self.logger.info(f"Creating Notion task: {task.title}")
 
-        # Validacija goal_id (ako nije validan UUID, generišemo novi UUID)
+        # Build relation if goal_id exists
+        goal_relation = None
         if task.goal_id:
-            try:
-                task.goal_id = UUID(task.goal_id)
-            except ValueError:
-                task.goal_id = uuid4()  # Generišemo novi UUID ako nije validan
+            goal_relation = [{"id": str(task.goal_id)}]
 
+        # Base Notion properties
         props = {
             "Name": {"title": [{"text": {"content": task.title}}]},
             "Description": {"rich_text": [{"text": {"content": task.description or ""}}]},
@@ -186,12 +168,15 @@ class NotionService:
             "Task ID": {"rich_text": [{"text": {"content": task.id}}]},
         }
 
-        if task.goal_id:
-            props["Goal"] = {"relation": [{"id": task.goal_id}]}
+        # Add relation
+        if goal_relation:
+            props["Goal"] = {"relation": goal_relation}
 
+        # Deadline
         if task.deadline:
             props["Due Date"] = {"date": {"start": task.deadline}}
 
+        # Priority
         if task.priority:
             props["Priority"] = {"select": {"name": task.priority}}
 

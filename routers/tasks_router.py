@@ -1,10 +1,12 @@
 from fastapi import APIRouter, HTTPException, Depends
 import logging
+import os
+from uuid import UUID
 
 from models.task_create import TaskCreate
 from models.task_update import TaskUpdate
 from models.task_model import TaskModel
-from services.tasks_service import TasksService  # Dodajemo import za TasksService
+from services.tasks_service import TasksService
 
 from dependencies import (
     get_tasks_service,
@@ -16,6 +18,7 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 router = APIRouter(prefix="/tasks", tags=["Tasks"])
+
 
 # ================================
 # CREATE TASK
@@ -31,38 +34,44 @@ async def create_task(
         raise HTTPException(status_code=400, detail="Title and description are required.")
 
     logger.info(f"Creating task with title: {payload.title}")
+
     try:
+        # 1. Kreiraj lokalni task
         task = await tasks_service.create_task(payload)
-        
-        # Provjeri goal_id i konvertuj ga u string ako je UUID
+
+        # 2. goal_id string safe conversion
         goal_id_str = str(payload.goal_id) if isinstance(payload.goal_id, UUID) else payload.goal_id
-        
-        # Konfiguracija za Notion payload
+
+        # 3. Notion payload
         notion_payload = {
             "parent": {"database_id": os.getenv("NOTION_TASKS_DB_ID")},
             "properties": {
-                "Name": {
-                    "title": [{"text": {"content": payload.title}}]
-                },
+                "Name": {"title": [{"text": {"content": payload.title}}]},
                 "Description": {
                     "rich_text": [{"text": {"content": payload.description}}]
                 },
-                "Deadline": {
-                    "date": {"start": payload.deadline}
-                },
-                "Priority": {
-                    "select": {"name": payload.priority}
-                },
-                "Goal": {
-                    "relation": [{"id": goal_id_str}]  # goal_id mora biti string
-                }
             }
         }
-        
-        # Slanje zahtjeva za kreiranje zadatka u Notion
+
+        # Optional fields
+        if payload.deadline:
+            notion_payload["properties"]["Deadline"] = {
+                "date": {"start": payload.deadline}
+            }
+
+        if payload.priority:
+            notion_payload["properties"]["Priority"] = {
+                "select": {"name": payload.priority}
+            }
+
+        if goal_id_str:
+            notion_payload["properties"]["Goal"] = {
+                "relation": [{"id": goal_id_str}]
+            }
+
+        # 4. Kreiranje u Notionu
         notion_res = await notion.create_page(notion_payload)
 
-        # Provjera odgovora od Notion-a
         if notion_res["ok"]:
             task.notion_id = notion_res["data"]["id"]
             task.notion_url = notion_res["data"]["url"]
@@ -75,6 +84,7 @@ async def create_task(
     except Exception as e:
         logger.error(f"Task creation failed: {e}")
         raise HTTPException(500, f"Task creation failed: {e}")
+
 
 # ================================
 # UPDATE TASK
@@ -93,6 +103,7 @@ async def update_task(
         logger.error(f"Task update failed ({task_id}): {e}")
         raise HTTPException(400, str(e))
 
+
 # ================================
 # DELETE TASK
 # ================================
@@ -104,7 +115,7 @@ async def delete_task(
 ):
     logger.info(f"Deleting task ID: {task_id}")
 
-    result = await tasks_service.delete_task(task_id)  # Pozivamo metod za brisanje zadatka
+    result = await tasks_service.delete_task(task_id)
 
     if not result["ok"]:
         raise HTTPException(404, f"Task {task_id} not found.")
@@ -121,11 +132,10 @@ async def delete_task(
             logger.info(f"Deleted from Notion: {notion_id}")
             return {"message": f"Task {task_id} deleted from backend + Notion."}
         else:
-            logger.warning(f"Task deleted locally, but Notion delete failed.")
+            logger.warning("Task removed locally, but Notion deletion failed.")
             return {
                 "warning": "Task removed locally, but Notion deletion failed.",
                 "notion_error": notion_res["error"]
             }
 
-    logger.info(f"Task deleted locally only: {task_id}")
     return {"message": f"Task {task_id} deleted locally (no Notion page)."}
