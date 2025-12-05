@@ -68,6 +68,8 @@ async def startup_event():
 
         # Get sync service and check if it is initialized
         sync_service = get_sync_service()
+        logger.info(f"Sync service: {sync_service}")  # Log the sync_service to check its value
+
         if sync_service is not None:
             sync_service.set_sync_service(notion_sync_service)
         else:
