@@ -34,9 +34,6 @@ class GoalsService:
         return datetime.now(timezone.utc)
 
     def _trigger_sync(self):
-        """
-        Safe async sync trigger
-        """
         if not self.sync_service:
             return
 
@@ -73,6 +70,7 @@ class GoalsService:
         forced_id: Optional[str] = None,
         notion_id: Optional[str] = None
     ) -> GoalModel:
+
         logger.info(f"[GOALS] Creating goal: {data.title}")
 
         now = self._now()
@@ -96,7 +94,6 @@ class GoalsService:
         self.goals[goal_id] = new_goal
         logger.info(f"[GOALS] Goal created with ID: {goal_id}")
 
-        # Parent linking
         if data.parent_id:
             parent = self.goals.get(data.parent_id)
             if parent:
@@ -114,29 +111,75 @@ class GoalsService:
         return False
 
     # ---------------------------------------------------------
-    # GET ALL GOALS (router uses this)
+    # GET ALL GOALS
     # ---------------------------------------------------------
     def get_all_goals(self) -> List[GoalModel]:
         logger.info(f"[GOALS] Fetching all goals: total {len(self.goals)}")
         return list(self.goals.values())
 
-    # ---------------------------------------------------------
-    # BACKUP METHOD
-    # ---------------------------------------------------------
     def get_all(self) -> List[GoalModel]:
         logger.info(f"[GOALS] Total goals in service: {len(self.goals)}")
         return list(self.goals.values())
 
     # ---------------------------------------------------------
-    # DELETE GOAL — FIX ADDED
+    # UPDATE GOAL (FULL PARENT–CHILD LOGIC)
+    # ---------------------------------------------------------
+    async def update_goal(self, goal_id: str, data: GoalUpdate) -> GoalUpdate:
+        logger.info(f"[GOALS] Updating goal {goal_id}")
+
+        goal = self.goals.get(goal_id)
+        if not goal:
+            raise ValueError(f"Goal {goal_id} not found")
+
+        old_parent_id = goal.parent_id
+        new_parent_id = data.parent_id if data.parent_id is not None else old_parent_id
+
+        # Root rules
+        if new_parent_id is None:
+            raise ValueError("Every goal except root must have a parent")
+
+        # Simple field updates
+        if data.title is not None:
+            goal.title = data.title
+        if data.description is not None:
+            goal.description = data.description
+        if data.deadline is not None:
+            goal.deadline = data.deadline
+        if data.priority is not None:
+            goal.priority = data.priority
+        if data.status is not None:
+            goal.status = data.status
+        if data.progress is not None:
+            goal.progress = data.progress
+
+        # Parent-child logic
+        if old_parent_id != new_parent_id:
+
+            if old_parent_id and old_parent_id in self.goals:
+                old_parent = self.goals[old_parent_id]
+                if goal_id in old_parent.children:
+                    old_parent.children.remove(goal_id)
+
+            if new_parent_id not in self.goals:
+                raise ValueError(f"Parent goal {new_parent_id} not found")
+
+            new_parent = self.goals[new_parent_id]
+            if goal_id not in new_parent.children:
+                new_parent.children.append(goal_id)
+
+            goal.parent_id = new_parent_id
+
+        # Timestamp update
+        goal.updated_at = self._now()
+
+        self._trigger_sync()
+
+        return data
+
+    # ---------------------------------------------------------
+    # DELETE GOAL
     # ---------------------------------------------------------
     async def delete_goal(self, goal_id: str) -> dict:
-        """
-        Minimal deletion logic required by router.
-        - Remove from internal memory
-        - Return dict with notion_id (router expects this)
-        """
-
         goal = self.goals.get(goal_id)
         if not goal:
             logger.warning(f"[GOALS] Attempted to delete non-existent goal {goal_id}")
@@ -144,7 +187,6 @@ class GoalsService:
 
         notion_id = goal.notion_id
 
-        # Remove from internal memory
         del self.goals[goal_id]
 
         logger.info(f"[GOALS] Deleted goal {goal_id} (notion_id={notion_id})")
