@@ -183,7 +183,19 @@ class GoalsService:
         return new_goal
 
     # ---------------------------------------------------------
-    # UPDATE GOAL (FIXED)
+    # GET ALL (FIX REQUIRED BY ROUTER)
+    # ---------------------------------------------------------
+    def get_all(self) -> List[GoalModel]:
+        """
+        Required by /goals/all router.
+        """
+        return list(self.goals.values())
+
+    def get_all_goals(self) -> List[GoalModel]:
+        return list(self.goals.values())
+
+    # ---------------------------------------------------------
+    # UPDATE GOAL
     # ---------------------------------------------------------
     async def update_goal(self, goal_id: str, data: dict):
 
@@ -193,7 +205,6 @@ class GoalsService:
         if not goal:
             raise ValueError(f"Goal {goal_id} not found")
 
-        # FIX: read from dict safely
         old_parent_id = goal.parent_id
         new_parent_id = data.get("parent_id", old_parent_id)
 

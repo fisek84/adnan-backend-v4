@@ -125,6 +125,12 @@ class TasksService:
         return list(self.tasks.values())
 
     # ------------------------------------------------------------
+    # REQUIRED BY ROUTERS + BULK SYSTEM (NEW)
+    # ------------------------------------------------------------
+    def get_all(self) -> List[TaskModel]:
+        return list(self.tasks.values())
+
+    # ------------------------------------------------------------
     # UPDATE TASK
     # ------------------------------------------------------------
     def update_task(self, task_id: str, data: dict) -> TaskModel:
@@ -168,16 +174,9 @@ class TasksService:
         return task
 
     # ------------------------------------------------------------
-    # DELETE TASK  — FIXED
+    # DELETE TASK — FIXED
     # ------------------------------------------------------------
     async def delete_task(self, task_id: str) -> dict:
-        """
-        Returns:
-        {
-            "ok": True/False,
-            "notion_id": str | None
-        }
-        """
         if task_id not in self.tasks:
             logger.warning(f"[TASKS] Delete failed — {task_id} not found")
             return {"ok": False, "notion_id": None}
