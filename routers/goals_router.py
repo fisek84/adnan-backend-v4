@@ -4,6 +4,7 @@ import logging
 
 from models.goal_create import GoalCreate
 from models.goal_update import GoalUpdate
+from models.base_model import GoalModel
 from dependencies import get_goals_service, get_notion_service
 
 logger = logging.getLogger(__name__)
@@ -52,13 +53,22 @@ async def create_goal(payload: GoalCreate, goals_service=Depends(get_goals_servi
 
 
 # ================================
-# UPDATE GOAL
+# UPDATE GOAL  (OPCIJA A — vraća GoalResponse)
 # ================================
-@router.patch("/{goal_id}", response_model=GoalUpdate)
+@router.patch("/{goal_id}")
 async def update_goal(goal_id: str, payload: GoalUpdate, goals_service=Depends(get_goals_service)):
     try:
-        updated = await goals_service.update_goal(goal_id, payload)
-        return updated
+        # Update internal model (GoalModel izmijenjen)
+        await goals_service.update_goal(goal_id, payload)
+
+        # Dohvati finalni kompletan GoalModel
+        updated_goal: GoalModel = goals_service.goals.get(goal_id)
+        if not updated_goal:
+            raise HTTPException(404, "Updated goal not found")
+
+        # Vrati kompletan objekt — GoalResponse format
+        return updated_goal.model_dump()
+
     except Exception as e:
         raise HTTPException(400, str(e))
 
@@ -68,12 +78,10 @@ async def update_goal(goal_id: str, payload: GoalUpdate, goals_service=Depends(g
 # ================================
 @router.delete("/{goal_id}")
 async def delete_goal(goal_id: str, goals_service=Depends(get_goals_service), notion=Depends(get_notion_service)):
-    # Delete from local store
     result = await goals_service.delete_goal(goal_id)
 
     notion_id = result.get("notion_id")
 
-    # Delete (archive) in Notion if exists
     if notion_id:
         await notion.delete_page(notion_id)
 

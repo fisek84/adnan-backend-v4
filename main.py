@@ -16,6 +16,9 @@ from routers.adnan_ai_router import router as adnan_ai_router
 from routers.adnan_ai_data_router import router as adnan_ai_data_router
 from routers.adnan_ai_query_router import router as adnan_ai_query_router
 
+# NEW IMPORT: BULK ROUTER
+from routers.notion_ops_bulk_router import router as bulk_router
+
 
 app = FastAPI()
 
@@ -42,6 +45,9 @@ app.include_router(adnan_ai_router)
 app.include_router(adnan_ai_data_router)
 app.include_router(adnan_ai_query_router)
 
+# NEW ROUTER INCLUDE
+app.include_router(bulk_router)
+
 
 @app.get("/health")
 async def health_check():
@@ -51,3 +57,4 @@ async def health_check():
 @app.get("/")
 async def root():
     return {"message": "Backend is running"}
+    

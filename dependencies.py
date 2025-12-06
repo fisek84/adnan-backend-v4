@@ -1,5 +1,6 @@
 import logging
 import os
+import sqlite3
 from dotenv import load_dotenv
 
 # Load .env
@@ -26,6 +27,9 @@ _tasks: TasksService | None = None
 _projects: ProjectsService | None = None
 _sync: NotionSyncService | None = None
 
+# SQLite connection
+_db_conn: sqlite3.Connection | None = None
+
 
 # -------------------------------------------------------
 # GETTERS (FastAPI Depends uses these)
@@ -50,11 +54,22 @@ def get_sync_service():
 # INIT SERVICES — Called ONCE from main.py
 # -------------------------------------------------------
 def init_services():
-    global _notion, _goals, _tasks, _projects, _sync
+    global _notion, _goals, _tasks, _projects, _sync, _db_conn
 
     logger.info("🔧 Initializing all backend services (dependencies.py)…")
 
-    # 1) Notion service
+    # ----------------------------------------
+    # 1) Init SQLite DB
+    # ----------------------------------------
+    db_path = os.getenv("GOALS_DB_PATH", "goals.db")
+    _db_conn = sqlite3.connect(db_path, check_same_thread=False)
+    _db_conn.row_factory = sqlite3.Row
+
+    logger.info(f"🗄 SQLite DB initialized at {db_path}")
+
+    # ----------------------------------------
+    # 2) Notion service
+    # ----------------------------------------
     _notion = NotionService(
         api_key=os.getenv("NOTION_API_KEY"),
         goals_db_id=os.getenv("NOTION_GOALS_DB_ID"),
@@ -62,8 +77,10 @@ def init_services():
         projects_db_id=os.getenv("NOTION_PROJECTS_DB_ID")
     )
 
-    # 2) Local backend services
-    _goals = GoalsService()
+    # ----------------------------------------
+    # 3) Local backend services
+    # ----------------------------------------
+    _goals = GoalsService(_db_conn)
     _tasks = TasksService(_notion)
     _projects = ProjectsService()
 
@@ -72,7 +89,9 @@ def init_services():
     _tasks.bind_goals_service(_goals)
     _projects.bind_goals_service(_goals)
 
-    # 3) Sync Service
+    # ----------------------------------------
+    # 4) Sync Service
+    # ----------------------------------------
     _sync = NotionSyncService(
         _notion,
         _goals,
@@ -83,9 +102,14 @@ def init_services():
         os.getenv("NOTION_PROJECTS_DB_ID")
     )
 
-    # Bind sync service to all others
+    # Bind sync service
     _goals.bind_sync_service(_sync)
     _tasks.bind_sync_service(_sync)
     _projects.bind_sync_service(_sync)
+
+    # ----------------------------------------
+    # 5) Load goals from DB
+    # ----------------------------------------
+    _goals.load_from_db()
 
     logger.info("🟩 dependencies.py → All services initialized successfully.")

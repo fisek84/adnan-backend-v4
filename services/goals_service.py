@@ -7,6 +7,8 @@ from uuid import uuid4
 from datetime import datetime, timezone
 from typing import Dict, Optional, List
 import logging
+import json
+import sqlite3
 
 logger = logging.getLogger(__name__)
 
@@ -15,17 +17,74 @@ class GoalsService:
     tasks_service = None
     sync_service = None
 
-    def __init__(self):
+    def __init__(self, db_conn: sqlite3.Connection):
+        self.db = db_conn
         self.goals: Dict[str, GoalModel] = {}
 
+        self._create_table()
+
     # ---------------------------------------------------------
-    # BINDING
+    # BIND METHODS
     # ---------------------------------------------------------
     def bind_tasks_service(self, tasks_service):
         self.tasks_service = tasks_service
 
     def bind_sync_service(self, sync_service):
         self.sync_service = sync_service
+
+    # ---------------------------------------------------------
+    # DB INIT
+    # ---------------------------------------------------------
+    def _create_table(self):
+        query = """
+        CREATE TABLE IF NOT EXISTS goals (
+            id TEXT PRIMARY KEY,
+            notion_id TEXT,
+            title TEXT NOT NULL,
+            description TEXT,
+            deadline TEXT,
+            parent_id TEXT,
+            priority TEXT,
+            status TEXT NOT NULL,
+            progress INTEGER,
+            children TEXT,
+            created_at TEXT,
+            updated_at TEXT
+        );
+        """
+        self.db.execute(query)
+        self.db.commit()
+
+    # ---------------------------------------------------------
+    # LOAD FROM DB
+    # ---------------------------------------------------------
+    def load_from_db(self):
+        logger.info("📥 Loading goals from SQLite DB…")
+
+        cursor = self.db.execute("SELECT * FROM goals")
+        rows = cursor.fetchall()
+
+        for row in rows:
+            children_list = json.loads(row["children"]) if row["children"] else []
+
+            model = GoalModel(
+                id=row["id"],
+                notion_id=row["notion_id"],
+                title=row["title"],
+                description=row["description"],
+                deadline=row["deadline"],
+                parent_id=row["parent_id"],
+                priority=row["priority"],
+                status=row["status"],
+                progress=row["progress"],
+                children=children_list,
+                created_at=datetime.fromisoformat(row["created_at"]),
+                updated_at=datetime.fromisoformat(row["updated_at"]),
+            )
+
+            self.goals[row["id"]] = model
+
+        logger.info(f"🟩 Loaded {len(self.goals)} goals from DB.")
 
     # ---------------------------------------------------------
     # INTERNAL HELPERS
@@ -45,21 +104,35 @@ class GoalsService:
                 self.sync_service.debounce_goals_sync()
             )
 
-    def to_dict(self, goal: GoalModel) -> dict:
-        return {
-            "id": goal.id,
-            "notion_id": goal.notion_id,
-            "title": goal.title,
-            "description": goal.description,
-            "deadline": goal.deadline,
-            "parent_id": goal.parent_id,
-            "priority": goal.priority,
-            "status": goal.status,
-            "progress": goal.progress,
-            "children": goal.children,
-            "created_at": goal.created_at,
-            "updated_at": goal.updated_at,
-        }
+    def _save_goal_to_db(self, goal: GoalModel):
+        query = """
+        INSERT OR REPLACE INTO goals (
+            id, notion_id, title, description, deadline,
+            parent_id, priority, status, progress,
+            children, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+
+        self.db.execute(query, (
+            goal.id,
+            goal.notion_id,
+            goal.title,
+            goal.description,
+            goal.deadline,
+            goal.parent_id,
+            goal.priority,
+            goal.status,
+            goal.progress,
+            json.dumps(goal.children),
+            goal.created_at.isoformat(),
+            goal.updated_at.isoformat(),
+        ))
+
+        self.db.commit()
+
+    def _delete_goal_from_db(self, goal_id: str):
+        self.db.execute("DELETE FROM goals WHERE id = ?", (goal_id,))
+        self.db.commit()
 
     # ---------------------------------------------------------
     # CREATE GOAL
@@ -71,7 +144,20 @@ class GoalsService:
         notion_id: Optional[str] = None
     ) -> GoalModel:
 
-        logger.info(f"[GOALS] Creating goal: {data.title}")
+        if isinstance(data, dict):
+            title = data.get("title")
+            description = data.get("description")
+            deadline = data.get("deadline")
+            parent_id = data.get("parent_id")
+            priority = data.get("priority")
+        else:
+            title = data.title
+            description = data.description
+            deadline = data.deadline
+            parent_id = data.parent_id
+            priority = data.priority
+
+        logger.info(f"[GOALS] Creating goal: {title}")
 
         now = self._now()
         goal_id = forced_id or uuid4().hex
@@ -79,11 +165,11 @@ class GoalsService:
         new_goal = GoalModel(
             id=goal_id,
             notion_id=notion_id,
-            title=data.title,
-            description=data.description,
-            deadline=data.deadline,
-            parent_id=data.parent_id,
-            priority=data.priority,
+            title=title,
+            description=description,
+            deadline=deadline,
+            parent_id=parent_id,
+            priority=priority,
             status="pending",
             progress=0,
             children=[],
@@ -92,73 +178,50 @@ class GoalsService:
         )
 
         self.goals[goal_id] = new_goal
-        logger.info(f"[GOALS] Goal created with ID: {goal_id}")
-
-        if data.parent_id:
-            parent = self.goals.get(data.parent_id)
-            if parent:
-                if self._would_create_cycle(parent.id, goal_id):
-                    logger.warning(f"Cyclic dependency detected for parent goal {parent.id} and new goal {goal_id}")
-                else:
-                    logger.info(f"Parent goal {parent.id} linked to new goal {goal_id}")
-            else:
-                logger.warning(f"Parent goal {data.parent_id} not found. No linking.")
+        self._save_goal_to_db(new_goal)
 
         return new_goal
 
-    def _would_create_cycle(self, parent_id: str, goal_id: str) -> bool:
-        logger.info(f"Checking for cycle between goal {goal_id} and parent {parent_id}")
-        return False
+    # ---------------------------------------------------------
+    # UPDATE GOAL (FIXED)
+    # ---------------------------------------------------------
+    async def update_goal(self, goal_id: str, data: dict):
 
-    # ---------------------------------------------------------
-    # GET ALL GOALS
-    # ---------------------------------------------------------
-    def get_all_goals(self) -> List[GoalModel]:
-        logger.info(f"[GOALS] Fetching all goals: total {len(self.goals)}")
-        return list(self.goals.values())
-
-    def get_all(self) -> List[GoalModel]:
-        logger.info(f"[GOALS] Total goals in service: {len(self.goals)}")
-        return list(self.goals.values())
-
-    # ---------------------------------------------------------
-    # UPDATE GOAL (FULL PARENT–CHILD LOGIC)
-    # ---------------------------------------------------------
-    async def update_goal(self, goal_id: str, data: GoalUpdate) -> GoalUpdate:
         logger.info(f"[GOALS] Updating goal {goal_id}")
 
         goal = self.goals.get(goal_id)
         if not goal:
             raise ValueError(f"Goal {goal_id} not found")
 
+        # FIX: read from dict safely
         old_parent_id = goal.parent_id
-        new_parent_id = data.parent_id if data.parent_id is not None else old_parent_id
+        new_parent_id = data.get("parent_id", old_parent_id)
 
-        # Root rules
         if new_parent_id is None:
             raise ValueError("Every goal except root must have a parent")
 
-        # Simple field updates
-        if data.title is not None:
-            goal.title = data.title
-        if data.description is not None:
-            goal.description = data.description
-        if data.deadline is not None:
-            goal.deadline = data.deadline
-        if data.priority is not None:
-            goal.priority = data.priority
-        if data.status is not None:
-            goal.status = data.status
-        if data.progress is not None:
-            goal.progress = data.progress
+        # SIMPLE FIELDS
+        if data.get("title") is not None:
+            goal.title = data["title"]
+        if data.get("description") is not None:
+            goal.description = data["description"]
+        if data.get("deadline") is not None:
+            goal.deadline = data["deadline"]
+        if data.get("priority") is not None:
+            goal.priority = data["priority"]
+        if data.get("status") is not None:
+            goal.status = data["status"]
+        if data.get("progress") is not None:
+            goal.progress = data["progress"]
 
-        # Parent-child logic
+        # PARENT-CHILD LOGIC
         if old_parent_id != new_parent_id:
 
             if old_parent_id and old_parent_id in self.goals:
                 old_parent = self.goals[old_parent_id]
                 if goal_id in old_parent.children:
                     old_parent.children.remove(goal_id)
+                    self._save_goal_to_db(old_parent)
 
             if new_parent_id not in self.goals:
                 raise ValueError(f"Parent goal {new_parent_id} not found")
@@ -166,11 +229,12 @@ class GoalsService:
             new_parent = self.goals[new_parent_id]
             if goal_id not in new_parent.children:
                 new_parent.children.append(goal_id)
+                self._save_goal_to_db(new_parent)
 
             goal.parent_id = new_parent_id
 
-        # Timestamp update
         goal.updated_at = self._now()
+        self._save_goal_to_db(goal)
 
         self._trigger_sync()
 
@@ -182,12 +246,12 @@ class GoalsService:
     async def delete_goal(self, goal_id: str) -> dict:
         goal = self.goals.get(goal_id)
         if not goal:
-            logger.warning(f"[GOALS] Attempted to delete non-existent goal {goal_id}")
             return {"notion_id": None}
 
         notion_id = goal.notion_id
 
         del self.goals[goal_id]
+        self._delete_goal_from_db(goal_id)
 
         logger.info(f"[GOALS] Deleted goal {goal_id} (notion_id={notion_id})")
 
