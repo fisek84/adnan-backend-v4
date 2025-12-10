@@ -1,3 +1,16 @@
+import os
+import sys
+
+# ============================================================
+# FIX: Ensure project root is on PYTHONPATH (Render/Docker)
+# ============================================================
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+if BASE_DIR not in sys.path:
+    sys.path.append(BASE_DIR)
+
+# ============================================================
+# ORIGINAL IMPORTS
+# ============================================================
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 import logging
@@ -15,11 +28,12 @@ from routers.ai_ops_router import router as ai_ops_router
 from routers.adnan_ai_router import router as adnan_ai_router
 from routers.adnan_ai_data_router import router as adnan_ai_data_router
 from routers.adnan_ai_query_router import router as adnan_ai_query_router
-
-# NEW IMPORT: BULK ROUTER
 from routers.notion_ops_bulk_router import router as bulk_router
 
 
+# ============================================================
+# APP SETUP
+# ============================================================
 app = FastAPI()
 
 # Static hosting for .well-known (REQUIRED for ActionsGPT)
@@ -29,6 +43,9 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 
+# ============================================================
+# STARTUP
+# ============================================================
 @app.on_event("startup")
 async def startup_event():
     logger.info("🔵 Starting backend services...")
@@ -36,6 +53,9 @@ async def startup_event():
     logger.info("🟩 All services initialized successfully.")
 
 
+# ============================================================
+# ROUTERS
+# ============================================================
 app.include_router(goals_router)
 app.include_router(tasks_router)
 app.include_router(projects_router)
@@ -44,11 +64,12 @@ app.include_router(ai_ops_router)
 app.include_router(adnan_ai_router)
 app.include_router(adnan_ai_data_router)
 app.include_router(adnan_ai_query_router)
-
-# NEW ROUTER INCLUDE
 app.include_router(bulk_router)
 
 
+# ============================================================
+# ROUTES
+# ============================================================
 @app.get("/health")
 async def health_check():
     return {"status": "ok", "message": "Backend is healthy"}
@@ -57,4 +78,3 @@ async def health_check():
 @app.get("/")
 async def root():
     return {"message": "Backend is running"}
-    
