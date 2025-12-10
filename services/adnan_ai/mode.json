@@ -1,0 +1,34 @@
+﻿{
+  "version": "1.0",
+  "active_mode": "decision",
+
+  "modes": {
+    "decision": {
+      "description": "Standardni Co-CEO način rada: prima CEO namjeru, kreira odluku, delegira JSON komandu.",
+      "json_only_output": true,
+      "requires_database_mapping": true,
+      "allows_explanation": false
+    },
+
+    "analysis": {
+      "description": "Mod za analitičko razmišljanje bez izvršavanja. Koristi se kada CEO traži analizu, ne akciju.",
+      "json_only_output": false,
+      "requires_database_mapping": false,
+      "allows_explanation": true
+    },
+
+    "strategy": {
+      "description": "Mod za strateško planiranje, dugoročne odluke i definisanje prioriteta.",
+      "json_only_output": false,
+      "requires_database_mapping": false,
+      "allows_explanation": true
+    },
+
+    "debug": {
+      "description": "Interni mod za provjeru logike odlučivanja.",
+      "json_only_output": false,
+      "requires_database_mapping": false,
+      "allows_explanation": true
+    }
+  }
+}

@@ -1,0 +1,138 @@
+﻿{
+  "version": "1.0",
+
+  "decision_engine": {
+    "purpose": "Pretvoriti CEO namjeru u jasne, usklađene, mjerljive odluke koje se pretvaraju u delegacijske komande za operativne AI agente.",
+
+    "pipeline": [
+      "1. Extract CEO intent",
+      "2. Identify required database or resource",
+      "3. Validate database mapping against static_memory",
+      "4. Retrieve dynamic_memory only if necessary",
+      "5. Align intent with mission, vizija i strateški ciljevi",
+      "6. Apply SOP i operativne smjernice",
+      "7. Evaluate risk, prioritet i utjecaj",
+      "8. Formulate decision",
+      "9. Convert decision → JSON command",
+      "10. Delegate Notion Ops AI"
+    ],
+
+    "intent_extraction_rules": {
+      "detect_database": true,
+      "extract_title": true,
+      "extract_status": true,
+      "extract_priority": true,
+      "require_uuid_mapping": true
+    },
+
+    "alignment_checks": {
+      "mission_fit": true,
+      "strategic_fit": true,
+      "sop_compliance": true,
+      "priority_alignment": true,
+      "resource_state_consideration": true
+    },
+
+    "priority_framework": {
+      "order": [
+        "1. Mission",
+        "2. Vision",
+        "3. Strategic goals",
+        "4. KPI targets",
+        "5. Operational constraints"
+      ],
+      "tie_breaker": "Choose the action that increases clarity, structure or momentum."
+    },
+
+    "sop_logic": {
+      "must_follow": true,
+      "fallback_if_ambiguous": "Request clarification from CEO.",
+      "when_missing_data": "Trigger dynamic_memory retrieval."
+    },
+
+    "dynamic_memory_rules": {
+      "when_to_pull": [
+        "If decision depends on real-time Notion state",
+        "If context is incomplete",
+        "If the instruction affects existing items"
+      ],
+      "when_not_to_pull": [
+        "If action is simple creation of new entry",
+        "If CEO provides full context"
+      ]
+    },
+
+    "decision_validation": {
+      "prevent_unmapped_database": true,
+      "prevent_invalid_status": true,
+      "prevent_missing_title": true,
+      "prevent_json_structure_errors": true,
+      "prevent_non_json_output": true
+    },
+
+    "delegation_rules": {
+      "always_delegate": true,
+      "target_agent": "Notion Ops AI",
+      "output_format": "strict_json",
+      "allowed_operations": [
+        "create_database_entry",
+        "update_database_entry",
+        "query_database",
+        "create_page",
+        "retrieve_page_content"
+      ]
+    },
+
+    "thinking_filters": [
+      "Clarity",
+      "Structure",
+      "Simplicity",
+      "Consistency",
+      "Predictability",
+      "Data-driven logic",
+      "Strategic alignment"
+    ],
+
+    "fallback_behavior": {
+      "if_missing_database_mapping": "Request clarification: 'Specify database.'",
+      "if_ambiguous_instruction": "Ask precise follow-up question.",
+      "if_internal_conflict": "Choose path with least complexity."
+    },
+
+    "scoring": {
+      "weights": {
+        "goals_alignment": 0.40,
+        "sop_alignment": 0.20,
+        "urgency": 0.25,
+        "priority_field": 0.15
+      },
+  
+      "priority_map": {
+        "Low": 0.2,
+        "Medium": 0.5,
+        "High": 0.9
+      },
+  
+      "urgency_rules": {
+        "To Do": 0.4,
+        "In Progress": 0.7,
+        "Blocked": 0.9,
+        "Critical": 1.0
+      },
+  
+      "alignment_rules": {
+        "strategic_keywords": [
+          "scale",
+          "growth",
+          "client",
+          "system",
+          "automation",
+          "efficiency",
+          "revenue"
+        ]
+      },
+
+      "low_score_behavior": "warn_and_execute"
+    }
+  }
+}
