@@ -3,6 +3,10 @@ from pathlib import Path
 import re
 import copy
 
+# Correct absolute path inside Render Docker image
+BASE_PATH = Path(__file__).resolve().parent.parent / "services" / "adnan_ai"
+MEMORY_FILE = BASE_PATH / "memory.json"
+
 # AUTOCORRECT A2
 from services.decision_engine.autocorrect import AutocorrectEngine
 
@@ -33,9 +37,6 @@ from services.decision_engine.operational_orchestration import OperationalOrches
 # TEST EXECUTION ENGINE T0
 from services.decision_engine.test_execution_engine import TestExecutionEngine
 
-
-BASE_PATH = Path(__file__).resolve().parent.parent / "adnan_ai"
-MEMORY_FILE = BASE_PATH / "memory.json"
 
 
 ###################################################################
@@ -69,6 +70,7 @@ DATABASE_MAP = {
     "partner potential sop": "2c35873bd84a80cbb885c2d22d4a0ee0",
     "sales closing sop": "2c35873bd84a80a8beb8eb61fb730dcc"
 }
+
 
 
 ###################################################################
@@ -139,19 +141,11 @@ class AdnanAIDecisionService:
         json.dump(self.session_memory, open(MEMORY_FILE, "w", encoding="utf-8"), indent=2)
 
 
+
     ###################################################################
-    # CEO PARSER — FIXED INDENT + VOICE INTENTS
+    # CEO PARSER
     ###################################################################
     def from_ceo_to_command(self, text: str) -> dict:
-        """
-        Voice-friendly parser.
-        Fixes taskbazi/taskbase/etc.
-        Detects natural "kreiraj task" even without 'u tasks bazi'.
-        """
-
-        # --------------------------------------------
-        # VOICE AUTO-FIX MAP
-        # --------------------------------------------
         voice_fixes = {
             "taskbazi": "tasks bazi",
             "tasksbazi": "tasks bazi",
@@ -171,9 +165,6 @@ class AdnanAIDecisionService:
         for bad, good in voice_fixes.items():
             text = text.replace(bad, good)
 
-        # --------------------------------------------
-        # 1. INTENT DETEKCIJA (novo)
-        # --------------------------------------------
         lowered = text.lower()
 
         if "kreiraj task" in lowered or "napravi task" in lowered:
@@ -185,9 +176,6 @@ class AdnanAIDecisionService:
         else:
             db_name_forced = None
 
-        # --------------------------------------------
-        # 2. STANDARDNI MATCHERI
-        # --------------------------------------------
         db_match = re.search(r"u (.*?) bazi", text, re.IGNORECASE)
         title_match = re.search(
             r"bazi: (.*?)(?:\. Status:|\. Prioritet:|\. Priority:|\.)",
@@ -197,11 +185,10 @@ class AdnanAIDecisionService:
         status_match = re.search(r"Status[: ]+([\w ]+)", text, re.IGNORECASE)
         priority_match = re.search(r"Priority[: ]+([\w ]+)", text, re.IGNORECASE)
 
-        # database resolution
         if db_match:
             db_name = db_match.group(1).strip().lower()
         else:
-            db_name = db_name_forced  # INTENT FALLBACK
+            db_name = db_name_forced
 
         sop_db = self.sop_mapper.resolve_sop(text)
         if sop_db:
@@ -229,6 +216,7 @@ class AdnanAIDecisionService:
             "autocorrect": autocorrect_info,
             "sop_detected": sop_db
         }
+
 
 
     ###################################################################
@@ -305,13 +293,14 @@ class AdnanAIDecisionService:
         return command
 
 
+
     ###################################################################
     # SCORING
     ###################################################################
     def evaluate_alignment(self, title: str) -> float:
         rules = self.decision_engine["decision_engine"]["scoring"]["alignment_rules"]
         score = 0
-        for kw in rules["strategic_keywords"]:
+        for kw in rules["strategatic_keywords"]:
             if kw in title.lower():
                 score += 0.2
         return min(score, 1.0)
@@ -330,6 +319,7 @@ class AdnanAIDecisionService:
             self.map_priority(entry["Priority"]) * w["priority_field"]
         )
         return round(min(max(score, 0), 1), 2)
+
 
 
     ###################################################################
@@ -355,6 +345,7 @@ class AdnanAIDecisionService:
         return command
 
 
+
     ###################################################################
     # AUDIT
     ###################################################################
@@ -372,6 +363,7 @@ class AdnanAIDecisionService:
 
         command["audit"] = audit
         return command
+
 
 
     ###################################################################
@@ -428,11 +420,13 @@ class AdnanAIDecisionService:
         return cmd
 
 
+
     ###################################################################
     # TESTS
     ###################################################################
     def run_tests(self, test_inputs: list):
         return self.test_engine.run_batch(test_inputs)
+
 
 
     ###################################################################
