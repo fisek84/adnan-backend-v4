@@ -1,5 +1,5 @@
 from fastapi import APIRouter, UploadFile, File, HTTPException
-from services.decision_engine.adnan_ai_decision_service import AdnanAIDecisionService
+from services.adnan_ai_decision_service import AdnanAIDecisionService
 from integrations.voice_service import VoiceService
 from services.agent_router.agent_router import AgentRouter
 import json

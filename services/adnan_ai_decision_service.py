@@ -1,339 +1,363 @@
 import json
 from pathlib import Path
+import re
+import copy
 
-# Correct absolute path inside Render Docker image
-BASE_PATH = Path(__file__).resolve().parent / "adnan_ai"
+# AUTOCORRECT A2
+from services.decision_engine.autocorrect import AutocorrectEngine
+
+# TRUST LAYER T1
+from services.decision_engine.trust_layer import TrustLayer
+
+# SOP INTELLIGENCE S2
+from services.decision_engine.sop_mapper import SOPMapper
+
+# STATIC MEMORY M1
+from services.decision_engine.static_memory_engine import StaticMemoryEngine
+
+# DYNAMIC MEMORY D1 (correct)
+from services.decision_engine.dynamic_memory import DynamicMemoryEngine
+
+
+BASE_PATH = Path(__file__).resolve().parent.parent / "adnan_ai"
 MEMORY_FILE = BASE_PATH / "memory.json"
 
 
+###################################################################
+# FULL DATABASE MAP
+###################################################################
+DATABASE_MAP = {
+    "tasks": "2ad5873bd84a80e8b4dac703018212fe",
+    "goals": "2ac5873bd84a801f956fc30327b8ef94",
+    "projects": "2ac5873bd84a8004aac0ea9c53025bfc",
+    "agent exchange": "2b45873bd84a80169f7fceffd8405fef",
+    "active goals": "2b75873bd84a807081c9d5b9a068f9d6",
+    "completed goals": "2b75873bd84a806ba853cbde32e0f849",
+    "blocked goals": "2b75873bd84a80ab85a9ec90ca34fb02",
+    "kpi": "2bd5873bd84a80b68889df5485567703",
+    "flp": "2bd5873bd84a80d3b9c9dceeaba651e8",
+    "lead": "2bb5873bd84a8095aac1f68b5d60ccf9",
+    "weekly summary": "2b75873bd84a80619330eb45348dd90e",
+    "agent projects": "2b45873bd84a80b3b06dd578c8c5d664",
+    "outreach sop": "2c35873bd84a809ab4bcd6a0e0908f0b",
+    "qualification sop": "2c35873bd84a80db8d37f71470424185",
+    "follow up sop": "2c35873bd84a80908941d4d1eb29ae17",
+    "fsc sop": "2c35873bd84a80c7a5c0c21dcb765c1b",
+    "flp ops sop": "2c35873bd84a8047b63bea50e5f78090",
+    "lss sop": "2c35873bd84a80c3ba85c66344fc98d4",
+    "partner activation sop": "2c35873bd84a808793edf056ad0c1a1f",
+    "partner performance sop": "2c35873bd84a80b4a27ad85c42560287",
+    "partner leadership sop": "2c35873bd84a80c6bbafcc6d3a5a5d3a",
+    "customer onboarding sop": "2c35873bd84a80f088abdc26d47fe551",
+    "customer retention sop": "2c35873bd84a80109336c02496f100b3",
+    "customer performance sop": "2c35873bd84a80708e8fcd3bf1d0132a",
+    "partner potential sop": "2c35873bd84a80cbb885c2d22d4a0ee0",
+    "sales closing sop": "2c35873bd84a80a8beb8eb61fb730dcc"
+}
+
+
+###################################################################
+# MAIN CLASS
+###################################################################
 class AdnanAIDecisionService:
+
     def __init__(self):
         self.identity = self._load("identity.json")
         self.kernel = self._load("kernel.json")
         self.mode = self._load("mode.json")
         self.state = self._load("state.json")
         self.decision_engine = self._load("decision_engine.json")
+        self.static_memory = self._load("static_memory.json")
 
-        # ---------------------------
-        # LOAD PERSISTENT MEMORY
-        # ---------------------------
+        # INIT MODULES
+        self.autocorrect_engine = AutocorrectEngine()
+        self.trust_layer = TrustLayer()
+        self.sop_mapper = SOPMapper()
+        self.static_memory_engine = StaticMemoryEngine(self.static_memory)
+
+        # SESSION MEMORY INIT
+        self.session_memory = self._init_session_memory()
+
+        # D1 ENGINE
+        self.dynamic_memory_engine = DynamicMemoryEngine(self.session_memory)
+
+
+    def _init_session_memory(self):
         if MEMORY_FILE.exists():
-            with open(MEMORY_FILE, "r", encoding="utf-8-sig") as f:
-                self.session_memory = json.load(f)
-        else:
-            self.session_memory = {
-                "last_mode": None,
-                "last_state": None,
-                "trace": [],
-                "notes": []
-            }
-            self._save_memory()
+            return json.load(open(MEMORY_FILE, "r", encoding="utf-8-sig"))
 
-    def _save_memory(self):
-        with open(MEMORY_FILE, "w", encoding="utf-8") as f:
-            json.dump(self.session_memory, f, ensure_ascii=False, indent=2)
+        base = {
+            "last_mode": None,
+            "last_state": None,
+            "trace": [],
+            "notes": [],
+            "dynamic_memory": {"tasks": []},
+            "agent_memory": []
+        }
+        json.dump(base, open(MEMORY_FILE, "w", encoding="utf-8"), indent=2)
+        return base
+
 
     def _load(self, filename: str):
-        path = BASE_PATH / filename
-        with open(path, "r", encoding="utf-8-sig") as f:
-            return json.load(f)
+        return json.load(open(BASE_PATH / filename, "r", encoding="utf-8-sig"))
 
-    def align(self, user_input: str) -> dict:
+
+    def _save_memory(self):
+        json.dump(self.session_memory, open(MEMORY_FILE, "w", encoding="utf-8"), indent=2)
+
+
+    ###################################################################
+    # CEO PARSER
+    ###################################################################
+    def from_ceo_to_command(self, text: str) -> dict:
+
+        db_match = re.search(r"u (.*?) bazi", text, re.IGNORECASE)
+        title_match = re.search(r"bazi: (.*?)(?:\. Status:|\. Prioritet:|\.)", text, re.IGNORECASE)
+        status_match = re.search(r"Status: ([\w ]]+)", text, re.IGNORECASE)
+        priority_match = re.search(r"Priority: ([\w ]]+)", text, re.IGNORECASE)
+
+        db_name = db_match.group(1).strip().lower() if db_match else None
+
+        # SOP INTELLIGENCE
+        sop_db = self.sop_mapper.resolve_sop(text)
+        if sop_db:
+            db_name = sop_db
+
+        # AUTOCORRECT
+        autocorrect_info = None
+        if db_name:
+            autocorrect_info = self.autocorrect_engine.autocorrect(db_name)
+            db_name = autocorrect_info["corrected"]
+
+        title = title_match.group(1).strip() if title_match else ""
+        status = status_match.group(1).strip() if status_match else ""
+        priority = priority_match.group(1).strip() if priority_match else ""
+
         return {
-            "mode": self.mode.get("current_mode"),
-            "state": self.state.get("current_state"),
-            "directives": self.decision_engine.get("directives", []),
-            "input": user_input,
+            "command": "create_database_entry",
+            "payload": {
+                "database_id": DATABASE_MAP.get(db_name),
+                "entry": {
+                    "Name": title,
+                    "Status": status,
+                    "Priority": priority
+                }
+            },
+            "autocorrect": autocorrect_info,
+            "sop_detected": sop_db
         }
 
-    def process(self, user_input: str) -> dict:
-        directives = []
-        mode_switch = None
 
-        memory_flag = False
-        memory_keywords = ["zapamti", "zapisi", "remember", "save note"]
-        if any(k.lower() in user_input.lower() for k in memory_keywords):
-            memory_flag = True
+    ###################################################################
+    # TRUST LAYER
+    ###################################################################
+    def apply_trust_layer(self, text: str) -> dict:
+        return self.trust_layer.evaluate(text)
 
-        engine_rules = self.decision_engine.get("rules", [])
 
-        for rule in engine_rules:
-            keywords = rule.get("keywords", [])
-            if any(kw.lower() in user_input.lower() for kw in keywords):
-                directives.append(rule.get("action"))
-                if "set_mode" in rule:
-                    mode_switch = rule["set_mode"]
+    ###################################################################
+    # STATIC MEMORY (M1)
+    ###################################################################
+    def apply_static_memory(self, text: str) -> dict:
+        return self.static_memory_engine.apply(text)
 
-        new_mode = self.mode.get("current_mode")
-        if mode_switch:
-            new_mode = mode_switch
-            self.mode["current_mode"] = new_mode
 
-        snapshot = {
-            "input": user_input,
-            "mode": new_mode,
-            "state": self.state.get("current_state"),
-            "directives": directives,
-            "kernel": self.kernel.get("core_directives", []),
-            "memory_flag": memory_flag
+    ###################################################################
+    # ERROR ENGINE
+    ###################################################################
+    def apply_error_engine(self, command: dict) -> dict:
+
+        entry = command["payload"]["entry"]
+        db = command["payload"]["database_id"]
+
+        errors = []
+        warnings = []
+        auto = {}
+
+        if db is None:
+            errors.append({
+                "type": "critical_error",
+                "field": "database",
+                "message": "Unknown database name provided."
+            })
+            command["error_engine"] = {"errors": errors, "warnings": warnings}
+            command["autocorrected"] = False
+            return command
+
+        if entry["Name"].strip() == "":
+            warnings.append({
+                "type": "validation_error",
+                "field": "Name",
+                "message": "Title missing → auto-set to 'Untitled'."
+            })
+            entry["Name"] = "Untitled"
+            auto["Name"] = "Untitled"
+
+        if entry["Status"].strip() == "":
+            warnings.append({
+                "type": "validation_error",
+                "field": "Status",
+                "message": "Missing status → auto-default = 'To Do'."
+            })
+            entry["Status"] = "To Do"
+            auto["Status"] = "To Do"
+
+        if entry["Priority"].strip() == "":
+            warnings.append({
+                "type": "validation_error",
+                "field": "Priority",
+                "message": "Missing priority → auto-default = 'Medium'."
+            })
+            entry["Priority"] = "Medium"
+            auto["Priority"] = "Medium"
+
+        command["payload"]["entry"] = entry
+        command["autocorrected"] = True
+        command["error_engine"] = {
+            "errors": errors,
+            "warnings": warnings,
+            "auto_corrected_fields": auto
+        }
+        return command
+
+
+    ###################################################################
+    # SCORING
+    ###################################################################
+    def evaluate_alignment(self, title: str) -> float:
+        rules = self.decision_engine["decision_engine"]["scoring"]["alignment_rules"]
+        score = 0
+        for kw in rules["strategic_keywords"]:
+            if kw in title.lower():
+                score += 0.2
+        return min(score, 1.0)
+
+
+    def map_priority(self, p):
+        return self.decision_engine["decision_engine"]["scoring"]["priority_map"].get(p, 0.5)
+
+
+    def map_urgency(self, s):
+        return self.decision_engine["decision_engine"]["scoring"]["urgency_rules"].get(s, 0.5)
+
+
+    def calculate_score(self, entry: dict) -> float:
+        w = self.decision_engine["decision_engine"]["scoring"]["weights"]
+        score = (
+            self.evaluate_alignment(entry["Name"]) * w["goals_alignment"] +
+            self.map_urgency(entry["Status"]) * w["urgency"] +
+            self.map_priority(entry["Priority"]) * w["priority_field"]
+        )
+        return round(min(max(score, 0), 1), 2)
+
+
+    ###################################################################
+    # BEHAVIORAL FILTERS
+    ###################################################################
+    def apply_behavioral_filters(self, command: dict) -> dict:
+        entry = command["payload"]["entry"]
+        rep = {"clarity": True, "simplicity": True, "mission_alignment": True, "issues": []}
+
+        if len(entry["Name"]) < 3:
+            rep["clarity"] = False
+            rep["issues"].append("Title too short")
+
+        if " and " in entry["Name"].lower():
+            rep["simplicity"] = False
+            rep["issues"].append("Multiple actions in one task")
+
+        if command["score"] < 0.4:
+            rep["mission_alignment"] = False
+            rep["issues"].append("Low mission score")
+
+        command["behavioral_filters"] = rep
+        return command
+
+
+    ###################################################################
+    # AUDIT
+    ###################################################################
+    def audit_decision(self, command: dict) -> dict:
+        audit = {"structural_ok": True, "strategic_ok": True, "issues": []}
+
+        entry = command["payload"]["entry"]
+
+        if entry["Name"] == "" or entry["Status"] == "" or entry["Priority"] == "":
+            audit["structural_ok"] = False
+            audit["issues"].append("Missing required fields")
+
+        if command.get("score", 0) < 0.3:
+            audit["strategic_ok"] = False
+            audit["issues"].append("Score < 0.3")
+
+        command["audit"] = audit
+        return command
+
+
+    ###################################################################
+    # MAIN PIPELINE
+    ###################################################################
+    def decide_action(self, context: dict) -> dict:
+
+        text = context["input"]
+
+        # 1 – PARSE
+        cmd = self.from_ceo_to_command(text)
+
+        # 2 – TRUST LAYER
+        cmd["trust"] = self.apply_trust_layer(text)
+
+        # 3 – STATIC MEMORY
+        cmd["static_memory_influence"] = self.apply_static_memory(text)
+
+        # 4 – DYNAMIC MEMORY (duplicate check)
+        d1 = self.dynamic_memory_engine.evaluate(text, cmd)
+        cmd["dynamic_memory"] = d1
+
+        if d1["duplicate_exists"]:
+            cmd.setdefault("error_engine", {"errors": [], "warnings": []})
+            cmd["error_engine"]["errors"].append({
+                "type": "duplicate_error",
+                "message": "Task već postoji — kreiranje blokirano."
+            })
+            return cmd
+
+        # 5 – ERROR ENGINE
+        cmd = self.apply_error_engine(cmd)
+        if cmd["error_engine"]["errors"]:
+            return cmd
+
+        # 6 – SCORING
+        cmd["score"] = self.calculate_score(cmd["payload"]["entry"])
+
+        # 7 – BEHAVIORAL FILTERS
+        cmd = self.apply_behavioral_filters(cmd)
+
+        return cmd
+
+
+    ###################################################################
+    # ENTRYPOINT
+    ###################################################################
+    def process_ceo_instruction(self, text: str):
+
+        context = {
+            "input": text,
+            "static_memory": self.static_memory,
+            "dynamic_memory": self.session_memory.get("dynamic_memory", {}),
+            "agent_memory": self.session_memory.get("agent_memory", [])
         }
 
-        snapshot = self.auto_transition(snapshot)
-        self.update_memory(snapshot)
-        snapshot["priority_context"] = self.prioritize(snapshot)
+        decision = self.decide_action(context)
+        decision = self.audit_decision(decision)
 
-        memory_context = self.get_memory_context()
-        snapshot["fusion_context"] = self.fuse(snapshot, memory_context)
+        # Add to dynamic memory only if NO critical errors
+        if "error_engine" in decision and not decision["error_engine"]["errors"]:
+            title = decision["payload"]["entry"]["Name"]
+            self.dynamic_memory_engine.add_task(title)
 
-        return snapshot
-
-    def enforce(self, gpt_output: str, snapshot: dict) -> str:
-        mode = snapshot.get("mode")
-        directives = snapshot.get("directives", [])
-        kernel_directives = snapshot.get("kernel", [])
-
-        corrections = []
-
-        if mode == "operational" and len(gpt_output) > 400:
-            corrections.append("Odgovor treba biti kraći i operativan.")
-
-        if mode == "strategic" and "vizija" not in gpt_output.lower():
-            corrections.append("Dodaj strateški ugao i viziju.")
-
-        if mode == "diagnostic" and "uzrok" not in gpt_output.lower():
-            corrections.append("Dodaj uzrok i dijagnostički ugao.")
-
-        if mode == "deep_clarity" and "jasno" not in gpt_output.lower():
-            corrections.append("Dodaj maksimalnu jasnoću i dubinu objašnjenja.")
-
-        for d in directives:
-            if d and d.lower() not in gpt_output.lower():
-                corrections.append(f"Nedostaje direktiva: {d}")
-
-        for kd in kernel_directives:
-            if kd and kd.lower() not in gpt_output.lower():
-                corrections.append(f"Uskladi se sa kernel direktivom: {kd}")
-
-        if not corrections:
-            return gpt_output
-
-        correction_note = "\n\n[Alignment Note]: " + " | ".join(corrections)
-        return gpt_output + correction_note
-
-    def refine(self, output: str, snapshot: dict) -> str:
-        mode = snapshot.get("mode")
-
-        if mode == "operational":
-            lines = [l.strip() for l in output.split("\n") if l.strip()]
-            if not lines:
-                return output
-            return "Operational Actions:\n- " + "\n- ".join(lines[:6])
-
-        if mode == "strategic" and "Executive Summary" not in output:
-            return (
-                "Executive Summary:\n"
-                "- Ključne strateške tačke navedene su u nastavku.\n\n"
-                f"{output}"
-            )
-
-        if mode == "diagnostic":
-            return (
-                "Problem Analysis:\n"
-                f"{output}\n\n"
-                "Recommendation:\n"
-                "- Identifikovati glavni uzrok i primijeniti korekcijske mjere."
-            )
-
-        if mode == "deep_clarity":
-            return (
-                "Deep Clarity Breakdown:\n"
-                "1. Insight:\n"
-                f"{output}\n\n"
-                "2. Reasoning:\n"
-                "- Razlozi i logika su eksplicitno izloženi u gornjem odgovoru.\n\n"
-                "3. Conclusion:\n"
-                "- Jasna odluka ili stav izvedeni iz analize."
-            )
-
-        return output
-
-    def auto_transition(self, snapshot: dict) -> dict:
-        current_mode = snapshot.get("mode")
-        current_state = snapshot.get("state")
-        directives = snapshot.get("directives", [])
-
-        engine_rules = self.decision_engine.get("rules", [])
-
-        for rule in engine_rules:
-            action = rule.get("action")
-            if action in directives:
-                if "set_state" in rule:
-                    new_state = rule["set_state"]
-                    self.state["current_state"] = new_state
-                    current_state = new_state
-
-                if "set_mode" in rule:
-                    new_mode = rule["set_mode"]
-                    self.mode["current_mode"] = new_mode
-                    current_mode = new_mode
-
-        snapshot["mode"] = current_mode
-        snapshot["state"] = current_state
-        return snapshot
-
-    def update_memory(self, snapshot: dict):
-        self.session_memory["last_mode"] = snapshot.get("mode")
-        self.session_memory["last_state"] = snapshot.get("state")
-
-        trace_entry = {
-            "input": snapshot.get("input"),
-            "mode": snapshot.get("mode"),
-            "state": snapshot.get("state"),
-            "directives": snapshot.get("directives"),
-        }
-
-        self.session_memory["trace"].append(trace_entry)
-
-        if snapshot.get("memory_flag"):
-            self.session_memory["notes"].append(snapshot.get("input"))
-
-        if len(self.session_memory["trace"]) > 20:
-            self.session_memory["trace"].pop(0)
-
-        # Save memory
+        # persist
+        self.session_memory["dynamic_memory"] = copy.deepcopy(self.dynamic_memory_engine.memory)
         self._save_memory()
 
-    def get_memory_context(self) -> dict:
-        return {
-            "last_mode": self.session_memory.get("last_mode"),
-            "last_state": self.session_memory.get("last_state"),
-            "trace": self.session_memory.get("trace", []),
-            "notes": list(self.session_memory.get("notes", []))
-        }
-
-    def prioritize(self, snapshot: dict) -> dict:
-        directives = snapshot.get("directives", [])
-        kernel = snapshot.get("kernel", [])
-        trace = self.session_memory.get("trace", [])
-
-        priority_order = []
-        high_impact = []
-        high_risk = []
-
-        for k in kernel:
-            priority_order.append(k)
-            high_impact.append(k)
-
-        for d in directives:
-            if d not in priority_order:
-                priority_order.append(d)
-
-        for t in trace:
-            for td in (t.get("directives") or []):
-                if td and td not in priority_order:
-                    priority_order.append(td)
-
-        return {
-            "priority_order": priority_order,
-            "high_impact_items": high_impact,
-            "high_risk_items": high_risk,
-        }
-
-    def compress(self, output: str) -> str:
-        lines = [l.strip() for l in output.split("\n") if l.strip()]
-
-        seen = set()
-        unique_lines = []
-        for line in lines:
-            if line not in seen:
-                unique_lines.append(line)
-                seen.add(line)
-
-        if len(unique_lines) <= 5:
-            return "\n".join(unique_lines)
-
-        compressed = unique_lines[:5]
-        return "\n".join(compressed)
-
-    def executive_consistency(self, output: str, snapshot: dict) -> str:
-        weak_phrases = [
-            "možda", "pokušaću", "ukoliko je moguće",
-            "pretpostavljam", "vjerovatno", "čini se da",
-            "moglo bi biti", "eventualno"
-        ]
-
-        for phrase in weak_phrases:
-            output = output.replace(phrase, "")
-
-        if "Conclusion" not in output and "Zaključak" not in output:
-            output += "\n\nConclusion:\n- Odluka je donesena na osnovu prioriteta, mode-a i state-a."
-
-        return output
-
-    def fuse(self, snapshot: dict, memory_context: dict) -> dict:
-        mode = snapshot.get("mode")
-        state = snapshot.get("state")
-        directives = snapshot.get("directives", [])
-        priority = snapshot.get("priority_context", {})
-
-        last_mode = memory_context.get("last_mode")
-        last_state = memory_context.get("last_state")
-        trace = memory_context.get("trace", [])
-        notes = memory_context.get("notes", [])
-
-        recent_trace = trace[-3:] if len(trace) > 3 else trace
-
-        fusion_score = {
-            "mode_stability": 1.0 if mode == last_mode else 0.7,
-            "state_stability": 1.0 if state == last_state else 0.6,
-            "directive_intensity": min(len(directives) / 5, 1.0),
-            "history_depth": min(len(recent_trace) / 3, 1.0),
-        }
-
-        return {
-            "current_mode": mode,
-            "current_state": state,
-            "last_mode": last_mode,
-            "last_state": last_state,
-            "active_directives": directives,
-            "recent_trace": recent_trace,
-            "notes": notes,
-            "priority_order": priority.get("priority_order", []),
-            "fusion_score": fusion_score,
-        }
-
-    def fusion_guided(self, output: str, fusion_context: dict) -> str:
-        score = fusion_context.get("fusion_score", {})
-
-        mode_stab = score.get("mode_stability", 1)
-        depth = score.get("history_depth", 1)
-        intensity = score.get("directive_intensity", 1)
-
-        if mode_stab < 0.8:
-            lines = output.split("\n")
-            output = "\n".join(lines[:5])
-
-        if intensity > 0.7:
-            output += "\n\n[Focus]: Prioritet je jasan. Egzekucija bez kašnjenja."
-
-        if depth > 0.6:
-            output += "\n[Continuity]: Usklađeno sa prethodnim odlukama."
-
-        return output
-
-    def assemble_output(self, gpt_output: str, snapshot: dict) -> str:
-        step1 = self.enforce(gpt_output, snapshot)
-        step2 = self.refine(step1, snapshot)
-        step3 = self.compress(step2)
-        step4 = self.executive_consistency(step3, snapshot)
-
-        fusion_context = snapshot.get("fusion_context", {})
-        step5 = self.fusion_guided(step4, fusion_context)
-
-        notes = fusion_context.get("notes", [])
-        if notes:
-            step5 += "\n\nSession Memory Notes:\n- " + "\n- ".join(notes)
-        else:
-            step5 += "\n\nSession Memory Notes:\n- Nema zapisanih bilješki u ovoj sesiji."
-
-        return step5
+        return decision

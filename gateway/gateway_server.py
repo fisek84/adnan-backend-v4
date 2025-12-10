@@ -9,14 +9,14 @@ from pydantic import BaseModel
 from dotenv import load_dotenv
 
 from notion_client import Client
-from services.decision_engine.adnan_ai_decision_service import AdnanAIDecisionService
+from services.adnan_ai_decision_service import AdnanAIDecisionService
 
-# --- NEW IMPORT ---
+# NEW: voice router
 from routers.voice_router import router as voice_router
 
 print("CURRENT FILE LOADED FROM:", os.path.abspath(__file__))
 
-# Učitaj .env
+# Load .env
 load_dotenv("C:/adnan-backend-v4/.env")
 
 logging.basicConfig(level=logging.INFO)
@@ -27,7 +27,7 @@ app = FastAPI()
 NOTION_KEY = os.getenv("NOTION_API_KEY")
 notion = Client(auth=NOTION_KEY)
 
-# Jedan globalni instance engine-a
+# Global engine instance
 decision_engine = AdnanAIDecisionService()
 
 
@@ -37,14 +37,14 @@ class CommandRequest(BaseModel):
 
 
 # =====================================================================
-#  REGISTER ROUTERS
+# REGISTER ROUTERS
 # =====================================================================
 app.include_router(voice_router)
 
 
 # =====================================================================
-#  /ops/execute
-#  CEO → Decision Engine → Notion Execution
+# /ops/execute
+# CEO → Decision Engine → Notion
 # =====================================================================
 @app.post("/ops/execute")
 async def execute_notion_command(req: CommandRequest):
@@ -54,18 +54,18 @@ async def execute_notion_command(req: CommandRequest):
         logger.info(">> Payload: %s", json.dumps(req.payload, ensure_ascii=False))
 
         # ==============================================================
-        # 1. CEO MODE → koristi Decision Engine
+        # 1. CEO MODE → USE DECISION ENGINE
         # ==============================================================
         if req.command == "from_ceo":
             ceo_text = req.payload.get("text", "")
-
             logger.info(">> Processing CEO instruction through Decision Engine")
+
             decision = decision_engine.process_ceo_instruction(ceo_text)
 
-            logger.info(">> DECISION ENGINE OUTPUT:")
+            logger.info(">> DECISION OUTPUT:")
             logger.info(json.dumps(decision, indent=2, ensure_ascii=False))
 
-            # Stop execution ako postoje critical errors
+            # Stop execution on critical errors
             err = decision.get("error_engine", {})
             if err and err.get("errors"):
                 return {
@@ -75,18 +75,19 @@ async def execute_notion_command(req: CommandRequest):
                     "engine_output": decision,
                 }
 
-            # Izvuci finalni Notion-ready command iz O1
-            notion_cmd = decision.get("operational_output", {}).get("notion_command")
+            # Extract final Notion command directly from decision
+            notion_command = decision.get("command")
+            notion_payload = decision.get("payload")
 
-            if not notion_cmd:
-                raise HTTPException(500, "Decision Engine did not produce a notion_command")
+            if not notion_command or not notion_payload:
+                raise HTTPException(500, "Decision Engine did not produce a valid command/payload")
 
-            # Override request vrijednosti za Notion izvršenje
-            req.command = notion_cmd.get("command")
-            req.payload = notion_cmd
+            # Override incoming request
+            req.command = notion_command
+            req.payload = notion_payload
 
         # =================================================================
-        # 2. ROUTE COMMAND → izvrši u Notion-u
+        # 2. EXECUTE NOTION COMMAND
         # =================================================================
         command = req.command
         payload = req.payload
@@ -119,7 +120,8 @@ async def execute_notion_command(req: CommandRequest):
                 properties=properties,
             )
 
-            logger.info(">> Notion entry created: %s", created.get("id"))
+            logger.info(">> Created: %s", created.get("id"))
+
             return {
                 "success": True,
                 "id": created.get("id"),
@@ -146,12 +148,10 @@ async def execute_notion_command(req: CommandRequest):
                         "rich_text": [{"text": {"content": str(value)}}]
                     }
 
-            updated = notion.pages.update(
-                page_id=page_id,
-                properties=properties,
-            )
+            updated = notion.pages.update(page_id=page_id, properties=properties)
 
-            logger.info(">> Notion entry updated: %s", updated.get("id"))
+            logger.info(">> Updated: %s", updated.get("id"))
+
             return {
                 "success": True,
                 "updated_id": updated.get("id"),
@@ -165,7 +165,8 @@ async def execute_notion_command(req: CommandRequest):
             db = payload.get("database_id")
             results = notion.databases.query(database_id=db)
 
-            logger.info(">> Query returned %d results", len(results.get("results", [])))
+            logger.info(">> Query returned %d rows", len(results.get("results", [])))
+
             return {
                 "success": True,
                 "results": results.get("results", []),
@@ -210,12 +211,12 @@ async def execute_notion_command(req: CommandRequest):
             return {"error": f"Unknown command: {command}"}
 
     except Exception as e:
-        logger.exception(">> ERROR in /ops/execute:")
+        logger.exception(">> ERROR in /ops/execute")
         raise HTTPException(500, str(e))
 
 
 # =====================================================================
-#  /ops/test_ceo
+# /ops/test_ceo
 # =====================================================================
 @app.post("/ops/test_ceo")
 async def test_ceo(req: dict):
@@ -240,5 +241,5 @@ async def test_ceo(req: dict):
         }
 
     except Exception as e:
-        logger.exception(">> ERROR in /ops/test_ceo:")
+        logger.exception(">> ERROR in /ops/test_ceo")
         raise HTTPException(500, str(e))
