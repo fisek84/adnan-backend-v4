@@ -8,7 +8,12 @@ from services.adnan_ai_decision_service import AdnanAIDecisionService
 
 router = APIRouter(prefix="/adnan-ai", tags=["AdnanAI Query"])
 
-BASE_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "adnan_ai")
+# ============================================================
+# FIXED PATH: Correct absolute path to /app/services/adnan_ai
+# ============================================================
+BASE_PATH = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "adnan_ai")
+)
 
 
 class QueryRequest(BaseModel):
@@ -36,16 +41,15 @@ async def adnan_ai_query(request: QueryRequest):
 
     client = OpenAI(api_key=OPENAI_KEY)
 
+    # DECISION ENGINE PIPELINE
     decision_service = AdnanAIDecisionService()
     decision_context = decision_service.align(request.text)
     decision_process = decision_service.process(request.text)
 
-    # --------------------------------------------------
-    # FIX: REFRESH MEMORY CONTEXT AFTER decision.process()
-    # --------------------------------------------------
+    # Memory refresh after process()
     memory_context = decision_service.get_memory_context()
-    # --------------------------------------------------
 
+    # LOAD IDENTITY FILES
     try:
         identity = load_json("identity.json")
         kernel = load_json("kernel.json")
@@ -55,6 +59,7 @@ async def adnan_ai_query(request: QueryRequest):
     except Exception as e:
         raise HTTPException(500, f"Failed to load identity files: {e}")
 
+    # SYSTEM PROMPT ASSEMBLY
     system_prompt = (
         "Ti si Adnan.AI — digitalni Co-CEO i sistemski arhitekta Evolia ekosistema.\n\n"
         f"IDENTITY:\n{json.dumps(identity, ensure_ascii=False)}\n\n"
@@ -70,6 +75,7 @@ async def adnan_ai_query(request: QueryRequest):
         "- Poštuj current_mode i state.\n"
     )
 
+    # CALL OPENAI
     response = client.chat.completions.create(
         model="gpt-4.1-mini",
         messages=[
@@ -80,6 +86,7 @@ async def adnan_ai_query(request: QueryRequest):
 
     answer = response.choices[0].message.content
 
+    # FINAL OUTPUT
     final_answer = decision_service.assemble_output(answer, decision_process)
 
     return {
