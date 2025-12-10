@@ -11,9 +11,8 @@ router = APIRouter(prefix="/adnan-ai", tags=["AdnanAI Query"])
 # ============================================================
 # FIXED PATH: Correct absolute path to /app/services/adnan_ai
 # ============================================================
-BASE_PATH = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "adnan_ai")
-)
+BASE_PATH = os.path.join(os.path.dirname(__file__), "..", "services", "adnan_ai")
+BASE_PATH = os.path.abspath(BASE_PATH)
 
 
 class QueryRequest(BaseModel):
