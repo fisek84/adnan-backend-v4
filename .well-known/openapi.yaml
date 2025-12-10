@@ -1,0 +1,437 @@
+openapi: "3.0.3"
+
+info:
+  title: "Evolia Backend v4"
+  version: "4.2"
+  description: "GPT-compatible API for Evolia Backend v4 — goals, tasks, sync, AI commands, AI Ops, agents, and Notion Ops."
+
+servers:
+  - url: "https://adnan-backend-v4.onrender.com"
+    description: "Production server"
+
+paths:
+
+  ############################################################
+  # GOALS
+  ############################################################
+  /goals/all:
+    get:
+      summary: "Get all goals"
+      tags: [Goals]
+      operationId: "getAllGoals"
+      responses:
+        "200":
+          description: "Goals list"
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/GoalResponse"
+
+  /goals/create:
+    post:
+      summary: "Create a goal"
+      tags: [Goals]
+      operationId: "createGoal"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GoalCreate"
+      responses:
+        "200":
+          description: "Goal created"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoalResponse"
+
+  /goals/{goal_id}:
+    patch:
+      summary: "Update a goal"
+      tags: [Goals]
+      operationId: "updateGoal"
+      parameters:
+        - name: "goal_id"
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GoalUpdate"
+      responses:
+        "200":
+          description: "Goal updated"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoalResponse"
+
+    delete:
+      summary: "Delete a goal"
+      tags: [Goals]
+      operationId: "deleteGoal"
+      parameters:
+        - name: "goal_id"
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: "Goal deleted"
+
+
+  ############################################################
+  # TASKS
+  ############################################################
+  /tasks/all:
+    get:
+      summary: "Get all tasks"
+      tags: [Tasks]
+      operationId: "getAllTasks"
+      responses:
+        "200":
+          description: "Tasks list"
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TaskResponse"
+
+  /tasks/create:
+    post:
+      summary: "Create a task"
+      tags: [Tasks]
+      operationId: "createTask"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TaskCreate"
+      responses:
+        "200":
+          description: "Task created"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskResponse"
+
+  /tasks/{task_id}:
+    patch:
+      summary: "Update a task"
+      tags: [Tasks]
+      operationId: "updateTask"
+      parameters:
+        - name: "task_id"
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TaskUpdate"
+      responses:
+        "200":
+          description: "Task updated"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskResponse"
+
+    delete:
+      summary: "Delete a task"
+      tags: [Tasks]
+      operationId: "deleteTask"
+      parameters:
+        - name: "task_id"
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: "Task deleted"
+
+
+  ############################################################
+  # SYNC
+  ############################################################
+  /sync/goals:
+    post:
+      summary: "Sync goals (push local → Notion)"
+      tags: [Sync]
+      operationId: "syncGoals"
+      responses:
+        "200":
+          description: "Sync complete"
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /sync/tasks:
+    post:
+      summary: "Sync tasks (push local → Notion)"
+      tags: [Sync]
+      operationId: "syncTasks"
+      responses:
+        "200":
+          description: "Sync complete"
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /sync/full:
+    post:
+      summary: "Full sync (goals + tasks)"
+      tags: [Sync]
+      operationId: "syncFull"
+      responses:
+        "200":
+          description: "Full sync complete"
+          content:
+            application/json:
+              schema:
+                type: object
+
+
+  ############################################################
+  # AI COMMANDS
+  ############################################################
+  /ai/run:
+    post:
+      summary: "Run AI command"
+      tags: [AI]
+      operationId: "runAiCommand"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AIRequest"
+      responses:
+        "200":
+          description: "AI execution result"
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /ai/commands:
+    get:
+      summary: "List AI commands"
+      tags: [AI]
+      operationId: "listAiCommands"
+      responses:
+        "200":
+          description: "List of commands"
+          content:
+            application/json:
+              schema:
+                type: object
+
+
+  ############################################################
+  # AGENTS (REAL ROUTE)
+  ############################################################
+  /ext/agents/message:
+    post:
+      summary: "Send message to agent"
+      tags: [Agents]
+      operationId: "messageAgent"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [agent, payload]
+              properties:
+                agent:
+                  type: string
+                payload:
+                  type: object
+      responses:
+        "200":
+          description: "Agent response"
+          content:
+            application/json:
+              schema:
+                type: object
+
+
+  ############################################################
+  # AI OPS — NATURAL LANGUAGE
+  ############################################################
+  /ai-ops/run:
+    post:
+      summary: "Execute natural language Notion Ops command"
+      tags: [AI Ops]
+      operationId: "runAiOpsNL"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text:
+                  type: string
+      responses:
+        "200":
+          description: "AI Ops result"
+          content:
+            application/json:
+              schema:
+                type: object
+
+
+  ############################################################
+  # NOTION OPS — STRUCTURED
+  ############################################################
+  /ext/notion-ops/execute:
+    post:
+      summary: "Execute structured Notion Ops command"
+      tags: [Notion Ops]
+      operationId: "notionOpsExecute"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [command]
+              properties:
+                command:
+                  type: string
+                payload:
+                  type: object
+      responses:
+        "200":
+          description: "Notion Ops execution result"
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /ext/notion-ops/structure-check:
+    post:
+      summary: "Validate Notion DB structure"
+      tags: [Notion Ops]
+      operationId: "notionOpsStructureCheck"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [db_key, expected_properties]
+              properties:
+                db_key:
+                  type: string
+                expected_properties:
+                  type: object
+      responses:
+        "200":
+          description: "Structure check result"
+          content:
+            application/json:
+              schema:
+                type: object
+
+
+############################################################
+# COMPONENTS
+############################################################
+components:
+  schemas:
+
+    GoalResponse:
+      type: object
+      properties:
+        id: {type: string}
+        title: {type: string}
+        description: {type: string, nullable: true}
+        deadline: {type: string, nullable: true}
+        parent_id: {type: string, nullable: true}
+        priority: {type: string, nullable: true}
+        status: {type: string}
+        progress: {type: integer}
+        children:
+          type: array
+          items: {type: string}
+
+    GoalCreate:
+      type: object
+      required: [title]
+      properties:
+        title: {type: string}
+        description: {type: string, nullable: true}
+        deadline: {type: string, nullable: true}
+        parent_id: {type: string, nullable: true}
+        priority: {type: string, nullable: true}
+
+    GoalUpdate:
+      type: object
+      properties:
+        title: {type: string, nullable: true}
+        description: {type: string, nullable: true}
+        deadline: {type: string, nullable: true}
+        parent_id: {type: string, nullable: true}
+        priority: {type: string, nullable: true}
+        status: {type: string, nullable: true}
+        progress: {type: integer, nullable: true}
+
+    TaskResponse:
+      type: object
+      properties:
+        id: {type: string}
+        title: {type: string}
+        description: {type: string, nullable: true}
+        goal_id: {type: string, nullable: true}
+        deadline: {type: string, nullable: true}
+        priority: {type: string, nullable: true}
+        status: {type: string}
+        order: {type: integer}
+
+    TaskCreate:
+      type: object
+      required: [title]
+      properties:
+        title: {type: string}
+        description: {type: string, nullable: true}
+        deadline: {type: string, nullable: true}
+        goal_id: {type: string, nullable: true}
+        priority: {type: string, nullable: true}
+
+    TaskUpdate:
+      type: object
+      properties:
+        title: {type: string, nullable: true}
+        description: {type: string, nullable: true}
+        deadline: {type: string, nullable: true}
+        goal_id: {type: string, nullable: true}
+        priority: {type: string, nullable: true}
+        status: {type: string, nullable: true}
+        order: {type: integer, nullable: true}
+
+    AIRequest:
+      type: object
+      required: [command]
+      properties:
+        command: {type: string}
+        payload: {type: object, nullable: true}
