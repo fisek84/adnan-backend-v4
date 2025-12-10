@@ -1,7 +1,8 @@
 import json
 from pathlib import Path
 
-BASE_PATH = Path(__file__).resolve().parent.parent / "adnan_ai"
+# Correct absolute path inside Render Docker image
+BASE_PATH = Path(__file__).resolve().parent / "adnan_ai"
 MEMORY_FILE = BASE_PATH / "memory.json"
 
 
@@ -199,9 +200,7 @@ class AdnanAIDecisionService:
         if len(self.session_memory["trace"]) > 20:
             self.session_memory["trace"].pop(0)
 
-        # ---------------------------
-        # SAVE PERSISTENT MEMORY
-        # ---------------------------
+        # Save memory
         self._save_memory()
 
     def get_memory_context(self) -> dict:
