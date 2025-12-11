@@ -1,146 +1,293 @@
+print("LOADED NEW GATEWAY VERSION")
+
+import os
+import logging
 import json
-from pathlib import Path
-from typing import Dict, Any
 
-# Putanja: backend/services/adnan_ai/personality.json
-BASE_PATH = Path(__file__).resolve().parent.parent.parent / "adnan_ai"
-PERSONALITY_FILE = BASE_PATH / "personality.json"
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+from dotenv import load_dotenv
+from fastapi.middleware.cors import CORSMiddleware
 
-DEFAULT_PERSONALITY = {
-    "values": [],
-    "philosophy": [],
-    "psychology": [],
-    "business_mind": [],
-    "communication_style": [],
-    "decision_frameworks": [],
-    "emotional_profile": [],
-    "personal_rules": []
-}
+from notion_client import Client
+
+from services.adnan_ai_decision_service import AdnanAIDecisionService
+from services.decision_engine.personality_engine import PersonalityEngine  # <-- NEW
+
+# voice router
+from routers.voice_router import router as voice_router
+
+print("CURRENT FILE LOADED FROM:", os.path.abspath(__file__))
+
+# Load .env
+load_dotenv("C:/adnan-backend-v4/.env")
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+app = FastAPI()
+
+# ============================
+# HEALTH CHECK
+# ============================
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
 
 
-class PersonalityEngine:
-    def __init__(self):
-        self.base_path = BASE_PATH
-        self.file_path = PERSONALITY_FILE
-        self.personality: Dict[str, Any] = self._load_or_init()
+# ============================
+# CORS
+# ============================
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-    # -------------------------------
-    # LOAD OR INITIALIZE
-    # -------------------------------
-    def _load_or_init(self) -> Dict[str, Any]:
-        if self.file_path.exists():
-            try:
-                with open(self.file_path, "r", encoding="utf-8-sig") as f:
-                    data = json.load(f)
-            except json.JSONDecodeError:
-                data = {}
-        else:
-            data = {}
+NOTION_KEY = os.getenv("NOTION_API_KEY")
+notion = Client(auth=NOTION_KEY)
 
-        # Ensure all keys exist
-        changed = False
-        for key, default_val in DEFAULT_PERSONALITY.items():
-            if key not in data or not isinstance(data[key], list):
-                data[key] = list(default_val)
-                changed = True
+# GLOBAL ENGINES
+decision_engine = AdnanAIDecisionService()
+personality_engine = PersonalityEngine()   # <-- NEW
 
-        if changed:
-            self._save(data)
 
-        return data
+class CommandRequest(BaseModel):
+    command: str
+    payload: dict
 
-    # -------------------------------
-    # SAVE
-    # -------------------------------
-    def _save(self, data: Dict[str, Any]) -> None:
-        self.file_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.file_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
 
-    # -------------------------------
-    # CATEGORY CLASSIFIER
-    # -------------------------------
-    def _classify_statement(self, text: str) -> str:
-        t = text.lower()
+# REGISTER ROUTERS
+app.include_router(voice_router)
 
-        if any(k in t for k in ["život", "zivot", "svijeta", "svijet", "smisao", "filozof", "filozofija"]):
-            return "philosophy"
 
-        if any(k in t for k in ["vrijednost", "vrijednosti", "princip", "integritet", "poštenje", "postenje"]):
-            return "values"
+# =====================================================================
+# PERSONALITY ROUTES
+# =====================================================================
 
-        if any(k in t for k in ["mindset", "psiholog", "psihologija", "podsvjes", "podsvijest", "ego"]):
-            return "psychology"
+@app.get("/ops/get_personality")
+async def get_personality():
+    try:
+        return {
+            "success": True,
+            "personality": personality_engine.get_personality()
+        }
+    except Exception as e:
+        raise HTTPException(500, str(e))
 
-        if any(k in t for k in ["biznis", "posao", "strategija", "rast", "skaliranje", "prodaja", "kpi"]):
-            return "business_mind"
 
-        if any(k in t for k in ["komuniciram", "pričam", "pricam", "govorim", "pišem", "pisem", "stil komunikacije"]):
-            return "communication_style"
+@app.post("/ops/reset_personality")
+async def reset_personality():
+    try:
+        personality_engine.reset()
+        return {
+            "success": True,
+            "message": "Personality fully reset."
+        }
+    except Exception as e:
+        raise HTTPException(500, str(e))
 
-        if any(k in t for k in ["odluku", "odlučujem", "odlucujem", "decision", "framework"]):
-            return "decision_frameworks"
 
-        if any(k in t for k in ["emocija", "emocije", "osjećam", "osjecam", "reakcija", "strah", "tuga", "ljutnja"]):
-            return "emotional_profile"
+@app.post("/ops/teach_personality")
+async def teach_personality(req: dict):
+    try:
+        text = req.get("text")
+        category = req.get("category", "values")
 
-        if any(k in t for k in ["pravilo", "pravila", "nikad", "uvijek", "za mene važi", "za mene vazi"]):
-            return "personal_rules"
+        if not text:
+            raise HTTPException(400, "Missing field: text")
 
-        return "values"
-
-    # -------------------------------
-    # ORIGINAL learn_from_text  (AI auto mode)
-    # -------------------------------
-    def learn_from_text(self, text: str) -> Dict[str, Any]:
-        category = self._classify_statement(text)
-        entry = text.strip()
-
-        if not entry:
-            return {"stored": False, "reason": "empty_text", "category": None}
-
-        if entry not in self.personality[category]:
-            self.personality[category].append(entry)
-            self._save(self.personality)
-            stored = True
-        else:
-            stored = False
+        personality_engine.add_trait(category, text)
 
         return {
-            "stored": stored,
+            "success": True,
+            "taught": text,
             "category": category,
-            "text": entry
+            "message": "Personality updated successfully."
         }
 
-    # -------------------------------
-    # NEW → REQUIRED BY GATEWAY
-    # -------------------------------
-    def add_trait(self, category: str, text: str):
-        """ manual teach_personality input """
-        if category not in self.personality:
-            raise ValueError(f"Unknown personality category: {category}")
+    except Exception as e:
+        raise HTTPException(500, str(e))
 
-        text = text.strip()
+
+# =====================================================================
+# /ops/execute   (CEO → Decision Engine → Notion)
+# =====================================================================
+@app.post("/ops/execute")
+async def execute_notion_command(req: CommandRequest):
+    try:
+        logger.info(">> Incoming /ops/execute")
+        logger.info(">> Command: %s", req.command)
+        logger.info(">> Payload: %s", json.dumps(req.payload, ensure_ascii=False))
+
+        # ------------------------------
+        # CEO MODE
+        # ------------------------------
+        if req.command == "from_ceo":
+            ceo_text = req.payload.get("text", "")
+            logger.info(">> Processing CEO instruction through Decision Engine")
+
+            decision = decision_engine.process_ceo_instruction(ceo_text)
+            logger.info(json.dumps(decision, indent=2, ensure_ascii=False))
+
+            # PERSONALITY LOCAL ONLY
+            if decision.get("local_only"):
+                return {"success": True, "engine_output": decision}
+
+            # STOP on blocking errors
+            err = decision.get("error_engine", {})
+            if err and err.get("errors"):
+                return {
+                    "success": False,
+                    "blocked": True,
+                    "reason": "Critical Decision Engine error — execution aborted.",
+                    "engine_output": decision,
+                }
+
+            notion_command = decision.get("command")
+            notion_payload = decision.get("payload")
+
+            if not notion_command or not notion_payload:
+                raise HTTPException(500, "Decision Engine did not produce a command/payload")
+
+            req.command = notion_command
+            req.payload = notion_payload
+
+        # ------------------------------
+        # EXECUTE NOTION COMMAND
+        # ------------------------------
+        command = req.command
+        payload = req.payload
+
+        logger.info(">> EXECUTING NOTION COMMAND: %s", command)
+
+        # CREATE ENTRY
+        if command == "create_database_entry":
+            db = payload.get("database_id")
+            entry = payload.get("entry", {})
+
+            properties = {}
+            for key, value in entry.items():
+                if key.lower() == "name":
+                    properties["Name"] = {"title": [{"text": {"content": value}}]}
+
+                elif key in ["Status", "Priority"]:
+                    properties[key] = {"select": {"name": value}}
+
+                else:
+                    properties[key] = {"rich_text": [{"text": {"content": str(value)}}]}
+
+            created = notion.pages.create(
+                parent={"database_id": db},
+                properties=properties,
+            )
+            return {"success": True, "id": created.get("id"), "url": created.get("url")}
+
+        # UPDATE ENTRY
+        elif command == "update_database_entry":
+            page_id = payload.get("page_id")
+            entry = payload.get("entry", {})
+
+            properties = {}
+            for key, value in entry.items():
+                if key.lower() == "name":
+                    properties["Name"] = {"title": [{"text": {"content": value}}]}
+
+                elif key in ["Status", "Priority"]:
+                    properties[key] = {"select": {"name": value}}
+
+                else:
+                    properties[key] = {"rich_text": [{"text": {"content": str(value)}}]}
+
+            updated = notion.pages.update(page_id=page_id, properties=properties)
+            return {
+                "success": True,
+                "updated_id": updated.get("id"),
+                "url": updated.get("url"),
+            }
+
+        # QUERY DB
+        elif command == "query_database":
+            db = payload.get("database_id")
+            results = notion.databases.query(database_id=db)
+            return {"success": True, "results": results.get("results", [])}
+
+        # CREATE PAGE
+        elif command == "create_page":
+            parent_id = payload.get("parent_page_id")
+            title = payload.get("title", "Untitled Page")
+            children = payload.get("children", [])
+
+            created = notion.pages.create(
+                parent={"page_id": parent_id},
+                properties={"title": [{"text": {"content": title}}]},
+                children=children,
+            )
+            return {"success": True, "page_id": created.get("id"), "url": created.get("url")}
+
+        # RETRIEVE PAGE CONTENT
+        elif command == "retrieve_page_content":
+            page_id = payload.get("page_id")
+            blocks = notion.blocks.children.list(block_id=page_id)
+            return {"success": True, "blocks": blocks.get("results", [])}
+
+        # DELETE PAGE
+        elif command == "delete_page":
+            name = payload.get("name")
+            if not name:
+                return {"error": "Missing name for delete_page"}
+
+            databases = [
+                "2ac5873bd84a801f956fc30327b8ef94",  # goals
+                "2ad5873bd84a80e8b4dac703018212fe",  # tasks
+                "2ac5873bd84a8004aac0ea9c53025bfc",  # projects
+            ]
+
+            page_to_delete = None
+
+            for db in databases:
+                res = notion.databases.query(database_id=db)
+                for row in res.get("results", []):
+                    try:
+                        title = row["properties"]["Name"]["title"][0]["plain_text"].lower()
+                        if name.lower() in title:
+                            page_to_delete = row["id"]
+                            break
+                    except:
+                        continue
+                if page_to_delete:
+                    break
+
+            if not page_to_delete:
+                return {"error": f"No page found matching: {name}"}
+
+            notion.pages.update(page_id=page_to_delete, archived=True)
+            return {"success": True, "deleted_id": page_to_delete}
+
+        # UNKNOWN COMMAND
+        else:
+            return {"error": f"Unknown command: {command}"}
+
+    except Exception as e:
+        logger.exception(">> ERROR in /ops/execute")
+        raise HTTPException(500, str(e))
+
+
+# =====================================================================
+# /ops/test_ceo
+# =====================================================================
+@app.post("/ops/test_ceo")
+async def test_ceo(req: dict):
+    try:
+        text = req.get("text")
         if not text:
-            return False
+            raise HTTPException(400, "Missing field: text")
 
-        if text not in self.personality[category]:
-            self.personality[category].append(text)
-            self._save(self.personality)
-            return True
+        result = decision_engine.process_ceo_instruction(text)
+        return {"success": True, "engine_output": result}
 
-        return False
-
-    # -------------------------------
-    # REQUIRED BY GATEWAY
-    # -------------------------------
-    def get_personality(self):
-        return self.personality
-
-    # -------------------------------
-    # REQUIRED BY GATEWAY
-    # -------------------------------
-    def reset(self):
-        """ Full wipe → restore defaults """
-        self.personality = {k: list(v) for k, v in DEFAULT_PERSONALITY.items()}
-        self._save(self.personality)
+    except Exception as e:
+        logger.exception(">> ERROR in /ops/test_ceo")
+        raise HTTPException(500, str(e))
