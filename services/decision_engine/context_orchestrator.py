@@ -1,6 +1,5 @@
 from typing import Dict, Any
 import os
-import asyncio
 
 from .identity_reasoning import IdentityReasoningEngine
 from .context_classifier import ContextClassifier
@@ -16,7 +15,8 @@ from services.agents_service import AgentsService
 
 class ContextOrchestrator:
     """
-    Centralni orkestrator — stabilna verzija (FIXED async Notion).
+    Centralni orkestrator — stabilna verzija bez async problema.
+    Svi async Notion pozivi sada koriste SYNC adapter iz NotionService-a.
     """
 
     def __init__(self, identity: Dict[str, Any], mode: Dict[str, Any], state: Dict[str, Any]):
@@ -34,7 +34,7 @@ class ContextOrchestrator:
         self.decision_engine = AdnanAIDecisionService()
         self.memory_engine = MemoryService()
 
-        # Notion (async!)
+        # Notion (async internally, sync wrapper externally)
         self.notion_engine = NotionService(
             os.getenv("NOTION_API_KEY"),
             os.getenv("NOTION_GOALS_DB"),
@@ -48,19 +48,6 @@ class ContextOrchestrator:
             os.getenv("NOTION_EXCHANGE_DB"),
             os.getenv("NOTION_PROJECTS_DB"),
         )
-
-    # -----------------------------------------------------------
-    # UTILITY → SAFE SYNC WRAPPER
-    # -----------------------------------------------------------
-
-    def _sync(self, coro):
-        """
-        Pretvara async u sync bez pucanja FastAPI-ja.
-        """
-        try:
-            return asyncio.get_event_loop().run_until_complete(coro)
-        except RuntimeError:
-            return asyncio.run(coro)
 
     # -----------------------------------------------------------
     # MAIN EXECUTOR
@@ -158,13 +145,13 @@ class ContextOrchestrator:
         if action == "follow_sop":
             return {
                 "type": "sop",
-                "response": self._sync(self.notion_engine.handle_sop(user_input)),
+                "response": self.notion_engine.handle_sop_sync(user_input),
             }
 
         if action == "query_or_update_notion":
             return {
                 "type": "notion",
-                "response": self._sync(self.notion_engine.smart_process(user_input, target_db)),
+                "response": self.notion_engine.smart_process_sync(user_input, target_db),
             }
 
         if action == "next_step":
@@ -181,13 +168,13 @@ class ContextOrchestrator:
     def _handle_notion(self, user_input: str) -> Dict[str, Any]:
         return {
             "type": "notion",
-            "response": self._sync(self.notion_engine.process(user_input)),
+            "response": self.notion_engine.process_sync(user_input),
         }
 
     def _handle_sop(self, user_input: str) -> Dict[str, Any]:
         return {
             "type": "sop",
-            "response": self._sync(self.notion_engine.handle_sop(user_input)),
+            "response": self.notion_engine.handle_sop_sync(user_input),
         }
 
     def _handle_agent_query(self, user_input: str) -> Dict[str, Any]:
