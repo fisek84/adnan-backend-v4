@@ -4,3 +4,5 @@
 __pycache__/
 *.pyc
 project_tree_full.txt
+node_modules/
+*.log
