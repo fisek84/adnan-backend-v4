@@ -8,8 +8,7 @@ class ContextClassifier:
     Ne baca sve u identity.
     Razlikuje:
         - identity pitanja
-        - general chat
-        - posao / poslovne naredbe
+        - general chat / business
         - notion operacije
         - sop
         - memory
@@ -24,14 +23,15 @@ class ContextClassifier:
 
     NOTION_KEYWORDS = [
         "notion", "baza", "database", "entry",
-        "page", "sop", "kreiraj", "izmijeni", "update", "query"
+        "page", "sop", "kreiraj", "napravi",
+        "izmijeni", "update", "query", "prikaži", "pokaži"
     ]
 
     SOP_KEYWORDS = ["sop", "procedure", "proces", "workflow"]
 
     AGENT_KEYWORDS = ["agent", "agents", "automation", "bot"]
 
-    MEMORY_KEYWORDS = ["zapamti", "nauči", "teach", "remember", "memorija"]
+    MEMORY_KEYWORDS = ["zapamti", "nauči", "nauci", "teach", "remember", "memorija"]
 
     META_KEYWORDS = ["debug", "status", "mode", "state", "config", "postavke"]
 
@@ -61,11 +61,6 @@ class ContextClassifier:
             context_type = "notion"
             tags.append("notion")
 
-        # BUSINESS
-        elif any(k in text for k in self.BUSINESS_KEYWORDS):
-            context_type = "business"
-            tags.append("business")
-
         # AGENTS
         elif any(k in text for k in self.AGENT_KEYWORDS):
             context_type = "agent"
@@ -76,12 +71,17 @@ class ContextClassifier:
             context_type = "meta"
             tags.append("meta")
 
-        # IDENTITY – samo kad je stvarno pitanje o identitetu
+        # IDENTITY – samo kad korisnik pita za pravo "ko si?"
         elif any(q in text for q in self.IDENTITY_QUESTIONS):
             context_type = "identity"
             tags.append("identity")
 
-        # DEFAULT → generalni biznis / chat
+        # BUSINESS (poslovni kontekst)
+        elif any(k in text for k in self.BUSINESS_KEYWORDS):
+            context_type = "business"
+            tags.append("business")
+
+        # DEFAULT – generalni chat → tvoj CEO engine to rješava
         else:
             context_type = "business"
             tags.append("general")
