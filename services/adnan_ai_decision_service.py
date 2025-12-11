@@ -24,7 +24,7 @@ from services.decision_engine.dynamic_memory import DynamicMemoryEngine
 from services.decision_engine.personality_engine import PersonalityEngine
 
 
-BASE_PATH = Path(__file__).resolve().parent.parent / "adnan_ai"
+BASE_PATH = Path(__file__).resolve().parent.parent / "identity"
 MEMORY_FILE = BASE_PATH / "memory.json"
 
 
