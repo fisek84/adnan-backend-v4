@@ -8,7 +8,7 @@ def load_json_file(path: str):
     if not os.path.exists(path):
         raise FileNotFoundError(f"State file not found: {path}")
 
-    # FIX: UTF-8 BOM safe loading
+    # UTF-8 BOM safe
     with open(path, "r", encoding="utf-8-sig") as f:
         return json.load(f)
 
@@ -43,7 +43,7 @@ def load_state():
         - Context Orchestrator
         - Gateway Server
     """
-    state_path = resolve_path("adnan_ai_state.json")
+    state_path = resolve_path("state.json")
     return load_json_file(state_path)
 
 

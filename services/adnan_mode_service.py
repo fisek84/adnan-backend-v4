@@ -7,7 +7,7 @@ def load_json_file(path: str):
     if not os.path.exists(path):
         raise FileNotFoundError(f"Mode file not found: {path}")
 
-    # FIX: UTF-8 BOM safe
+    # UTF-8 BOM safe
     with open(path, "r", encoding="utf-8-sig") as f:
         return json.load(f)
 
@@ -38,9 +38,9 @@ def resolve_path(filename: str) -> str:
 def load_mode():
     """
     Loads persisted Adnan.AI operating mode.
-    Example file: identity/adnan_ai_mode.json
+    Example file: identity/mode.json
     """
-    path = resolve_path("adnan_ai_mode.json")
+    path = resolve_path("mode.json")
     return load_json_file(path)
 
 

@@ -190,7 +190,7 @@ class AdnanAIDecisionService:
         json.dump(self.session_memory, open(MEMORY_FILE, "w", encoding="utf-8"), indent=2)
 
     ###################################################################
-    # INTENT + COMMAND BUILDERS (same as before)
+    # INTENT + COMMAND BUILDERS
     ###################################################################
     def detect_intent(self, text):
         t = text.lower()
@@ -274,6 +274,7 @@ class AdnanAIDecisionService:
 
         if intent["action"] == "create":
             return {"command": "create_database_entry", "payload": {"database_id": db_id, "entry": entry}}
+
         if intent["action"] == "update":
             return {"command": "update_database_entry",
                     "payload": {"page_id": None, "entry": entry}}
