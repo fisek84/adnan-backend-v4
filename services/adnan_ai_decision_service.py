@@ -3,6 +3,8 @@ from pathlib import Path
 import re
 import copy
 
+from rapidfuzz import fuzz, process
+
 # AUTOCORRECT A2
 from services.decision_engine.autocorrect import AutocorrectEngine
 
@@ -48,17 +50,23 @@ DATABASE_MAP = {
 
     "weekly summary": "2b75873bd84a80619330eb45348dd90e",
 
-    "kpi": "2bd5873bd84a80b68889df5485567703"
-}
+    "kpi": "2bd5873bd84a80b68889df5485567703",
 
-
-RELATION_FIELDS = {
-    "goal→subgoal": "Subgoals",
-    "subgoal→goal": "Parent Goal",
-    "goal→task": "Tasks",
-    "task→goal": "Goal",
-    "project→task": "Tasks",
-    "task→project": "Project",
+    # SOP DATABASES
+    "outreach sop": "2c35873bd84a809ab4bcd6a0e0908f0b",
+    "qualification sop": "2c35873bd84a80db8d37f71470424185",
+    "follow up sop": "2c35873bd84a80908941d4d1eb29ae17",
+    "fsc sop": "2c35873bd84a80c7a5c0c21dcb765c1b",
+    "flp ops sop": "2c35873bd84a8047b63bea50e5f78090",
+    "lss sop": "2c35873bd84a80c3ba85c66344fc98d4",
+    "partner activation sop": "2c35873bd84a808793edf056ad0c1a1f",
+    "partner performance sop": "2c35873bd84a80b4a27ad85c42560287",
+    "partner leadership sop": "2c35873bd84a80c6bbafcc6d3a5a5d3a",
+    "customer onboarding sop": "2c35873bd84a80f088abdc26d47fe551",
+    "customer retention sop": "2c35873bd84a80109336c02496f100b3",
+    "customer performance sop": "2c35873bd84a80708e8fcd3bf1d0132a",
+    "partner potential sop": "2c35873bd84a80cbb885c2d22d4a0ee0",
+    "sales closing sop": "2c35873bd84a80a8beb8eb61fb730dcc",
 }
 
 
@@ -75,7 +83,32 @@ ACTION_PATTERNS = {
 
 
 ###################################################################
-# NATURAL SYSTEM RESPONSE
+# FUZZY HELPERS
+###################################################################
+def fuzzy_match(value, choices, threshold=75):
+    if not value:
+        return None
+    result, score, _ = process.extractOne(value, choices, scorer=fuzz.partial_ratio)
+    return result if score >= threshold else None
+
+
+def fuzzy_extract_name(text):
+    text_low = text.lower()
+    cleaned = (
+        text_low.replace("kreiraj", "")
+        .replace("napravi", "")
+        .replace("dodaj", "")
+        .replace("obrisi", "")
+        .replace("obriši", "")
+        .replace("task", "")
+        .replace("goal", "")
+        .strip()
+    )
+    return cleaned if cleaned else ""
+
+
+###################################################################
+# RESPONSE LAYER
 ###################################################################
 def natural_response(cmd):
     if cmd.get("blocked"):
@@ -85,6 +118,7 @@ def natural_response(cmd):
         "update_database_entry": "Ažuriram zapis.",
         "delete_page": "Brišem zapis.",
         "query_database": "Prikupljam podatke.",
+        "query_all": "Prikupljam sve podatke.",
         "link_records": "Povezujem relacije."
     }.get(cmd.get("command"), "Izvršavam tvoj zahtjev.")
 
@@ -109,7 +143,6 @@ class AdnanAIDecisionService:
         self.session_memory = self._init_session_memory()
         self.dynamic_memory_engine = DynamicMemoryEngine(self.session_memory)
 
-
     ###################################################################
     # MEMORY
     ###################################################################
@@ -133,33 +166,36 @@ class AdnanAIDecisionService:
     def _save_memory(self):
         json.dump(self.session_memory, open(MEMORY_FILE, "w", encoding="utf-8"), indent=2)
 
-
     ###################################################################
-    # INTENT ENGINE (Advanced NL Interpreter)
+    # INTENT DETECTION
     ###################################################################
     def detect_intent(self, text: str):
+
         t = text.lower()
 
-        # Detect action
+        #############################
+        # ACTION (FUZZY)
+        #############################
         action = None
         for act, patterns in ACTION_PATTERNS.items():
-            if any(re.search(p, t) for p in patterns):
+            if fuzzy_match(t, patterns, 70):
                 action = act
                 break
 
-        # Detect database
-        db_guess = None
-        for db in DATABASE_MAP.keys():
-            if db in t:
-                db_guess = db
-                break
+        #############################
+        # DATABASE (FUZZY)
+        #############################
+        db_guess = fuzzy_match(t, list(DATABASE_MAP.keys()), 70)
 
-        # Extract name (robust)
+        #############################
+        # NAME EXTRACTION (FUZZY)
+        #############################
         name = ""
+
         patterns = [
             r"(ime|title|naziv)\s*[-:]\s*(.+)",
-            r"(task|goal|project|note)\s*[-:]\s*(.+)",
-            r"(task|goal|project|note)\s+([A-Za-z0-9_\-\s]+)$"
+            r"(task|goal|project|note|subgoal)\s*[-:]\s*(.+)",
+            r"(task|goal|project|note|subgoal)\s+([A-Za-z0-9_\-\s]+)$"
         ]
         for p in patterns:
             m = re.search(p, text, re.IGNORECASE)
@@ -168,38 +204,40 @@ class AdnanAIDecisionService:
                 break
 
         if not name:
-            first_line = text.strip().split("\n")[0]
-            name = (
-                first_line.replace("kreiraj", "")
-                          .replace("napravi", "")
-                          .replace("dodaj", "")
-                          .replace("task", "")
-                          .strip()
-            )
+            name = fuzzy_extract_name(text)
 
-        # Status
+        #############################
+        # STATUS
+        #############################
         status = ""
         m = re.search(r"status\s*[-:]\s*([\w ]+)", text, re.IGNORECASE)
         if m:
             status = m.group(1).strip()
 
-        # Priority
+        #############################
+        # PRIORITY
+        #############################
         priority = ""
         m = re.search(r"(priority|prioritet)\s*[-:]\s*([\w ]+)", text, re.IGNORECASE)
         if m:
             priority = m.group(2).strip()
 
-        # For linking: detect sentence patterns like:
-        # "povezi task Majmun na cilj Prodaja"
+        #############################
+        # LINK RELATIONS (FUZZY)
+        #############################
         parent = None
         child = None
+
         link_match = re.search(
-            r"(task|goal|project|podcilj|subgoal)\s+(.+?)\s+.*?(na|u|pod|to)\s+(goal|cilj|project|task)\s+(.+)",
+            r"(task|goal|project|subgoal|podcilj)\s+(.+?)\s+.*?(na|u|pod|to)\s+(goal|cilj|project|task|subgoal)\s+(.+)",
             text, re.IGNORECASE
         )
         if link_match:
-            child = link_match.group(2).strip()
-            parent = link_match.group(5).strip()
+            child_raw = link_match.group(2).strip()
+            parent_raw = link_match.group(5).strip()
+
+            child = fuzzy_match(child_raw, [child_raw, name], 60)
+            parent = fuzzy_match(parent_raw, list(DATABASE_MAP.keys()), 60)
 
         return {
             "action": action,
@@ -212,13 +250,12 @@ class AdnanAIDecisionService:
             "raw_text": text
         }
 
-
     ###################################################################
     # COMMAND BUILDER
     ###################################################################
     def build_command(self, intent):
 
-        # LINKING MODE
+        # LINK
         if intent["action"] == "link":
             return {
                 "command": "link_records",
@@ -228,47 +265,64 @@ class AdnanAIDecisionService:
                 }
             }
 
-        db_id = DATABASE_MAP.get(intent["database"])
-
-        entry = {
-            "Name": intent.get("name", ""),
-            "Status": intent.get("status", ""),
-            "Priority": intent.get("priority", "")
-        }
-
-        if intent["action"] == "create":
-            return {
-                "command": "create_database_entry",
-                "payload": {"database_id": db_id, "entry": entry}
-            }
-
-        if intent["action"] == "update":
-            return {
-                "command": "update_database_entry",
-                "payload": {"page_id": None, "entry": entry}
-            }
-
+        # DELETE
         if intent["action"] == "delete":
             return {
                 "command": "delete_page",
                 "payload": {"name": intent.get("name")}
             }
 
+        # QUERY ALL
+        if intent["action"] == "query" and "all" in intent["raw_text"].lower():
+            return {
+                "command": "query_all",
+                "payload": {}
+            }
+
+        # QUERY DB
         if intent["action"] == "query":
+            db_id = DATABASE_MAP.get(intent["database"])
             return {
                 "command": "query_database",
                 "payload": {"database_id": db_id}
             }
 
+        db_id = DATABASE_MAP.get(intent["database"])
+        entry = {
+            "Name": intent.get("name", ""),
+            "Status": intent.get("status", ""),
+            "Priority": intent.get("priority", "")
+        }
+
+        # CREATE
+        if intent["action"] == "create":
+            return {
+                "command": "create_database_entry",
+                "payload": {"database_id": db_id, "entry": entry}
+            }
+
+        # UPDATE
+        if intent["action"] == "update":
+            return {
+                "command": "update_database_entry",
+                "payload": {"page_id": None, "entry": entry}
+            }
+
         return {"command": None, "payload": {}}
 
-
     ###################################################################
-    # ERROR ENGINE (auto defaults)
+    # ERROR ENGINE
     ###################################################################
     def apply_error_engine(self, command):
 
-        if command["command"] == "link_records":
+        if command["command"] == "delete_page":
+            if not command["payload"].get("name"):
+                command["error_engine"] = {"errors": ["Missing name for delete"]}
+
+            return command
+
+        if command["command"] in ["query_all", "link_records"]:
+            command["error_engine"] = {"errors": []}
             return command
 
         entry = command["payload"].get("entry", {})
@@ -278,36 +332,31 @@ class AdnanAIDecisionService:
         warnings = []
         auto = {}
 
-        if command["command"] == "delete_page":
-            if not command["payload"].get("name"):
-                errors.append({"type": "c", "msg": "Name missing"})
-            command["error_engine"] = {"errors": errors}
-            return command
-
         if db is None:
-            errors.append({"type": "critical_error", "msg": "Unknown database"})
+            errors.append("Unknown database.")
             command["error_engine"] = {"errors": errors}
             return command
 
         if entry.get("Name", "").strip() == "":
             entry["Name"] = "Untitled"
-            warnings.append({"msg": "Name auto-set"})
             auto["Name"] = "Untitled"
+            warnings.append("Name auto-set to Untitled")
 
         if entry.get("Status", "").strip() == "":
             entry["Status"] = "To Do"
-            warnings.append({"msg": "Status auto-set"})
             auto["Status"] = "To Do"
 
         if entry.get("Priority", "").strip() == "":
             entry["Priority"] = "Medium"
-            warnings.append({"msg": "Priority auto-set"})
             auto["Priority"] = "Medium"
 
         command["payload"]["entry"] = entry
-        command["error_engine"] = {"errors": errors, "warnings": warnings, "auto": auto}
+        command["error_engine"] = {
+            "errors": errors,
+            "warnings": warnings,
+            "auto": auto
+        }
         return command
-
 
     ###################################################################
     # ENTRYPOINT
@@ -316,21 +365,20 @@ class AdnanAIDecisionService:
 
         intent = self.detect_intent(text)
 
-        # Build command
         command = self.build_command(intent)
 
-        # Add Trust + Memory
+        # Add trust + memory layers
         command["trust"] = self.trust_layer.evaluate(text)
         command["static_memory"] = self.static_memory_engine.apply(text)
         command["dynamic_memory"] = self.dynamic_memory_engine.evaluate(text, command)
 
-        # Error engine
+        # Validate
         command = self.apply_error_engine(command)
         if command["error_engine"]["errors"]:
             command["system_response"] = "Nisam mogao izvršiti zbog greške."
             return command
 
-        # Save dynamic memory
+        # Save memory for created tasks
         if "entry" in command["payload"]:
             title = command["payload"]["entry"].get("Name")
             if title:
@@ -338,6 +386,5 @@ class AdnanAIDecisionService:
                 self.session_memory["dynamic_memory"] = copy.deepcopy(self.dynamic_memory_engine.memory)
                 self._save_memory()
 
-        # Response
         command["system_response"] = natural_response(command)
         return command
