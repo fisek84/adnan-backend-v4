@@ -19,24 +19,26 @@ RUN pip install --upgrade pip wheel setuptools && \
 # ===========================
 FROM python:3.11-slim
 
+# FORCE DOCKER TO REBUILD (cache breaker)
+ARG CACHE_BREAK=1
+
 ENV TZ=Europe/Sarajevo
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-# Install OS tools
 RUN apt-get update && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
 
 # COPY BUILT PYTHON PACKAGES
 COPY --from=builder /install /usr/local
 
-# COPY APP CODE
-COPY . .
+# COPY APP CODE — FIXED
+COPY ./ ./
 
 # expose Render port
 EXPOSE $PORT
 
-# START FASTAPI BACKEND
+# START FASTAPI
 CMD ["sh", "-c", "uvicorn gateway.gateway_server:app --host 0.0.0.0 --port $PORT"]
