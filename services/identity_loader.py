@@ -59,3 +59,22 @@ def load_adnan_mode():
 def load_adnan_state():
     state_path = resolve_path("adnan_ai_state.json")
     return load_json_file(state_path)
+
+
+# ============================================================
+# BACKWARD-COMPATIBLE WRAPPERS FOR GATEWAY IMPORTS
+# ============================================================
+
+def load_identity():
+    """Compatibility wrapper for gateway_server.py"""
+    return load_adnan_identity()
+
+
+def load_mode():
+    """Compatibility wrapper for gateway_server.py"""
+    return load_adnan_mode()
+
+
+def load_state():
+    """Compatibility wrapper for gateway_server.py"""
+    return load_adnan_state()
