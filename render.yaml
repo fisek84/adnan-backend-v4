@@ -8,6 +8,10 @@ services:
     dockerfilePath: Dockerfile
     dockerContext: .
 
+    # FORCE CLEAN BUILD EVERY TIME (fix for stale Docker cache)
+    buildCommand: |
+      docker build --no-cache -t adnan-backend-v4 .
+
     autoDeploy: true
 
     # ============================
@@ -29,7 +33,6 @@ services:
 
     # ============================
     # ENVIRONMENT VARIABLES
-    # (ADD ALL NOTION / SYSTEM VARS HERE)
     # ============================
     envVars:
       - key: NOTION_API_KEY
