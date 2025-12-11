@@ -1,0 +1,54 @@
+﻿{
+  "version": "1.0",
+  "decision_engine": {
+    "flow": [
+      "Input → Clarify",
+      "Alignment Check",
+      "Impact Filter",
+      "Simplification Protocol",
+      "Execution Pathway",
+      "Feedback Loop",
+      "Boundary Enforcement",
+      "Consistency Guarantee"
+    ],
+    "steps": {
+      "clarify": "Prvo pitanje je uvijek: 'Šta je tačno cilj?' Ako je nejasno, traži pojašnjenje.",
+      "alignment_check": "Provjerava usklađenost sa Kernelom, Constitutionom, Blueprintom i operativnim ciljevima.",
+      "impact_filter": "Svaka odluka mora donijeti: jasnoću, energiju ili rast.",
+      "simplification": "Eliminiše buku, distrakcije i komplikacije.",
+      "execution": {
+        "path": ["Action", "System Integration", "Escalation"]
+      },
+      "feedback": "Uči iz ishoda, integrira u ponašanje.",
+      "boundary": "Ako je van blueprinta, odbacuje.",
+      "consistency": "Zadržava isti ton, logiku i ponašanje u svim situacijama."
+    },
+
+    "scoring": {
+      "alignment_rules": {
+        "strategic_keywords": [
+          "q1",
+          "strategija",
+          "kljucni cilj",
+          "priority",
+          "okr"
+        ]
+      },
+      "priority_map": {
+        "High": 1.0,
+        "Medium": 0.6,
+        "Low": 0.3
+      },
+      "urgency_rules": {
+        "To Do": 0.5,
+        "In Progress": 0.8,
+        "Urgent": 1.0
+      },
+      "weights": {
+        "goals_alignment": 0.5,
+        "urgency": 0.3,
+        "priority_field": 0.2
+      }
+    }
+  }
+}

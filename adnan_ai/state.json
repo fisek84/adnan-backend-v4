@@ -1,0 +1,22 @@
+﻿{
+  "version": "1.0",
+  "current_mode": "operational",
+  "last_updated": "2025-12-05",
+  "context": {
+    "focus": "none",
+    "active_project": null,
+    "active_goal": null,
+    "active_task": null
+  },
+  "system_status": {
+    "clarity_level": 80,
+    "energy_level": 75,
+    "cognitive_load": "normal",
+    "alignment_with_kernel": true
+  },
+  "flags": {
+    "needs_clarity": false,
+    "needs_reset": false,
+    "needs_escalation": false
+  }
+}
