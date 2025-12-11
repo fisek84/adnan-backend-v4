@@ -1,12 +1,12 @@
 from typing import Dict, Any
-import os  # DODANO
+import os
 
 from .identity_reasoning import IdentityReasoningEngine
 from .context_classifier import ContextClassifier
 from services.decision_engine.final_response_engine import FinalResponseEngine
 from services.decision_engine.playbook_engine import PlaybookEngine
 
-# Postojeći servisi — samo ih importujemo, ne mijenjamo ih
+# Postojeći servisi
 from services.adnan_ai_decision_service import AdnanAIDecisionService
 from services.memory_service import MemoryService
 from services.notion_service import NotionService
@@ -15,7 +15,7 @@ from services.agents_service import AgentsService
 
 class ContextOrchestrator:
     """
-    Centralni orkestrator — mozak Adnan.ai sistema.
+    Centralni orkestrator — mozak Adnan.AI sistema.
     """
 
     def __init__(self, identity: Dict[str, Any], mode: Dict[str, Any], state: Dict[str, Any]):
@@ -31,26 +31,30 @@ class ContextOrchestrator:
         self.decision_engine = AdnanAIDecisionService()
         self.memory_engine = MemoryService()
 
-        # Notion service ispravno inicijalizovan
+        # Notion service
         self.notion_engine = NotionService(
             os.getenv("NOTION_API_KEY"),
             os.getenv("NOTION_GOALS_DB"),
             os.getenv("NOTION_TASKS_DB"),
-            os.getenv("NOTION_PROJECTS_DB"),
+            os.getenv("NOTION_PROJECTS_DB")
         )
 
-        # AgentsService sada traži 3 argumenta → moramo ih proslijediti
+        # Agents service zahtijeva 3 parametra
         self.agents_engine = AgentsService(
             os.getenv("NOTION_API_KEY"),
             os.getenv("NOTION_EXCHANGE_DB"),
             os.getenv("NOTION_PROJECTS_DB")
         )
 
+    # ============================================================
+    # CENTRALNI TOK
+    # ============================================================
     def run(self, user_input: str) -> Dict[str, Any]:
         identity_reasoning = self.reasoner.generate_reasoning(user_input)
         classification = self.classifier.classify(user_input, identity_reasoning)
-        context = classification["context_type"]
+        context = classification.get("context_type")
 
+        # Prebacivanje toka
         if context == "identity":
             result = self._handle_identity(user_input, identity_reasoning)
 
@@ -81,9 +85,10 @@ class ContextOrchestrator:
             result = {
                 "success": False,
                 "system_response": "Nisam siguran u kontekst.",
-                "context_type": context,
+                "context_type": context
             }
 
+        # Finalna komunikacija (tone, stil, fokus, preciznost)
         final_output = self.response_engine.format_response(
             identity_reasoning=identity_reasoning,
             classification=classification,
@@ -96,89 +101,67 @@ class ContextOrchestrator:
             "identity_reasoning": identity_reasoning,
             "classification": classification,
             "result": result,
-            "final_output": final_output,
+            "final_output": final_output
         }
 
-    # -----------------------------------------------------------
-    # BUSINESS PLAYBOOK HANDLER
-    # -----------------------------------------------------------
-
+    # ============================================================
+    # BUSINESS FLOW
+    # ============================================================
     def _handle_business_playbook(self, user_input: str, playbook: Dict[str, Any]) -> Dict[str, Any]:
         action = playbook.get("recommended_action")
         target_db = playbook.get("target_database")
 
         if action == "follow_sop":
-            return {
-                "type": "sop",
-                "response": self.notion_engine.handle_sop(user_input)
-            }
+            return {"type": "sop", "response": self.notion_engine.handle_sop(user_input)}
 
         if action == "query_or_update_notion":
-            return {
-                "type": "notion",
-                "response": self.notion_engine.smart_process(user_input, target_db)
-            }
+            return {"type": "notion", "response": self.notion_engine.smart_process(user_input, target_db)}
 
         if action == "next_step":
-            return {
-                "type": "business",
-                "response": self.decision_engine.next_step(user_input)
-            }
+            return {"type": "business", "response": self.decision_engine.next_step(user_input)}
 
-        return {
-            "type": "business",
-            "response": self.decision_engine.process_business(user_input)
-        }
+        return {"type": "business", "response": self.decision_engine.process_business(user_input)}
 
-    # -----------------------------------------------------------
+    # ============================================================
     # HANDLERI TOKOVA
-    # -----------------------------------------------------------
-
+    # ============================================================
     def _handle_identity(self, user_input: str, reasoning: Dict[str, Any]) -> Dict[str, Any]:
         """
-        FIX: `process_identity` NE POSTOJI u AdnanAIDecisionService → 
-        koristimo identity reasoning engine koji već daje savršen identity output.
+        Identity odgovori moraju biti prirodni, fokusirani i bez JSON strukture.
+        Pošto AdnanAIDecisionService nema process_identity, generišemo prirodan fallback.
         """
-        return {
-            "type": "identity",
-            "response": reasoning
-        }
+
+        # Ako decision engine ima identity handler — koristi ga
+        if hasattr(self.decision_engine, "process_identity"):
+            resp = self.decision_engine.process_identity(user_input, reasoning)
+            if isinstance(resp, str):
+                return {"type": "identity", "response": resp}
+
+        # Fallback — garantovan prirodan odgovor
+        resp = (
+            "Ja sam Adnan.AI — digitalna rekonstrukcija tvog načina razmišljanja, "
+            "donošenja odluka i poslovne logike. Fokusiran, precizan i sistemski."
+        )
+
+        return {"type": "identity", "response": resp}
 
     def _handle_business(self, user_input: str) -> Dict[str, Any]:
-        return {
-            "type": "business",
-            "response": self.decision_engine.process_business(user_input)
-        }
+        return {"type": "business", "response": self.decision_engine.process_business(user_input)}
 
     def _handle_notion(self, user_input: str) -> Dict[str, Any]:
-        return {
-            "type": "notion",
-            "response": self.notion_engine.process(user_input)
-        }
+        return {"type": "notion", "response": self.notion_engine.process(user_input)}
 
     def _handle_sop(self, user_input: str) -> Dict[str, Any]:
-        return {
-            "type": "sop",
-            "response": self.notion_engine.handle_sop(user_input)
-        }
+        return {"type": "sop", "response": self.notion_engine.handle_sop(user_input)}
 
     def _handle_agent_query(self, user_input: str) -> Dict[str, Any]:
-        return {
-            "type": "agent",
-            "response": self.agents_engine.query(user_input)
-        }
+        return {"type": "agent", "response": self.agents_engine.query(user_input)}
 
     def _handle_memory(self, user_input: str) -> Dict[str, Any]:
-        return {
-            "type": "memory",
-            "response": self.memory_engine.process(user_input)
-        }
+        return {"type": "memory", "response": self.memory_engine.process(user_input)}
 
     def _handle_meta(self, user_input: str) -> Dict[str, Any]:
         return {
             "type": "meta",
-            "response": {
-                "status": "meta-command-received",
-                "input": user_input
-            }
+            "response": {"status": "meta-command-received", "input": user_input}
         }
