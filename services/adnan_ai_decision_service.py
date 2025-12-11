@@ -370,7 +370,12 @@ class AdnanAIDecisionService:
         # Add trust + memory layers
         command["trust"] = self.trust_layer.evaluate(text)
         command["static_memory"] = self.static_memory_engine.apply(text)
-        command["dynamic_memory"] = self.dynamic_memory_engine.evaluate(text, command)
+        # Skip dynamic memory for commands without entry (delete, link, query)
+        if command.get("payload") and "entry" in command["payload"]:
+            command["dynamic_memory"] = self.dynamic_memory_engine.evaluate(text, command)
+        else:
+            command["dynamic_memory"] = None
+
 
         # Validate
         command = self.apply_error_engine(command)
