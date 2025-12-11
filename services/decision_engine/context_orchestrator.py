@@ -1,5 +1,6 @@
 from typing import Dict, Any
 import os
+import asyncio
 
 from .identity_reasoning import IdentityReasoningEngine
 from .context_classifier import ContextClassifier
@@ -15,7 +16,7 @@ from services.agents_service import AgentsService
 
 class ContextOrchestrator:
     """
-    Centralni orkestrator — mozak Adnan.AI sistema.
+    Centralni orkestrator — stabilna verzija (FIXED async Notion).
     """
 
     def __init__(self, identity: Dict[str, Any], mode: Dict[str, Any], state: Dict[str, Any]):
@@ -29,11 +30,11 @@ class ContextOrchestrator:
         self.response_engine = FinalResponseEngine(identity)
         self.playbook_engine = PlaybookEngine()
 
-        # Servisi
+        # Services
         self.decision_engine = AdnanAIDecisionService()
         self.memory_engine = MemoryService()
 
-        # Notion engine
+        # Notion (async!)
         self.notion_engine = NotionService(
             os.getenv("NOTION_API_KEY"),
             os.getenv("NOTION_GOALS_DB"),
@@ -41,12 +42,25 @@ class ContextOrchestrator:
             os.getenv("NOTION_PROJECTS_DB"),
         )
 
-        # Agents engine — requires 3 params
+        # Agents (sync)
         self.agents_engine = AgentsService(
             os.getenv("NOTION_API_KEY"),
             os.getenv("NOTION_EXCHANGE_DB"),
             os.getenv("NOTION_PROJECTS_DB"),
         )
+
+    # -----------------------------------------------------------
+    # UTILITY → SAFE SYNC WRAPPER
+    # -----------------------------------------------------------
+
+    def _sync(self, coro):
+        """
+        Pretvara async u sync bez pucanja FastAPI-ja.
+        """
+        try:
+            return asyncio.get_event_loop().run_until_complete(coro)
+        except RuntimeError:
+            return asyncio.run(coro)
 
     # -----------------------------------------------------------
     # MAIN EXECUTOR
@@ -92,7 +106,7 @@ class ContextOrchestrator:
                 "context_type": context,
             }
 
-        # Compose final response
+        # FINAL RESPONSE
         final_output = self.response_engine.format_response(
             identity_reasoning=identity_reasoning,
             classification=classification,
@@ -113,9 +127,6 @@ class ContextOrchestrator:
     # -----------------------------------------------------------
 
     def _handle_identity(self, user_input: str, reasoning: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Prirodni identitetni odgovor umjesto JSON-a.
-        """
 
         lower = user_input.lower()
 
@@ -134,28 +145,26 @@ class ContextOrchestrator:
         }
 
     def _handle_business(self, user_input: str) -> Dict[str, Any]:
-        """
-        process_business NE POSTOJI → koristimo process_ceo_instruction.
-        """
         return {
             "type": "business",
             "response": self.decision_engine.process_ceo_instruction(user_input),
         }
 
     def _handle_business_playbook(self, user_input: str, playbook: Dict[str, Any]) -> Dict[str, Any]:
+
         action = playbook.get("recommended_action")
         target_db = playbook.get("target_database")
 
         if action == "follow_sop":
             return {
                 "type": "sop",
-                "response": self.notion_engine.handle_sop(user_input),
+                "response": self._sync(self.notion_engine.handle_sop(user_input)),
             }
 
         if action == "query_or_update_notion":
             return {
                 "type": "notion",
-                "response": self.notion_engine.smart_process(user_input, target_db),
+                "response": self._sync(self.notion_engine.smart_process(user_input, target_db)),
             }
 
         if action == "next_step":
@@ -164,7 +173,6 @@ class ContextOrchestrator:
                 "response": self.decision_engine.process_ceo_instruction(user_input),
             }
 
-        # DEFAULT BUSINESS HANDLER
         return {
             "type": "business",
             "response": self.decision_engine.process_ceo_instruction(user_input),
@@ -173,13 +181,13 @@ class ContextOrchestrator:
     def _handle_notion(self, user_input: str) -> Dict[str, Any]:
         return {
             "type": "notion",
-            "response": self.notion_engine.process(user_input),
+            "response": self._sync(self.notion_engine.process(user_input)),
         }
 
     def _handle_sop(self, user_input: str) -> Dict[str, Any]:
         return {
             "type": "sop",
-            "response": self.notion_engine.handle_sop(user_input),
+            "response": self._sync(self.notion_engine.handle_sop(user_input)),
         }
 
     def _handle_agent_query(self, user_input: str) -> Dict[str, Any]:
