@@ -26,7 +26,13 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
-# ==== DODANO: CORS MIDDLEWARE (NE MIJENJA NIŠTA OSTALO) ====
+# ==== HEALTH ENDPOINT (Render zahtijeva ovo) ====
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+# ===============================================
+
+# ==== DODANO: CORS MIDDLEWARE ====
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -34,7 +40,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-# ===========================================================
+# =================================
 
 NOTION_KEY = os.getenv("NOTION_API_KEY")
 notion = Client(auth=NOTION_KEY)
@@ -65,9 +71,7 @@ async def execute_notion_command(req: CommandRequest):
         logger.info(">> Command: %s", req.command)
         logger.info(">> Payload: %s", json.dumps(req.payload, ensure_ascii=False))
 
-        # ==============================================================
-        # 1. CEO MODE → USE DECISION ENGINE
-        # ==============================================================
+        # 1. CEO MODE
         if req.command == "from_ceo":
             ceo_text = req.payload.get("text", "")
             logger.info(">> Processing CEO instruction through Decision Engine")
@@ -87,28 +91,23 @@ async def execute_notion_command(req: CommandRequest):
                     "engine_output": decision,
                 }
 
-            # Extract final Notion command directly from decision
+            # Extract final Notion command
             notion_command = decision.get("command")
             notion_payload = decision.get("payload")
 
             if not notion_command or not notion_payload:
                 raise HTTPException(500, "Decision Engine did not produce a valid command/payload")
 
-            # Override incoming request
             req.command = notion_command
             req.payload = notion_payload
 
-        # =================================================================
         # 2. EXECUTE NOTION COMMAND
-        # =================================================================
         command = req.command
         payload = req.payload
 
         logger.info(">> EXECUTING NOTION COMMAND: %s", command)
 
-        # -------------------------------------------------------------
         # CREATE DATABASE ENTRY
-        # -------------------------------------------------------------
         if command == "create_database_entry":
             db = payload.get("database_id")
             entry = payload.get("entry", {})
@@ -140,9 +139,7 @@ async def execute_notion_command(req: CommandRequest):
                 "url": created.get("url"),
             }
 
-        # -------------------------------------------------------------
         # UPDATE DATABASE ENTRY
-        # -------------------------------------------------------------
         elif command == "update_database_entry":
             page_id = payload.get("page_id")
             entry = payload.get("entry", {})
@@ -170,9 +167,7 @@ async def execute_notion_command(req: CommandRequest):
                 "url": updated.get("url"),
             }
 
-        # -------------------------------------------------------------
         # QUERY DATABASE
-        # -------------------------------------------------------------
         elif command == "query_database":
             db = payload.get("database_id")
             results = notion.databases.query(database_id=db)
@@ -184,9 +179,7 @@ async def execute_notion_command(req: CommandRequest):
                 "results": results.get("results", []),
             }
 
-        # -------------------------------------------------------------
         # CREATE PAGE
-        # -------------------------------------------------------------
         elif command == "create_page":
             parent_id = payload.get("parent_page_id")
             title = payload.get("title", "Untitled Page")
@@ -204,9 +197,7 @@ async def execute_notion_command(req: CommandRequest):
                 "url": created.get("url"),
             }
 
-        # -------------------------------------------------------------
         # RETRIEVE PAGE CONTENT
-        # -------------------------------------------------------------
         elif command == "retrieve_page_content":
             page_id = payload.get("page_id")
             blocks = notion.blocks.children.list(block_id=page_id)
@@ -216,9 +207,7 @@ async def execute_notion_command(req: CommandRequest):
                 "blocks": blocks.get("results", []),
             }
 
-        # -------------------------------------------------------------
         # UNKNOWN COMMAND
-        # -------------------------------------------------------------
         else:
             return {"error": f"Unknown command: {command}"}
 
