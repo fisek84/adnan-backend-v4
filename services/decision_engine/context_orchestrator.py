@@ -31,7 +31,7 @@ class ContextOrchestrator:
         self.decision_engine = AdnanAIDecisionService()
         self.memory_engine = MemoryService()
 
-        # FIX — Notion service ispravno inicijalizovan
+        # Notion service ispravno inicijalizovan
         self.notion_engine = NotionService(
             os.getenv("NOTION_API_KEY"),
             os.getenv("NOTION_GOALS_DB"),
@@ -39,7 +39,7 @@ class ContextOrchestrator:
             os.getenv("NOTION_PROJECTS_DB"),
         )
 
-        # FIX — AgentsService sada traži 3 argumenta → moramo ih proslijediti
+        # AgentsService sada traži 3 argumenta → moramo ih proslijediti
         self.agents_engine = AgentsService(
             os.getenv("NOTION_API_KEY"),
             os.getenv("NOTION_EXCHANGE_DB"),
@@ -135,9 +135,13 @@ class ContextOrchestrator:
     # -----------------------------------------------------------
 
     def _handle_identity(self, user_input: str, reasoning: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        FIX: `process_identity` NE POSTOJI u AdnanAIDecisionService → 
+        koristimo identity reasoning engine koji već daje savršen identity output.
+        """
         return {
             "type": "identity",
-            "response": self.decision_engine.process_identity(user_input, reasoning)
+            "response": reasoning
         }
 
     def _handle_business(self, user_input: str) -> Dict[str, Any]:
