@@ -1,4 +1,5 @@
 from typing import Dict, Any
+import os  # DODANO
 
 from .identity_reasoning import IdentityReasoningEngine
 from .context_classifier import ContextClassifier
@@ -15,19 +16,6 @@ from services.agents_service import AgentsService
 class ContextOrchestrator:
     """
     Centralni orkestrator — mozak Adnan.ai sistema.
-    ------------------------------------------------
-    Prima:
-        user_input: str
-        identity: dict
-        mode: dict
-        state: dict
-
-    Radi:
-        1. Identity Reasoning
-        2. Context Classification
-        3. Playbook Business Layer (za business tok)
-        4. Odabir toka (identity, business, notion, sop, agent, memory, meta)
-        5. Final Response Engine (Adnan-style output)
     """
 
     def __init__(self, identity: Dict[str, Any], mode: Dict[str, Any], state: Dict[str, Any]):
@@ -42,18 +30,22 @@ class ContextOrchestrator:
 
         self.decision_engine = AdnanAIDecisionService()
         self.memory_engine = MemoryService()
-        self.notion_engine = NotionService()
+
+        # FIX — OPCIJA A: Notion parametri iz .env
+        self.notion_engine = NotionService(
+            os.getenv("NOTION_API_KEY"),
+            os.getenv("NOTION_GOALS_DB"),
+            os.getenv("NOTION_TASKS_DB"),
+            os.getenv("NOTION_PROJECTS_DB"),
+        )
+
         self.agents_engine = AgentsService()
 
     def run(self, user_input: str) -> Dict[str, Any]:
-        # 1 — Identity Reasoning
         identity_reasoning = self.reasoner.generate_reasoning(user_input)
-
-        # 2 — Context Classification
         classification = self.classifier.classify(user_input, identity_reasoning)
         context = classification["context_type"]
 
-        # 3 — Routing prema kontekstu
         if context == "identity":
             result = self._handle_identity(user_input, identity_reasoning)
 
@@ -87,7 +79,6 @@ class ContextOrchestrator:
                 "context_type": context,
             }
 
-        # 4 — Final Response Layer (Adnan-style output)
         final_output = self.response_engine.format_response(
             identity_reasoning=identity_reasoning,
             classification=classification,
@@ -111,35 +102,31 @@ class ContextOrchestrator:
         action = playbook.get("recommended_action")
         target_db = playbook.get("target_database")
 
-        # FOLLOW SOP
         if action == "follow_sop":
             return {
                 "type": "sop",
                 "response": self.notion_engine.handle_sop(user_input)
             }
 
-        # QUERY/UPDATE BUSINESS DATA
         if action == "query_or_update_notion":
             return {
                 "type": "notion",
                 "response": self.notion_engine.smart_process(user_input, target_db)
             }
 
-        # NEXT STEP (CEO)
         if action == "next_step":
             return {
                 "type": "business",
                 "response": self.decision_engine.next_step(user_input)
             }
 
-        # GENERAL BUSINESS ADVICE
         return {
             "type": "business",
             "response": self.decision_engine.process_business(user_input)
         }
 
     # -----------------------------------------------------------
-    # HANDLERI TOKOVA (minimalni — ne diramo postojeću logiku)
+    # HANDLERI TOKOVA
     # -----------------------------------------------------------
 
     def _handle_identity(self, user_input: str, reasoning: Dict[str, Any]) -> Dict[str, Any]:
