@@ -17,15 +17,15 @@ from services.adnan_ai_decision_service import AdnanAIDecisionService
 # Personality Engine
 from services.decision_engine.personality_engine import PersonalityEngine
 
-# Context Orchestrator (NEW)
+# Context Orchestrator
 from services.decision_engine.context_orchestrator import ContextOrchestrator
 
-# Identity / Mode / State Loaders (FIXED IMPORTS)
+# Identity / Mode / State Services
 from services.identity_loader import load_adnan_identity
 from services.adnan_mode_service import load_mode
 from services.adnan_state_service import load_state
 
-# Voice router
+# Voice Router
 from routers.voice_router import router as voice_router
 
 
@@ -38,7 +38,6 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("gateway")
 
 app = FastAPI()
-
 
 # ================================================================
 # HEALTH CHECK
@@ -59,7 +58,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 # ================================================================
 # GLOBALS
 # ================================================================
@@ -69,12 +67,10 @@ notion = Client(auth=NOTION_KEY)
 decision_engine = AdnanAIDecisionService()
 personality_engine = PersonalityEngine()
 
-# Load identity, mode, state
 identity = load_adnan_identity()
 mode = load_mode()
 state = load_state()
 
-# Init Orchestrator
 orchestrator = ContextOrchestrator(identity, mode, state)
 
 
@@ -83,7 +79,6 @@ class CommandRequest(BaseModel):
     payload: dict
 
 
-# Register voice router
 app.include_router(voice_router)
 
 
@@ -127,13 +122,12 @@ async def teach_personality(req: dict):
             "category": category,
             "message": "Personality updated successfully."
         }
-
     except Exception as e:
         raise HTTPException(500, str(e))
 
 
 # =====================================================================
-# /ops/execute  —  CEO → Hybrid Engine → Notion
+# /ops/execute — CEO → Orchestrator → Decision Engine → Notion
 # =====================================================================
 @app.post("/ops/execute")
 async def execute_notion_command(req: CommandRequest):
@@ -143,20 +137,19 @@ async def execute_notion_command(req: CommandRequest):
         logger.info(">> Payload: %s", json.dumps(req.payload, ensure_ascii=False))
 
         # ------------------------------------------------------------
-        # ORCHESTRATOR FIRST — detect identity, meta, memory, notion, sop, agents
+        # ORCHESTRATOR — interpret the user text first
         # ------------------------------------------------------------
-        user_text = None
-
-        if req.command == "from_ceo":
-            user_text = req.payload.get("text", "")
-        else:
-            user_text = req.payload.get("text") or req.payload.get("query") or ""
+        user_text = (
+            req.payload.get("text", "")
+            if req.command == "from_ceo"
+            else req.payload.get("text") or req.payload.get("query") or ""
+        )
 
         if user_text:
             orch = orchestrator.run(user_text)
             context_type = orch.get("context_type")
 
-            # DIRECT ANSWERS (no decision engine)
+            # DIRECT ANSWERS → do not involve Notion or Hybrid Engine
             if context_type in ["identity", "memory", "agent", "sop", "notion", "meta"]:
                 return {
                     "success": True,
@@ -165,7 +158,7 @@ async def execute_notion_command(req: CommandRequest):
                 }
 
         # ------------------------------------------------------------
-        # CEO mode — fallback to Hybrid Decision Engine
+        # CEO MODE — fallback to Hybrid Decision Engine
         # ------------------------------------------------------------
         if req.command == "from_ceo":
             ceo_text = req.payload.get("text", "")
@@ -173,6 +166,7 @@ async def execute_notion_command(req: CommandRequest):
             decision = decision_engine.process_ceo_instruction(ceo_text)
             logger.info(json.dumps(decision, indent=2, ensure_ascii=False))
 
+            # Local-only → chat/personality tone
             if decision.get("local_only"):
                 return {
                     "success": True,
@@ -180,8 +174,7 @@ async def execute_notion_command(req: CommandRequest):
                     "engine_output": decision
                 }
 
-            err = decision.get("error_engine", {})
-            if err and err.get("errors"):
+            if decision.get("error_engine", {}).get("errors"):
                 return {
                     "success": False,
                     "blocked": True,
@@ -189,7 +182,6 @@ async def execute_notion_command(req: CommandRequest):
                     "engine_output": decision,
                 }
 
-            # Map decision engine → Notion API
             notion_command = decision.get("command")
             notion_payload = decision.get("payload")
 
@@ -204,7 +196,7 @@ async def execute_notion_command(req: CommandRequest):
             req.payload = notion_payload
 
         # ------------------------------------------------------------
-        # EXECUTION: Notion Commands
+        # EXECUTION — Notion Commands
         # ------------------------------------------------------------
         command = req.command
         payload = req.payload
@@ -229,6 +221,7 @@ async def execute_notion_command(req: CommandRequest):
                 parent={"database_id": db},
                 properties=properties,
             )
+
             return {
                 "success": True,
                 "final_answer": "Novi zapis je kreiran.",
@@ -281,6 +274,7 @@ async def execute_notion_command(req: CommandRequest):
                 properties={"title": [{"text": {"content": title}}]},
                 children=children,
             )
+
             return {
                 "success": True,
                 "final_answer": "Nova stranica je kreirana.",
@@ -337,7 +331,6 @@ async def execute_notion_command(req: CommandRequest):
                 "deleted_id": page_to_delete,
             }
 
-        # UNKNOWN COMMAND
         else:
             return {
                 "error": f"Unknown command: {command}",
@@ -350,7 +343,7 @@ async def execute_notion_command(req: CommandRequest):
 
 
 # =====================================================================
-# DIRECT ORCHESTRATOR ENDPOINT
+# DIRECT AI ORCHESTRATOR ENDPOINT
 # =====================================================================
 @app.post("/ai/context")
 async def ai_context(req: dict):
