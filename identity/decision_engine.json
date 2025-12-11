@@ -1,0 +1,123 @@
+﻿{
+  "version": "2.0",
+  "decision_engine": {
+    "flow": [
+      "Parsing",
+      "Validation",
+      "Normalization",
+      "Alignment Check",
+      "Command Mapping",
+      "Payload Build",
+      "Final Output"
+    ],
+
+    "parsing_rules": [
+      {
+        "name": "extract_name",
+        "description": "Extract task name after keywords Ime / Name",
+        "patterns": [
+          {
+            "regex": "(?i)ime\\s*[:-]?\\s*([a-zA-Z0-9_\\- ]+)",
+            "target": "Name"
+          },
+          {
+            "regex": "(?i)name\\s*[:-]?\\s*([a-zA-Z0-9_\\- ]+)",
+            "target": "Name"
+          }
+        ]
+      },
+      {
+        "name": "extract_status",
+        "description": "Extract status field",
+        "patterns": [
+          {
+            "regex": "(?i)status\\s*[:-]?\\s*([a-zA-Z ]+)",
+            "target": "Status"
+          }
+        ]
+      },
+      {
+        "name": "extract_priority",
+        "description": "Extract priority field",
+        "patterns": [
+          {
+            "regex": "(?i)priority\\s*[:-]?\\s*([a-zA-Z ]+)",
+            "target": "Priority"
+          }
+        ]
+      }
+    ],
+
+    "validation_rules": [
+      {
+        "field": "Name",
+        "required": true,
+        "error_code": "missing_name",
+        "message": "Task name cannot be empty."
+      },
+      {
+        "field": "Status",
+        "required": true,
+        "allowed": ["active", "inactive", "todo", "in progress", "done"],
+        "error_code": "invalid_status",
+        "message": "Invalid or missing status."
+      },
+      {
+        "field": "Priority",
+        "required": true,
+        "allowed": ["high", "medium", "low"],
+        "error_code": "invalid_priority",
+        "message": "Invalid or missing priority."
+      }
+    ],
+
+    "normalization_rules": {
+      "Status": {
+        "active": "Active",
+        "in progress": "In Progress",
+        "todo": "To Do",
+        "done": "Done"
+      },
+      "Priority": {
+        "high": "High",
+        "medium": "Medium",
+        "low": "Low"
+      }
+    },
+
+    "alignment_rules": {
+      "strategic_keywords": [
+        "q1",
+        "strategija",
+        "kljucni cilj",
+        "priority",
+        "okr"
+      ],
+      "priority_map": {
+        "High": 1.0,
+        "Medium": 0.6,
+        "Low": 0.3
+      },
+      "urgency_rules": {
+        "To Do": 0.5,
+        "In Progress": 0.8,
+        "Urgent": 1.0
+      }
+    },
+
+    "command_mapping": {
+      "default": "create_database_entry"
+    },
+
+    "payload_structure": {
+      "create_database_entry": {
+        "database_id": "auto",
+        "entry": {
+          "Name": "$Name",
+          "Status": "$Status",
+          "Priority": "$Priority"
+        }
+      }
+    }
+  }
+}
