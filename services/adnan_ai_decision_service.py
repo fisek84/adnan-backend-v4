@@ -132,7 +132,9 @@ class AdnanAIDecisionService:
 
         text_low = text.lower()
 
+        # ----------------------------
         # 1) Detect action
+        # ----------------------------
         action = None
         for act, patterns in ACTION_PATTERNS.items():
             for p in patterns:
@@ -140,14 +142,16 @@ class AdnanAIDecisionService:
                     action = act
                     break
 
-        # 2) Detect database (domain-aware)
+        # ----------------------------
+        # 2) Detect database (domain)
+        # ----------------------------
         db_guess = None
         for db in DATABASE_MAP.keys():
             if db in text_low:
                 db_guess = db
                 break
 
-        # 2b) Fallback domain rules
+        # fallback mapping
         if not db_guess:
             if "kpi" in text_low:
                 db_guess = "kpi"
@@ -156,24 +160,56 @@ class AdnanAIDecisionService:
             elif "zabilježi" in text_low or "note" in text_low:
                 db_guess = "notes"
 
-        # 3) Extract structured fields
+        # ----------------------------
+        # 3) Extract NAME, STATUS, PRIORITY
+        # ----------------------------
+
+        # Robust Name Extractor V3
         name = ""
+
+        # pattern 1: Ime - Majmun
+        m1 = re.search(r"(ime|title|naziv)\s*[-:]\s*(.+)", text, re.IGNORECASE)
+        if m1:
+            name = m1.group(2).strip()
+
+        # pattern 2: task: Majmun
+        if not name:
+            m2 = re.search(r"(task|goal|project|note)\s*[:\-]\s*(.+)", text, re.IGNORECASE)
+            if m2:
+                name = m2.group(2).strip()
+
+        # pattern 3: kreiraj task majmun
+        if not name:
+            m3 = re.search(r"(task|goal|project|note)\s+([A-Za-z0-9_\-\s]+)$", text, re.IGNORECASE)
+            if m3:
+                name = m3.group(2).strip()
+
+        # pattern 4: fallback — prva linija
+        if not name:
+            first = text.strip().split("\n")[0]
+            name = (
+                first.replace("kreiraj", "")
+                .replace("napravi", "")
+                .replace("dodaj", "")
+                .replace("task", "")
+                .strip()
+            )
+
+        # status
         status = ""
+        s = re.search(r"(status)\s*[-:]\s*([\w ]+)", text, re.IGNORECASE)
+        if s:
+            status = s.group(2).strip()
+
+        # priority
         priority = ""
+        p = re.search(r"(priority|prioritet)\s*[-:]\s*([\w ]+)", text, re.IGNORECASE)
+        if p:
+            priority = p.group(2).strip()
 
-        name_match = re.search(r"(ime|title|naziv)\s*[-:]\s*(.+)", text, re.IGNORECASE)
-        if name_match:
-            name = name_match.group(2).strip()
-
-        status_match = re.search(r"(status)\s*[-:]\s*([\w ]+)", text, re.IGNORECASE)
-        if status_match:
-            status = status_match.group(2).strip()
-
-        prio_match = re.search(r"(priority|prioritet)\s*[-:]\s*([\w ]+)", text, re.IGNORECASE)
-        if prio_match:
-            priority = prio_match.group(2).strip()
-
-        # 4) HARD CONFIRM MODE
+        # ----------------------------
+        # 4) Hard Confirm Mode
+        # ----------------------------
         if action == "create" and not db_guess:
             return {
                 "needs_confirmation": True,
@@ -213,27 +249,19 @@ class AdnanAIDecisionService:
         if intent["action"] == "create":
             return {
                 "command": "create_database_entry",
-                "payload": {
-                    "database_id": db_id,
-                    "entry": entry
-                }
+                "payload": {"database_id": db_id, "entry": entry}
             }
 
         if intent["action"] == "update":
             return {
                 "command": "update_database_entry",
-                "payload": {
-                    "page_id": None,
-                    "entry": entry
-                }
+                "payload": {"page_id": None, "entry": entry}
             }
 
         if intent["action"] == "query":
             return {
                 "command": "query_database",
-                "payload": {
-                    "database_id": db_id
-                }
+                "payload": {"database_id": db_id}
             }
 
         return {"command": None, "payload": {}}
@@ -275,7 +303,11 @@ class AdnanAIDecisionService:
             warnings.append({"field": "Priority", "message": "Missing → auto 'Medium'"})
 
         command["payload"]["entry"] = entry
-        command["error_engine"] = {"errors": errors, "warnings": warnings, "auto": auto}
+        command["error_engine"] = {
+            "errors": errors,
+            "warnings": warnings,
+            "auto": auto
+        }
 
         return command
 
