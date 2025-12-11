@@ -15,7 +15,7 @@ from services.decision_engine.sop_mapper import SOPMapper
 # STATIC MEMORY M1
 from services.decision_engine.static_memory_engine import StaticMemoryEngine
 
-# DYNAMIC MEMORY D1 (correct)
+# DYNAMIC MEMORY D1
 from services.decision_engine.dynamic_memory import DynamicMemoryEngine
 
 
@@ -24,36 +24,57 @@ MEMORY_FILE = BASE_PATH / "memory.json"
 
 
 ###################################################################
-# FULL DATABASE MAP
+# EXTENDED DATABASE MAP (full workspace)
 ###################################################################
 DATABASE_MAP = {
+    "task": "2ad5873bd84a80e8b4dac703018212fe",
     "tasks": "2ad5873bd84a80e8b4dac703018212fe",
+
+    "goal": "2ac5873bd84a801f956fc30327b8ef94",
     "goals": "2ac5873bd84a801f956fc30327b8ef94",
+
+    "project": "2ac5873bd84a8004aac0ea9c53025bfc",
     "projects": "2ac5873bd84a8004aac0ea9c53025bfc",
-    "agent exchange": "2b45873bd84a80169f7fceffd8405fef",
-    "active goals": "2b75873bd84a807081c9d5b9a068f9d6",
-    "completed goals": "2b75873bd84a806ba853cbde32e0f849",
-    "blocked goals": "2b75873bd84a80ab85a9ec90ca34fb02",
-    "kpi": "2bd5873bd84a80b68889df5485567703",
-    "flp": "2bd5873bd84a80d3b9c9dceeaba651e8",
-    "lead": "2bb5873bd84a8095aac1f68b5d60ccf9",
+
+    "note": "2b75873bd84a80619330eb45348dd90e",
+    "notes": "2b75873bd84a80619330eb45348dd90e",
     "weekly summary": "2b75873bd84a80619330eb45348dd90e",
-    "agent projects": "2b45873bd84a80b3b06dd578c8c5d664",
-    "outreach sop": "2c35873bd84a809ab4bcd6a0e0908f0b",
-    "qualification sop": "2c35873bd84a80db8d37f71470424185",
-    "follow up sop": "2c35873bd84a80908941d4d1eb29ae17",
-    "fsc sop": "2c35873bd84a80c7a5c0c21dcb765c1b",
-    "flp ops sop": "2c35873bd84a8047b63bea50e5f78090",
-    "lss sop": "2c35873bd84a80c3ba85c66344fc98d4",
-    "partner activation sop": "2c35873bd84a808793edf056ad0c1a1f",
-    "partner performance sop": "2c35873bd84a80b4a27ad85c42560287",
-    "partner leadership sop": "2c35873bd84a80c6bbafcc6d3a5a5d3a",
-    "customer onboarding sop": "2c35873bd84a80f088abdc26d47fe551",
-    "customer retention sop": "2c35873bd84a80109336c02496f100b3",
-    "customer performance sop": "2c35873bd84a80708e8fcd3bf1d0132a",
-    "partner potential sop": "2c35873bd84a80cbb885c2d22d4a0ee0",
-    "sales closing sop": "2c35873bd84a80a8beb8eb61fb730dcc"
+
+    "kpi": "2bd5873bd84a80b68889df5485567703"
 }
+
+
+###################################################################
+# NATURAL LANGUAGE → INTENT
+###################################################################
+ACTION_PATTERNS = {
+    "create": [r"kreiraj", r"napravi", r"create", r"add", r"dodaj", r"postavi"],
+    "update": [r"update", r"izmijeni", r"promijeni", r"uredi", r"postavi status"],
+    "query":  [r"prikaži", r"listaj", r"show", r"get", r"query", r"pokaži"]
+}
+
+
+###################################################################
+# RESPONSE LAYER — prirodni jezik
+###################################################################
+def natural_response(command):
+    if command.get("blocked"):
+        if command["reason"] == "confirmation_required":
+            return f"Treba mi potvrda: {command['question']}"
+        return "Nisam mogao izvršiti zadatak zbog kritične greške."
+
+    cmd = command.get("command")
+
+    if cmd == "create_database_entry":
+        return "Kreiram novi zapis u Notion bazi."
+
+    if cmd == "update_database_entry":
+        return "Ažuriram postojeći zapis u Notionu."
+
+    if cmd == "query_database":
+        return "Dohvaćam podatke iz Notion baze."
+
+    return "Izvršavam tvoj zahtjev."
 
 
 ###################################################################
@@ -69,19 +90,17 @@ class AdnanAIDecisionService:
         self.decision_engine = self._load("decision_engine.json")
         self.static_memory = self._load("static_memory.json")
 
-        # INIT MODULES
         self.autocorrect_engine = AutocorrectEngine()
         self.trust_layer = TrustLayer()
         self.sop_mapper = SOPMapper()
         self.static_memory_engine = StaticMemoryEngine(self.static_memory)
-
-        # SESSION MEMORY INIT
         self.session_memory = self._init_session_memory()
-
-        # D1 ENGINE
         self.dynamic_memory_engine = DynamicMemoryEngine(self.session_memory)
 
 
+    ###################################################################
+    # MEMORY LOADERS
+    ###################################################################
     def _init_session_memory(self):
         if MEMORY_FILE.exists():
             return json.load(open(MEMORY_FILE, "r", encoding="utf-8-sig"))
@@ -107,68 +126,125 @@ class AdnanAIDecisionService:
 
 
     ###################################################################
-    # CEO PARSER
+    # DOMAIN-AWARE INTENT DETECTION (Bosnian + English)
     ###################################################################
-    def from_ceo_to_command(self, text: str) -> dict:
+    def detect_intent(self, text: str):
 
-        db_match = re.search(r"u (.*?) bazi", text, re.IGNORECASE)
-        title_match = re.search(r"bazi: (.*?)(?:\. Status:|\. Prioritet:|\.)", text, re.IGNORECASE)
-        status_match = re.search(r"Status: ([\w ]]+)", text, re.IGNORECASE)
-        priority_match = re.search(r"Priority: ([\w ]]+)", text, re.IGNORECASE)
+        text_low = text.lower()
 
-        db_name = db_match.group(1).strip().lower() if db_match else None
+        # 1) Detect action
+        action = None
+        for act, patterns in ACTION_PATTERNS.items():
+            for p in patterns:
+                if re.search(p, text_low):
+                    action = act
+                    break
 
-        # SOP INTELLIGENCE
-        sop_db = self.sop_mapper.resolve_sop(text)
-        if sop_db:
-            db_name = sop_db
+        # 2) Detect database (domain-aware)
+        db_guess = None
+        for db in DATABASE_MAP.keys():
+            if db in text_low:
+                db_guess = db
+                break
 
-        # AUTOCORRECT
-        autocorrect_info = None
-        if db_name:
-            autocorrect_info = self.autocorrect_engine.autocorrect(db_name)
-            db_name = autocorrect_info["corrected"]
+        # 2b) Fallback domain rules
+        if not db_guess:
+            if "kpi" in text_low:
+                db_guess = "kpi"
+            elif "rezime" in text_low or "summary" in text_low:
+                db_guess = "weekly summary"
+            elif "zabilježi" in text_low or "note" in text_low:
+                db_guess = "notes"
 
-        title = title_match.group(1).strip() if title_match else ""
-        status = status_match.group(1).strip() if status_match else ""
-        priority = priority_match.group(1).strip() if priority_match else ""
+        # 3) Extract structured fields
+        name = ""
+        status = ""
+        priority = ""
+
+        name_match = re.search(r"(ime|title|naziv)\s*[-:]\s*(.+)", text, re.IGNORECASE)
+        if name_match:
+            name = name_match.group(2).strip()
+
+        status_match = re.search(r"(status)\s*[-:]\s*([\w ]+)", text, re.IGNORECASE)
+        if status_match:
+            status = status_match.group(2).strip()
+
+        prio_match = re.search(r"(priority|prioritet)\s*[-:]\s*([\w ]+)", text, re.IGNORECASE)
+        if prio_match:
+            priority = prio_match.group(2).strip()
+
+        # 4) HARD CONFIRM MODE
+        if action == "create" and not db_guess:
+            return {
+                "needs_confirmation": True,
+                "question": "U koju Notion bazu želiš da kreiram ovaj zapis?",
+                "missing": "database"
+            }
+
+        if not action:
+            return {
+                "needs_confirmation": True,
+                "question": "Da li želiš da kreiram, ažuriram ili prikažem podatke?",
+                "missing": "action"
+            }
 
         return {
-            "command": "create_database_entry",
-            "payload": {
-                "database_id": DATABASE_MAP.get(db_name),
-                "entry": {
-                    "Name": title,
-                    "Status": status,
-                    "Priority": priority
-                }
-            },
-            "autocorrect": autocorrect_info,
-            "sop_detected": sop_db
+            "action": action,
+            "database": db_guess,
+            "name": name,
+            "status": status,
+            "priority": priority,
+            "needs_confirmation": False
         }
 
 
     ###################################################################
-    # TRUST LAYER
+    # COMMAND BUILDER
     ###################################################################
-    def apply_trust_layer(self, text: str) -> dict:
-        return self.trust_layer.evaluate(text)
+    def build_command(self, intent):
+        db_id = DATABASE_MAP.get(intent.get("database"))
+
+        entry = {
+            "Name": intent.get("name", ""),
+            "Status": intent.get("status", ""),
+            "Priority": intent.get("priority", "")
+        }
+
+        if intent["action"] == "create":
+            return {
+                "command": "create_database_entry",
+                "payload": {
+                    "database_id": db_id,
+                    "entry": entry
+                }
+            }
+
+        if intent["action"] == "update":
+            return {
+                "command": "update_database_entry",
+                "payload": {
+                    "page_id": None,
+                    "entry": entry
+                }
+            }
+
+        if intent["action"] == "query":
+            return {
+                "command": "query_database",
+                "payload": {
+                    "database_id": db_id
+                }
+            }
+
+        return {"command": None, "payload": {}}
 
 
     ###################################################################
-    # STATIC MEMORY (M1)
+    # ERROR ENGINE (auto-fixing)
     ###################################################################
-    def apply_static_memory(self, text: str) -> dict:
-        return self.static_memory_engine.apply(text)
-
-
-    ###################################################################
-    # ERROR ENGINE
-    ###################################################################
-    def apply_error_engine(self, command: dict) -> dict:
-
-        entry = command["payload"]["entry"]
-        db = command["payload"]["database_id"]
+    def apply_error_engine(self, command):
+        entry = command["payload"].get("entry", {})
+        db = command["payload"].get("database_id")
 
         errors = []
         warnings = []
@@ -181,159 +257,27 @@ class AdnanAIDecisionService:
                 "message": "Unknown database name provided."
             })
             command["error_engine"] = {"errors": errors, "warnings": warnings}
-            command["autocorrected"] = False
             return command
 
-        if entry["Name"].strip() == "":
-            warnings.append({
-                "type": "validation_error",
-                "field": "Name",
-                "message": "Title missing → auto-set to 'Untitled'."
-            })
+        if entry.get("Name", "").strip() == "":
             entry["Name"] = "Untitled"
             auto["Name"] = "Untitled"
+            warnings.append({"field": "Name", "message": "Missing → auto 'Untitled'"})
 
-        if entry["Status"].strip() == "":
-            warnings.append({
-                "type": "validation_error",
-                "field": "Status",
-                "message": "Missing status → auto-default = 'To Do'."
-            })
+        if entry.get("Status", "").strip() == "":
             entry["Status"] = "To Do"
             auto["Status"] = "To Do"
+            warnings.append({"field": "Status", "message": "Missing → auto 'To Do'"})
 
-        if entry["Priority"].strip() == "":
-            warnings.append({
-                "type": "validation_error",
-                "field": "Priority",
-                "message": "Missing priority → auto-default = 'Medium'."
-            })
+        if entry.get("Priority", "").strip() == "":
             entry["Priority"] = "Medium"
             auto["Priority"] = "Medium"
+            warnings.append({"field": "Priority", "message": "Missing → auto 'Medium'"})
 
         command["payload"]["entry"] = entry
-        command["autocorrected"] = True
-        command["error_engine"] = {
-            "errors": errors,
-            "warnings": warnings,
-            "auto_corrected_fields": auto
-        }
+        command["error_engine"] = {"errors": errors, "warnings": warnings, "auto": auto}
+
         return command
-
-
-    ###################################################################
-    # SCORING
-    ###################################################################
-    def evaluate_alignment(self, title: str) -> float:
-        rules = self.decision_engine["decision_engine"]["scoring"]["alignment_rules"]
-        score = 0
-        for kw in rules["strategic_keywords"]:
-            if kw in title.lower():
-                score += 0.2
-        return min(score, 1.0)
-
-
-    def map_priority(self, p):
-        return self.decision_engine["decision_engine"]["scoring"]["priority_map"].get(p, 0.5)
-
-
-    def map_urgency(self, s):
-        return self.decision_engine["decision_engine"]["scoring"]["urgency_rules"].get(s, 0.5)
-
-
-    def calculate_score(self, entry: dict) -> float:
-        w = self.decision_engine["decision_engine"]["scoring"]["weights"]
-        score = (
-            self.evaluate_alignment(entry["Name"]) * w["goals_alignment"] +
-            self.map_urgency(entry["Status"]) * w["urgency"] +
-            self.map_priority(entry["Priority"]) * w["priority_field"]
-        )
-        return round(min(max(score, 0), 1), 2)
-
-
-    ###################################################################
-    # BEHAVIORAL FILTERS
-    ###################################################################
-    def apply_behavioral_filters(self, command: dict) -> dict:
-        entry = command["payload"]["entry"]
-        rep = {"clarity": True, "simplicity": True, "mission_alignment": True, "issues": []}
-
-        if len(entry["Name"]) < 3:
-            rep["clarity"] = False
-            rep["issues"].append("Title too short")
-
-        if " and " in entry["Name"].lower():
-            rep["simplicity"] = False
-            rep["issues"].append("Multiple actions in one task")
-
-        if command["score"] < 0.4:
-            rep["mission_alignment"] = False
-            rep["issues"].append("Low mission score")
-
-        command["behavioral_filters"] = rep
-        return command
-
-
-    ###################################################################
-    # AUDIT
-    ###################################################################
-    def audit_decision(self, command: dict) -> dict:
-        audit = {"structural_ok": True, "strategic_ok": True, "issues": []}
-
-        entry = command["payload"]["entry"]
-
-        if entry["Name"] == "" or entry["Status"] == "" or entry["Priority"] == "":
-            audit["structural_ok"] = False
-            audit["issues"].append("Missing required fields")
-
-        if command.get("score", 0) < 0.3:
-            audit["strategic_ok"] = False
-            audit["issues"].append("Score < 0.3")
-
-        command["audit"] = audit
-        return command
-
-
-    ###################################################################
-    # MAIN PIPELINE
-    ###################################################################
-    def decide_action(self, context: dict) -> dict:
-
-        text = context["input"]
-
-        # 1 – PARSE
-        cmd = self.from_ceo_to_command(text)
-
-        # 2 – TRUST LAYER
-        cmd["trust"] = self.apply_trust_layer(text)
-
-        # 3 – STATIC MEMORY
-        cmd["static_memory_influence"] = self.apply_static_memory(text)
-
-        # 4 – DYNAMIC MEMORY (duplicate check)
-        d1 = self.dynamic_memory_engine.evaluate(text, cmd)
-        cmd["dynamic_memory"] = d1
-
-        if d1["duplicate_exists"]:
-            cmd.setdefault("error_engine", {"errors": [], "warnings": []})
-            cmd["error_engine"]["errors"].append({
-                "type": "duplicate_error",
-                "message": "Task već postoji — kreiranje blokirano."
-            })
-            return cmd
-
-        # 5 – ERROR ENGINE
-        cmd = self.apply_error_engine(cmd)
-        if cmd["error_engine"]["errors"]:
-            return cmd
-
-        # 6 – SCORING
-        cmd["score"] = self.calculate_score(cmd["payload"]["entry"])
-
-        # 7 – BEHAVIORAL FILTERS
-        cmd = self.apply_behavioral_filters(cmd)
-
-        return cmd
 
 
     ###################################################################
@@ -341,23 +285,41 @@ class AdnanAIDecisionService:
     ###################################################################
     def process_ceo_instruction(self, text: str):
 
-        context = {
-            "input": text,
-            "static_memory": self.static_memory,
-            "dynamic_memory": self.session_memory.get("dynamic_memory", {}),
-            "agent_memory": self.session_memory.get("agent_memory", [])
-        }
+        intent = self.detect_intent(text)
 
-        decision = self.decide_action(context)
-        decision = self.audit_decision(decision)
+        # 1) Hard Confirm Mode
+        if intent.get("needs_confirmation"):
+            return {
+                "success": False,
+                "blocked": True,
+                "reason": "confirmation_required",
+                "question": intent["question"],
+                "system_response": intent["question"]
+            }
 
-        # Add to dynamic memory only if NO critical errors
-        if "error_engine" in decision and not decision["error_engine"]["errors"]:
-            title = decision["payload"]["entry"]["Name"]
-            self.dynamic_memory_engine.add_task(title)
+        # 2) Build command
+        command = self.build_command(intent)
 
-        # persist
-        self.session_memory["dynamic_memory"] = copy.deepcopy(self.dynamic_memory_engine.memory)
-        self._save_memory()
+        # 3) Trust + Memory layers
+        command["trust"] = self.trust_layer.evaluate(text)
+        command["static_memory"] = self.static_memory_engine.apply(text)
+        command["dynamic_memory"] = self.dynamic_memory_engine.evaluate(text, command)
 
-        return decision
+        # 4) Error Engine
+        command = self.apply_error_engine(command)
+        if command["error_engine"]["errors"]:
+            command["system_response"] = "Nisam mogao izvršiti zbog kritične greške."
+            return command
+
+        # 5) Add to dynamic memory
+        if "entry" in command["payload"]:
+            title = command["payload"]["entry"].get("Name")
+            if title:
+                self.dynamic_memory_engine.add_task(title)
+                self.session_memory["dynamic_memory"] = copy.deepcopy(self.dynamic_memory_engine.memory)
+                self._save_memory()
+
+        # 6) Natural language response
+        command["system_response"] = natural_response(command)
+
+        return command
