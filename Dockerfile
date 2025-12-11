@@ -10,7 +10,6 @@ WORKDIR /build
 
 COPY requirements.txt .
 
-# Install packages into /install (standard)
 RUN pip install --upgrade pip wheel setuptools && \
     pip install --prefix=/install --no-cache-dir -r requirements.txt
 
@@ -27,8 +26,7 @@ ENV PYTHONUNBUFFERED=1
 WORKDIR /app
 
 # Install OS tools
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
+RUN apt-get update && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
 
 # COPY BUILT PYTHON PACKAGES
@@ -37,7 +35,8 @@ COPY --from=builder /install /usr/local
 # COPY APP CODE
 COPY . .
 
-# Render provides $PORT — do not hardcode
+# expose Render port
 EXPOSE $PORT
 
-CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port $PORT"]
+# START FASTAPI BACKEND
+CMD ["sh", "-c", "uvicorn gateway.gateway_server:app --host 0.0.0.0 --port $PORT"]
