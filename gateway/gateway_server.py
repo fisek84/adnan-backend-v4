@@ -8,6 +8,8 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
+from fastapi.middleware.cors import CORSMiddleware  # <-- DODANO
+
 from notion_client import Client
 from services.adnan_ai_decision_service import AdnanAIDecisionService
 
@@ -23,6 +25,16 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI()
+
+# ==== DODANO: CORS MIDDLEWARE (NE MIJENJA NIŠTA OSTALO) ====
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+# ===========================================================
 
 NOTION_KEY = os.getenv("NOTION_API_KEY")
 notion = Client(auth=NOTION_KEY)
