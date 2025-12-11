@@ -114,16 +114,28 @@ class ContextOrchestrator:
 
     def _handle_identity(self, user_input: str, reasoning: Dict[str, Any]) -> Dict[str, Any]:
         """
-        FIX: process_identity ne postoji → vraćamo reasoning
+        Prirodni identitetni odgovor umjesto JSON-a.
         """
+
+        lower = user_input.lower()
+
+        if any(q in lower for q in ["ko si", "ko si ti", "šta si ti", "ko je adnan.ai", "tvoj identitet"]):
+            text = (
+                "Ja sam Adnan.AI — digitalna rekonstrukcija tvog načina razmišljanja "
+                "i donošenja odluka. Fokusiran, precizan, sistemski."
+            )
+        else:
+            text = "Razumijem. Reci mi šta želiš dalje."
+
         return {
             "type": "identity",
-            "response": reasoning,
+            "response": text,
+            "reasoning": reasoning
         }
 
     def _handle_business(self, user_input: str) -> Dict[str, Any]:
         """
-        FIX: process_business NE POSTOJI → koristimo process_ceo_instruction
+        process_business NE POSTOJI → koristimo process_ceo_instruction.
         """
         return {
             "type": "business",
