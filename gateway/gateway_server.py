@@ -55,11 +55,17 @@ async def health():
 
 
 # ================================================================
-# CORS
+# ** FIXED CORS FOR REPLIT + RENDER **
 # ================================================================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "*",
+        "https://adnan-ai-frontend.fisekovicadnan.repl.co",
+        "https://*.replit.dev",
+        "http://localhost:3000"
+    ],
+    allow_origin_regex=".*replit\\.dev.*",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -142,7 +148,7 @@ async def execute_notion_command(req: CommandRequest):
         logger.info(">> Payload: %s", json.dumps(req.payload, ensure_ascii=False))
 
         # ------------------------------------------------------------
-        # 1) ORCHESTRATOR — interpret first
+        # 1) ORCHESTRATOR
         # ------------------------------------------------------------
         user_text = (
             req.payload.get("text", "")
@@ -154,7 +160,7 @@ async def execute_notion_command(req: CommandRequest):
             orch = orchestrator.run(user_text)
             context_type = orch.get("context_type")
 
-            # Direct answers (Identity, Memory, SOP, Meta...)
+            # Direct responses (identity, memory, meta, notion…)
             if context_type in ["identity", "memory", "agent", "sop", "notion", "meta"]:
                 return {
                     "success": True,
@@ -163,7 +169,7 @@ async def execute_notion_command(req: CommandRequest):
                 }
 
         # ------------------------------------------------------------
-        # 2) CEO MODE — fallback to Hybrid Engine
+        # 2) CEO MODE
         # ------------------------------------------------------------
         if req.command == "from_ceo":
             ceo_text = req.payload.get("text", "")
@@ -190,7 +196,7 @@ async def execute_notion_command(req: CommandRequest):
             req.payload = decision.get("payload")
 
         # ------------------------------------------------------------
-        # 3) EXECUTION — Notion Commands
+        # 3) EXECUTION — NOTION COMMANDS
         # ------------------------------------------------------------
         command = req.command
         payload = req.payload
@@ -334,6 +340,7 @@ async def execute_notion_command(req: CommandRequest):
     except Exception as e:
         logger.exception(">> ERROR in /ops/execute")
         raise HTTPException(500, str(e))
+
 
 
 # =====================================================================
