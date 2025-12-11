@@ -1,8 +1,26 @@
+# Git repo
 .git
 .gitignore
-.env
+
+# Python cache
 __pycache__/
 *.pyc
-project_tree_full.txt
-node_modules/
+*.pyo
+*.pyd
+
+# Virtual environments
+venv/
+.env
+
+# Local artifacts
 *.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Node (ako se pojavi frontend folder)
+node_modules/
+
+# Docker build artefakti
+*.tar
