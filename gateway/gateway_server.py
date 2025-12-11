@@ -11,22 +11,23 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from notion_client import Client
 
-# FINAL HYBRID DECISION ENGINE
+# Hybrid Decision Engine
 from services.adnan_ai_decision_service import AdnanAIDecisionService
 
-# FINAL PERSONALITY ENGINE (shared reference)
+# Personality Engine
 from services.decision_engine.personality_engine import PersonalityEngine
 
-# NEW — CONTEXT ORCHESTRATION IMPORTS
+# Context Orchestrator (NEW)
 from services.decision_engine.context_orchestrator import ContextOrchestrator
 
-# FIXED — correct import
+# Identity / Mode / State Loaders (FIXED IMPORTS)
 from services.identity_loader import load_adnan_identity
 from services.adnan_mode_service import load_mode
 from services.adnan_state_service import load_state
 
-# voice router
+# Voice router
 from routers.voice_router import router as voice_router
+
 
 print("CURRENT FILE LOADED FROM:", os.path.abspath(__file__))
 
@@ -38,17 +39,18 @@ logger = logging.getLogger("gateway")
 
 app = FastAPI()
 
-# ============================
+
+# ================================================================
 # HEALTH CHECK
-# ============================
+# ================================================================
 @app.get("/health")
 async def health():
     return {"status": "ok"}
 
 
-# ============================
+# ================================================================
 # CORS
-# ============================
+# ================================================================
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -58,21 +60,21 @@ app.add_middleware(
 )
 
 
-# ============================
+# ================================================================
 # GLOBALS
-# ============================
+# ================================================================
 NOTION_KEY = os.getenv("NOTION_API_KEY")
 notion = Client(auth=NOTION_KEY)
 
 decision_engine = AdnanAIDecisionService()
-personality_engine = PersonalityEngine()  # shared personality
+personality_engine = PersonalityEngine()
 
-# FIXED — LOAD IDENTITY / MODE / STATE
+# Load identity, mode, state
 identity = load_adnan_identity()
 mode = load_mode()
 state = load_state()
 
-# NEW — INIT ORCHESTRATOR
+# Init Orchestrator
 orchestrator = ContextOrchestrator(identity, mode, state)
 
 
@@ -81,7 +83,7 @@ class CommandRequest(BaseModel):
     payload: dict
 
 
-# REGISTER ROUTERS
+# Register voice router
 app.include_router(voice_router)
 
 
@@ -103,10 +105,7 @@ async def get_personality():
 async def reset_personality():
     try:
         personality_engine.reset()
-        return {
-            "success": True,
-            "message": "Personality fully reset."
-        }
+        return {"success": True, "message": "Personality fully reset."}
     except Exception as e:
         raise HTTPException(500, str(e))
 
@@ -134,7 +133,7 @@ async def teach_personality(req: dict):
 
 
 # =====================================================================
-# /ops/execute   (CEO → Hybrid Engine → Business / Chat / Personality)
+# /ops/execute  —  CEO → Hybrid Engine → Notion
 # =====================================================================
 @app.post("/ops/execute")
 async def execute_notion_command(req: CommandRequest):
@@ -143,9 +142,9 @@ async def execute_notion_command(req: CommandRequest):
         logger.info(">> Command: %s", req.command)
         logger.info(">> Payload: %s", json.dumps(req.payload, ensure_ascii=False))
 
-        # ============================================================
-        # ORCHESTRATOR — PRVI SLOJ (context + identity reasoning)
-        # ============================================================
+        # ------------------------------------------------------------
+        # ORCHESTRATOR FIRST — detect identity, meta, memory, notion, sop, agents
+        # ------------------------------------------------------------
         user_text = None
 
         if req.command == "from_ceo":
@@ -157,6 +156,7 @@ async def execute_notion_command(req: CommandRequest):
             orch = orchestrator.run(user_text)
             context_type = orch.get("context_type")
 
+            # DIRECT ANSWERS (no decision engine)
             if context_type in ["identity", "memory", "agent", "sop", "notion", "meta"]:
                 return {
                     "success": True,
@@ -164,12 +164,11 @@ async def execute_notion_command(req: CommandRequest):
                     "engine_output": orch
                 }
 
-        # ============================================================
-        # CEO MODE — klasik
-        # ============================================================
+        # ------------------------------------------------------------
+        # CEO mode — fallback to Hybrid Decision Engine
+        # ------------------------------------------------------------
         if req.command == "from_ceo":
             ceo_text = req.payload.get("text", "")
-            logger.info(">> Processing CEO instruction through Hybrid Decision Engine")
 
             decision = decision_engine.process_ceo_instruction(ceo_text)
             logger.info(json.dumps(decision, indent=2, ensure_ascii=False))
@@ -186,10 +185,11 @@ async def execute_notion_command(req: CommandRequest):
                 return {
                     "success": False,
                     "blocked": True,
-                    "reason": "Critical Decision Engine error — execution aborted.",
+                    "reason": "Critical Decision Engine error",
                     "engine_output": decision,
                 }
 
+            # Map decision engine → Notion API
             notion_command = decision.get("command")
             notion_payload = decision.get("payload")
 
@@ -203,9 +203,9 @@ async def execute_notion_command(req: CommandRequest):
             req.command = notion_command
             req.payload = notion_payload
 
-        # ============================================================
-        # EXECUTE NOTION COMMANDS
-        # ============================================================
+        # ------------------------------------------------------------
+        # EXECUTION: Notion Commands
+        # ------------------------------------------------------------
         command = req.command
         payload = req.payload
 
@@ -251,6 +251,7 @@ async def execute_notion_command(req: CommandRequest):
                     properties[key] = {"rich_text": [{"text": {"content": str(value)}}]}
 
             updated = notion.pages.update(page_id=page_id, properties=properties)
+
             return {
                 "success": True,
                 "final_answer": "Zapis je ažuriran.",
@@ -262,6 +263,7 @@ async def execute_notion_command(req: CommandRequest):
         elif command == "query_database":
             db = payload.get("database_id")
             results = notion.databases.query(database_id=db)
+
             return {
                 "success": True,
                 "final_answer": "Evo rezultata iz baze.",
@@ -290,6 +292,7 @@ async def execute_notion_command(req: CommandRequest):
         elif command == "retrieve_page_content":
             page_id = payload.get("page_id")
             blocks = notion.blocks.children.list(block_id=page_id)
+
             return {
                 "success": True,
                 "final_answer": "Evo sadržaja stranice.",
@@ -327,6 +330,7 @@ async def execute_notion_command(req: CommandRequest):
                 return {"error": f"No page found matching: {name}"}
 
             notion.pages.update(page_id=page_to_delete, archived=True)
+
             return {
                 "success": True,
                 "final_answer": "Stranica je obrisana.",
@@ -346,30 +350,7 @@ async def execute_notion_command(req: CommandRequest):
 
 
 # =====================================================================
-# /ops/test_ceo
-# =====================================================================
-@app.post("/ops/test_ceo")
-async def test_ceo(req: dict):
-    try:
-        text = req.get("text")
-        if not text:
-            raise HTTPException(400, "Missing field: text")
-
-        result = decision_engine.process_ceo_instruction(text)
-
-        return {
-            "success": True,
-            "final_answer": result.get("system_response"),
-            "engine_output": result
-        }
-
-    except Exception as e:
-        logger.exception(">> ERROR in /ops/test_ceo")
-        raise HTTPException(500, str(e))
-
-
-# =====================================================================
-# NEW — DIRECT CONTEXT ORCHESTRATION ENDPOINT
+# DIRECT ORCHESTRATOR ENDPOINT
 # =====================================================================
 @app.post("/ai/context")
 async def ai_context(req: dict):
@@ -378,4 +359,14 @@ async def ai_context(req: dict):
         if not user_input:
             raise HTTPException(400, "Missing field: text")
 
-        result = orchestrator
+        result = orchestrator.run(user_input)
+
+        return {
+            "success": True,
+            "final_answer": result["final_output"]["final_answer"],
+            "engine_output": result
+        }
+
+    except Exception as e:
+        logger.exception(">> ERROR in /ai/context")
+        raise HTTPException(500, str(e))
