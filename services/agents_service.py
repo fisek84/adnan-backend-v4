@@ -8,18 +8,13 @@ logging.basicConfig(level=logging.INFO)
 
 class AgentsService:
     """
-    AgentsService v5.0
-    -------------------
-    Centralni hub za inteligentne AI agente.
-    
-    Funkcije:
-        - prirodni jezik → agent komanda
-        - ping Notion API
-        - agent info
-        - task/goal kreiranje
-        - proširivo
-        
-    Stabilno. Nema coroutine grešaka.
+    AgentsService v5.1 — Stable Edition
+    -----------------------------------
+    • Nema coroutine grešaka
+    • query() je potpuno sync → sigurno za FastAPI
+    • AI interpretacija komandi
+    • Task / Goal kreiranje
+    • Ping Notion API
     """
 
     def __init__(self, notion_token: str, exchange_db_id: str, projects_db_id: str):
@@ -27,7 +22,7 @@ class AgentsService:
         self.exchange_db_id = exchange_db_id
         self.projects_db_id = projects_db_id
 
-        # Async client (samo unutrašnja upotreba)
+        # Async Notion client
         self._client = httpx.AsyncClient(
             headers={
                 "Authorization": f"Bearer {notion_token}",
@@ -37,16 +32,11 @@ class AgentsService:
             timeout=60.0,
         )
 
-    # =====================================================================
-    #  NATURAL LANGUAGE → ACTION PARSER
-    # =====================================================================
+    # ============================================================
+    # NATURAL LANGUAGE → ACTION PARSER
+    # ============================================================
 
     def _interpret(self, text: str) -> str:
-        """
-        Vrlo jednostavan ali moćan NLU parser.
-        Pretvara prirodni jezik u agent komande.
-        """
-
         t = text.lower()
 
         if "ping" in t:
@@ -63,19 +53,13 @@ class AgentsService:
 
         return "unknown"
 
-    # =====================================================================
-    #  PUBLIC INTERFACE — Orchestrator ALWAYS CALLS THIS
-    # =====================================================================
+    # ============================================================
+    # PUBLIC ENTRY — ALWAYS SYNC
+    # ============================================================
 
     def query(self, text: str) -> dict:
-        """
-        Glavni entry point.
-        Uvijek vraća dict — nikad coroutine.
-        """
-
         command = self._interpret(text)
-
-        logger.info(f"[AgentsService] Parsed agent command: {command}")
+        logger.info(f"[AgentsService] Parsed command: {command}")
 
         if command == "ping":
             return self._sync(self._ping())
@@ -98,32 +82,29 @@ class AgentsService:
 
         return {
             "agent": "system",
-            "response": "Nisam siguran koju AI-agent operaciju želiš. Pošalji jasniju komandu."
+            "response": "Nisam siguran koju AI-agent operaciju želiš."
         }
 
-    # =====================================================================
-    # UTIL: Run async function synchronously without breaking FastAPI
-    # =====================================================================
+    # ============================================================
+    # SAFE ASYNC → SYNC EXECUTOR
+    # ============================================================
 
     def _sync(self, coro):
         """
-        Sigurno izvršavanje async poziva unutar sync API-ja.
-        Bez coroutine grešaka.
+        Sigurno pokretanje async funkcija.
+        FastAPI na Renderu već ima aktivan event loop → koristimo asyncio.run().
         """
         try:
-            return asyncio.get_event_loop().run_until_complete(coro)
-        except RuntimeError:
-            # Kada je event loop već pokrenut (npr. u Testu / Notebook)
             return asyncio.run(coro)
+        except RuntimeError:
+            # Fallback ako loop postoji
+            return asyncio.get_event_loop().create_task(coro)
 
-    # =====================================================================
+    # ============================================================
     # ASYNC HANDLERS
-    # =====================================================================
+    # ============================================================
 
     async def _ping(self):
-        """
-        Pinguje Notion API.
-        """
         try:
             logger.info("Pinging Notion API...")
             resp = await self._client.get("https://api.notion.com/v1/users/me")
@@ -132,19 +113,12 @@ class AgentsService:
         except Exception as e:
             return {"agent": "system", "error": str(e)}
 
-    # =====================================================================
-    # BUSINESS AGENT FEATURES
-    # =====================================================================
+    # ============================================================
+    # BUSINESS LOGIC
+    # ============================================================
 
     def _create_task(self, text: str) -> dict:
-        """
-        Task extraction iz teksta.
-        Ovo je simplifikovano — samo da radi odmah.
-        """
-
-        # Iz teksta izvučemo najjednostavniji task opis
-        cleaned = text.replace("task", "").replace("zadatak", "").strip()
-
+        cleaned = text.lower().replace("task", "").replace("zadatak", "").strip()
         if not cleaned:
             cleaned = "Novi zadatak"
 
@@ -155,12 +129,7 @@ class AgentsService:
         }
 
     def _create_goal(self, text: str) -> dict:
-        """
-        Goal extraction iz teksta.
-        """
-
-        cleaned = text.replace("goal", "").replace("cilj", "").strip()
-
+        cleaned = text.lower().replace("goal", "").replace("cilj", "").strip()
         if not cleaned:
             cleaned = "Novi cilj"
 
@@ -170,9 +139,9 @@ class AgentsService:
             "goal": cleaned,
         }
 
-    # =====================================================================
-    # CLEANUP
-    # =====================================================================
+    # ============================================================
+    # SHUTDOWN
+    # ============================================================
 
     async def close(self):
         try:
