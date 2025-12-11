@@ -78,7 +78,7 @@ ACTION_PATTERNS = {
     "update": ["update", "izmijeni", "uredi", "promijeni", "change", "postavi status"],
     "delete": ["obriši", "obrisi", "delete", "remove", "ukloni"],
     "query": ["prikaži", "listaj", "show", "get", "query", "pokaži"],
-    "link": ["poveži", "povezi", "link", "relate", "connect", "dodijeli", "dodjeli", "assign"]
+    "link": ["poveži", "povezi", "link", "relate", "connect", "dodijeli", "dodjeli", "assign"],
 }
 
 
@@ -88,11 +88,14 @@ ACTION_PATTERNS = {
 def fuzzy_match(value, choices, threshold=75):
     if not value:
         return None
-    result, score, _ = process.extractOne(value, choices, scorer=fuzz.partial_ratio)
-    return result if score >= threshold else None
+    result = process.extractOne(value, choices, scorer=fuzz.partial_ratio)
+    if not result:
+        return None
+    match, score, _ = result
+    return match if score >= threshold else None
 
 
-def fuzzy_extract_name(text):
+def fuzzy_extract_name(text: str) -> str:
     text_low = text.lower()
     cleaned = (
         text_low.replace("kreiraj", "")
@@ -119,7 +122,7 @@ def natural_response(cmd):
         "delete_page": "Brišem zapis.",
         "query_database": "Prikupljam podatke.",
         "query_all": "Prikupljam sve podatke.",
-        "link_records": "Povezujem relacije."
+        "link_records": "Povezujem relacije.",
     }.get(cmd.get("command"), "Izvršavam tvoj zahtjev.")
 
 
@@ -155,7 +158,7 @@ class AdnanAIDecisionService:
             "last_mode": None,
             "last_state": None,
             "trace": [],
-            "notes": []
+            "notes": [],
         }
         json.dump(base, open(MEMORY_FILE, "w", encoding="utf-8"), indent=2)
         return base
@@ -178,6 +181,7 @@ class AdnanAIDecisionService:
         #############################
         action = None
         for act, patterns in ACTION_PATTERNS.items():
+            # fuzzy match cijelog teksta na listu patterna
             if fuzzy_match(t, patterns, 70):
                 action = act
                 break
@@ -188,14 +192,14 @@ class AdnanAIDecisionService:
         db_guess = fuzzy_match(t, list(DATABASE_MAP.keys()), 70)
 
         #############################
-        # NAME EXTRACTION (FUZZY)
+        # NAME EXTRACTION (FUZZY + REGEX)
         #############################
         name = ""
 
         patterns = [
             r"(ime|title|naziv)\s*[-:]\s*(.+)",
             r"(task|goal|project|note|subgoal)\s*[-:]\s*(.+)",
-            r"(task|goal|project|note|subgoal)\s+([A-Za-z0-9_\-\s]+)$"
+            r"(task|goal|project|note|subgoal)\s+([A-Za-z0-9_\-\s]+)$",
         ]
         for p in patterns:
             m = re.search(p, text, re.IGNORECASE)
@@ -230,7 +234,8 @@ class AdnanAIDecisionService:
 
         link_match = re.search(
             r"(task|goal|project|subgoal|podcilj)\s+(.+?)\s+.*?(na|u|pod|to)\s+(goal|cilj|project|task|subgoal)\s+(.+)",
-            text, re.IGNORECASE
+            text,
+            re.IGNORECASE,
         )
         if link_match:
             child_raw = link_match.group(2).strip()
@@ -247,7 +252,7 @@ class AdnanAIDecisionService:
             "priority": priority,
             "parent": parent,
             "child": child,
-            "raw_text": text
+            "raw_text": text,
         }
 
     ###################################################################
@@ -261,22 +266,22 @@ class AdnanAIDecisionService:
                 "command": "link_records",
                 "payload": {
                     "parent_name": intent["parent"],
-                    "child_name": intent["child"]
-                }
+                    "child_name": intent["child"],
+                },
             }
 
         # DELETE
         if intent["action"] == "delete":
             return {
                 "command": "delete_page",
-                "payload": {"name": intent.get("name")}
+                "payload": {"name": intent.get("name")},
             }
 
         # QUERY ALL
         if intent["action"] == "query" and "all" in intent["raw_text"].lower():
             return {
                 "command": "query_all",
-                "payload": {}
+                "payload": {},
             }
 
         # QUERY DB
@@ -284,28 +289,28 @@ class AdnanAIDecisionService:
             db_id = DATABASE_MAP.get(intent["database"])
             return {
                 "command": "query_database",
-                "payload": {"database_id": db_id}
+                "payload": {"database_id": db_id},
             }
 
         db_id = DATABASE_MAP.get(intent["database"])
         entry = {
             "Name": intent.get("name", ""),
             "Status": intent.get("status", ""),
-            "Priority": intent.get("priority", "")
+            "Priority": intent.get("priority", ""),
         }
 
         # CREATE
         if intent["action"] == "create":
             return {
                 "command": "create_database_entry",
-                "payload": {"database_id": db_id, "entry": entry}
+                "payload": {"database_id": db_id, "entry": entry},
             }
 
         # UPDATE
         if intent["action"] == "update":
             return {
                 "command": "update_database_entry",
-                "payload": {"page_id": None, "entry": entry}
+                "payload": {"page_id": None, "entry": entry},
             }
 
         return {"command": None, "payload": {}}
@@ -315,16 +320,20 @@ class AdnanAIDecisionService:
     ###################################################################
     def apply_error_engine(self, command):
 
+        # DELETE – uvijek postavi error_engine
         if command["command"] == "delete_page":
             if not command["payload"].get("name"):
                 command["error_engine"] = {"errors": ["Missing name for delete"]}
-
+            else:
+                command["error_engine"] = {"errors": []}
             return command
 
+        # QUERY ALL / LINK – default bez grešaka
         if command["command"] in ["query_all", "link_records"]:
             command["error_engine"] = {"errors": []}
             return command
 
+        # CREATE / UPDATE
         entry = command["payload"].get("entry", {})
         db = command["payload"].get("database_id")
 
@@ -354,7 +363,7 @@ class AdnanAIDecisionService:
         command["error_engine"] = {
             "errors": errors,
             "warnings": warnings,
-            "auto": auto
+            "auto": auto,
         }
         return command
 
@@ -370,12 +379,12 @@ class AdnanAIDecisionService:
         # Add trust + memory layers
         command["trust"] = self.trust_layer.evaluate(text)
         command["static_memory"] = self.static_memory_engine.apply(text)
+
         # Skip dynamic memory for commands without entry (delete, link, query)
         if command.get("payload") and "entry" in command["payload"]:
             command["dynamic_memory"] = self.dynamic_memory_engine.evaluate(text, command)
         else:
             command["dynamic_memory"] = None
-
 
         # Validate
         command = self.apply_error_engine(command)
@@ -388,7 +397,9 @@ class AdnanAIDecisionService:
             title = command["payload"]["entry"].get("Name")
             if title:
                 self.dynamic_memory_engine.add_task(title)
-                self.session_memory["dynamic_memory"] = copy.deepcopy(self.dynamic_memory_engine.memory)
+                self.session_memory["dynamic_memory"] = copy.deepcopy(
+                    self.dynamic_memory_engine.memory
+                )
                 self._save_memory()
 
         command["system_response"] = natural_response(command)
