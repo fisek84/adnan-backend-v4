@@ -3,10 +3,15 @@ import json
 
 
 def load_json_file(path: str):
+    """
+    Loads JSON files and automatically strips UTF-8 BOM if present.
+    Prevents JSONDecodeError: Unexpected UTF-8 BOM.
+    """
     if not os.path.exists(path):
         raise FileNotFoundError(f"Identity file not found: {path}")
 
-    with open(path, "r", encoding="utf-8") as f:
+    # utf-8-sig automatically removes BOM if present
+    with open(path, "r", encoding="utf-8-sig") as f:
         return json.load(f)
 
 
