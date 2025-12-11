@@ -29,7 +29,7 @@ MEMORY_FILE = BASE_PATH / "memory.json"
 
 
 ###################################################################
-# EXTENDED DATABASE + RELATION MAP
+# EXTENDED DATABASE MAP
 ###################################################################
 DATABASE_MAP = {
     "task": "2ad5873bd84a80e8b4dac703018212fe",
@@ -37,6 +37,7 @@ DATABASE_MAP = {
 
     "goal": "2ac5873bd84a801f956fc30327b8ef94",
     "goals": "2ac5873bd84a801f956fc30327b8ef94",
+
     "cilj": "2ac5873bd84a801f956fc30327b8ef94",
     "ciljevi": "2ac5873bd84a801f956fc30327b8ef94",
 
@@ -53,7 +54,7 @@ DATABASE_MAP = {
 
 
 ###################################################################
-# ACTION PATTERNS
+# ACTION VERBS
 ###################################################################
 ACTION_PATTERNS = {
     "create": ["kreiraj", "napravi", "create", "add", "dodaj", "postavi", "new"],
@@ -65,7 +66,7 @@ ACTION_PATTERNS = {
 
 
 ###################################################################
-# FUZZY MATCH HELPERS
+# FUZZY HELPERS
 ###################################################################
 def fuzzy_match(value, choices, threshold=75):
     if not value:
@@ -93,7 +94,7 @@ def fuzzy_extract_name(text):
 
 
 ###################################################################
-# NATURAL LANGUAGE RESPONSE LAYER
+# NATURAL LANGUAGE RESPONSE
 ###################################################################
 def natural_response(cmd):
     if cmd.get("blocked"):
@@ -110,11 +111,12 @@ def natural_response(cmd):
 
 
 ###################################################################
-# MAIN DECISION ENGINE
+# HYBRID BRAIN DECISION ENGINE (FINAL VERSION)
 ###################################################################
 class AdnanAIDecisionService:
 
     def __init__(self):
+        # Load engine configs
         self.identity = self._load("identity.json")
         self.kernel = self._load("kernel.json")
         self.mode = self._load("mode.json")
@@ -122,19 +124,50 @@ class AdnanAIDecisionService:
         self.decision_engine = self._load("decision_engine.json")
         self.static_memory = self._load("static_memory.json")
 
+        # sub-engines
         self.autocorrect_engine = AutocorrectEngine()
         self.trust_layer = TrustLayer()
         self.sop_mapper = SOPMapper()
         self.static_memory_engine = StaticMemoryEngine(self.static_memory)
 
+        # memory engines
         self.session_memory = self._init_session_memory()
         self.dynamic_memory_engine = DynamicMemoryEngine(self.session_memory)
 
-        # Adnan personality clone engine
+        # identity / personality brain
         self.personality_engine = PersonalityEngine()
 
     ###################################################################
-    # MEMORY MANAGEMENT
+    # HYBRID ROUTER HELPERS
+    ###################################################################
+    def is_business_message(self, text: str) -> bool:
+        t = text.lower()
+        keywords = [
+            "task", "goal", "project", "kpi",
+            "cilj", "projekat", "zad", "zadatak",
+            "outreach", "sales", "follow up", "proces", "sop",
+            "rast", "skaliranje", "performance"
+        ]
+        return any(k in t for k in keywords)
+
+    def chat_response(self, text: str) -> dict:
+        return {
+            "command": None,
+            "payload": {},
+            "local_only": True,
+            "system_response": self._chat_logic(text)
+        }
+
+    def _chat_logic(self, text: str) -> str:
+        t = text.lower()
+        if "ko si" in t:
+            return "Ja sam Adnan.AI — tvoj digitalni klon, dizajniran da razmišlja i djeluje kao ti."
+        if "ko sam ja" in t:
+            return "Ti si Adnan Fisek — kreator Evolia ekosistema."
+        return "Razumijem. Reci mi šta želiš dalje."
+
+    ###################################################################
+    # MEMORY
     ###################################################################
     def _init_session_memory(self):
         if MEMORY_FILE.exists():
@@ -147,7 +180,6 @@ class AdnanAIDecisionService:
             "trace": [],
             "notes": []
         }
-
         json.dump(base, open(MEMORY_FILE, "w", encoding="utf-8"), indent=2)
         return base
 
@@ -155,30 +187,22 @@ class AdnanAIDecisionService:
         return json.load(open(BASE_PATH / filename, "r", encoding="utf-8-sig"))
 
     def _save_memory(self):
-        json.dump(
-            self.session_memory,
-            open(MEMORY_FILE, "w", encoding="utf-8"),
-            indent=2
-        )
+        json.dump(self.session_memory, open(MEMORY_FILE, "w", encoding="utf-8"), indent=2)
 
     ###################################################################
-    # INTENT DETECTION
+    # INTENT + COMMAND BUILDERS (same as before)
     ###################################################################
     def detect_intent(self, text):
-
         t = text.lower()
 
-        # ACTION
         action = None
         for act, patterns in ACTION_PATTERNS.items():
             if fuzzy_match(t, patterns, 70):
                 action = act
                 break
 
-        # DATABASE
         db_guess = fuzzy_match(t, list(DATABASE_MAP.keys()), 70)
 
-        # NAME EXTRACTION
         name = ""
         patterns = [
             r"(ime|title|naziv)\s*[-:]\s*(.+)",
@@ -194,24 +218,19 @@ class AdnanAIDecisionService:
         if not name:
             name = fuzzy_extract_name(text)
 
-        # STATUS
         status_match = re.search(r"status\s*[-:]\s*([\w ]+)", text, re.IGNORECASE)
         status = status_match.group(1).strip() if status_match else ""
 
-        # PRIORITY
         priority_match = re.search(r"(priority|prioritet)\s*[-:]\s*([\w ]+)", text, re.IGNORECASE)
         priority = priority_match.group(2).strip() if priority_match else ""
 
-        # LINK PARENT/CHILD
         parent = None
         child = None
-
         link_match = re.search(
-            r"(task|goal|project|subgoal|podcilj)\s+(.+?)\s+.*?(na|u|pod|to)\s+"
-            r"(goal|cilj|project|task|subgoal)\s+(.+)",
-            text, re.IGNORECASE
+            r"(task|goal|project|subgoal)\s+(.+?)\s+.*?(na|u|pod|to)\s+(goal|cilj|project|task)\s+(.+)",
+            text,
+            re.IGNORECASE
         )
-
         if link_match:
             child_raw = link_match.group(2).strip()
             parent_raw = link_match.group(5).strip()
@@ -229,38 +248,23 @@ class AdnanAIDecisionService:
             "raw_text": text
         }
 
-    ###################################################################
-    # COMMAND BUILDER
-    ###################################################################
     def build_command(self, intent):
-
-        # LINK
         if intent["action"] == "link":
-            return {
-                "command": "link_records",
-                "payload": {
-                    "parent_name": intent["parent"],
-                    "child_name": intent["child"]
-                }
-            }
+            return {"command": "link_records", "payload": {
+                "parent_name": intent["parent"],
+                "child_name": intent["child"]
+            }}
 
-        # DELETE
         if intent["action"] == "delete":
-            return {
-                "command": "delete_page",
-                "payload": {"name": intent.get("name")}
-            }
+            return {"command": "delete_page", "payload": {"name": intent.get("name")}}
 
-        # QUERY ALL
         if intent["action"] == "query" and "all" in intent["raw_text"].lower():
             return {"command": "query_all", "payload": {}}
 
-        # QUERY DATABASE
         if intent["action"] == "query":
             db_id = DATABASE_MAP.get(intent["database"])
             return {"command": "query_database", "payload": {"database_id": db_id}}
 
-        # Create / Update
         db_id = DATABASE_MAP.get(intent["database"])
         entry = {
             "Name": intent.get("name", ""),
@@ -270,9 +274,9 @@ class AdnanAIDecisionService:
 
         if intent["action"] == "create":
             return {"command": "create_database_entry", "payload": {"database_id": db_id, "entry": entry}}
-
         if intent["action"] == "update":
-            return {"command": "update_database_entry", "payload": {"page_id": None, "entry": entry}}
+            return {"command": "update_database_entry",
+                    "payload": {"page_id": None, "entry": entry}}
 
         return {"command": None, "payload": {}}
 
@@ -322,28 +326,20 @@ class AdnanAIDecisionService:
         return command
 
     ###################################################################
-    # ENTRYPOINT — MASTER ENGINE
+    # MASTER ENTRYPOINT — HYBRID ROUTER
     ###################################################################
     def process_ceo_instruction(self, text: str):
 
         lower = text.lower().strip()
 
-        # =============================================================
-        # PERSONALITY LEARNING MODE
-        # =============================================================
+        # 1) PERSONALITY MODE
         if (
-            "nauči ovo o meni" in lower
-            or "nauci ovo o meni" in lower
-            or "zapamti ovo o meni" in lower
+            "nauči ovo o meni" in lower or
+            "nauci ovo o meni" in lower or
+            "zapamti ovo o meni" in lower
         ):
             learn = self.personality_engine.learn_from_text(text)
-
-            system_response = (
-                "Zabilježio sam novu informaciju o tebi."
-                if learn.get("stored")
-                else "Već imam ovu informaciju zapisanu."
-            )
-
+            system_response = "Zabilježio sam novu informaciju o tebi." if learn.get("stored") else "Već imam ovu informaciju."
             return {
                 "command": None,
                 "payload": {},
@@ -353,12 +349,22 @@ class AdnanAIDecisionService:
                 "local_only": True
             }
 
-        # =============================================================
-        # STANDARD NOTION FLOW
-        # =============================================================
+        # 2) BUSINESS MODE
+        if self.is_business_message(lower):
+            return self._process_business_instruction(text)
+
+        # 3) CHAT MODE (default)
+        return self.chat_response(text)
+
+    ###################################################################
+    # BUSINESS PIPELINE WRAPPER
+    ###################################################################
+    def _process_business_instruction(self, text: str):
+
         intent = self.detect_intent(text)
         command = self.build_command(intent)
 
+        # add layers
         command["trust"] = self.trust_layer.evaluate(text)
         command["static_memory"] = self.static_memory_engine.apply(text)
 
@@ -367,19 +373,18 @@ class AdnanAIDecisionService:
         else:
             command["dynamic_memory"] = None
 
+        # errors
         command = self.apply_error_engine(command)
-
         if command["error_engine"]["errors"]:
             command["system_response"] = "Nisam mogao izvršiti zbog greške."
             return command
 
+        # memory save
         if "entry" in command.get("payload", {}):
             title = command["payload"]["entry"]["Name"]
             if title:
                 self.dynamic_memory_engine.add_task(title)
-                self.session_memory["dynamic_memory"] = copy.deepcopy(
-                    self.dynamic_memory_engine.memory
-                )
+                self.session_memory["dynamic_memory"] = copy.deepcopy(self.dynamic_memory_engine.memory)
                 self._save_memory()
 
         command["system_response"] = natural_response(command)
