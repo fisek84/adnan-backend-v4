@@ -17,6 +17,12 @@ from services.adnan_ai_decision_service import AdnanAIDecisionService
 # FINAL PERSONALITY ENGINE (shared reference)
 from services.decision_engine.personality_engine import PersonalityEngine
 
+# NEW — CONTEXT ORCHESTRATION IMPORTS
+from services.decision_engine.context_orchestrator import ContextOrchestrator
+from services.identity_loader import load_identity
+from services.adnan_mode_service import load_mode
+from services.adnan_state_service import load_state
+
 # voice router
 from routers.voice_router import router as voice_router
 
@@ -58,6 +64,14 @@ notion = Client(auth=NOTION_KEY)
 
 decision_engine = AdnanAIDecisionService()
 personality_engine = PersonalityEngine()  # shared personality
+
+# NEW — LOAD IDENTITY / MODE / STATE
+identity = load_identity()
+mode = load_mode()
+state = load_state()
+
+# NEW — INIT ORCHESTRATOR
+orchestrator = ContextOrchestrator(identity, mode, state)
 
 
 class CommandRequest(BaseModel):
@@ -127,9 +141,77 @@ async def execute_notion_command(req: CommandRequest):
         logger.info(">> Command: %s", req.command)
         logger.info(">> Payload: %s", json.dumps(req.payload, ensure_ascii=False))
 
-        # ---------------------------------------------------
-        # CEO MODE
-        # ---------------------------------------------------
+        # ============================================================
+        # ORCHESTRATOR — PRVI SLOJ (context + identity reasoning)
+        # ============================================================
+        user_text = None
+
+        # Ako je CEO komanda → text je u payload-u
+        if req.command == "from_ceo":
+            user_text = req.payload.get("text", "")
+
+        # Ako nije CEO → pokušaj izvući text iz payload-a
+        else:
+            user_text = req.payload.get("text") or req.payload.get("query") or ""
+
+        if user_text:
+            orch = orchestrator.run(user_text)
+            context_type = orch.get("context_type")
+
+            # 1) Identity-only upiti — direktan odgovor
+            if context_type == "identity":
+                return {
+                    "success": True,
+                    "final_answer": orch["final_output"]["final_answer"],
+                    "engine_output": orch
+                }
+
+            # 2) Memory tok
+            if context_type == "memory":
+                return {
+                    "success": True,
+                    "final_answer": orch["final_output"]["final_answer"],
+                    "engine_output": orch
+                }
+
+            # 3) Agents tok
+            if context_type == "agent":
+                return {
+                    "success": True,
+                    "final_answer": orch["final_output"]["final_answer"],
+                    "engine_output": orch
+                }
+
+            # 4) SOP tok
+            if context_type == "sop":
+                return {
+                    "success": True,
+                    "final_answer": orch["final_output"]["final_answer"],
+                    "engine_output": orch
+                }
+
+            # 5) Notion tok
+            if context_type == "notion":
+                return {
+                    "success": True,
+                    "final_answer": orch["final_output"]["final_answer"],
+                    "engine_output": orch
+                }
+
+            # 6) Meta komande
+            if context_type == "meta":
+                return {
+                    "success": True,
+                    "final_answer": orch["final_output"]["final_answer"],
+                    "engine_output": orch
+                }
+
+            # BUSINESS → jedini tok koji dopuštamo da ide u Hybrid Decision Engine
+
+
+        # ============================================================
+        # CEO MODE — klasik
+        # ============================================================
         if req.command == "from_ceo":
             ceo_text = req.payload.get("text", "")
             logger.info(">> Processing CEO instruction through Hybrid Decision Engine")
@@ -139,7 +221,11 @@ async def execute_notion_command(req: CommandRequest):
 
             # PERSONALITY / CHAT MODE — LOCAL ONLY
             if decision.get("local_only"):
-                return {"success": True, "engine_output": decision}
+                return {
+                    "success": True,
+                    "final_answer": decision.get("system_response"),
+                    "engine_output": decision
+                }
 
             # STOP IF CORE ENGINE FAILS
             err = decision.get("error_engine", {})
@@ -156,14 +242,18 @@ async def execute_notion_command(req: CommandRequest):
             notion_payload = decision.get("payload")
 
             if not notion_command:
-                return {"success": True, "engine_output": decision}
+                return {
+                    "success": True,
+                    "final_answer": decision.get("system_response"),
+                    "engine_output": decision
+                }
 
             req.command = notion_command
             req.payload = notion_payload
 
-        # ---------------------------------------------------
-        # EXECUTE NOTION COMMAND
-        # ---------------------------------------------------
+        # ============================================================
+        # EXECUTE NOTION COMMANDS (originalni blok — netaknut)
+        # ============================================================
         command = req.command
         payload = req.payload
 
@@ -187,7 +277,12 @@ async def execute_notion_command(req: CommandRequest):
                 parent={"database_id": db},
                 properties=properties,
             )
-            return {"success": True, "id": created.get("id"), "url": created.get("url")}
+            return {
+                "success": True,
+                "final_answer": "Novi zapis je kreiran.",
+                "id": created.get("id"),
+                "url": created.get("url"),
+            }
 
         # UPDATE ENTRY
         elif command == "update_database_entry":
@@ -206,6 +301,7 @@ async def execute_notion_command(req: CommandRequest):
             updated = notion.pages.update(page_id=page_id, properties=properties)
             return {
                 "success": True,
+                "final_answer": "Zapis je ažuriran.",
                 "updated_id": updated.get("id"),
                 "url": updated.get("url"),
             }
@@ -214,7 +310,11 @@ async def execute_notion_command(req: CommandRequest):
         elif command == "query_database":
             db = payload.get("database_id")
             results = notion.databases.query(database_id=db)
-            return {"success": True, "results": results.get("results", [])}
+            return {
+                "success": True,
+                "final_answer": "Evo rezultata iz baze.",
+                "results": results.get("results", []),
+            }
 
         # CREATE PAGE
         elif command == "create_page":
@@ -227,13 +327,22 @@ async def execute_notion_command(req: CommandRequest):
                 properties={"title": [{"text": {"content": title}}]},
                 children=children,
             )
-            return {"success": True, "page_id": created.get("id"), "url": created.get("url")}
+            return {
+                "success": True,
+                "final_answer": "Nova stranica je kreirana.",
+                "page_id": created.get("id"),
+                "url": created.get("url"),
+            }
 
         # RETRIEVE PAGE CONTENT
         elif command == "retrieve_page_content":
             page_id = payload.get("page_id")
             blocks = notion.blocks.children.list(block_id=page_id)
-            return {"success": True, "blocks": blocks.get("results", [])}
+            return {
+                "success": True,
+                "final_answer": "Evo sadržaja stranice.",
+                "blocks": blocks.get("results", []),
+            }
 
         # DELETE PAGE
         elif command == "delete_page":
@@ -266,11 +375,18 @@ async def execute_notion_command(req: CommandRequest):
                 return {"error": f"No page found matching: {name}"}
 
             notion.pages.update(page_id=page_to_delete, archived=True)
-            return {"success": True, "deleted_id": page_to_delete}
+            return {
+                "success": True,
+                "final_answer": "Stranica je obrisana.",
+                "deleted_id": page_to_delete,
+            }
 
         # UNKNOWN COMMAND
         else:
-            return {"error": f"Unknown command: {command}"}
+            return {
+                "error": f"Unknown command: {command}",
+                "final_answer": "Ne poznajem ovu operaciju."
+            }
 
     except Exception as e:
         logger.exception(">> ERROR in /ops/execute")
@@ -288,8 +404,36 @@ async def test_ceo(req: dict):
             raise HTTPException(400, "Missing field: text")
 
         result = decision_engine.process_ceo_instruction(text)
-        return {"success": True, "engine_output": result}
+
+        return {
+            "success": True,
+            "final_answer": result.get("system_response"),
+            "engine_output": result
+        }
 
     except Exception as e:
         logger.exception(">> ERROR in /ops/test_ceo")
+        raise HTTPException(500, str(e))
+
+
+# =====================================================================
+# NEW — DIRECT CONTEXT ORCHESTRATION ENDPOINT
+# =====================================================================
+@app.post("/ai/context")
+async def ai_context(req: dict):
+    try:
+        user_input = req.get("text")
+        if not user_input:
+            raise HTTPException(400, "Missing field: text")
+
+        result = orchestrator.run(user_input)
+
+        return {
+            "success": True,
+            "final_answer": result["final_output"]["final_answer"],
+            "engine_output": result
+        }
+
+    except Exception as e:
+        logger.exception(">> ERROR in /ai/context")
         raise HTTPException(500, str(e))

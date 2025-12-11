@@ -173,3 +173,80 @@ class NotionService:
             self.logger.error(f"Failed to create task in Notion: {response}")
 
         return response
+
+    # =====================================================================
+    # SMART PROCESS — PLAYBOOK + ORCHESTRATOR INTEGRATION
+    # =====================================================================
+    async def smart_process(self, user_input: str, target_db: Optional[str]):
+        """
+        Orchestrator šalje user_input + target_db (od Playbook Engine-a).
+        Ovdje se input pretvara u stvarne Notion API operacije.
+
+        target_db može biti: tasks, goals, projects, SOP baze ili bilo koja druga Notion DB.
+        """
+
+        if not target_db:
+            return {
+                "ok": False,
+                "error": "Playbook nije mogao odrediti Notion database."
+            }
+
+        text = user_input.lower()
+
+        # ============================================================
+        # CREATE ENTRY (KREIRAJ / DODAJ / NAPRAVI)
+        # ============================================================
+        if any(w in text for w in ["dodaj", "napravi", "kreiraj", "create", "add"]):
+            title = user_input.strip()
+            payload = {
+                "parent": {"database_id": target_db},
+                "properties": {
+                    "Name": {"title": [{"text": {"content": title}}]}
+                }
+            }
+            return await self.create_page(payload)
+
+        # ============================================================
+        # QUERY / LIST / PREGLED
+        # ============================================================
+        if any(w in text for w in ["prikaži", "pokaži", "lista", "list", "query", "svi", "pregled"]):
+            return await self.query_database(target_db)
+
+        # ============================================================
+        # DEFAULT — fallback signal Orchestratoru
+        # ============================================================
+        return {
+            "ok": True,
+            "note": "Smart Process primljen, ali nije prepoznata specifična operacija.",
+            "db": target_db
+        }
+
+    # =====================================================================
+    # SOP HANDLER (NEW)
+    # =====================================================================
+    async def handle_sop(self, user_input: str):
+        """
+        SOP requests se delegiraju prema SOP bazama definisanim u PlaybookEngine mappingu.
+        """
+        from services.decision_engine.playbook_engine import get_db_id
+
+        sop_db = get_db_id("sop")
+        if not sop_db:
+            return {"ok": False, "error": "Nema SOP baze u mappingu."}
+
+        return await self.smart_process(user_input, sop_db)
+
+    # =====================================================================
+    # GENERAL Notion PROCESS (NEW)
+    # =====================================================================
+    async def process(self, user_input: str):
+        """
+        Generalni handler koji pronalazi odgovarajuću Notion bazu putem fuzzy matching-a.
+        """
+        from services.decision_engine.playbook_engine import get_db_id
+
+        db = get_db_id(user_input)
+        if not db:
+            return {"ok": False, "error": "Ne mogu pronaći odgovarajuću Notion bazu."}
+
+        return await self.smart_process(user_input, db)
