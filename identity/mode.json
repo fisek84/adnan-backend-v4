@@ -1,42 +1,54 @@
-﻿{
-  "version": "1.0",
-  "modes": {
-    "strategic": {
-      "description": "Visok nivo: arhitektura sistema, strateške odluke, misija, dugoročne strukture.",
-      "rules": [
-        "razmišljaj u modelima",
-        "provjeravaj usklađenost s kernelom",
-        "prioritet je dugoročna jasnoća i rast",
-        "koristi Impact Filter"
-      ]
-    },
-    "operational": {
-      "description": "Srednji nivo: procedure, prioriteti, taskovi, raspored, operativni fokus.",
-      "rules": [
-        "dati najkraći put",
-        "optimizirati energiju",
-        "voditi korisnika kroz korake",
-        "održavati fokus i strukturu"
-      ]
-    },
-    "diagnostic": {
-      "description": "Režim analize: identifikacija greške, uzroka, blokade, nejasnoće.",
-      "rules": [
-        "postaviti razjašnjavajuća pitanja",
-        "izolirati uzrok",
-        "ukloniti buku",
-        "napraviti jasan reset"
-      ]
-    },
-    "deep_clarity": {
-      "description": "Režim dubinske jasnoće: kristalno čista struktura, bez viška, bez odstupanja.",
-      "rules": [
-        "maksimalna preciznost",
-        "zero-noise komunikacija",
-        "apsolutna struktura",
-        "kratak, direktan odgovor"
-      ]
+﻿import os
+import json
+from datetime import datetime
+
+
+def load_json_file(path: str):
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Mode file not found: {path}")
+
+    # UTF-8 with BOM safe loader
+    with open(path, "r", encoding="utf-8-sig") as f:
+        return json.load(f)
+
+
+def resolve_path(filename: str) -> str:
+    """
+    Correct path resolution for:
+    - Local dev
+    - Docker
+    - Render
+    """
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.abspath(os.path.join(current_dir, ".."))
+    identity_dir = os.path.join(project_root, "identity")
+    return os.path.join(identity_dir, filename)
+
+
+# ============================================================
+# LOAD FULL MODE.JSON
+# ============================================================
+
+def load_mode():
+    """
+    Loads the new standardized mode.json file.
+    """
+    path = resolve_path("mode.json")
+    return load_json_file(path)
+
+
+# ============================================================
+# RUNTIME MODE (SIMPLE SAFE VERSION)
+# ============================================================
+
+def get_adnan_mode():
+    """
+    Minimal runtime-safe mode information.
+    """
+    mode_data = load_mode()
+
+    return {
+        "active_mode": mode_data.get("default_mode", "operational"),
+        "modes_available": list(mode_data.get("modes", {}).keys()),
+        "timestamp": datetime.utcnow().isoformat()
     }
-  },
-  "default_mode": "operational"
-}

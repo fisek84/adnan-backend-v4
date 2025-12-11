@@ -1,22 +1,56 @@
-﻿{
-  "version": "1.0",
-  "current_mode": "operational",
-  "last_updated": "2025-12-05",
-  "context": {
-    "focus": "none",
-    "active_project": null,
-    "active_goal": null,
-    "active_task": null
-  },
-  "system_status": {
-    "clarity_level": 80,
-    "energy_level": 75,
-    "cognitive_load": "normal",
-    "alignment_with_kernel": true
-  },
-  "flags": {
-    "needs_clarity": false,
-    "needs_reset": false,
-    "needs_escalation": false
-  }
-}
+﻿import os
+import json
+
+
+def load_json_file(path: str):
+    """
+    Loads JSON with BOM-safe utf-8-sig to avoid BOM problems.
+    """
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"State file not found: {path}")
+
+    with open(path, "r", encoding="utf-8-sig") as f:
+        return json.load(f)
+
+
+def resolve_path(filename: str) -> str:
+    """
+    Resolves correct identity directory in all environments:
+    - Local dev
+    - Docker
+    - Render
+    """
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.abspath(os.path.join(current_dir, ".."))
+    identity_dir = os.path.join(project_root, "identity")
+    return os.path.join(identity_dir, filename)
+
+
+# ============================================================
+# LOAD STATE.JSON (REAL FILE NAME)
+# ============================================================
+
+def load_state():
+    """
+    Loads the new standardized state.json.
+    """
+    path = resolve_path("state.json")
+    return load_json_file(path)
+
+
+# ============================================================
+# Runtime-friendly minimal state
+# ============================================================
+
+def get_adnan_state():
+    """
+    Returns simplified active runtime state.
+    """
+    state = load_state()
+
+    return {
+        "mode": state.get("current_mode", "operational"),
+        "context": state.get("context", {}),
+        "flags": state.get("flags", {}),
+        "system_status": state.get("system_status", {})
+    }

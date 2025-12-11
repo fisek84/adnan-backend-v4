@@ -1,26 +1,45 @@
-# Git repo
+# -------------------------
+# Git repo (OK to ignore)
+# -------------------------
 .git
 .gitignore
 
+# -------------------------
 # Python cache
+# -------------------------
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 
+# -------------------------
 # Virtual environments
+# -------------------------
 venv/
 .env
 
+# -------------------------
 # Local artifacts
+# -------------------------
 *.log
 
+# -------------------------
 # OS files
+# -------------------------
 .DS_Store
 Thumbs.db
 
+# -------------------------
 # Node (ako se pojavi frontend folder)
+# -------------------------
 node_modules/
 
-# Docker build artefakti
+# -------------------------
+# Docker build artifacts
+# -------------------------
 *.tar
+
+# -------------------------
+# CRITICAL: Do NOT ignore identity folder!
+# Make sure NOTHING here blocks JSON files
+# -------------------------
