@@ -38,3 +38,8 @@ annotated-types==0.6.0
 # REQUIRED FOR FORMDATA (voice router)
 # ===========================
 python-multipart==0.0.9
+
+# ===========================
+# FUZZY MATCHING
+# ===========================
+rapidfuzz==3.6.1
