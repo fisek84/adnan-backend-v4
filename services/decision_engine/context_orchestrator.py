@@ -31,7 +31,7 @@ class ContextOrchestrator:
         self.decision_engine = AdnanAIDecisionService()
         self.memory_engine = MemoryService()
 
-        # FIX — OPCIJA A: Notion parametri iz .env
+        # FIX — Notion service ispravno inicijalizovan
         self.notion_engine = NotionService(
             os.getenv("NOTION_API_KEY"),
             os.getenv("NOTION_GOALS_DB"),
@@ -39,7 +39,12 @@ class ContextOrchestrator:
             os.getenv("NOTION_PROJECTS_DB"),
         )
 
-        self.agents_engine = AgentsService()
+        # FIX — AgentsService sada traži 3 argumenta → moramo ih proslijediti
+        self.agents_engine = AgentsService(
+            os.getenv("NOTION_API_KEY"),
+            os.getenv("NOTION_EXCHANGE_DB"),
+            os.getenv("NOTION_PROJECTS_DB")
+        )
 
     def run(self, user_input: str) -> Dict[str, Any]:
         identity_reasoning = self.reasoner.generate_reasoning(user_input)
