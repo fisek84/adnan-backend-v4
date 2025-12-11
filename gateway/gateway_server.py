@@ -20,8 +20,8 @@ from services.decision_engine.personality_engine import PersonalityEngine
 # Context Orchestrator
 from services.decision_engine.context_orchestrator import ContextOrchestrator
 
-# Identity / Mode / State Services
-from services.identity_loader import load_adnan_identity
+# Identity / Mode / State Loaders (CORRECT)
+from services.identity_loader import load_identity
 from services.adnan_mode_service import load_mode
 from services.adnan_state_service import load_state
 
@@ -29,9 +29,16 @@ from services.adnan_state_service import load_state
 from routers.voice_router import router as voice_router
 
 
+# ================================================================
+# INITIAL LOAD
+# ================================================================
+identity = load_identity()
+mode = load_mode()
+state = load_state()
+
 print("CURRENT FILE LOADED FROM:", os.path.abspath(__file__))
 
-# Load .env
+# Load env
 load_dotenv(".env")
 
 logging.basicConfig(level=logging.INFO)
@@ -67,10 +74,7 @@ notion = Client(auth=NOTION_KEY)
 decision_engine = AdnanAIDecisionService()
 personality_engine = PersonalityEngine()
 
-identity = load_adnan_identity()
-mode = load_mode()
-state = load_state()
-
+# Orchestrator
 orchestrator = ContextOrchestrator(identity, mode, state)
 
 
@@ -79,6 +83,7 @@ class CommandRequest(BaseModel):
     payload: dict
 
 
+# Include Voice Router
 app.include_router(voice_router)
 
 
@@ -137,7 +142,7 @@ async def execute_notion_command(req: CommandRequest):
         logger.info(">> Payload: %s", json.dumps(req.payload, ensure_ascii=False))
 
         # ------------------------------------------------------------
-        # ORCHESTRATOR — interpret the user text first
+        # 1) ORCHESTRATOR — interpret first
         # ------------------------------------------------------------
         user_text = (
             req.payload.get("text", "")
@@ -149,7 +154,7 @@ async def execute_notion_command(req: CommandRequest):
             orch = orchestrator.run(user_text)
             context_type = orch.get("context_type")
 
-            # DIRECT ANSWERS → do not involve Notion or Hybrid Engine
+            # Direct answers (Identity, Memory, SOP, Meta...)
             if context_type in ["identity", "memory", "agent", "sop", "notion", "meta"]:
                 return {
                     "success": True,
@@ -158,7 +163,7 @@ async def execute_notion_command(req: CommandRequest):
                 }
 
         # ------------------------------------------------------------
-        # CEO MODE — fallback to Hybrid Decision Engine
+        # 2) CEO MODE — fallback to Hybrid Engine
         # ------------------------------------------------------------
         if req.command == "from_ceo":
             ceo_text = req.payload.get("text", "")
@@ -166,7 +171,6 @@ async def execute_notion_command(req: CommandRequest):
             decision = decision_engine.process_ceo_instruction(ceo_text)
             logger.info(json.dumps(decision, indent=2, ensure_ascii=False))
 
-            # Local-only → chat/personality tone
             if decision.get("local_only"):
                 return {
                     "success": True,
@@ -182,21 +186,11 @@ async def execute_notion_command(req: CommandRequest):
                     "engine_output": decision,
                 }
 
-            notion_command = decision.get("command")
-            notion_payload = decision.get("payload")
-
-            if not notion_command:
-                return {
-                    "success": True,
-                    "final_answer": decision.get("system_response"),
-                    "engine_output": decision
-                }
-
-            req.command = notion_command
-            req.payload = notion_payload
+            req.command = decision.get("command")
+            req.payload = decision.get("payload")
 
         # ------------------------------------------------------------
-        # EXECUTION — Notion Commands
+        # 3) EXECUTION — Notion Commands
         # ------------------------------------------------------------
         command = req.command
         payload = req.payload
@@ -300,9 +294,9 @@ async def execute_notion_command(req: CommandRequest):
                 return {"error": "Missing name for delete_page"}
 
             databases = [
-                "2ac5873bd84a801f956fc30327b8ef94",  # goals
-                "2ad5873bd84a80e8b4dac703018212fe",  # tasks
-                "2ac5873bd84a8004aac0ea9c53025bfc",  # projects
+                "2ac5873bd84a801f956fc30327b8ef94",
+                "2ad5873bd84a80e8b4dac703018212fe",
+                "2ac5873bd84a8004aac0ea9c53025bfc",
             ]
 
             page_to_delete = None
