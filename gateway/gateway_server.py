@@ -8,12 +8,12 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
-from fastapi.middleware.cors import CORSMiddleware  # <-- DODANO
+from fastapi.middleware.cors import CORSMiddleware
 
 from notion_client import Client
 from services.adnan_ai_decision_service import AdnanAIDecisionService
 
-# NEW: voice router
+# voice router
 from routers.voice_router import router as voice_router
 
 print("CURRENT FILE LOADED FROM:", os.path.abspath(__file__))
@@ -26,13 +26,12 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
-# ==== HEALTH ENDPOINT (Render zahtijeva ovo) ====
+# HEALTH (Render requires this)
 @app.get("/health")
 async def health():
     return {"status": "ok"}
-# ===============================================
 
-# ==== DODANO: CORS MIDDLEWARE ====
+# CORS (frontend access)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -40,12 +39,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-# =================================
 
 NOTION_KEY = os.getenv("NOTION_API_KEY")
 notion = Client(auth=NOTION_KEY)
 
-# Global engine instance
+# Decision Engine global instance
 decision_engine = AdnanAIDecisionService()
 
 
@@ -54,15 +52,12 @@ class CommandRequest(BaseModel):
     payload: dict
 
 
-# =====================================================================
 # REGISTER ROUTERS
-# =====================================================================
 app.include_router(voice_router)
 
 
 # =====================================================================
-# /ops/execute
-# CEO → Decision Engine → Notion
+# /ops/execute   (CEO -> Decision Engine -> Notion)
 # =====================================================================
 @app.post("/ops/execute")
 async def execute_notion_command(req: CommandRequest):
@@ -71,7 +66,9 @@ async def execute_notion_command(req: CommandRequest):
         logger.info(">> Command: %s", req.command)
         logger.info(">> Payload: %s", json.dumps(req.payload, ensure_ascii=False))
 
-        # 1. CEO MODE
+        # ======================
+        # 1) CEO MODE
+        # ======================
         if req.command == "from_ceo":
             ceo_text = req.payload.get("text", "")
             logger.info(">> Processing CEO instruction through Decision Engine")
@@ -81,7 +78,7 @@ async def execute_notion_command(req: CommandRequest):
             logger.info(">> DECISION OUTPUT:")
             logger.info(json.dumps(decision, indent=2, ensure_ascii=False))
 
-            # Stop execution on critical errors
+            # Critical error check
             err = decision.get("error_engine", {})
             if err and err.get("errors"):
                 return {
@@ -91,7 +88,7 @@ async def execute_notion_command(req: CommandRequest):
                     "engine_output": decision,
                 }
 
-            # Extract final Notion command
+            # Extract Notion command and payload
             notion_command = decision.get("command")
             notion_payload = decision.get("payload")
 
@@ -101,7 +98,9 @@ async def execute_notion_command(req: CommandRequest):
             req.command = notion_command
             req.payload = notion_payload
 
-        # 2. EXECUTE NOTION COMMAND
+        # ======================
+        # 2) EXECUTE NOTION COMMAND
+        # ======================
         command = req.command
         payload = req.payload
 
@@ -113,31 +112,20 @@ async def execute_notion_command(req: CommandRequest):
             entry = payload.get("entry", {})
 
             properties = {}
-
             for key, value in entry.items():
                 if key.lower() == "name":
-                    properties["Name"] = {
-                        "title": [{"text": {"content": value}}]
-                    }
+                    properties["Name"] = {"title": [{"text": {"content": value}}]}
                 elif key in ["Status", "Priority"]:
                     properties[key] = {"select": {"name": value}}
                 else:
-                    properties[key] = {
-                        "rich_text": [{"text": {"content": str(value)}}]
-                    }
+                    properties[key] = {"rich_text": [{"text": {"content": str(value)}}]}
 
             created = notion.pages.create(
                 parent={"database_id": db},
                 properties=properties,
             )
 
-            logger.info(">> Created: %s", created.get("id"))
-
-            return {
-                "success": True,
-                "id": created.get("id"),
-                "url": created.get("url"),
-            }
+            return {"success": True, "id": created.get("id"), "url": created.get("url")}
 
         # UPDATE DATABASE ENTRY
         elif command == "update_database_entry":
@@ -147,19 +135,13 @@ async def execute_notion_command(req: CommandRequest):
             properties = {}
             for key, value in entry.items():
                 if key.lower() == "name":
-                    properties["Name"] = {
-                        "title": [{"text": {"content": value}}]
-                    }
+                    properties["Name"] = {"title": [{"text": {"content": value}}]}
                 elif key in ["Status", "Priority"]:
                     properties[key] = {"select": {"name": value}}
                 else:
-                    properties[key] = {
-                        "rich_text": [{"text": {"content": str(value)}}]
-                    }
+                    properties[key] = {"rich_text": [{"text": {"content": str(value)}}]}
 
             updated = notion.pages.update(page_id=page_id, properties=properties)
-
-            logger.info(">> Updated: %s", updated.get("id"))
 
             return {
                 "success": True,
@@ -171,8 +153,6 @@ async def execute_notion_command(req: CommandRequest):
         elif command == "query_database":
             db = payload.get("database_id")
             results = notion.databases.query(database_id=db)
-
-            logger.info(">> Query returned %d rows", len(results.get("results", [])))
 
             return {
                 "success": True,
@@ -191,23 +171,56 @@ async def execute_notion_command(req: CommandRequest):
                 children=children,
             )
 
-            return {
-                "success": True,
-                "page_id": created.get("id"),
-                "url": created.get("url"),
-            }
+            return {"success": True, "page_id": created.get("id"), "url": created.get("url")}
 
         # RETRIEVE PAGE CONTENT
         elif command == "retrieve_page_content":
             page_id = payload.get("page_id")
             blocks = notion.blocks.children.list(block_id=page_id)
 
-            return {
-                "success": True,
-                "blocks": blocks.get("results", []),
-            }
+            return {"success": True, "blocks": blocks.get("results", [])}
 
-        # UNKNOWN COMMAND
+        # =====================================================================
+        # DELETE PAGE  (NEW — FIX FOR "Unknown command: delete_page")
+        # =====================================================================
+        elif command == "delete_page":
+            name = payload.get("name")
+
+            if not name:
+                return {"error": "Missing name for delete_page"}
+
+            # TARGET DATABASES
+            databases = [
+                "2ac5873bd84a801f956fc30327b8ef94",  # goals
+                "2ad5873bd84a80e8b4dac703018212fe",  # tasks
+                "2ac5873bd84a8004aac0ea9c53025bfc",  # projects
+            ]
+
+            page_to_delete = None
+
+            # FIND PAGE BY TITLE
+            for db in databases:
+                res = notion.databases.query(database_id=db)
+                for row in res.get("results", []):
+                    try:
+                        title = row["properties"]["Name"]["title"][0]["plain_text"].lower()
+                        if name.lower() in title:
+                            page_to_delete = row["id"]
+                            break
+                    except:
+                        continue
+                if page_to_delete:
+                    break
+
+            if not page_to_delete:
+                return {"error": f"No page found matching: {name}"}
+
+            # ARCHIVE PAGE
+            notion.pages.update(page_id=page_to_delete, archived=True)
+
+            return {"success": True, "deleted_id": page_to_delete}
+
+        # FALLBACK
         else:
             return {"error": f"Unknown command: {command}"}
 
@@ -226,21 +239,11 @@ async def test_ceo(req: dict):
         if not text:
             raise HTTPException(400, "Missing field: text")
 
-        print("\n======================")
-        print(" DECISION ENGINE TEST ")
-        print("======================")
-        print("INPUT:", text)
-
         result = decision_engine.process_ceo_instruction(text)
 
-        print("\n--- DECISION OUTPUT ---")
-        print(json.dumps(result, indent=2, ensure_ascii=False))
-
-        return {
-            "success": True,
-            "engine_output": result,
-        }
+        return {"success": True, "engine_output": result}
 
     except Exception as e:
         logger.exception(">> ERROR in /ops/test_ceo")
         raise HTTPException(500, str(e))
+
