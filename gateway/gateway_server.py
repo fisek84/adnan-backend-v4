@@ -19,7 +19,9 @@ from services.decision_engine.personality_engine import PersonalityEngine
 
 # NEW — CONTEXT ORCHESTRATION IMPORTS
 from services.decision_engine.context_orchestrator import ContextOrchestrator
-from services.identity_loader import load_identity
+
+# FIXED — correct import
+from services.identity_loader import load_adnan_identity
 from services.adnan_mode_service import load_mode
 from services.adnan_state_service import load_state
 
@@ -65,8 +67,8 @@ notion = Client(auth=NOTION_KEY)
 decision_engine = AdnanAIDecisionService()
 personality_engine = PersonalityEngine()  # shared personality
 
-# NEW — LOAD IDENTITY / MODE / STATE
-identity = load_identity()
+# FIXED — LOAD IDENTITY / MODE / STATE
+identity = load_adnan_identity()
 mode = load_mode()
 state = load_state()
 
@@ -146,11 +148,8 @@ async def execute_notion_command(req: CommandRequest):
         # ============================================================
         user_text = None
 
-        # Ako je CEO komanda → text je u payload-u
         if req.command == "from_ceo":
             user_text = req.payload.get("text", "")
-
-        # Ako nije CEO → pokušaj izvući text iz payload-a
         else:
             user_text = req.payload.get("text") or req.payload.get("query") or ""
 
@@ -158,56 +157,12 @@ async def execute_notion_command(req: CommandRequest):
             orch = orchestrator.run(user_text)
             context_type = orch.get("context_type")
 
-            # 1) Identity-only upiti — direktan odgovor
-            if context_type == "identity":
+            if context_type in ["identity", "memory", "agent", "sop", "notion", "meta"]:
                 return {
                     "success": True,
                     "final_answer": orch["final_output"]["final_answer"],
                     "engine_output": orch
                 }
-
-            # 2) Memory tok
-            if context_type == "memory":
-                return {
-                    "success": True,
-                    "final_answer": orch["final_output"]["final_answer"],
-                    "engine_output": orch
-                }
-
-            # 3) Agents tok
-            if context_type == "agent":
-                return {
-                    "success": True,
-                    "final_answer": orch["final_output"]["final_answer"],
-                    "engine_output": orch
-                }
-
-            # 4) SOP tok
-            if context_type == "sop":
-                return {
-                    "success": True,
-                    "final_answer": orch["final_output"]["final_answer"],
-                    "engine_output": orch
-                }
-
-            # 5) Notion tok
-            if context_type == "notion":
-                return {
-                    "success": True,
-                    "final_answer": orch["final_output"]["final_answer"],
-                    "engine_output": orch
-                }
-
-            # 6) Meta komande
-            if context_type == "meta":
-                return {
-                    "success": True,
-                    "final_answer": orch["final_output"]["final_answer"],
-                    "engine_output": orch
-                }
-
-            # BUSINESS → jedini tok koji dopuštamo da ide u Hybrid Decision Engine
-
 
         # ============================================================
         # CEO MODE — klasik
@@ -219,7 +174,6 @@ async def execute_notion_command(req: CommandRequest):
             decision = decision_engine.process_ceo_instruction(ceo_text)
             logger.info(json.dumps(decision, indent=2, ensure_ascii=False))
 
-            # PERSONALITY / CHAT MODE — LOCAL ONLY
             if decision.get("local_only"):
                 return {
                     "success": True,
@@ -227,7 +181,6 @@ async def execute_notion_command(req: CommandRequest):
                     "engine_output": decision
                 }
 
-            # STOP IF CORE ENGINE FAILS
             err = decision.get("error_engine", {})
             if err and err.get("errors"):
                 return {
@@ -237,7 +190,6 @@ async def execute_notion_command(req: CommandRequest):
                     "engine_output": decision,
                 }
 
-            # GET BUSINESS COMMAND
             notion_command = decision.get("command")
             notion_payload = decision.get("payload")
 
@@ -252,7 +204,7 @@ async def execute_notion_command(req: CommandRequest):
             req.payload = notion_payload
 
         # ============================================================
-        # EXECUTE NOTION COMMANDS (originalni blok — netaknut)
+        # EXECUTE NOTION COMMANDS
         # ============================================================
         command = req.command
         payload = req.payload
@@ -426,14 +378,4 @@ async def ai_context(req: dict):
         if not user_input:
             raise HTTPException(400, "Missing field: text")
 
-        result = orchestrator.run(user_input)
-
-        return {
-            "success": True,
-            "final_answer": result["final_output"]["final_answer"],
-            "engine_output": result
-        }
-
-    except Exception as e:
-        logger.exception(">> ERROR in /ai/context")
-        raise HTTPException(500, str(e))
+        result = orchestrator
