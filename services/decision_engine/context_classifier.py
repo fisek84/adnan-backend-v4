@@ -14,9 +14,11 @@ class ContextClassifier:
     ]
 
     BUSINESS_KEYWORDS = [
-        "task", "project", "goal", "biznis",
-        "kompanija", "firma", "operacije",
-        "plan", "analiza", "strategija",
+        "task", "tasks", "zadaci",
+        "project", "projects", "projekti",
+        "goal", "goals", "cilj", "ciljevi",
+        "biznis", "kompanija", "firma",
+        "operacije", "plan", "analiza", "strategija",
     ]
 
     NOTION_KEYWORDS = [
@@ -49,6 +51,21 @@ class ContextClassifier:
         "koji si",
     ]
 
+    # ============================
+    # NEW: BUSINESS QUESTIONS
+    # ============================
+    BUSINESS_QUESTIONS = [
+        "koji su mi",
+        "koji su moji",
+        "šta su mi",
+        "sta su mi",
+        "šta imam",
+        "sta imam",
+        "koliko imam",
+        "pregled",
+        "lista",
+    ]
+
     def classify(
         self,
         user_input: str,
@@ -57,34 +74,68 @@ class ContextClassifier:
         text = user_input.lower().strip()
         tags: List[str] = []
 
+        # --------------------------------
+        # MEMORY
+        # --------------------------------
         if any(k in text for k in self.MEMORY_KEYWORDS):
             context_type = "memory"
             tags.append("memory")
 
+        # --------------------------------
+        # SOP
+        # --------------------------------
         elif any(k in text for k in self.SOP_KEYWORDS):
             context_type = "sop"
             tags.append("sop")
 
+        # --------------------------------
+        # NOTION (explicit)
+        # --------------------------------
         elif any(k in text for k in self.NOTION_KEYWORDS):
             context_type = "notion"
             tags.append("notion")
 
+        # --------------------------------
+        # AGENT
+        # --------------------------------
         elif any(k in text for k in self.AGENT_KEYWORDS):
             context_type = "agent"
             tags.append("agent")
 
+        # --------------------------------
+        # META
+        # --------------------------------
         elif any(k in text for k in self.META_KEYWORDS):
             context_type = "meta"
             tags.append("meta")
 
+        # --------------------------------
+        # IDENTITY
+        # --------------------------------
         elif any(q in text for q in self.IDENTITY_QUESTIONS):
             context_type = "identity"
             tags.append("identity")
 
+        # --------------------------------
+        # BUSINESS — QUESTION BASED (NEW)
+        # --------------------------------
+        elif (
+            any(q in text for q in self.BUSINESS_QUESTIONS)
+            and any(k in text for k in self.BUSINESS_KEYWORDS)
+        ):
+            context_type = "business"
+            tags.append("business")
+
+        # --------------------------------
+        # BUSINESS — KEYWORD BASED
+        # --------------------------------
         elif any(k in text for k in self.BUSINESS_KEYWORDS):
             context_type = "business"
             tags.append("business")
 
+        # --------------------------------
+        # FALLBACK CHAT
+        # --------------------------------
         else:
             context_type = "chat"
             tags.append("chat")
@@ -92,5 +143,5 @@ class ContextClassifier:
         return {
             "context_type": context_type,
             "context_tags": tags,
-            "confidence": 0.85,
+            "confidence": 0.9,
         }
