@@ -1,6 +1,9 @@
-import httpx
 import logging
-import asyncio
+import uuid
+from datetime import datetime
+from typing import Dict, Any
+
+from services.notion_ops.ops_engine import NotionOpsEngine
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -8,143 +11,159 @@ logging.basicConfig(level=logging.INFO)
 
 class AgentsService:
     """
-    AgentsService v5.1 — Stable Edition
-    -----------------------------------
-    • Nema coroutine grešaka
-    • query() je potpuno sync → sigurno za FastAPI
-    • AI interpretacija komandi
-    • Task / Goal kreiranje
-    • Ping Notion API
+    AgentsService — FAZA 3 / KORAK 2
+
+    FAZA 7.3:
+    - pasivna agent load awareness (execution stats)
+
+    FAZA 8.3:
+    - soft overload protection (READ-ONLY SIGNAL)
+
+    Pravila:
+    - NEMA sync/async miješanja
+    - NEMA asyncio.run
+    - NEMA schedulera
+    - JSON serializable output
     """
 
-    def __init__(self, notion_token: str, exchange_db_id: str, projects_db_id: str):
-        self.token = notion_token
-        self.exchange_db_id = exchange_db_id
-        self.projects_db_id = projects_db_id
+    OVERLOAD_MIN_TOTAL = 5
+    OVERLOAD_SUCCESS_THRESHOLD = 0.6
 
-        # Async Notion client
-        self._client = httpx.AsyncClient(
-            headers={
-                "Authorization": f"Bearer {notion_token}",
-                "Notion-Version": "2022-06-28",
-                "Content-Type": "application/json",
-            },
-            timeout=60.0,
+    def __init__(self):
+        self.notion_ops = NotionOpsEngine()
+        self.agent_name = "notion_ops"
+
+    # ============================================================
+    # PUBLIC ASYNC ENTRYPOINT
+    # ============================================================
+    async def execute(self, command: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        job_id = str(uuid.uuid4())
+        started_at = datetime.utcnow().isoformat()
+
+        logger.info(
+            "[AgentsService] job_id=%s command=%s",
+            job_id,
+            command,
         )
 
-    # ============================================================
-    # NATURAL LANGUAGE → ACTION PARSER
-    # ============================================================
+        job = {
+            "job_id": job_id,
+            "status": "queued",
+            "command": command,
+            "payload": payload,
+            "started_at": started_at,
+            "finished_at": None,
+            "result": None,
+            "error": None,
+            "agent_state": None,  # FAZA 8.3
+        }
 
-    def _interpret(self, text: str) -> str:
-        t = text.lower()
+        try:
+            # ----------------------------------------------------
+            # RUNNING
+            # ----------------------------------------------------
+            job["status"] = "running"
 
-        if "ping" in t:
-            return "ping"
+            if command in {
+                "query_database",
+                "create_database_entry",
+                "update_database_entry",
+                "create_page",
+                "retrieve_page_content",
+                "delete_page",
+            }:
+                result = await self.notion_ops.execute(command, payload)
+            else:
+                raise ValueError("Nepoznata ili nepodržana agent operacija.")
 
-        if "status" in t or "info" in t:
-            return "info"
+            # ----------------------------------------------------
+            # DONE
+            # ----------------------------------------------------
+            job["status"] = "done"
+            job["result"] = result
+            job["finished_at"] = datetime.utcnow().isoformat()
 
-        if "task" in t or "zadatak" in t or "uradi" in t:
-            return "create_task"
+            # FAZA 7.3 — RECORD AGENT SUCCESS
+            self._record_agent_execution(success=True)
 
-        if "goal" in t or "cilj" in t:
-            return "create_goal"
+            # FAZA 8.3 — EVALUATE AGENT STATE (SOFT)
+            job["agent_state"] = self._evaluate_agent_state()
 
-        return "unknown"
-
-    # ============================================================
-    # PUBLIC ENTRY — ALWAYS SYNC
-    # ============================================================
-
-    def query(self, text: str) -> dict:
-        command = self._interpret(text)
-        logger.info(f"[AgentsService] Parsed command: {command}")
-
-        if command == "ping":
-            return self._sync(self._ping())
-
-        if command == "info":
             return {
-                "agent": "system",
-                "response": {
-                    "exchange_db_id": self.exchange_db_id,
-                    "projects_db_id": self.projects_db_id,
-                    "token_present": bool(self.token),
-                },
+                "success": True,
+                "summary": result.get("summary", "Operacija završena."),
+                "job": job,
             }
 
-        if command == "create_task":
-            return self._create_task(text)
-
-        if command == "create_goal":
-            return self._create_goal(text)
-
-        return {
-            "agent": "system",
-            "response": "Nisam siguran koju AI-agent operaciju želiš."
-        }
-
-    # ============================================================
-    # SAFE ASYNC → SYNC EXECUTOR
-    # ============================================================
-
-    def _sync(self, coro):
-        """
-        Sigurno pokretanje async funkcija.
-        FastAPI na Renderu već ima aktivan event loop → koristimo asyncio.run().
-        """
-        try:
-            return asyncio.run(coro)
-        except RuntimeError:
-            # Fallback ako loop postoji
-            return asyncio.get_event_loop().create_task(coro)
-
-    # ============================================================
-    # ASYNC HANDLERS
-    # ============================================================
-
-    async def _ping(self):
-        try:
-            logger.info("Pinging Notion API...")
-            resp = await self._client.get("https://api.notion.com/v1/users/me")
-            resp.raise_for_status()
-            return {"agent": "system", "response": "Notion API je online."}
         except Exception as e:
-            return {"agent": "system", "error": str(e)}
+            logger.exception("[AgentsService] job failed")
+
+            job["status"] = "failed"
+            job["error"] = str(e)
+            job["finished_at"] = datetime.utcnow().isoformat()
+
+            # FAZA 7.3 — RECORD AGENT FAILURE
+            self._record_agent_execution(success=False)
+
+            # FAZA 8.3 — EVALUATE AGENT STATE (SOFT)
+            job["agent_state"] = self._evaluate_agent_state()
+
+            return {
+                "success": False,
+                "summary": "Greška tokom izvršenja operacije.",
+                "job": job,
+            }
 
     # ============================================================
-    # BUSINESS LOGIC
+    # FAZA 7.3 — PASSIVE AGENT STATS
     # ============================================================
-
-    def _create_task(self, text: str) -> dict:
-        cleaned = text.lower().replace("task", "").replace("zadatak", "").strip()
-        if not cleaned:
-            cleaned = "Novi zadatak"
-
-        return {
-            "agent": "task_manager",
-            "response": f"Kreiram task: {cleaned}",
-            "task": cleaned,
-        }
-
-    def _create_goal(self, text: str) -> dict:
-        cleaned = text.lower().replace("goal", "").replace("cilj", "").strip()
-        if not cleaned:
-            cleaned = "Novi cilj"
-
-        return {
-            "agent": "goal_manager",
-            "response": f"Kreiram cilj: {cleaned}",
-            "goal": cleaned,
-        }
-
-    # ============================================================
-    # SHUTDOWN
-    # ============================================================
-
-    async def close(self):
+    def _record_agent_execution(self, success: bool):
+        """
+        Pasivno bilježenje execution signala.
+        Nikad ne smije srušiti agenta.
+        """
         try:
-            await self._client.aclose()
-        except:
+            from services.memory_service import MemoryService
+
+            mem = MemoryService()
+            mem.record_execution(
+                decision_type="agent",
+                key=self.agent_name,
+                success=success,
+            )
+        except Exception:
             pass
+
+    # ============================================================
+    # FAZA 8.3 — SOFT OVERLOAD EVALUATION
+    # ============================================================
+    def _evaluate_agent_state(self) -> str:
+        """
+        READ-ONLY evaluacija stanja agenta.
+        NEMA side-effecta.
+        """
+        try:
+            from services.memory_service import MemoryService
+
+            mem = MemoryService()
+            stats = mem.get_execution_stats(
+                decision_type="agent",
+                key=self.agent_name,
+            )
+
+            if not stats:
+                return "normal"
+
+            total = stats.get("total", 0)
+            success_rate = stats.get("success_rate", 1.0)
+
+            if (
+                total >= self.OVERLOAD_MIN_TOTAL
+                and success_rate < self.OVERLOAD_SUCCESS_THRESHOLD
+            ):
+                return "degraded"
+
+            return "normal"
+
+        except Exception:
+            return "unknown"

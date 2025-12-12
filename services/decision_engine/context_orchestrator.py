@@ -1,25 +1,29 @@
-from typing import Dict, Any
-import os
+from typing import Dict, Any, Optional
 
-from .identity_reasoning import IdentityReasoningEngine
-from .context_classifier import ContextClassifier
+from services.decision_engine.identity_reasoning import IdentityReasoningEngine
+from services.decision_engine.context_classifier import ContextClassifier
 from services.decision_engine.final_response_engine import FinalResponseEngine
 from services.decision_engine.playbook_engine import PlaybookEngine
+from services.decision_engine.sop_mapper import SOPMapper
 
-# Ostali servisi
 from services.adnan_ai_decision_service import AdnanAIDecisionService
 from services.memory_service import MemoryService
-from services.notion_service import NotionService
-from services.agents_service import AgentsService
 
 
 class ContextOrchestrator:
     """
-    Centralni orkestrator — stabilna verzija bez async problema.
-    Svi async Notion pozivi sada koriste SYNC adapter iz NotionService-a.
+    CEO-level orchestrator.
+
+    FAZA 2: chat kontinuitet
+    FAZA 4–6: SOP → playbook → execution plan → delegation
     """
 
-    def __init__(self, identity: Dict[str, Any], mode: Dict[str, Any], state: Dict[str, Any]):
+    def __init__(
+        self,
+        identity: Dict[str, Any],
+        mode: Dict[str, Any],
+        state: Dict[str, Any],
+    ):
         self.identity = identity
         self.mode = mode
         self.state = state
@@ -34,153 +38,131 @@ class ContextOrchestrator:
         self.decision_engine = AdnanAIDecisionService()
         self.memory_engine = MemoryService()
 
-        # Notion (async internally, sync wrapper externally)
-        self.notion_engine = NotionService(
-            os.getenv("NOTION_API_KEY"),
-            os.getenv("NOTION_GOALS_DB"),
-            os.getenv("NOTION_TASKS_DB"),
-            os.getenv("NOTION_PROJECTS_DB"),
-        )
+        # FAZA 2 — last human-facing answer
+        self._last_human_answer: Optional[str] = None
 
-        # Agents (sync)
-        self.agents_engine = AgentsService(
-            os.getenv("NOTION_API_KEY"),
-            os.getenv("NOTION_EXCHANGE_DB"),
-            os.getenv("NOTION_PROJECTS_DB"),
-        )
+    # ============================================================
+    # MAIN ORCHESTRATION
+    # ============================================================
+    async def run(self, user_input: str) -> Dict[str, Any]:
 
-    # -----------------------------------------------------------
-    # MAIN EXECUTOR
-    # -----------------------------------------------------------
-
-    def run(self, user_input: str) -> Dict[str, Any]:
         identity_reasoning = self.reasoner.generate_reasoning(user_input)
-        classification = self.classifier.classify(user_input, identity_reasoning)
+        classification = self.classifier.classify(
+            user_input,
+            identity_reasoning,
+        )
 
-        context = classification["context_type"]
+        context_type = classification.get("context_type")
 
+        # --------------------------------------------------------
         # ROUTING
-        if context == "identity":
+        # --------------------------------------------------------
+        if context_type == "identity":
             result = self._handle_identity(user_input, identity_reasoning)
 
-        elif context == "business":
-            playbook = self.playbook_engine.evaluate(
+        elif context_type == "chat":
+            result = self._handle_chat(user_input)
+
+        elif context_type == "memory":
+            result = self._handle_memory(user_input)
+
+        elif context_type == "sop":
+            result = self._handle_sop(
                 user_input=user_input,
                 identity_reasoning=identity_reasoning,
                 context=classification,
             )
-            result = self._handle_business_playbook(user_input, playbook)
 
-        elif context == "notion":
-            result = self._handle_notion(user_input)
+        elif context_type in {"business", "notion", "agent"}:
+            result = self._delegate_operation(
+                user_input=user_input,
+                context_type=context_type,
+            )
 
-        elif context == "sop":
-            result = self._handle_sop(user_input)
-
-        elif context == "agent":
-            result = self._handle_agent_query(user_input)
-
-        elif context == "memory":
-            result = self._handle_memory(user_input)
-
-        elif context == "meta":
+        elif context_type == "meta":
             result = self._handle_meta(user_input)
 
         else:
             result = {
-                "success": False,
-                "system_response": "Nisam siguran u kontekst.",
-                "context_type": context,
+                "type": "unknown",
+                "response": "Nepoznat kontekst.",
             }
 
+        # --------------------------------------------------------
         # FINAL RESPONSE
+        # --------------------------------------------------------
         final_output = self.response_engine.format_response(
             identity_reasoning=identity_reasoning,
             classification=classification,
             result=result,
         )
 
+        # --------------------------------------------------------
+        # FAZA 2 — STORE LAST HUMAN ANSWER
+        # --------------------------------------------------------
+        if context_type in {"chat", "identity"}:
+            self._last_human_answer = final_output.get("final_answer")
+
         return {
             "success": True,
-            "context_type": context,
+            "context_type": context_type,
             "identity_reasoning": identity_reasoning,
             "classification": classification,
             "result": result,
             "final_output": final_output,
         }
 
-    # -----------------------------------------------------------
+    # ============================================================
     # HANDLERS
-    # -----------------------------------------------------------
-
-    def _handle_identity(self, user_input: str, reasoning: Dict[str, Any]) -> Dict[str, Any]:
+    # ============================================================
+    def _handle_identity(
+        self,
+        user_input: str,
+        reasoning: Dict[str, Any],
+    ) -> Dict[str, Any]:
 
         lower = user_input.lower()
 
-        if any(q in lower for q in ["ko si", "ko si ti", "šta si ti", "ko je adnan.ai", "tvoj identitet"]):
-            text = (
-                "Ja sam Adnan.AI — digitalna rekonstrukcija tvog načina razmišljanja "
-                "i donošenja odluka. Fokusiran, precizan, sistemski."
-            )
+        if any(
+            q in lower
+            for q in [
+                "ko si",
+                "ko si ti",
+                "šta si ti",
+                "ko je adnan.ai",
+                "tvoj identitet",
+            ]
+        ):
+            text = "Ja sam Adnan.AI — digitalni CEO i orkestrator sistema Evolia."
         else:
-            text = "Razumijem. Reci mi šta želiš dalje."
+            text = "Razumijem."
 
         return {
             "type": "identity",
             "response": text,
-            "reasoning": reasoning
+            "reasoning": reasoning,
         }
 
-    def _handle_business(self, user_input: str) -> Dict[str, Any]:
-        return {
-            "type": "business",
-            "response": self.decision_engine.process_ceo_instruction(user_input),
-        }
+    def _handle_chat(self, user_input: str) -> Dict[str, Any]:
+        lower = user_input.lower().strip()
 
-    def _handle_business_playbook(self, user_input: str, playbook: Dict[str, Any]) -> Dict[str, Any]:
+        FOLLOW_UP_MARKERS = [
+            "zašto", "zasto", "a zašto", "a zasto",
+            "kako", "možeš", "mozes",
+            "pojasni", "šta onda", "sta onda",
+            "i dalje", "dalje", "a onda",
+        ]
 
-        action = playbook.get("recommended_action")
-        target_db = playbook.get("target_database")
+        is_follow_up = any(lower.startswith(m) or m in lower for m in FOLLOW_UP_MARKERS)
 
-        if action == "follow_sop":
-            return {
-                "type": "sop",
-                "response": self.notion_engine.handle_sop_sync(user_input),
-            }
-
-        if action == "query_or_update_notion":
-            return {
-                "type": "notion",
-                "response": self.notion_engine.smart_process_sync(user_input, target_db),
-            }
-
-        if action == "next_step":
-            return {
-                "type": "business",
-                "response": self.decision_engine.process_ceo_instruction(user_input),
-            }
+        if is_follow_up and self._last_human_answer:
+            response = self._last_human_answer
+        else:
+            response = user_input
 
         return {
-            "type": "business",
-            "response": self.decision_engine.process_ceo_instruction(user_input),
-        }
-
-    def _handle_notion(self, user_input: str) -> Dict[str, Any]:
-        return {
-            "type": "notion",
-            "response": self.notion_engine.process_sync(user_input),
-        }
-
-    def _handle_sop(self, user_input: str) -> Dict[str, Any]:
-        return {
-            "type": "sop",
-            "response": self.notion_engine.handle_sop_sync(user_input),
-        }
-
-    def _handle_agent_query(self, user_input: str) -> Dict[str, Any]:
-        return {
-            "type": "agent",
-            "response": self.agents_engine.query(user_input),
+            "type": "chat",
+            "response": response,
         }
 
     def _handle_memory(self, user_input: str) -> Dict[str, Any]:
@@ -195,5 +177,56 @@ class ContextOrchestrator:
             "response": {
                 "status": "meta-command-received",
                 "input": user_input,
+            },
+        }
+
+    # ============================================================
+    # SOP HANDLER — KANONSKI (FAZA 6)
+    # ============================================================
+    def _handle_sop(
+        self,
+        user_input: str,
+        identity_reasoning: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+
+        playbook_result = self.playbook_engine.evaluate(
+            user_input=user_input,
+            identity_reasoning=identity_reasoning,
+            context=context,
+        )
+
+        if playbook_result.get("type") != "sop_execution":
+            return {
+                "type": "sop",
+                "response": "SOP nije moguće izvršiti.",
+            }
+
+        return {
+            "type": "delegation",
+            "context": "sop",
+            "delegation": {
+                "sop": playbook_result.get("sop"),
+                "plan": playbook_result.get("execution_plan"),
+            },
+        }
+
+    # ============================================================
+    # GENERIC DELEGATION (NON-SOP)
+    # ============================================================
+    def _delegate_operation(
+        self,
+        user_input: str,
+        context_type: str,
+    ) -> Dict[str, Any]:
+
+        decision = self.decision_engine.process_ceo_instruction(user_input)
+
+        return {
+            "type": "delegation",
+            "context": context_type,
+            "delegation": {
+                "command": decision.get("command"),
+                "payload": decision.get("payload"),
             },
         }

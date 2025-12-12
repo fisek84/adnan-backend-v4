@@ -2,28 +2,25 @@ print("LOADED NEW GATEWAY VERSION")
 
 import os
 import logging
-import json
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
 
-from notion_client import Client
-
-# Hybrid Decision Engine
-from services.adnan_ai_decision_service import AdnanAIDecisionService
-
 # Personality Engine
 from services.decision_engine.personality_engine import PersonalityEngine
 
-# Context Orchestrator
+# Context Orchestrator (CEO brain, ASYNC)
 from services.decision_engine.context_orchestrator import ContextOrchestrator
 
-# Identity / Mode / State Loaders (CORRECT)
+# Identity / Mode / State
 from services.identity_loader import load_identity
 from services.adnan_mode_service import load_mode
 from services.adnan_state_service import load_state
+
+# Agents Service (ONLY executor)
+from services.agents_service import AgentsService
 
 # Voice Router
 from routers.voice_router import router as voice_router
@@ -38,7 +35,6 @@ state = load_state()
 
 print("CURRENT FILE LOADED FROM:", os.path.abspath(__file__))
 
-# Load env
 load_dotenv(".env")
 
 logging.basicConfig(level=logging.INFO)
@@ -46,8 +42,9 @@ logger = logging.getLogger("gateway")
 
 app = FastAPI()
 
+
 # ================================================================
-# HEALTH CHECK
+# HEALTH
 # ================================================================
 @app.get("/health")
 async def health():
@@ -55,312 +52,158 @@ async def health():
 
 
 # ================================================================
-# ** FIXED CORS FOR REPLIT + RENDER **
+# CORS
 # ================================================================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "*",
-        "https://adnan-ai-frontend.fisekovicadnan.repl.co",
-        "https://*.replit.dev",
-        "http://localhost:3000"
-    ],
-    allow_origin_regex=".*replit\\.dev.*",
+    allow_origins=["*"],
+    allow_origin_regex=".*",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ================================================================
-# GLOBALS
-# ================================================================
-NOTION_KEY = os.getenv("NOTION_API_KEY")
-notion = Client(auth=NOTION_KEY)
 
-decision_engine = AdnanAIDecisionService()
+# ================================================================
+# GLOBAL SERVICES
+# ================================================================
 personality_engine = PersonalityEngine()
-
-# Orchestrator
 orchestrator = ContextOrchestrator(identity, mode, state)
+agents_service = AgentsService()
 
 
+# ================================================================
+# MODELS
+# ================================================================
 class CommandRequest(BaseModel):
     command: str
     payload: dict
 
 
-# Include Voice Router
 app.include_router(voice_router)
 
 
-# =====================================================================
+# ================================================================
 # PERSONALITY ROUTES
-# =====================================================================
+# ================================================================
 @app.get("/ops/get_personality")
 async def get_personality():
-    try:
-        return {
-            "success": True,
-            "personality": personality_engine.get_personality()
-        }
-    except Exception as e:
-        raise HTTPException(500, str(e))
+    return {
+        "success": True,
+        "personality": personality_engine.get_personality()
+    }
 
 
 @app.post("/ops/reset_personality")
 async def reset_personality():
-    try:
-        personality_engine.reset()
-        return {"success": True, "message": "Personality fully reset."}
-    except Exception as e:
-        raise HTTPException(500, str(e))
+    personality_engine.reset()
+    return {"success": True}
 
 
 @app.post("/ops/teach_personality")
 async def teach_personality(req: dict):
-    try:
-        text = req.get("text")
-        category = req.get("category", "values")
+    text = req.get("text")
+    category = req.get("category", "values")
 
-        if not text:
-            raise HTTPException(400, "Missing field: text")
+    if not text:
+        raise HTTPException(400, "Missing field: text")
 
-        personality_engine.add_trait(category, text)
-
-        return {
-            "success": True,
-            "taught": text,
-            "category": category,
-            "message": "Personality updated successfully."
-        }
-    except Exception as e:
-        raise HTTPException(500, str(e))
+    personality_engine.add_trait(category, text)
+    return {"success": True}
 
 
-# =====================================================================
-# /ops/execute — CEO → Orchestrator → Decision Engine → Notion
-# =====================================================================
+# ================================================================
+# /ops/execute — CEO → Orchestrator → Agent
+# ================================================================
 @app.post("/ops/execute")
-async def execute_notion_command(req: CommandRequest):
+async def execute(req: CommandRequest):
     try:
-        logger.info(">> Incoming /ops/execute")
-        logger.info(">> Command: %s", req.command)
-        logger.info(">> Payload: %s", json.dumps(req.payload, ensure_ascii=False))
+        logger.info(">> /ops/execute %s", req.command)
 
-        # ------------------------------------------------------------
-        # 1) ORCHESTRATOR
-        # ------------------------------------------------------------
         user_text = (
-            req.payload.get("text", "")
-            if req.command == "from_ceo"
-            else req.payload.get("text") or req.payload.get("query") or ""
+            req.payload.get("text")
+            or req.payload.get("query")
+            or ""
         )
 
-        if user_text:
-            orch = orchestrator.run(user_text)
-            context_type = orch.get("context_type")
+        # ------------------------------------------------------------
+        # ORCHESTRATOR (SINGLE SOURCE OF TRUTH)
+        # ------------------------------------------------------------
+        orch = await orchestrator.run(user_text)
+        context_type = orch.get("context_type")
+        result = orch.get("result", {})
 
-            # Direct responses (identity, memory, meta, notion…)
-            if context_type in ["identity", "memory", "agent", "sop", "notion", "meta"]:
+        # ------------------------------------------------------------
+        # NON-EXECUTING CONTEXTS
+        # ------------------------------------------------------------
+        if context_type in {"identity", "chat", "memory", "meta"}:
+            return {
+                "success": True,
+                "final_answer": orch["final_output"]["final_answer"],
+                "engine_output": orch,
+            }
+
+        # ------------------------------------------------------------
+        # DELEGATION → AGENT EXECUTION
+        # ------------------------------------------------------------
+        if result.get("type") == "delegation":
+            delegation = result.get("delegation", {})
+            command = delegation.get("command")
+            payload = delegation.get("payload")
+
+            if not command:
                 return {
                     "success": True,
                     "final_answer": orch["final_output"]["final_answer"],
-                    "engine_output": orch
+                    "engine_output": orch,
                 }
 
-        # ------------------------------------------------------------
-        # 2) CEO MODE
-        # ------------------------------------------------------------
-        if req.command == "from_ceo":
-            ceo_text = req.payload.get("text", "")
-
-            decision = decision_engine.process_ceo_instruction(ceo_text)
-            logger.info(json.dumps(decision, indent=2, ensure_ascii=False))
-
-            if decision.get("local_only"):
-                return {
-                    "success": True,
-                    "final_answer": decision.get("system_response"),
-                    "engine_output": decision
-                }
-
-            if decision.get("error_engine", {}).get("errors"):
-                return {
-                    "success": False,
-                    "blocked": True,
-                    "reason": "Critical Decision Engine error",
-                    "engine_output": decision,
-                }
-
-            req.command = decision.get("command")
-            req.payload = decision.get("payload")
-
-        # ------------------------------------------------------------
-        # 3) EXECUTION — NOTION COMMANDS
-        # ------------------------------------------------------------
-        command = req.command
-        payload = req.payload
-
-        logger.info(">> EXECUTING NOTION COMMAND: %s", command)
-
-        # CREATE ENTRY
-        if command == "create_database_entry":
-            db = payload.get("database_id")
-            entry = payload.get("entry", {})
-
-            properties = {}
-            for key, value in entry.items():
-                if key.lower() == "name":
-                    properties["Name"] = {"title": [{"text": {"content": value}}]}
-                elif key in ["Status", "Priority"]:
-                    properties[key] = {"select": {"name": value}}
-                else:
-                    properties[key] = {"rich_text": [{"text": {"content": str(value)}}]}
-
-            created = notion.pages.create(
-                parent={"database_id": db},
-                properties=properties,
+            agent_result = await agents_service.execute(
+                command=command,
+                payload=payload,
             )
 
             return {
                 "success": True,
-                "final_answer": "Novi zapis je kreiran.",
-                "id": created.get("id"),
-                "url": created.get("url"),
+                "final_answer": agent_result.get(
+                    "summary",
+                    "Operacija izvršena."
+                ),
+                "engine_output": {
+                    "context_type": "agent_execution",
+                    "delegation": delegation,
+                    "agent_result": agent_result,
+                },
             }
 
-        # UPDATE ENTRY
-        elif command == "update_database_entry":
-            page_id = payload.get("page_id")
-            entry = payload.get("entry", {})
-
-            properties = {}
-            for key, value in entry.items():
-                if key.lower() == "name":
-                    properties["Name"] = {"title": [{"text": {"content": value}}]}
-                elif key in ["Status", "Priority"]:
-                    properties[key] = {"select": {"name": value}}
-                else:
-                    properties[key] = {"rich_text": [{"text": {"content": str(value)}}]}
-
-            updated = notion.pages.update(page_id=page_id, properties=properties)
-
-            return {
-                "success": True,
-                "final_answer": "Zapis je ažuriran.",
-                "updated_id": updated.get("id"),
-                "url": updated.get("url"),
-            }
-
-        # QUERY DATABASE
-        elif command == "query_database":
-            db = payload.get("database_id")
-            results = notion.databases.query(database_id=db)
-
-            return {
-                "success": True,
-                "final_answer": "Evo rezultata iz baze.",
-                "results": results.get("results", []),
-            }
-
-        # CREATE PAGE
-        elif command == "create_page":
-            parent_id = payload.get("parent_page_id")
-            title = payload.get("title", "Untitled Page")
-            children = payload.get("children", [])
-
-            created = notion.pages.create(
-                parent={"page_id": parent_id},
-                properties={"title": [{"text": {"content": title}}]},
-                children=children,
-            )
-
-            return {
-                "success": True,
-                "final_answer": "Nova stranica je kreirana.",
-                "page_id": created.get("id"),
-                "url": created.get("url"),
-            }
-
-        # RETRIEVE PAGE CONTENT
-        elif command == "retrieve_page_content":
-            page_id = payload.get("page_id")
-            blocks = notion.blocks.children.list(block_id=page_id)
-
-            return {
-                "success": True,
-                "final_answer": "Evo sadržaja stranice.",
-                "blocks": blocks.get("results", []),
-            }
-
-        # DELETE PAGE
-        elif command == "delete_page":
-            name = payload.get("name")
-            if not name:
-                return {"error": "Missing name for delete_page"}
-
-            databases = [
-                "2ac5873bd84a801f956fc30327b8ef94",
-                "2ad5873bd84a80e8b4dac703018212fe",
-                "2ac5873bd84a8004aac0ea9c53025bfc",
-            ]
-
-            page_to_delete = None
-
-            for db in databases:
-                res = notion.databases.query(database_id=db)
-                for row in res.get("results", []):
-                    try:
-                        title = row["properties"]["Name"]["title"][0]["plain_text"].lower()
-                        if name.lower() in title:
-                            page_to_delete = row["id"]
-                            break
-                    except:
-                        continue
-                if page_to_delete:
-                    break
-
-            if not page_to_delete:
-                return {"error": f"No page found matching: {name}"}
-
-            notion.pages.update(page_id=page_to_delete, archived=True)
-
-            return {
-                "success": True,
-                "final_answer": "Stranica je obrisana.",
-                "deleted_id": page_to_delete,
-            }
-
-        else:
-            return {
-                "error": f"Unknown command: {command}",
-                "final_answer": "Ne poznajem ovu operaciju."
-            }
-
-    except Exception as e:
-        logger.exception(">> ERROR in /ops/execute")
-        raise HTTPException(500, str(e))
-
-
-
-# =====================================================================
-# DIRECT AI ORCHESTRATOR ENDPOINT
-# =====================================================================
-@app.post("/ai/context")
-async def ai_context(req: dict):
-    try:
-        user_input = req.get("text")
-        if not user_input:
-            raise HTTPException(400, "Missing field: text")
-
-        result = orchestrator.run(user_input)
-
+        # ------------------------------------------------------------
+        # FALLBACK (SAFE)
+        # ------------------------------------------------------------
         return {
             "success": True,
-            "final_answer": result["final_output"]["final_answer"],
-            "engine_output": result
+            "final_answer": orch["final_output"]["final_answer"],
+            "engine_output": orch,
         }
 
     except Exception as e:
-        logger.exception(">> ERROR in /ai/context")
+        logger.exception(">> ERROR /ops/execute")
         raise HTTPException(500, str(e))
+
+
+# ================================================================
+# DIRECT AI CONTEXT (READ-ONLY)
+# ================================================================
+@app.post("/ai/context")
+async def ai_context(req: dict):
+    user_input = req.get("text")
+
+    if not user_input:
+        raise HTTPException(400, "Missing field: text")
+
+    result = await orchestrator.run(user_input)
+
+    return {
+        "success": True,
+        "final_answer": result["final_output"]["final_answer"],
+        "engine_output": result,
+    }

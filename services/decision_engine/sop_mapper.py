@@ -1,63 +1,62 @@
 import re
+from typing import List, Dict, Any, Optional
+
 
 class SOPMapper:
+    """
+    SOP Mapper — FAZA 4–6 (STABLE)
+
+    Pravila:
+    - resolve_sop vraća LOGIČKI SOP KEY
+    - build_execution_plan je DEPRECATED (ne koristi se)
+    - nema izvršenja
+    """
 
     def __init__(self):
-        # ključne riječi za svaku SOP bazu
         self.sop_map = {
-            "qualification sop": [
-                r"kvalifik", r"qualification", r"qualify", r"qlf", r"qual proc"
+            "customer_onboarding_sop": [
+                r"onboarding", r"onboard", r"uvođenje", r"novog klijenta"
             ],
-            "outreach sop": [
-                r"outreach", r"pristup", r"prvi kontakt"
+            "qualification_sop": [
+                r"kvalifik", r"qualification", r"qualify"
             ],
-            "follow up sop": [
-                r"follow", r"followup", r"prati dalje", r"follow-up"
+            "outreach_sop": [
+                r"outreach", r"prvi kontakt"
             ],
-            "fsc sop": [
-                r"fsc", r"sales cycle", r"funnel step", r"prodajni ciklus"
+            "follow_up_sop": [
+                r"follow", r"follow[- ]?up", r"prati dalje"
             ],
-            "flp ops sop": [
-                r"flp ops", r"ops flp", r"lead pipeline ops"
-            ],
-            "lss sop": [
-                r"lss", r"lead scoring", r"scoring system"
-            ],
-            "partner activation sop": [
-                r"partner activation", r"aktivacija partnera", r"activate partner"
-            ],
-            "partner performance sop": [
-                r"partner performance", r"performanse partnera"
-            ],
-            "partner leadership sop": [
-                r"partner leadership", r"vodjenje partnera"
-            ],
-            "customer onboarding sop": [
-                r"onboard", r"onboarding", r"uvod klijenta", r"klijentsko onboard"
-            ],
-            "customer retention sop": [
-                r"retention", r"zadržavanje klijenata", r"retencija"
-            ],
-            "customer performance sop": [
-                r"customer performance", r"performanse klijenta"
-            ],
-            "partner potential sop": [
-                r"potential partner", r"potencijal partnera"
-            ],
-            "sales closing sop": [
-                r"closing", r"zatvaranje prodaje", r"sales close"
-            ]
         }
 
-    ###################################################################
-    # MAIN SOP RESOLUTION
-    ###################################################################
-    def resolve_sop(self, text: str) -> str | None:
-        """
-        Detektuje SOP iz CEO teksta i vraća canonical SOP naziv.
-        """
+        # FAZA 5/6 — canonical aliasing (NON-BREAKING)
+        self.sop_aliases = {
+            "customer onboarding sop": "customer_onboarding_sop",
+            "customer_onboarding_sop": "customer_onboarding_sop",
+        }
+
+    # ------------------------------------------------------------
+    # RESOLVE SOP (KANONSKI)
+    # ------------------------------------------------------------
+    def resolve_sop(self, text: str) -> Optional[str]:
         for sop_name, patterns in self.sop_map.items():
             for p in patterns:
                 if re.search(p, text, re.IGNORECASE):
-                    return sop_name
+                    return self._normalize_sop_key(sop_name)
         return None
+
+    def _normalize_sop_key(self, sop_name: str) -> str:
+        """
+        Garantuje stabilan SOP key kroz sistem.
+        """
+        return self.sop_aliases.get(sop_name, sop_name)
+
+    # ------------------------------------------------------------
+    # BUILD EXECUTION PLAN (DEPRECATED — NE KORISTITI)
+    # ------------------------------------------------------------
+    def build_execution_plan(self, sop_name: str) -> List[Dict[str, Any]]:
+        """
+        DEPRECATED.
+        Ostavljen isključivo radi backward compatibility.
+        Ne koristi se u runtime flow-u.
+        """
+        return []

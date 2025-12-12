@@ -1,82 +1,124 @@
 # services/action_workflow_service.py
 
 """
-Workflow Execution Engine (Korak 8.4)
+Workflow Execution Engine — FAZA 4 (KANONSKI)
 
-Ovaj servis:
-- prima AI definisane workflow-e
-- izvršava ih korak po korak
-- koristi ActionExecutionService za svaku akciju
-- ne prekida cijeli workflow osim u kritičnoj grešci
-- vraća listu rezultata za svaki korak
+Uloge:
+- Prepoznaje klasični workflow
+- Prepoznaje SOP execution plan
+- Delegira SOP na SOPExecutionManager
+- Ne donosi odluke
 """
 
 from typing import Dict, Any, List
+
 from services.action_execution_service import ActionExecutionService
+from services.sop_execution_manager import SOPExecutionManager
 
 
 class ActionWorkflowService:
     def __init__(self):
         self.executor = ActionExecutionService()
+        self.sop_executor = SOPExecutionManager()
 
-    def execute_workflow(self, workflow: Dict[str, Any]) -> Dict[str, Any]:
+    # ============================================================
+    # PUBLIC ENTRYPOINT
+    # ============================================================
+    async def execute_workflow(self, workflow: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Workflow format:
+        Podržani formati:
+
+        1) Legacy workflow:
         {
             "type": "workflow",
             "steps": [
-                {"directive": "...", "params": {...}},
                 {"directive": "...", "params": {...}}
+            ]
+        }
+
+        2) SOP execution plan:
+        {
+            "type": "sop_execution",
+            "execution_plan": [
+                {
+                    "step": 1,
+                    "agent": "notion_ops",
+                    "command": "...",
+                    "payload": {...}
+                }
             ]
         }
         """
 
-        # --------------------------------
-        # Validacija workflow strukture
-        # --------------------------------
-        if not workflow or "steps" not in workflow:
+        if not workflow or "type" not in workflow:
             return {
-                "workflow_executed": False,
-                "error": "invalid_workflow_structure"
+                "success": False,
+                "error": "invalid_workflow_structure",
             }
 
-        steps = workflow.get("steps", [])
-        results: List[Dict[str, Any]] = []
+        workflow_type = workflow.get("type")
 
-        # --------------------------------
-        # Izvršavanje svakog koraka
-        # --------------------------------
-        for index, step in enumerate(steps):
-            directive = step.get("directive")
-            params = step.get("params", {})
+        # --------------------------------------------------------
+        # SOP WORKFLOW (FAZA 4)
+        # --------------------------------------------------------
+        if workflow_type == "sop_execution":
+            execution_plan = workflow.get("execution_plan")
 
-            if not directive:
+            if not execution_plan:
+                return {
+                    "success": False,
+                    "error": "missing_execution_plan",
+                }
+
+            return await self.sop_executor.execute_plan(execution_plan)
+
+        # --------------------------------------------------------
+        # LEGACY WORKFLOW (ZADRŽANO)
+        # --------------------------------------------------------
+        if workflow_type == "workflow":
+            steps = workflow.get("steps", [])
+            results: List[Dict[str, Any]] = []
+
+            for index, step in enumerate(steps):
+                directive = step.get("directive")
+                params = step.get("params", {})
+
+                if not directive:
+                    results.append({
+                        "step": index,
+                        "executed": False,
+                        "error": "missing_directive",
+                    })
+                    continue
+
+                try:
+                    result = self.executor.execute(directive, params)
+                except Exception as e:
+                    results.append({
+                        "step": index,
+                        "executed": False,
+                        "error": "execution_error",
+                        "message": str(e),
+                    })
+                    continue
+
                 results.append({
                     "step": index,
-                    "executed": False,
-                    "error": "missing_directive"
+                    "executed": result.get("executed", False),
+                    "directive": directive,
+                    "result": result,
                 })
-                continue
 
-            try:
-                result = self.executor.execute(directive, params)
-            except Exception as e:
-                results.append({
-                    "step": index,
-                    "executed": False,
-                    "error": "execution_error",
-                    "message": str(e),
-                })
-                continue
+            return {
+                "success": True,
+                "workflow_executed": True,
+                "steps_results": results,
+            }
 
-            results.append({
-                "step": index,
-                "executed": result.get("executed", False),
-                "directive": directive,
-                "result": result
-            })
-
+        # --------------------------------------------------------
+        # UNKNOWN
+        # --------------------------------------------------------
         return {
-            "workflow_executed": True,
-            "steps_results": results
+            "success": False,
+            "error": f"unsupported_workflow_type: {workflow_type}",
         }
