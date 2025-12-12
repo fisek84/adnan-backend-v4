@@ -10,7 +10,7 @@ from services.adnan_ai_decision_service import AdnanAIDecisionService
 from services.memory_service import MemoryService
 from services.knowledge_snapshot_service import KnowledgeSnapshotService
 from services.sop_knowledge_registry import SOPKnowledgeRegistry
-from ..conversation_state_service import ConversationStateService
+from services.conversation_state_service import ConversationStateService
 
 CONFIRMATION_KEYWORDS = {
     "da", "yes", "potvrdi", "potvrđujem", "ok", "u redu", "izvrši", "izvrsi"
