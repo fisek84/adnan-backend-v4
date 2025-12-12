@@ -1,4 +1,4 @@
-from typing import Dict, Any
+from typing import Dict, Any, List
 
 
 class FinalResponseEngine:
@@ -108,6 +108,12 @@ class FinalResponseEngine:
         if context_type == "meta":
             return "Status je provjeren."
 
+        # ========================================================
+        # NEW — KNOWLEDGE RESPONSE (GOALS / TASKS / PROJECTS)
+        # ========================================================
+        if result.get("type") == "knowledge":
+            return self._format_knowledge(result)
+
         # -------------------------
         # SOP / DELEGATION (FAZA 10)
         # -------------------------
@@ -118,6 +124,41 @@ class FinalResponseEngine:
         # GENERIC
         # -------------------------
         return self._format_generic(raw, style)
+
+    # ============================================================
+    # KNOWLEDGE FORMATTER (READ-ONLY)
+    # ============================================================
+    def _format_knowledge(self, result: Dict[str, Any]) -> str:
+        """
+        CEO verbalizacija postojećeg znanja.
+        Nema execution-a.
+        """
+
+        response = result.get("response", {})
+        topic = response.get("topic")
+        items: List[str] = response.get("items", [])
+        count = response.get("count", len(items))
+
+        if not items:
+            return "Trenutno nemam dostupne podatke."
+
+        if topic == "goals":
+            header = f"Trenutno imaš {count} aktivnih ciljeva:"
+        elif topic == "tasks":
+            header = f"Trenutno imaš {count} zadataka:"
+        elif topic == "projects":
+            header = f"Trenutno imaš {count} projekata:"
+        else:
+            header = f"Pregled podataka ({count} stavki):"
+
+        lines = [header]
+        for item in items[:10]:
+            lines.append(f"- {item}")
+
+        if count > 10:
+            lines.append("…")
+
+        return " ".join(lines)
 
     # ============================================================
     # FAZA 10 — EXPLAINABILITY (READ-ONLY)
@@ -132,7 +173,6 @@ class FinalResponseEngine:
         sop = delegation.get("sop")
         plan = delegation.get("plan")
 
-        # fallback — staro ponašanje
         if not isinstance(plan, list) or not plan:
             return "Zadatak je delegiran agentu. Pratim izvršenje."
 
