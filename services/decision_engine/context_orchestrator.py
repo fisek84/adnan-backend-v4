@@ -45,13 +45,34 @@ class ContextOrchestrator:
         self.decision_engine = AdnanAIDecisionService()
         self.memory_engine = MemoryService()
 
+        # FAZA 5/6 — pending execution state
         self._pending_decision: Optional[str] = None
 
     async def run(self, user_input: str) -> Dict[str, Any]:
 
         normalized = (user_input or "").lower().strip()
 
-        # FAZA 5/6 — CONFIRMATION CHECK
+        # ============================================================
+        # FAZA 6 — CONFIRMATION GUARD
+        # Ako čekamo potvrdu, ne prihvatamo nove odluke
+        # ============================================================
+        if self._pending_decision and not self._is_confirmation(normalized):
+            return {
+                "success": True,
+                "context_type": "confirmation_pending",
+                "decision_intent": "awaiting_confirmation",
+                "result": {
+                    "type": "decision_candidate",
+                    "message": "Čekam potvrdu za prethodnu odluku. Napiši 'da' ili 'ok'.",
+                },
+                "final_output": {
+                    "final_answer": "Čekam potvrdu za prethodnu odluku."
+                },
+            }
+
+        # ============================================================
+        # FAZA 5/6 — CONFIRMATION ACCEPTED
+        # ============================================================
         if self._pending_decision and self._is_confirmation(normalized):
             execution = self.decision_engine.process_ceo_instruction(
                 self._pending_decision
@@ -74,6 +95,9 @@ class ContextOrchestrator:
                 },
             }
 
+        # ============================================================
+        # NORMAL FLOW
+        # ============================================================
         identity_reasoning = self.reasoner.generate_reasoning(user_input)
         classification = self.classifier.classify(user_input, identity_reasoning)
         context_type = classification.get("context_type")
@@ -130,6 +154,9 @@ class ContextOrchestrator:
             "final_output": final_output,
         }
 
+    # ============================================================
+    # HELPERS
+    # ============================================================
     def _is_confirmation(self, text: str) -> bool:
         return any(k in text for k in CONFIRMATION_KEYWORDS)
 
@@ -140,6 +167,9 @@ class ContextOrchestrator:
             return "decision_candidate"
         return "unknown"
 
+    # ============================================================
+    # READ-ONLY KNOWLEDGE
+    # ============================================================
     def _handle_business_knowledge(self, user_input: str) -> Optional[Dict[str, Any]]:
         if not KnowledgeSnapshotService.is_ready():
             return None
@@ -198,6 +228,9 @@ class ContextOrchestrator:
             },
         }
 
+    # ============================================================
+    # OTHER HANDLERS
+    # ============================================================
     def _handle_identity(self) -> Dict[str, Any]:
         return {
             "type": "identity",
