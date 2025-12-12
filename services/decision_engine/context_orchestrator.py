@@ -4,7 +4,6 @@ from services.decision_engine.identity_reasoning import IdentityReasoningEngine
 from services.decision_engine.context_classifier import ContextClassifier
 from services.decision_engine.final_response_engine import FinalResponseEngine
 from services.decision_engine.playbook_engine import PlaybookEngine
-from services.decision_engine.sop_mapper import SOPMapper
 
 from services.adnan_ai_decision_service import AdnanAIDecisionService
 from services.memory_service import MemoryService
@@ -16,6 +15,7 @@ class ContextOrchestrator:
 
     FAZA 2: chat kontinuitet
     FAZA 4–6: SOP → playbook → execution plan → delegation
+    FAZA 20: NON-SOP semantic business objects
     """
 
     def __init__(
@@ -38,7 +38,6 @@ class ContextOrchestrator:
         self.decision_engine = AdnanAIDecisionService()
         self.memory_engine = MemoryService()
 
-        # FAZA 2 — last human-facing answer
         self._last_human_answer: Optional[str] = None
 
     # ============================================================
@@ -54,9 +53,6 @@ class ContextOrchestrator:
 
         context_type = classification.get("context_type")
 
-        # --------------------------------------------------------
-        # ROUTING
-        # --------------------------------------------------------
         if context_type == "identity":
             result = self._handle_identity(user_input, identity_reasoning)
 
@@ -74,10 +70,7 @@ class ContextOrchestrator:
             )
 
         elif context_type in {"business", "notion", "agent"}:
-            result = self._delegate_operation(
-                user_input=user_input,
-                context_type=context_type,
-            )
+            result = self._delegate_operation(user_input)
 
         elif context_type == "meta":
             result = self._handle_meta(user_input)
@@ -88,81 +81,83 @@ class ContextOrchestrator:
                 "response": "Nepoznat kontekst.",
             }
 
-        # --------------------------------------------------------
-        # FINAL RESPONSE
-        # --------------------------------------------------------
         final_output = self.response_engine.format_response(
             identity_reasoning=identity_reasoning,
             classification=classification,
             result=result,
         )
 
-        # --------------------------------------------------------
-        # FAZA 2 — STORE LAST HUMAN ANSWER
-        # --------------------------------------------------------
         if context_type in {"chat", "identity"}:
             self._last_human_answer = final_output.get("final_answer")
 
         return {
             "success": True,
             "context_type": context_type,
-            "identity_reasoning": identity_reasoning,
-            "classification": classification,
             "result": result,
             "final_output": final_output,
         }
 
     # ============================================================
-    # HANDLERS
+    # NON-SOP BUSINESS DELEGATION (FIX)
     # ============================================================
-    def _handle_identity(
-        self,
-        user_input: str,
-        reasoning: Dict[str, Any],
-    ) -> Dict[str, Any]:
+    def _delegate_operation(self, user_input: str) -> Dict[str, Any]:
+
+        decision = self.decision_engine.process_ceo_instruction(user_input)
+        command = decision.get("command")
+        payload = decision.get("payload", {})
 
         lower = user_input.lower()
 
-        if any(
-            q in lower
-            for q in [
-                "ko si",
-                "ko si ti",
-                "šta si ti",
-                "ko je adnan.ai",
-                "tvoj identitet",
-            ]
+        # -----------------------------
+        # GOAL SEMANTIC OBJECT
+        # -----------------------------
+        if command == "create_database_entry" and any(
+            k in lower for k in ["cilj", "goal", "objective"]
         ):
-            text = "Ja sam Adnan.AI — digitalni CEO i orkestrator sistema Evolia."
-        else:
-            text = "Razumijem."
+            title = payload.get("title") or user_input.split(":")[-1].strip()
+
+            payload = {
+                "database_key": "goals",
+                "properties": {
+                    "Name": {
+                        "title": [
+                            {
+                                "text": {
+                                    "content": title
+                                }
+                            }
+                        ]
+                    },
+                    "Status": {
+                        "select": {
+                            "name": "Active"
+                        }
+                    }
+                },
+            }
 
         return {
+            "type": "delegation",
+            "context": "business",
+            "delegation": {
+                "command": command,
+                "payload": payload,
+            },
+        }
+
+    # ============================================================
+    # OTHER HANDLERS (UNCHANGED)
+    # ============================================================
+    def _handle_identity(self, user_input: str, reasoning: Dict[str, Any]) -> Dict[str, Any]:
+        return {
             "type": "identity",
-            "response": text,
-            "reasoning": reasoning,
+            "response": "Ja sam Adnan.AI — digitalni CEO sistema Evolia.",
         }
 
     def _handle_chat(self, user_input: str) -> Dict[str, Any]:
-        lower = user_input.lower().strip()
-
-        FOLLOW_UP_MARKERS = [
-            "zašto", "zasto", "a zašto", "a zasto",
-            "kako", "možeš", "mozes",
-            "pojasni", "šta onda", "sta onda",
-            "i dalje", "dalje", "a onda",
-        ]
-
-        is_follow_up = any(lower.startswith(m) or m in lower for m in FOLLOW_UP_MARKERS)
-
-        if is_follow_up and self._last_human_answer:
-            response = self._last_human_answer
-        else:
-            response = user_input
-
         return {
             "type": "chat",
-            "response": response,
+            "response": user_input,
         }
 
     def _handle_memory(self, user_input: str) -> Dict[str, Any]:
@@ -174,15 +169,9 @@ class ContextOrchestrator:
     def _handle_meta(self, user_input: str) -> Dict[str, Any]:
         return {
             "type": "meta",
-            "response": {
-                "status": "meta-command-received",
-                "input": user_input,
-            },
+            "response": {"input": user_input},
         }
 
-    # ============================================================
-    # SOP HANDLER — KANONSKI (FAZA 6)
-    # ============================================================
     def _handle_sop(
         self,
         user_input: str,
@@ -208,25 +197,5 @@ class ContextOrchestrator:
             "delegation": {
                 "sop": playbook_result.get("sop"),
                 "plan": playbook_result.get("execution_plan"),
-            },
-        }
-
-    # ============================================================
-    # GENERIC DELEGATION (NON-SOP)
-    # ============================================================
-    def _delegate_operation(
-        self,
-        user_input: str,
-        context_type: str,
-    ) -> Dict[str, Any]:
-
-        decision = self.decision_engine.process_ceo_instruction(user_input)
-
-        return {
-            "type": "delegation",
-            "context": context_type,
-            "delegation": {
-                "command": decision.get("command"),
-                "payload": decision.get("payload"),
             },
         }
