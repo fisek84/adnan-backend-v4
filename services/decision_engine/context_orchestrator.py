@@ -1,4 +1,4 @@
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any
 import hashlib
 
 from .identity_reasoning import IdentityReasoningEngine
@@ -133,12 +133,12 @@ class ContextOrchestrator:
             })
 
         # ============================================================
-        # CONFIRMATION
+        # CONFIRMATION  ✅ POPRAVKA JE OVDJE
         # ============================================================
         if (
             state["state"] == "DECISION_PENDING"
             and state["expected_input"] == "confirmation"
-            and normalized in CONFIRMATION_KEYWORDS
+            and any(k in normalized for k in CONFIRMATION_KEYWORDS)
         ):
             pending = state.get("pending_decision") or {}
             execution = self.decision_engine.process_ceo_instruction(
