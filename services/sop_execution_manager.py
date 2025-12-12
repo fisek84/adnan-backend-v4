@@ -114,9 +114,6 @@ class SOPExecutionManager:
             mem = MemoryService()
             optimized: List[Dict[str, Any]] = []
 
-            # --------------------------------------------
-            # FAZA 9 — LOAD CROSS-SOP BIAS (READ-ONLY)
-            # --------------------------------------------
             cross_sop_bias: List[Dict[str, Any]] = []
             if current_sop:
                 try:
@@ -135,9 +132,6 @@ class SOPExecutionManager:
 
                 success_rate = stats.get("success_rate", 0.5) if stats else 0.5
 
-                # ----------------------------
-                # CONFIDENCE TIERS
-                # ----------------------------
                 if success_rate >= self.CONFIDENCE_HIGH:
                     tier = "high"
                 elif success_rate >= self.CONFIDENCE_MEDIUM:
@@ -149,9 +143,6 @@ class SOPExecutionManager:
                     success_rate * self.TIER_MULTIPLIER[tier], 2
                 )
 
-                # ----------------------------
-                # FAZA 9 — CROSS-SOP BIAS BOOST
-                # ----------------------------
                 bias_boost = 0.0
                 for b in cross_sop_bias:
                     if b.get("to") == step_id:
@@ -165,15 +156,9 @@ class SOPExecutionManager:
                 step["preferred_agent"] = agent
                 step["cross_sop_bias"] = round(bias_boost, 2)
 
-                # ----------------------------
-                # SOFT SKIP
-                # ----------------------------
                 if tier == "high":
                     continue
 
-                # ----------------------------
-                # CRITICALITY HARDENING
-                # ----------------------------
                 if tier == "medium" and step.get("critical"):
                     step["critical"] = False
 
@@ -243,6 +228,7 @@ class SOPExecutionManager:
                 "step": step_id,
                 "status": "failed",
                 "critical": critical,
+                "confirmed": False,
                 "error": result,
                 "delegation_meta": delegation_meta,
             }
@@ -251,6 +237,7 @@ class SOPExecutionManager:
             "step": step_id,
             "status": "done",
             "critical": critical,
+            "confirmed": True,
             "result": result,
             "delegation_meta": delegation_meta,
         }
@@ -263,6 +250,7 @@ class SOPExecutionManager:
         failed = [r for r in results if r["status"] == "failed"]
 
         success = len(failed) == 0
+        confirmed = success
 
         try:
             from services.memory_service import MemoryService
@@ -283,6 +271,7 @@ class SOPExecutionManager:
 
         return {
             "success": success,
+            "confirmed": confirmed,
             "summary": (
                 "SOP uspješno izvršen."
                 if success

@@ -14,6 +14,7 @@ class PlaybookEngine:
     - vraća EXECUTION PLAN + VARIJANTE
     - FAZA 9.1: READ-ONLY SOP bias (learning signal)
     - FAZA 9.2: READ-ONLY SOP chaining recommendation (CEO suggestion)
+    - FAZA 9.3: READ-ONLY SOP historical success rate (CEO signal)
     - NEMA izvršenja
     - NEMA odlučivanja
     - NEMA pisanja u memoriju
@@ -54,6 +55,11 @@ class PlaybookEngine:
             sop_bias = self.memory.get_cross_sop_bias(sop_name)
 
             # ====================================================
+            # FAZA 9.3 — SOP HISTORICAL SUCCESS RATE (READ-ONLY)
+            # ====================================================
+            sop_success_rate = self.memory.sop_success_rate(sop_name)
+
+            # ====================================================
             # FAZA 9.2 — SOP CHAINING RECOMMENDATION (READ-ONLY)
             # ====================================================
             recommendation = self._build_sop_recommendation(
@@ -64,10 +70,11 @@ class PlaybookEngine:
             return {
                 "type": "sop_execution",
                 "sop": sop_name,
-                "execution_plan": base_plan,   # backward-compatible
+                "execution_plan": base_plan,
                 "variants": self._build_variants(sop_name, base_plan),
-                "sop_bias": sop_bias,          # FAZA 9.1
-                "recommendation": recommendation,  # FAZA 9.2
+                "sop_bias": sop_bias,
+                "sop_success_rate": sop_success_rate,  # FAZA 9.3
+                "recommendation": recommendation,
             }
 
         return {
@@ -79,10 +86,6 @@ class PlaybookEngine:
     # SOP → EXECUTION PLAN (BASELINE)
     # ============================================================
     def _build_sop_execution_plan(self, sop_name: str) -> List[Dict[str, Any]]:
-        """
-        Baseline plan (SAFE DEFAULT).
-        """
-
         if sop_name == "customer onboarding sop":
             return [
                 {
@@ -139,11 +142,6 @@ class PlaybookEngine:
         sop_name: str,
         base_plan: List[Dict[str, Any]],
     ) -> Dict[str, List[Dict[str, Any]]]:
-        """
-        VARIJANTE SU OPISNE.
-        NEMA logike.
-        NEMA odluke.
-        """
 
         variants: Dict[str, List[Dict[str, Any]]] = {
             "default": base_plan,
@@ -154,7 +152,6 @@ class PlaybookEngine:
                 step for step in base_plan
                 if step.get("step") == "create_project"
             ]
-
             variants["full"] = list(base_plan)
 
         return variants
@@ -167,16 +164,10 @@ class PlaybookEngine:
         current_sop: str,
         bias: List[Dict[str, Any]],
     ) -> Optional[Dict[str, Any]]:
-        """
-        READ-ONLY.
-        Ne donosi odluku.
-        Samo kaže: "Preporučujem da razmotriš X".
-        """
 
         if not bias:
             return None
 
-        # bias je već sortiran po success_rate (iz MemoryService)
         best = bias[0]
 
         return {

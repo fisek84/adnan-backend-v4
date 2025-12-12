@@ -1,16 +1,16 @@
 # services/action_safety_service.py
 
 """
-Safety & Validation Layer (Korak 8.5)
+Safety & Validation Layer (Korak 8.5 / FAZA 11)
 
-Ovaj modul obezbjeđuje:
-- sigurnosne provjere prije izvršenja bilo koje AI akcije
-- validaciju direktiva
-- validaciju parametara
-- zaštitu od opasnih workflow-a
+Uloga:
+- sigurnosne provjere prije izvršenja
+- validacija direktiva
+- validacija parametara
+- zaštita od opasnih workflow-a
 
 NIŠTA se ne izvršava.
-Ovo je samo zaštitni sloj koji vraća "allowed" ili "blocked".
+Ovo je READ-ONLY guard sloj.
 """
 
 from typing import Dict, Any, List
@@ -40,34 +40,34 @@ class ActionSafetyService:
     # ------------------------------------------
     def validate_action(self, directive: str, params: Dict[str, Any]) -> Dict[str, Any]:
 
-        # 1. Provjera da li je akcija eksplicitno blokirana
         if directive in self.BLOCKED_ACTIONS:
             return {
                 "allowed": False,
-                "reason": f"Directive '{directive}' is blocked for safety reasons."
+                "safety_level": "blocked",
+                "reason": f"Directive '{directive}' is blocked for safety reasons.",
             }
 
-        # 2. Minimalna validacija parametara
         if params is None:
             params = {}
 
         if not isinstance(params, dict):
             return {
                 "allowed": False,
-                "reason": "Invalid parameter format. Expected a dict."
+                "safety_level": "blocked",
+                "reason": "Invalid parameter format. Expected a dict.",
             }
 
-        # 3. Provjera praznih ključeva
-        for key, value in params.items():
-            if key is None or key == "":
+        for key in params.keys():
+            if not key:
                 return {
                     "allowed": False,
-                    "reason": "Parameter keys cannot be empty."
+                    "safety_level": "blocked",
+                    "reason": "Parameter keys cannot be empty.",
                 }
 
-        # 4. Sve OK — akcija je dozvoljena
         return {
-            "allowed": True
+            "allowed": True,
+            "safety_level": "safe",
         }
 
     # ------------------------------------------
@@ -75,23 +75,22 @@ class ActionSafetyService:
     # ------------------------------------------
     def validate_workflow(self, workflow: Dict[str, Any]) -> Dict[str, Any]:
 
-        # Workflow mora imati listu koraka
         steps: List[Dict[str, Any]] = workflow.get("steps", [])
 
         if not isinstance(steps, list):
             return {
                 "allowed": False,
-                "reason": "Workflow malformed: 'steps' must be a list."
+                "safety_level": "blocked",
+                "reason": "Workflow malformed: 'steps' must be a list.",
             }
 
-        # Maksimalan broj koraka
         if len(steps) > self.MAX_WORKFLOW_STEPS:
             return {
                 "allowed": False,
-                "reason": f"Workflow too long. Limit is {self.MAX_WORKFLOW_STEPS} steps."
+                "safety_level": "blocked",
+                "reason": f"Workflow too long. Limit is {self.MAX_WORKFLOW_STEPS} steps.",
             }
 
-        # Validacija svakog koraka
         for index, step in enumerate(steps):
             directive = step.get("directive")
             params = step.get("params", {})
@@ -99,18 +98,19 @@ class ActionSafetyService:
             if not directive:
                 return {
                     "allowed": False,
-                    "reason": f"Missing directive at step {index}."
+                    "safety_level": "blocked",
+                    "reason": f"Missing directive at step {index}.",
                 }
 
-            # Ako ijedna akcija nije validna → workflow je blokiran
-            single_check = self.validate_action(directive, params)
-            if not single_check["allowed"]:
+            check = self.validate_action(directive, params)
+            if not check["allowed"]:
                 return {
                     "allowed": False,
-                    "reason": f"Workflow blocked at step {index}: {single_check['reason']}"
+                    "safety_level": "blocked",
+                    "reason": f"Workflow blocked at step {index}: {check['reason']}",
                 }
 
-        # Sve OK — workflow dozvoljen
         return {
-            "allowed": True
+            "allowed": True,
+            "safety_level": "safe",
         }

@@ -53,6 +53,7 @@ class ActionWorkflowService:
         if not workflow or "type" not in workflow:
             return {
                 "success": False,
+                "confirmed": False,
                 "error": "invalid_workflow_structure",
             }
 
@@ -67,10 +68,17 @@ class ActionWorkflowService:
             if not execution_plan:
                 return {
                     "success": False,
+                    "confirmed": False,
                     "error": "missing_execution_plan",
                 }
 
-            return await self.sop_executor.execute_plan(execution_plan)
+            result = await self.sop_executor.execute_plan(execution_plan)
+
+            # SOP executor već zna outcome → samo propagacija
+            return {
+                **result,
+                "confirmed": bool(result.get("success")),
+            }
 
         # --------------------------------------------------------
         # LEGACY WORKFLOW (ZADRŽANO)
@@ -78,6 +86,7 @@ class ActionWorkflowService:
         if workflow_type == "workflow":
             steps = workflow.get("steps", [])
             results: List[Dict[str, Any]] = []
+            confirmed = False
 
             for index, step in enumerate(steps):
                 directive = step.get("directive")
@@ -87,6 +96,7 @@ class ActionWorkflowService:
                     results.append({
                         "step": index,
                         "executed": False,
+                        "confirmed": False,
                         "error": "missing_directive",
                     })
                     continue
@@ -97,14 +107,19 @@ class ActionWorkflowService:
                     results.append({
                         "step": index,
                         "executed": False,
+                        "confirmed": False,
                         "error": "execution_error",
                         "message": str(e),
                     })
                     continue
 
+                step_confirmed = bool(result.get("confirmed"))
+                confirmed = confirmed or step_confirmed
+
                 results.append({
                     "step": index,
                     "executed": result.get("executed", False),
+                    "confirmed": step_confirmed,
                     "directive": directive,
                     "result": result,
                 })
@@ -112,6 +127,7 @@ class ActionWorkflowService:
             return {
                 "success": True,
                 "workflow_executed": True,
+                "confirmed": confirmed,
                 "steps_results": results,
             }
 
@@ -120,5 +136,6 @@ class ActionWorkflowService:
         # --------------------------------------------------------
         return {
             "success": False,
+            "confirmed": False,
             "error": f"unsupported_workflow_type: {workflow_type}",
         }

@@ -7,7 +7,7 @@ class FinalResponseEngine:
 
     FAZA 10:
     - READ-ONLY explainability
-    - confidence signal (low / medium / high)
+    - confidence tier + confidence score
     - NEMA izvršenja
     - NEMA memorije
     - NEMA logike odlučivanja
@@ -62,16 +62,20 @@ class FinalResponseEngine:
         result: Dict[str, Any],
     ) -> Dict[str, Any]:
 
+        tier = self._confidence_level(context_type, result)
+        score = self._confidence_score(tier)
+
         explanation = {
             "context_type": context_type,
-            "confidence": self._confidence_level(context_type, result),
+            "confidence_tier": tier,
+            "confidence_score": score,
             "reasoning": [],
             "read_only": True,
         }
 
         if context_type in {"chat", "identity", "meta"}:
             explanation["reasoning"].append(
-                "Ovo je informativni odgovor bez poslovne odluke."
+                "Informativni odgovor bez poslovne odluke."
             )
 
         if result.get("type") == "decision_candidate":
@@ -81,12 +85,17 @@ class FinalResponseEngine:
 
         if result.get("type") == "delegation":
             explanation["reasoning"].append(
-                "Odluka je potvrđena od strane korisnika i delegirana."
+                "Odluka je potvrđena i delegirana izvršnom agentu."
             )
 
         if "recommendation" in result:
             explanation["reasoning"].append(
-                "Preporuka je bazirana na historijskim podacima (READ-ONLY)."
+                "Preporuka je bazirana na historijskim podacima (READ-ONLY signal)."
+            )
+
+        if not explanation["reasoning"]:
+            explanation["reasoning"].append(
+                "Nema operativnih implikacija."
             )
 
         return explanation
@@ -108,10 +117,22 @@ class FinalResponseEngine:
 
         return "low"
 
+    def _confidence_score(self, tier: str) -> float:
+        """
+        Stabilan, deterministički mapping.
+        NEMA ML-a.
+        """
+        return {
+            "high": 0.9,
+            "medium": 0.6,
+            "low": 0.3,
+        }.get(tier, 0.2)
+
     def _explain_read_only(self, context_type: str) -> Dict[str, Any]:
         return {
             "context_type": context_type,
-            "confidence": "high",
+            "confidence_tier": "high",
+            "confidence_score": 0.95,
             "reasoning": [
                 "Sistem je u READ-ONLY režimu.",
                 "Nema odluka niti izvršenja.",

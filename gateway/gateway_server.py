@@ -27,6 +27,11 @@ from services.adnan_state_service import load_state
 from services.action_workflow_service import ActionWorkflowService
 
 # ================================================================
+# GOVERNANCE (FAZA 19)
+# ================================================================
+from services.execution_governance_service import ExecutionGovernanceService
+
+# ================================================================
 # MEMORY (FAZA 8.1)
 # ================================================================
 from services.memory_service import MemoryService
@@ -58,7 +63,6 @@ logger = logging.getLogger("gateway")
 
 app = FastAPI()
 
-
 # ================================================================
 # GLOBAL SERVICES (SINGLETONS)
 # ================================================================
@@ -66,6 +70,7 @@ personality_engine = PersonalityEngine()
 orchestrator = ContextOrchestrator(identity, mode, state)
 workflow_service = ActionWorkflowService()
 memory_service = MemoryService()
+governance_service = ExecutionGovernanceService()
 
 # ------------------------------------------------
 # NOTION READ-ONLY SERVICE (SNAPSHOT SOURCE)
@@ -77,7 +82,6 @@ notion_service = NotionService(
     projects_db_id=os.getenv("NOTION_PROJECTS_DB_ID"),
 )
 
-
 # ================================================================
 # STARTUP — INITIAL KNOWLEDGE SYNC
 # ================================================================
@@ -86,14 +90,12 @@ async def startup_event():
     logger.info(">> Startup: syncing Notion knowledge snapshot")
     await notion_service.sync_knowledge_snapshot()
 
-
 # ================================================================
 # HEALTH
 # ================================================================
 @app.get("/health")
 async def health():
     return {"status": "ok"}
-
 
 # ================================================================
 # CORS
@@ -107,7 +109,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 # ================================================================
 # MODELS
 # ================================================================
@@ -115,17 +116,24 @@ class CommandRequest(BaseModel):
     command: str
     payload: dict
 
-
 app.include_router(voice_router)
 
-
 # ================================================================
-# /ops/execute — CEO → ORCHESTRATOR → EXECUTION → MEMORY
+# /ops/execute — CEO → ORCHESTRATOR → GOVERNANCE → EXECUTION
 # ================================================================
 @app.post("/ops/execute")
 async def execute(req: CommandRequest):
     try:
         logger.info(">> /ops/execute %s", req.command)
+
+        # ------------------------------------------------------------
+        # ACTIVE DECISION GUARD (FAZA 8)
+        # ------------------------------------------------------------
+        if memory_service.get_active_decision():
+            return {
+                "success": False,
+                "final_answer": "Postoji aktivna odluka. Potrebno je završiti ili otkazati prije nove.",
+            }
 
         user_text = (
             req.payload.get("text")
@@ -143,7 +151,7 @@ async def execute(req: CommandRequest):
         # ------------------------------------------------------------
         # 2. READ-ONLY CONTEXTS
         # ------------------------------------------------------------
-        if context_type in {"identity", "chat", "memory", "meta", "knowledge"}:
+        if context_type in {"identity", "chat", "memory", "meta", "knowledge", "status"}:
             return {
                 "success": True,
                 "final_answer": orch["final_output"]["final_answer"],
@@ -151,7 +159,7 @@ async def execute(req: CommandRequest):
             }
 
         # ------------------------------------------------------------
-        # 3. DELEGATION → EXECUTION
+        # 3. DELEGATION → GOVERNANCE → EXECUTION
         # ------------------------------------------------------------
         if result.get("type") == "delegation":
             delegation = result.get("delegation", {})
@@ -165,6 +173,32 @@ async def execute(req: CommandRequest):
                     "engine_output": orch,
                 }
 
+            # --------------------------------------------------------
+            # FAZA 19 — GOVERNANCE CHECK (FINAL GATE)
+            # --------------------------------------------------------
+            governance = governance_service.evaluate(
+                role=payload.get("role", "user"),
+                context_type=context_type,
+                directive=command,
+                params=payload,
+                approval_id=payload.get("approval_id"),
+            )
+
+            if not governance.get("allowed"):
+                return {
+                    "success": False,
+                    "final_answer": "Izvršenje je blokirano governance pravilima.",
+                    "governance": governance,
+                }
+
+            # --------------------------------------------------------
+            # FAZA 8 — SET ACTIVE DECISION
+            # --------------------------------------------------------
+            memory_service.set_active_decision({
+                "command": command,
+                "payload": payload,
+            })
+
             workflow = {
                 "type": "workflow",
                 "steps": [
@@ -177,20 +211,24 @@ async def execute(req: CommandRequest):
 
             workflow_result = await workflow_service.execute_workflow(workflow)
 
-            # =========================================================
-            # FAZA 8.1 — AFTER EXECUTION MEMORY HOOK
-            # =========================================================
-            success = bool(workflow_result and workflow_result.get("confirmed"))
+            # ---------------------------------------------------------
+            # CONFIRMED DERIVATION (KANONSKI)
+            # ---------------------------------------------------------
+            steps = workflow_result.get("steps_results", [])
+            confirmed = any(
+                step.get("result", {}).get("confirmed") is True
+                for step in steps
+            )
 
             memory_service.record_execution(
                 decision_type="workflow",
                 key=command,
-                success=success,
+                success=confirmed,
             )
 
             memory_service.clear_active_decision()
 
-            if not success:
+            if not confirmed:
                 return {
                     "success": True,
                     "final_answer": "Akcija je predložena, ali nije potvrđena.",
@@ -221,9 +259,9 @@ async def execute(req: CommandRequest):
         }
 
     except Exception as e:
+        memory_service.clear_active_decision()
         logger.exception(">> ERROR /ops/execute")
         raise HTTPException(500, str(e))
-
 
 # ================================================================
 # DIRECT AI CONTEXT (READ-ONLY)

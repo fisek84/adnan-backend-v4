@@ -1,4 +1,5 @@
 from typing import Dict, Any, Optional
+import hashlib
 
 from services.decision_engine.identity_reasoning import IdentityReasoningEngine
 from services.decision_engine.context_classifier import ContextClassifier
@@ -19,13 +20,8 @@ class ContextOrchestrator:
     """
     CEO-level orchestrator.
 
-    FAZA 1: READ-ONLY poslovna svijest
-    FAZA 2: CEO conversation
-    FAZA 3: Intent ↔ Decision split
-    FAZA 4: Controlled delegation
-    FAZA 5/6: Explicit confirmation → delegation
-    FAZA 7: Delegation → Ops layer
-    FAZA 8: Active decision continuity (memory-backed)
+    FAZA 1–8: postojeće ponašanje
+    FAZA 17: Intent hardening + confirmation binding
     """
 
     def __init__(
@@ -46,7 +42,9 @@ class ContextOrchestrator:
         self.decision_engine = AdnanAIDecisionService()
         self.memory_engine = MemoryService()
 
+        # FAZA 17 — hardened pending decision
         self._pending_decision: Optional[str] = None
+        self._pending_fingerprint: Optional[str] = None
 
     async def run(self, user_input: str) -> Dict[str, Any]:
 
@@ -77,24 +75,26 @@ class ContextOrchestrator:
             }
 
         # ============================================================
-        # FAZA 6 — CONFIRMATION GUARD
+        # FAZA 6 + FAZA 17 — CONFIRMATION GUARD (HARDENED)
         # ============================================================
         if self._pending_decision and not self._is_confirmation(normalized):
+            # ako korisnik krene novu temu → poništi pending
+            self._clear_pending()
             return {
                 "success": True,
-                "context_type": "confirmation_pending",
-                "decision_intent": "awaiting_confirmation",
+                "context_type": "confirmation_cancelled",
+                "decision_intent": "cancelled",
                 "result": {
                     "type": "decision_candidate",
-                    "message": "Čekam potvrdu za prethodnu odluku. Napiši 'da' ili 'ok'.",
+                    "message": "Prethodna odluka je poništena. Možemo nastaviti dalje.",
                 },
                 "final_output": {
-                    "final_answer": "Čekam potvrdu za prethodnu odluku."
+                    "final_answer": "Prethodna odluka je poništena."
                 },
             }
 
         # ============================================================
-        # FAZA 5/6 → FAZA 7 — CONFIRMATION ACCEPTED
+        # FAZA 5/6 → FAZA 7 — CONFIRMATION ACCEPTED (BOUND)
         # ============================================================
         if self._pending_decision and self._is_confirmation(normalized):
             execution = self.decision_engine.process_ceo_instruction(
@@ -104,7 +104,7 @@ class ContextOrchestrator:
             # FAZA 8 — STORE ACTIVE DECISION
             self.memory_engine.set_active_decision(execution)
 
-            self._pending_decision = None
+            self._clear_pending()
 
             return {
                 "success": True,
@@ -146,14 +146,14 @@ class ContextOrchestrator:
             result = knowledge if knowledge else self._knowledge_help_result()
 
         elif context_type == "sop":
-            self._pending_decision = user_input
+            self._set_pending(user_input)
             result = {
                 "type": "decision_candidate",
                 "message": "Prepoznat SOP. Želiš li da pripremim i izvršim plan?",
             }
 
         elif context_type in {"business", "notion", "agent"}:
-            self._pending_decision = user_input
+            self._set_pending(user_input)
             result = {
                 "type": "decision_candidate",
                 "message": "Prepoznata je potencijalna odluka. Da li potvrđuješ izvršenje?",
@@ -183,10 +183,21 @@ class ContextOrchestrator:
         }
 
     # ============================================================
-    # HELPERS
+    # FAZA 17 — PENDING MANAGEMENT
     # ============================================================
+    def _set_pending(self, text: str):
+        self._pending_decision = text
+        self._pending_fingerprint = self._fingerprint(text)
+
+    def _clear_pending(self):
+        self._pending_decision = None
+        self._pending_fingerprint = None
+
+    def _fingerprint(self, text: str) -> str:
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
     def _is_confirmation(self, text: str) -> bool:
-        return any(k in text for k in CONFIRMATION_KEYWORDS)
+        return text in CONFIRMATION_KEYWORDS
 
     def _derive_decision_intent(self, context_type: str) -> str:
         if context_type in {"knowledge", "chat", "identity", "meta", "status"}:

@@ -25,11 +25,6 @@ class ActionExecutionService:
     # FAZA 19 — RBAC
     # ============================================================
     def _rbac_check(self, directive: str, params: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        RBAC enforcement.
-        Ako role nema pravo → odmah BLOCK (bez approval-a).
-        """
-
         role = params.get("role", "user")
 
         ROLE_MATRIX = {
@@ -47,27 +42,21 @@ class ActionExecutionService:
                 }
             },
             "admin": {
-                "allowed": "*",  # sve dozvoljeno
+                "allowed": "*",
             },
         }
 
         role_policy = ROLE_MATRIX.get(role)
 
         if not role_policy:
-            return {
-                "allowed": False,
-                "reason": "unknown_role",
-            }
+            return {"allowed": False, "reason": "unknown_role"}
 
         allowed = role_policy["allowed"]
 
         if allowed == "*" or directive in allowed:
             return {"allowed": True}
 
-        return {
-            "allowed": False,
-            "reason": "role_not_permitted",
-        }
+        return {"allowed": False, "reason": "role_not_permitted"}
 
     # ============================================================
     # FAZA 16 — POLICY ENGINE
@@ -156,6 +145,7 @@ class ActionExecutionService:
         if not directive:
             result = {
                 "executed": False,
+                "confirmed": False,
                 "error": "missing_directive",
                 "trace": base_trace,
             }
@@ -163,13 +153,14 @@ class ActionExecutionService:
             return result
 
         # -------------------------------
-        # 2. RBAC CHECK (FAZA 19)
+        # 2. RBAC CHECK
         # -------------------------------
         rbac = self._rbac_check(directive, params)
 
         if not rbac.get("allowed"):
             result = {
                 "executed": False,
+                "confirmed": False,
                 "execution_type": "blocked",
                 "directive": directive,
                 "error": rbac.get("reason"),
@@ -184,7 +175,7 @@ class ActionExecutionService:
             return result
 
         # -------------------------------
-        # 3. POLICY + APPROVAL (FAZA 16–18)
+        # 3. POLICY + APPROVAL
         # -------------------------------
         policy = self._policy_check(directive)
 
@@ -194,6 +185,7 @@ class ActionExecutionService:
             if not approval.get("approved"):
                 result = {
                     "executed": False,
+                    "confirmed": False,
                     "execution_type": "blocked",
                     "directive": directive,
                     "requires_approval": True,
@@ -222,6 +214,7 @@ class ActionExecutionService:
             except Exception as e:
                 result = {
                     "executed": False,
+                    "confirmed": False,
                     "error": "action_failed",
                     "message": str(e),
                     "trace": {
@@ -236,6 +229,7 @@ class ActionExecutionService:
 
             result = {
                 "executed": True,
+                "confirmed": True,
                 "execution_type": "local",
                 "directive": directive,
                 "params": params,
@@ -258,6 +252,7 @@ class ActionExecutionService:
         if not route.get("endpoint"):
             result = {
                 "executed": False,
+                "confirmed": False,
                 "execution_type": "agent",
                 "directive": directive,
                 "error": "no_matching_agent",
@@ -285,6 +280,7 @@ class ActionExecutionService:
         if not agent_result.get("success"):
             result = {
                 "executed": False,
+                "confirmed": False,
                 "execution_type": "agent",
                 "directive": directive,
                 "error": "agent_execution_failed",
@@ -305,6 +301,7 @@ class ActionExecutionService:
         # -------------------------------
         result = {
             "executed": True,
+            "confirmed": True,
             "execution_type": "agent",
             "directive": directive,
             "params": params,
