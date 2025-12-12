@@ -8,21 +8,27 @@ from pydantic import BaseModel
 from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
 
-# Personality Engine
+# ================================================================
+# DECISION / ORCHESTRATION
+# ================================================================
 from services.decision_engine.personality_engine import PersonalityEngine
-
-# Context Orchestrator (CEO brain, ASYNC)
 from services.decision_engine.context_orchestrator import ContextOrchestrator
 
-# Identity / Mode / State
+# ================================================================
+# IDENTITY / MODE / STATE
+# ================================================================
 from services.identity_loader import load_identity
 from services.adnan_mode_service import load_mode
 from services.adnan_state_service import load_state
 
-# Agents Service (ONLY executor)
-from services.agents_service import AgentsService
+# ================================================================
+# EXECUTION LAYER (KANONSKI)
+# ================================================================
+from services.action_workflow_service import ActionWorkflowService
 
-# Voice Router
+# ================================================================
+# VOICE
+# ================================================================
 from routers.voice_router import router as voice_router
 
 
@@ -65,11 +71,11 @@ app.add_middleware(
 
 
 # ================================================================
-# GLOBAL SERVICES
+# GLOBAL SERVICES (SINGLETONS)
 # ================================================================
 personality_engine = PersonalityEngine()
 orchestrator = ContextOrchestrator(identity, mode, state)
-agents_service = AgentsService()
+workflow_service = ActionWorkflowService()
 
 
 # ================================================================
@@ -113,7 +119,7 @@ async def teach_personality(req: dict):
 
 
 # ================================================================
-# /ops/execute — CEO → Orchestrator → Agent
+# /ops/execute — CEO → ORCHESTRATOR → WORKFLOW → EXECUTION
 # ================================================================
 @app.post("/ops/execute")
 async def execute(req: CommandRequest):
@@ -127,14 +133,14 @@ async def execute(req: CommandRequest):
         )
 
         # ------------------------------------------------------------
-        # ORCHESTRATOR (SINGLE SOURCE OF TRUTH)
+        # 1. ORCHESTRATOR (CEO BRAIN)
         # ------------------------------------------------------------
         orch = await orchestrator.run(user_text)
         context_type = orch.get("context_type")
         result = orch.get("result", {})
 
         # ------------------------------------------------------------
-        # NON-EXECUTING CONTEXTS
+        # 2. NON-EXECUTING CONTEXTS
         # ------------------------------------------------------------
         if context_type in {"identity", "chat", "memory", "meta"}:
             return {
@@ -144,12 +150,36 @@ async def execute(req: CommandRequest):
             }
 
         # ------------------------------------------------------------
-        # DELEGATION → AGENT EXECUTION
+        # 3. SOP DELEGATION → SOPExecutionManager
+        # ------------------------------------------------------------
+        if (
+            result.get("type") == "delegation"
+            and result.get("context") == "sop"
+        ):
+            workflow = {
+                "type": "sop_execution",
+                "execution_plan": result["delegation"].get("plan", []),
+            }
+
+            workflow_result = await workflow_service.execute_workflow(workflow)
+
+            return {
+                "success": True,
+                "final_answer": "SOP je izvršen.",
+                "engine_output": {
+                    "context_type": "sop_execution",
+                    "workflow": workflow,
+                    "workflow_result": workflow_result,
+                },
+            }
+
+        # ------------------------------------------------------------
+        # 4. GENERIC DELEGATION → WORKFLOW ENGINE
         # ------------------------------------------------------------
         if result.get("type") == "delegation":
             delegation = result.get("delegation", {})
             command = delegation.get("command")
-            payload = delegation.get("payload")
+            payload = delegation.get("payload") or {}
 
             if not command:
                 return {
@@ -158,26 +188,30 @@ async def execute(req: CommandRequest):
                     "engine_output": orch,
                 }
 
-            agent_result = await agents_service.execute(
-                command=command,
-                payload=payload,
-            )
+            workflow = {
+                "type": "workflow",
+                "steps": [
+                    {
+                        "directive": command,
+                        "params": payload,
+                    }
+                ],
+            }
+
+            workflow_result = await workflow_service.execute_workflow(workflow)
 
             return {
                 "success": True,
-                "final_answer": agent_result.get(
-                    "summary",
-                    "Operacija izvršena."
-                ),
+                "final_answer": "Zadatak je izvršen.",
                 "engine_output": {
-                    "context_type": "agent_execution",
-                    "delegation": delegation,
-                    "agent_result": agent_result,
+                    "context_type": "workflow_execution",
+                    "workflow": workflow,
+                    "workflow_result": workflow_result,
                 },
             }
 
         # ------------------------------------------------------------
-        # FALLBACK (SAFE)
+        # 5. FALLBACK
         # ------------------------------------------------------------
         return {
             "success": True,

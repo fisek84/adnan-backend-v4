@@ -38,7 +38,7 @@ DATABASE_MAP = {
 # ACTION VERBS
 # ================================================================
 ACTION_PATTERNS = {
-    "create": ["kreiraj", "napravi", "create", "add", "dodaj", "new"],
+    "create": ["kreiraj", "napravi", "create", "add", "dodaj", "novi", "new"],
     "update": ["update", "izmijeni", "uredi", "promijeni"],
     "delete": ["obriši", "obrisi", "delete", "remove"],
     "query": ["prikaži", "listaj", "show", "get", "query", "pokaži"],
@@ -58,21 +58,36 @@ def fuzzy_match(value, choices, threshold=75):
     return match if score >= threshold else None
 
 
+def extract_title_from_text(text: str) -> str:
+    """
+    Izvlači naziv entiteta iz prirodnog jezika.
+    Primjeri:
+    - "Dodaj novi cilj: FLP MANAGER" → "FLP MANAGER"
+    - "Dodaj cilj FLP MANAGER" → "FLP MANAGER"
+    """
+    if ":" in text:
+        return text.split(":", 1)[1].strip()
+
+    tokens = text.split()
+    return tokens[-1] if tokens else "Untitled"
+
+
 def natural_response(command: str) -> str:
     return {
-        "create_database_entry": "Kreiram novi zapis.",
-        "update_database_entry": "Ažuriram zapis.",
-        "delete_page": "Brišem zapis.",
-        "query_database": "Prikupljam podatke.",
+        "create_database_entry": "Kreiram novi zapis u Notionu.",
+        "update_database_entry": "Ažuriram zapis u Notionu.",
+        "delete_page": "Brišem zapis iz Notiona.",
+        "query_database": "Prikupljam podatke iz Notiona.",
     }.get(command, "Izvršavam zahtjev.")
 
 
 # ================================================================
-# CEO DECISION SERVICE — STABLE
+# CEO DECISION SERVICE — FINAL / STABLE
 # ================================================================
 class AdnanAIDecisionService:
     """
-    CEO Brain — Routing & Intent only (FAZA 1 stable)
+    CEO Brain — prirodni jezik → VALIDNA operativna komanda.
+    OVDJE se prevodi ljudski jezik u REALNU akciju.
     """
 
     def __init__(self):
@@ -91,7 +106,7 @@ class AdnanAIDecisionService:
         self.personality_engine = PersonalityEngine()
 
     # ============================================================
-    # LOADERS (FIXED)
+    # LOADERS
     # ============================================================
     def _load(self, filename: str) -> Dict[str, Any]:
         path = BASE_PATH / filename
@@ -102,7 +117,7 @@ class AdnanAIDecisionService:
             return json.load(f)
 
     # ============================================================
-    # INTENT
+    # INTENT DETECTION
     # ============================================================
     def _detect_intent(self, text: str) -> Dict[str, Any]:
         t = text.lower()
@@ -113,8 +128,8 @@ class AdnanAIDecisionService:
                 action = act
                 break
 
-        db_key = fuzzy_match(t, DATABASE_MAP.keys(), 70)
-        db_key = DATABASE_MAP.get(db_key)
+        db_key_raw = fuzzy_match(t, DATABASE_MAP.keys(), 70)
+        db_key = DATABASE_MAP.get(db_key_raw)
 
         return {
             "action": action,
@@ -122,28 +137,62 @@ class AdnanAIDecisionService:
             "raw_text": text,
         }
 
+    # ============================================================
+    # COMMAND BUILDER (KRITIČNO MJESTO)
+    # ============================================================
     def _build_command(self, intent: Dict[str, Any]) -> Dict[str, Any]:
         action = intent.get("action")
         db_key = intent.get("database_key")
+        raw_text = intent.get("raw_text", "")
 
+        if not action or not db_key:
+            return {"command": None, "payload": {}}
+
+        # -----------------------------
+        # QUERY
+        # -----------------------------
         if action == "query":
             return {
                 "command": "query_database",
-                "payload": {"database_key": db_key},
+                "payload": {
+                    "database_key": db_key
+                },
             }
 
+        # -----------------------------
+        # CREATE (FIXED)
+        # -----------------------------
         if action == "create":
+            title = extract_title_from_text(raw_text)
+
             return {
                 "command": "create_database_entry",
-                "payload": {"database_key": db_key},
+                "payload": {
+                    "database_key": db_key,
+                    "properties": {
+                        "Name": {
+                            "title": [
+                                {"text": {"content": title}}
+                            ]
+                        }
+                    }
+                },
             }
 
+        # -----------------------------
+        # UPDATE
+        # -----------------------------
         if action == "update":
             return {
                 "command": "update_database_entry",
-                "payload": {"database_key": db_key},
+                "payload": {
+                    "database_key": db_key
+                },
             }
 
+        # -----------------------------
+        # DELETE
+        # -----------------------------
         if action == "delete":
             return {
                 "command": "delete_page",
@@ -156,8 +205,10 @@ class AdnanAIDecisionService:
     # ENTRYPOINT
     # ============================================================
     def process_ceo_instruction(self, text: str) -> Dict[str, Any]:
+        lower = text.lower()
 
-        if "zapamti" in text.lower():
+        # MEMORY LEARNING
+        if "zapamti" in lower:
             self.personality_engine.learn_from_text(text)
             return {
                 "command": None,
