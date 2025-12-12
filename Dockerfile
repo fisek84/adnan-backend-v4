@@ -25,6 +25,7 @@ ARG CACHE_BREAK=1
 ENV TZ=Europe/Sarajevo
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app
 
 WORKDIR /app
 
@@ -34,7 +35,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl \
 # COPY BUILT PYTHON PACKAGES
 COPY --from=builder /install /usr/local
 
-# COPY APP CODE — FIXED
+# COPY APP CODE
 COPY ./ ./
 
 # expose Render port
