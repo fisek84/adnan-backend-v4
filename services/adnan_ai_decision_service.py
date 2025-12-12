@@ -59,12 +59,6 @@ def fuzzy_match(value, choices, threshold=75):
 
 
 def extract_title_from_text(text: str) -> str:
-    """
-    Izvlači naziv entiteta iz prirodnog jezika.
-    Primjeri:
-    - "Dodaj novi cilj: FLP MANAGER" → "FLP MANAGER"
-    - "Dodaj cilj FLP MANAGER" → "FLP MANAGER"
-    """
     if ":" in text:
         return text.split(":", 1)[1].strip()
 
@@ -74,20 +68,20 @@ def extract_title_from_text(text: str) -> str:
 
 def natural_response(command: str) -> str:
     return {
-        "create_database_entry": "Kreiram novi zapis u Notionu.",
-        "update_database_entry": "Ažuriram zapis u Notionu.",
-        "delete_page": "Brišem zapis iz Notiona.",
-        "query_database": "Prikupljam podatke iz Notiona.",
-    }.get(command, "Izvršavam zahtjev.")
+        "create_database_entry": "Mogu kreirati novi zapis u Notionu.",
+        "update_database_entry": "Mogu ažurirati zapis u Notionu.",
+        "delete_page": "Mogu obrisati zapis iz Notiona.",
+        "query_database": "Mogu prikupiti podatke iz Notiona.",
+    }.get(command, "Mogu izvršiti zahtjev.")
 
 
 # ================================================================
-# CEO DECISION SERVICE — FINAL / STABLE
+# CEO DECISION SERVICE — FAZA 4 (CONTROLLED)
 # ================================================================
 class AdnanAIDecisionService:
     """
-    CEO Brain — prirodni jezik → VALIDNA operativna komanda.
-    OVDJE se prevodi ljudski jezik u REALNU akciju.
+    CEO Brain — prirodni jezik → POTENCIJALNA odluka.
+    FAZA 4: NEMA izvršenja bez eksplicitne potvrde.
     """
 
     def __init__(self):
@@ -138,7 +132,7 @@ class AdnanAIDecisionService:
         }
 
     # ============================================================
-    # COMMAND BUILDER (KRITIČNO MJESTO)
+    # COMMAND BUILDER (READ-ONLY)
     # ============================================================
     def _build_command(self, intent: Dict[str, Any]) -> Dict[str, Any]:
         action = intent.get("action")
@@ -148,51 +142,32 @@ class AdnanAIDecisionService:
         if not action or not db_key:
             return {"command": None, "payload": {}}
 
-        # -----------------------------
-        # QUERY
-        # -----------------------------
         if action == "query":
             return {
                 "command": "query_database",
-                "payload": {
-                    "database_key": db_key
-                },
+                "payload": {"database_key": db_key},
             }
 
-        # -----------------------------
-        # CREATE (FIXED)
-        # -----------------------------
         if action == "create":
             title = extract_title_from_text(raw_text)
-
             return {
                 "command": "create_database_entry",
                 "payload": {
                     "database_key": db_key,
                     "properties": {
                         "Name": {
-                            "title": [
-                                {"text": {"content": title}}
-                            ]
+                            "title": [{"text": {"content": title}}]
                         }
                     }
                 },
             }
 
-        # -----------------------------
-        # UPDATE
-        # -----------------------------
         if action == "update":
             return {
                 "command": "update_database_entry",
-                "payload": {
-                    "database_key": db_key
-                },
+                "payload": {"database_key": db_key},
             }
 
-        # -----------------------------
-        # DELETE
-        # -----------------------------
         if action == "delete":
             return {
                 "command": "delete_page",
@@ -202,20 +177,19 @@ class AdnanAIDecisionService:
         return {"command": None, "payload": {}}
 
     # ============================================================
-    # ENTRYPOINT
+    # ENTRYPOINT — FAZA 4
     # ============================================================
     def process_ceo_instruction(self, text: str) -> Dict[str, Any]:
         lower = text.lower()
 
-        # MEMORY LEARNING
+        # MEMORY LEARNING (LOCAL ONLY)
         if "zapamti" in lower:
             self.personality_engine.learn_from_text(text)
             return {
+                "decision_candidate": False,
                 "command": None,
                 "payload": {},
-                "local_only": True,
                 "system_response": "Zabilježeno.",
-                "error_engine": {"errors": []},
             }
 
         intent = self._detect_intent(text)
@@ -223,17 +197,16 @@ class AdnanAIDecisionService:
 
         if not command_block["command"]:
             return {
+                "decision_candidate": False,
                 "command": None,
                 "payload": {},
-                "local_only": True,
                 "system_response": "Razumijem.",
-                "error_engine": {"errors": []},
             }
 
+        # FAZA 4: SAMO KANDIDAT — BEZ IZVRŠENJA
         return {
+            "decision_candidate": True,
             "command": command_block["command"],
             "payload": command_block["payload"],
-            "local_only": False,
             "system_response": natural_response(command_block["command"]),
-            "error_engine": {"errors": []},
         }

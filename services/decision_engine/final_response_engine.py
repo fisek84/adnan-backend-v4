@@ -1,15 +1,16 @@
-from typing import Dict, Any, Tuple
+from typing import Dict, Any
 
 
 class FinalResponseEngine:
     """
-    Final Response Engine — FAZA 2 + FAZA 10
+    Final Response Engine — FAZA 2
 
     Pravila:
     - chat mora zvučati prirodno
-    - CEO / direktnost samo kad treba
+    - CEO razmišlja, NE izvršava
+    - follow-up pitanja samo ako postoji nejasnoća ili više opcija
     - final_answer uvijek string
-    - FAZA 10: READ-ONLY explainability (bez side-effecta)
+    - READ-ONLY (bez side-effecta)
     """
 
     def __init__(self, identity: Dict[str, Any]):
@@ -27,7 +28,7 @@ class FinalResponseEngine:
 
         context_type = classification.get("context_type")
 
-        # KNOWLEDGE (READ-ONLY REPORTING)
+        # READ-ONLY KNOWLEDGE
         if context_type == "knowledge":
             text = self._format_knowledge(result)
             return {"final_answer": text}
@@ -35,12 +36,22 @@ class FinalResponseEngine:
         raw = result.get("response") if isinstance(result, dict) else result
 
         style = self._derive_style(identity_reasoning, context_type)
+
         final_text = self._compose_final_text(
             context_type=context_type,
             raw=raw,
             style=style,
             result=result,
         )
+
+        # CEO FOLLOW-UP (samo ako ima nejasnoće)
+        follow_up = self._maybe_add_follow_up(
+            context_type=context_type,
+            result=result,
+        )
+
+        if follow_up:
+            final_text = f"{final_text}\n\n{follow_up}"
 
         return {"final_answer": final_text}
 
@@ -59,7 +70,7 @@ class FinalResponseEngine:
             "precise": False,
         }
 
-        if context_type in {"business", "notion", "sop", "agent", "knowledge"}:
+        if context_type in {"business", "notion", "knowledge"}:
             style.update({
                 "direct": True,
                 "focused": True,
@@ -75,15 +86,52 @@ class FinalResponseEngine:
         return style
 
     # ============================================================
+    # CEO FOLLOW-UP LOGIC (READ-ONLY)
+    # ============================================================
+    def _maybe_add_follow_up(
+        self,
+        context_type: str,
+        result: Dict[str, Any],
+    ) -> str | None:
+        """
+        CEO postavlja pitanje samo ako:
+        - postoji nejasnoća
+        - postoji više opcija
+        """
+
+        if context_type not in {"chat", "business", "knowledge"}:
+            return None
+
+        if not isinstance(result, dict):
+            return None
+
+        signals = result.get("signals", {})
+
+        ambiguous = signals.get("ambiguous")
+        multiple_options = signals.get("multiple_options")
+        missing_info = signals.get("missing_info")
+
+        if not (ambiguous or multiple_options or missing_info):
+            return None
+
+        # CEO-style follow-up
+        if multiple_options:
+            return "Koju od ovih opcija smatraš prioritetnom i zašto?"
+
+        if missing_info:
+            return "Šta trenutno nedostaje da bismo mogli donijeti jasnu odluku?"
+
+        if ambiguous:
+            return "Možeš li precizirati šta tačno želiš postići u ovom kontekstu?"
+
+        return None
+
+    # ============================================================
     # KNOWLEDGE FORMATTER (SAFE)
     # ============================================================
     def _format_knowledge(self, result: Dict[str, Any]) -> str:
-        """
-        Sigurno formatiranje READ-ONLY znanja.
-        """
         response = result.get("response")
 
-        # FALLBACK: ako je string
         if isinstance(response, str):
             return response
 
@@ -92,9 +140,8 @@ class FinalResponseEngine:
 
         topic = response.get("topic")
 
-        # GLOBAL REPORT
         if topic == "full_report":
-            lines = ["📊 Pregled poslovne zgrade:"]
+            lines = ["📊 Pregled poslovnog sistema:"]
             databases = response.get("databases", {})
             for key, db in databases.items():
                 label = db.get("label", key)
@@ -102,7 +149,6 @@ class FinalResponseEngine:
                 lines.append(f"- {label}: {count}")
             return "\n".join(lines)
 
-        # POJEDINAČNA BAZA
         items = response.get("items", [])
         count = response.get("count", len(items))
 
@@ -141,7 +187,8 @@ class FinalResponseEngine:
             return "Status je provjeren."
 
         if result.get("type") == "delegation":
-            return "Zadatak je delegiran agentima."
+            # CEO samo konstatuje, ne izvršava
+            return "Delegacija je zabilježena."
 
         return self._format_generic(raw)
 

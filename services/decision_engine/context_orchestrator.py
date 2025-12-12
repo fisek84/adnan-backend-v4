@@ -8,17 +8,23 @@ from services.decision_engine.playbook_engine import PlaybookEngine
 from services.adnan_ai_decision_service import AdnanAIDecisionService
 from services.memory_service import MemoryService
 
-# READ-ONLY KNOWLEDGE
 from services.knowledge_snapshot_service import KnowledgeSnapshotService
+
+
+CONFIRMATION_KEYWORDS = {
+    "da", "yes", "potvrdi", "potvrđujem", "ok", "u redu", "izvrši", "izvrsi"
+}
 
 
 class ContextOrchestrator:
     """
     CEO-level orchestrator.
 
-    FAZA 1: READ-ONLY poslovna svijest (Knowledge Snapshot)
-    FAZA 2: chat kontinuitet
-    FAZA 4–6: SOP → playbook → execution plan → delegation
+    FAZA 1: READ-ONLY poslovna svijest
+    FAZA 2: CEO conversation
+    FAZA 3: Intent ↔ Decision split
+    FAZA 4: Controlled delegation
+    FAZA 5: Explicit confirmation → execution
     """
 
     def __init__(
@@ -31,26 +37,54 @@ class ContextOrchestrator:
         self.mode = mode
         self.state = state
 
-        # Engines
         self.reasoner = IdentityReasoningEngine(identity, mode, state)
         self.classifier = ContextClassifier()
         self.response_engine = FinalResponseEngine(identity)
         self.playbook_engine = PlaybookEngine()
 
-        # Services
         self.decision_engine = AdnanAIDecisionService()
         self.memory_engine = MemoryService()
 
-        self._last_human_answer: Optional[str] = None
+        # FAZA 5 — confirmation state
+        self._pending_decision: Optional[str] = None
 
     # ============================================================
     # MAIN ORCHESTRATION
     # ============================================================
     async def run(self, user_input: str) -> Dict[str, Any]:
 
+        normalized = (user_input or "").lower().strip()
+
+        # --------------------------------------------------------
+        # FAZA 5 — CONFIRMATION CHECK
+        # --------------------------------------------------------
+        if self._pending_decision and self._is_confirmation(normalized):
+            execution = self.decision_engine.process_ceo_instruction(
+                self._pending_decision
+            )
+            self._pending_decision = None
+
+            return {
+                "success": True,
+                "context_type": "execution",
+                "decision_intent": "confirmed",
+                "result": {
+                    "type": "delegation",
+                    "delegation": execution,
+                },
+                "final_output": {
+                    "final_answer": execution.get(
+                        "system_response",
+                        "Zadatak je potvrđen i delegiran."
+                    )
+                },
+            }
+
         identity_reasoning = self.reasoner.generate_reasoning(user_input)
         classification = self.classifier.classify(user_input, identity_reasoning)
         context_type = classification.get("context_type")
+
+        decision_intent = self._derive_decision_intent(context_type)
 
         if context_type == "identity":
             result = self._handle_identity()
@@ -66,11 +100,18 @@ class ContextOrchestrator:
             result = knowledge if knowledge else self._knowledge_help_result()
 
         elif context_type == "sop":
-            result = self._handle_sop(user_input, identity_reasoning, classification)
+            self._pending_decision = user_input
+            result = {
+                "type": "decision_candidate",
+                "message": "Prepoznat SOP. Želiš li da pripremim i izvršim plan?",
+            }
 
         elif context_type in {"business", "notion", "agent"}:
-            knowledge = self._handle_business_knowledge(user_input)
-            result = knowledge if knowledge else self._delegate_operation(user_input)
+            self._pending_decision = user_input
+            result = {
+                "type": "decision_candidate",
+                "message": "Prepoznata je potencijalna odluka. Da li potvrđuješ izvršenje?",
+            }
 
         elif context_type == "meta":
             result = self._handle_meta(user_input)
@@ -90,12 +131,26 @@ class ContextOrchestrator:
         return {
             "success": True,
             "context_type": context_type,
+            "decision_intent": decision_intent,
             "result": result,
             "final_output": final_output,
         }
 
     # ============================================================
-    # READ-ONLY KNOWLEDGE (IZ SNAPSHOTA)
+    # HELPERS
+    # ============================================================
+    def _is_confirmation(self, text: str) -> bool:
+        return text in CONFIRMATION_KEYWORDS
+
+    def _derive_decision_intent(self, context_type: str) -> str:
+        if context_type in {"knowledge", "chat", "identity", "meta"}:
+            return "read_only"
+        if context_type in {"business", "notion", "agent", "sop"}:
+            return "decision_candidate"
+        return "unknown"
+
+    # ============================================================
+    # READ-ONLY KNOWLEDGE
     # ============================================================
     def _handle_business_knowledge(self, user_input: str) -> Optional[Dict[str, Any]]:
         if not KnowledgeSnapshotService.is_ready():
@@ -120,30 +175,6 @@ class ContextOrchestrator:
                 },
             }
 
-        if "sop" in lower:
-            grouped = self._aggregate_group(databases, include_if_key_contains=["sop"])
-            if grouped:
-                return {
-                    "type": "knowledge",
-                    "response": {
-                        "topic": "sop",
-                        "count": len(grouped),
-                        "items": grouped,
-                    },
-                }
-
-        if any(w in lower for w in ["agent", "agenti", "agents"]):
-            grouped = self._aggregate_group(databases, include_if_key_contains=["agent"])
-            if grouped:
-                return {
-                    "type": "knowledge",
-                    "response": {
-                        "topic": "agents",
-                        "count": len(grouped),
-                        "items": grouped,
-                    },
-                }
-
         for key, db in databases.items():
             label = (db.get("label") or "").lower()
             if key in lower or (label and label in lower):
@@ -164,20 +195,6 @@ class ContextOrchestrator:
 
         return None
 
-    def _aggregate_group(
-        self,
-        databases: Dict[str, Any],
-        include_if_key_contains: List[str],
-    ) -> List[str]:
-        out: List[str] = []
-        for key, db in databases.items():
-            k = (key or "").lower()
-            if any(token in k for token in include_if_key_contains):
-                label = db.get("label") or key
-                count = len(db.get("items", []) or [])
-                out.append(f"{label} ({count})")
-        return out
-
     def _knowledge_help_result(self) -> Dict[str, Any]:
         snapshot = KnowledgeSnapshotService.get_snapshot()
         databases = snapshot.get("databases") or {}
@@ -191,17 +208,6 @@ class ContextOrchestrator:
                 "count": len(items),
                 "items": items,
             },
-        }
-
-    # ============================================================
-    # DELEGATION (UNCHANGED)
-    # ============================================================
-    def _delegate_operation(self, user_input: str) -> Dict[str, Any]:
-        decision = self.decision_engine.process_ceo_instruction(user_input)
-        return {
-            "type": "delegation",
-            "context": "business",
-            "delegation": decision,
         }
 
     # ============================================================
@@ -221,31 +227,3 @@ class ContextOrchestrator:
 
     def _handle_meta(self, user_input: str) -> Dict[str, Any]:
         return {"type": "meta", "response": {"input": user_input}}
-
-    def _handle_sop(
-        self,
-        user_input: str,
-        identity_reasoning: Dict[str, Any],
-        context: Dict[str, Any],
-    ) -> Dict[str, Any]:
-
-        playbook_result = self.playbook_engine.evaluate(
-            user_input=user_input,
-            identity_reasoning=identity_reasoning,
-            context=context,
-        )
-
-        if playbook_result.get("type") != "sop_execution":
-            return {
-                "type": "sop",
-                "response": "SOP nije moguće izvršiti.",
-            }
-
-        return {
-            "type": "delegation",
-            "context": "sop",
-            "delegation": {
-                "sop": playbook_result.get("sop"),
-                "plan": playbook_result.get("execution_plan"),
-            },
-        }
