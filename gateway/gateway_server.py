@@ -27,6 +27,11 @@ from services.adnan_state_service import load_state
 from services.action_workflow_service import ActionWorkflowService
 
 # ================================================================
+# MEMORY (FAZA 8.1)
+# ================================================================
+from services.memory_service import MemoryService
+
+# ================================================================
 # NOTION (READ-ONLY KNOWLEDGE → SNAPSHOT)
 # ================================================================
 from services.notion_service import NotionService
@@ -60,6 +65,7 @@ app = FastAPI()
 personality_engine = PersonalityEngine()
 orchestrator = ContextOrchestrator(identity, mode, state)
 workflow_service = ActionWorkflowService()
+memory_service = MemoryService()
 
 # ------------------------------------------------
 # NOTION READ-ONLY SERVICE (SNAPSHOT SOURCE)
@@ -114,7 +120,7 @@ app.include_router(voice_router)
 
 
 # ================================================================
-# /ops/execute — CEO → ORCHESTRATOR → (OPTIONAL) EXECUTION
+# /ops/execute — CEO → ORCHESTRATOR → EXECUTION → MEMORY
 # ================================================================
 @app.post("/ops/execute")
 async def execute(req: CommandRequest):
@@ -135,9 +141,9 @@ async def execute(req: CommandRequest):
         result = orch.get("result", {})
 
         # ------------------------------------------------------------
-        # 2. NON-EXECUTING CONTEXTS (READ-ONLY)
+        # 2. READ-ONLY CONTEXTS
         # ------------------------------------------------------------
-        if context_type in {"identity", "chat", "memory", "meta"}:
+        if context_type in {"identity", "chat", "memory", "meta", "knowledge"}:
             return {
                 "success": True,
                 "final_answer": orch["final_output"]["final_answer"],
@@ -145,42 +151,7 @@ async def execute(req: CommandRequest):
             }
 
         # ------------------------------------------------------------
-        # 3. SOP DELEGATION (EXECUTION WITH VERIFICATION)
-        # ------------------------------------------------------------
-        if (
-            result.get("type") == "delegation"
-            and result.get("context") == "sop"
-        ):
-            workflow = {
-                "type": "sop_execution",
-                "execution_plan": result["delegation"].get("plan", []),
-            }
-
-            workflow_result = await workflow_service.execute_workflow(workflow)
-
-            if not workflow_result or not workflow_result.get("confirmed"):
-                return {
-                    "success": True,
-                    "final_answer": "Predložio sam izvršenje SOP-a, ali ono još nije potvrđeno.",
-                    "engine_output": {
-                        "context_type": "sop_proposed",
-                        "workflow": workflow,
-                        "workflow_result": workflow_result,
-                    },
-                }
-
-            return {
-                "success": True,
-                "final_answer": "SOP je uspješno izvršen.",
-                "engine_output": {
-                    "context_type": "sop_execution",
-                    "workflow": workflow,
-                    "workflow_result": workflow_result,
-                },
-            }
-
-        # ------------------------------------------------------------
-        # 4. GENERIC DELEGATION (PROPOSE FIRST, EXECUTE ONLY IF CONFIRMED)
+        # 3. DELEGATION → EXECUTION
         # ------------------------------------------------------------
         if result.get("type") == "delegation":
             delegation = result.get("delegation", {})
@@ -206,12 +177,25 @@ async def execute(req: CommandRequest):
 
             workflow_result = await workflow_service.execute_workflow(workflow)
 
-            if not workflow_result or not workflow_result.get("confirmed"):
+            # =========================================================
+            # FAZA 8.1 — AFTER EXECUTION MEMORY HOOK
+            # =========================================================
+            success = bool(workflow_result and workflow_result.get("confirmed"))
+
+            memory_service.record_execution(
+                decision_type="workflow",
+                key=command,
+                success=success,
+            )
+
+            memory_service.clear_active_decision()
+
+            if not success:
                 return {
                     "success": True,
-                    "final_answer": "Predložio sam akciju, ali izvršenje još nije potvrđeno.",
+                    "final_answer": "Akcija je predložena, ali nije potvrđena.",
                     "engine_output": {
-                        "context_type": "workflow_proposed",
+                        "context_type": "workflow_not_confirmed",
                         "workflow": workflow,
                         "workflow_result": workflow_result,
                     },
@@ -221,14 +205,14 @@ async def execute(req: CommandRequest):
                 "success": True,
                 "final_answer": "Akcija je uspješno izvršena.",
                 "engine_output": {
-                    "context_type": "workflow_execution",
+                    "context_type": "workflow_executed",
                     "workflow": workflow,
                     "workflow_result": workflow_result,
                 },
             }
 
         # ------------------------------------------------------------
-        # 5. FALLBACK — CEO RESPONSE ONLY
+        # 4. FALLBACK
         # ------------------------------------------------------------
         return {
             "success": True,

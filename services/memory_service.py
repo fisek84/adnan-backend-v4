@@ -35,6 +35,9 @@ class MemoryService:
         self.memory.setdefault("execution_stats", {})
         self.memory.setdefault("cross_sop_relations", {})
 
+        # FAZA 8 — ACTIVE DECISION MEMORY
+        self.memory.setdefault("active_decision", None)
+
     # ============================================================
     # INTERNALS
     # ============================================================
@@ -77,6 +80,32 @@ class MemoryService:
 
     def get_recent(self, limit: int = 10) -> List[Dict[str, Any]]:
         return self.memory["entries"][-limit:]
+
+    # ============================================================
+    # FAZA 8 — CEO DECISION MEMORY (NEW)
+    # ============================================================
+    def set_active_decision(self, decision: Dict[str, Any]):
+        """
+        Postavlja trenutno aktivnu (potvrđenu) odluku CEO-a.
+        """
+        self.memory["active_decision"] = {
+            "decision": decision,
+            "ts": self._now(),
+        }
+        self._save()
+
+    def clear_active_decision(self):
+        """
+        Briše aktivnu odluku (nakon izvršenja ili otkazivanja).
+        """
+        self.memory["active_decision"] = None
+        self._save()
+
+    def get_active_decision(self) -> Optional[Dict[str, Any]]:
+        """
+        Vraća trenutno aktivnu odluku ako postoji.
+        """
+        return self.memory.get("active_decision")
 
     # ============================================================
     # FAZA 5 — SOP OUTCOMES

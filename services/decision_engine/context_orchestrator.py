@@ -1,4 +1,4 @@
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional
 
 from services.decision_engine.identity_reasoning import IdentityReasoningEngine
 from services.decision_engine.context_classifier import ContextClassifier
@@ -7,7 +7,6 @@ from services.decision_engine.playbook_engine import PlaybookEngine
 
 from services.adnan_ai_decision_service import AdnanAIDecisionService
 from services.memory_service import MemoryService
-
 from services.knowledge_snapshot_service import KnowledgeSnapshotService
 
 
@@ -25,6 +24,8 @@ class ContextOrchestrator:
     FAZA 3: Intent ↔ Decision split
     FAZA 4: Controlled delegation
     FAZA 5/6: Explicit confirmation → delegation
+    FAZA 7: Delegation → Ops layer
+    FAZA 8: Active decision continuity (memory-backed)
     """
 
     def __init__(
@@ -45,7 +46,6 @@ class ContextOrchestrator:
         self.decision_engine = AdnanAIDecisionService()
         self.memory_engine = MemoryService()
 
-        # FAZA 5/6 — pending execution state
         self._pending_decision: Optional[str] = None
 
     async def run(self, user_input: str) -> Dict[str, Any]:
@@ -53,8 +53,31 @@ class ContextOrchestrator:
         normalized = (user_input or "").lower().strip()
 
         # ============================================================
+        # FAZA 8 — STATUS QUERY
+        # ============================================================
+        if normalized in {"status", "gdje smo", "šta radimo", "sta radimo"}:
+            active = self.memory_engine.get_active_decision()
+            result = {
+                "type": "status",
+                "response": active or "Nema aktivne odluke."
+            }
+
+            final_output = self.response_engine.format_response(
+                identity_reasoning=None,
+                classification={"context_type": "status"},
+                result=result,
+            )
+
+            return {
+                "success": True,
+                "context_type": "status",
+                "decision_intent": "read_only",
+                "result": result,
+                "final_output": final_output,
+            }
+
+        # ============================================================
         # FAZA 6 — CONFIRMATION GUARD
-        # Ako čekamo potvrdu, ne prihvatamo nove odluke
         # ============================================================
         if self._pending_decision and not self._is_confirmation(normalized):
             return {
@@ -71,12 +94,16 @@ class ContextOrchestrator:
             }
 
         # ============================================================
-        # FAZA 5/6 — CONFIRMATION ACCEPTED
+        # FAZA 5/6 → FAZA 7 — CONFIRMATION ACCEPTED
         # ============================================================
         if self._pending_decision and self._is_confirmation(normalized):
             execution = self.decision_engine.process_ceo_instruction(
                 self._pending_decision
             )
+
+            # FAZA 8 — STORE ACTIVE DECISION
+            self.memory_engine.set_active_decision(execution)
+
             self._pending_decision = None
 
             return {
@@ -85,6 +112,7 @@ class ContextOrchestrator:
                 "decision_intent": "confirmed",
                 "result": {
                     "type": "delegation",
+                    "agent": "ops_layer",
                     "delegation": execution,
                 },
                 "final_output": {
@@ -161,7 +189,7 @@ class ContextOrchestrator:
         return any(k in text for k in CONFIRMATION_KEYWORDS)
 
     def _derive_decision_intent(self, context_type: str) -> str:
-        if context_type in {"knowledge", "chat", "identity", "meta"}:
+        if context_type in {"knowledge", "chat", "identity", "meta", "status"}:
             return "read_only"
         if context_type in {"business", "notion", "agent", "sop"}:
             return "decision_candidate"
@@ -181,26 +209,13 @@ class ContextOrchestrator:
 
         lower = (user_input or "").lower().strip()
 
-        if any(w in lower for w in [
-            "report", "izvještaj", "izvjestaj",
-            "pregled svega", "cijela firma", "stanje firme",
-        ]):
-            return {
-                "type": "knowledge",
-                "response": {
-                    "topic": "full_report",
-                    "databases": databases,
-                },
-            }
-
         for key, db in databases.items():
             label = (db.get("label") or "").lower()
             if key in lower or (label and label in lower):
                 items = db.get("items", [])
                 names = [
                     it.get("name") if isinstance(it, dict) else str(it)
-                    for it in items
-                    if it
+                    for it in items if it
                 ]
                 return {
                     "type": "knowledge",

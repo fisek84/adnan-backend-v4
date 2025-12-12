@@ -1,23 +1,27 @@
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 from services.decision_engine.sop_mapper import SOPMapper
+from services.memory_service import MemoryService
 
 
 class PlaybookEngine:
     """
-    BUSINESS PLAYBOOK ENGINE — FAZA 4–7 (CEO level)
+    BUSINESS PLAYBOOK ENGINE — FAZA 4–7 + FAZA 9.1 + FAZA 9.2 (CEO level)
 
     Pravila:
     - prepoznaje SOP intent
     - mapira SOP (LOGIČKI, ne DB)
     - vraća EXECUTION PLAN + VARIJANTE
+    - FAZA 9.1: READ-ONLY SOP bias (learning signal)
+    - FAZA 9.2: READ-ONLY SOP chaining recommendation (CEO suggestion)
     - NEMA izvršenja
-    - NEMA memorije
     - NEMA odlučivanja
+    - NEMA pisanja u memoriju
     """
 
     def __init__(self):
         self.sop_mapper = SOPMapper()
+        self.memory = MemoryService()  # READ-ONLY
 
     # ============================================================
     # PUBLIC API
@@ -44,11 +48,26 @@ class PlaybookEngine:
 
             base_plan = self._build_sop_execution_plan(sop_name)
 
+            # ====================================================
+            # FAZA 9.1 — SOP BIAS (READ-ONLY)
+            # ====================================================
+            sop_bias = self.memory.get_cross_sop_bias(sop_name)
+
+            # ====================================================
+            # FAZA 9.2 — SOP CHAINING RECOMMENDATION (READ-ONLY)
+            # ====================================================
+            recommendation = self._build_sop_recommendation(
+                current_sop=sop_name,
+                bias=sop_bias,
+            )
+
             return {
                 "type": "sop_execution",
                 "sop": sop_name,
                 "execution_plan": base_plan,   # backward-compatible
                 "variants": self._build_variants(sop_name, base_plan),
+                "sop_bias": sop_bias,          # FAZA 9.1
+                "recommendation": recommendation,  # FAZA 9.2
             }
 
         return {
@@ -131,13 +150,43 @@ class PlaybookEngine:
         }
 
         if sop_name == "customer onboarding sop":
-            # FAST: minimalni koraci
             variants["fast"] = [
                 step for step in base_plan
                 if step.get("step") == "create_project"
             ]
 
-            # FULL: eksplicitno svi koraci (isti kao default, ali imenovano)
             variants["full"] = list(base_plan)
 
         return variants
+
+    # ============================================================
+    # FAZA 9.2 — SOP CHAINING RECOMMENDATION (CEO-LEVEL)
+    # ============================================================
+    def _build_sop_recommendation(
+        self,
+        current_sop: str,
+        bias: List[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """
+        READ-ONLY.
+        Ne donosi odluku.
+        Samo kaže: "Preporučujem da razmotriš X".
+        """
+
+        if not bias:
+            return None
+
+        # bias je već sortiran po success_rate (iz MemoryService)
+        best = bias[0]
+
+        return {
+            "message": (
+                f"Nakon SOP-a '{current_sop}', "
+                f"historijski je najbolje slijedio SOP '{best['to']}' "
+                f"(success rate: {best['success_rate']})."
+            ),
+            "suggested_next_sop": best["to"],
+            "confidence": best["success_rate"],
+            "source": "historical_execution_data",
+            "read_only": True,
+        }

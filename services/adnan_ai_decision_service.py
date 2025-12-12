@@ -61,7 +61,6 @@ def fuzzy_match(value, choices, threshold=75):
 def extract_title_from_text(text: str) -> str:
     if ":" in text:
         return text.split(":", 1)[1].strip()
-
     tokens = text.split()
     return tokens[-1] if tokens else "Untitled"
 
@@ -76,12 +75,13 @@ def natural_response(command: str) -> str:
 
 
 # ================================================================
-# CEO DECISION SERVICE — FAZA 4 (CONTROLLED)
+# CEO DECISION SERVICE — FAZA 7.3 (DELEGATION CONTRACT)
 # ================================================================
 class AdnanAIDecisionService:
     """
-    CEO Brain — prirodni jezik → POTENCIJALNA odluka.
-    FAZA 4: NEMA izvršenja bez eksplicitne potvrde.
+    CEO Brain — prirodni jezik → DELEGACIJSKI UGOVOR.
+    - NEMA direktnog izvršenja
+    - Eksplicitni executor: notion_ops
     """
 
     def __init__(self):
@@ -106,7 +106,6 @@ class AdnanAIDecisionService:
         path = BASE_PATH / filename
         if not path.exists():
             return {}
-
         with open(path, "r", encoding="utf-8-sig") as f:
             return json.load(f)
 
@@ -132,7 +131,7 @@ class AdnanAIDecisionService:
         }
 
     # ============================================================
-    # COMMAND BUILDER (READ-ONLY)
+    # COMMAND BUILDER (DELEGATION-ONLY)
     # ============================================================
     def _build_command(self, intent: Dict[str, Any]) -> Dict[str, Any]:
         action = intent.get("action")
@@ -156,9 +155,11 @@ class AdnanAIDecisionService:
                     "database_key": db_key,
                     "properties": {
                         "Name": {
-                            "title": [{"text": {"content": title}}]
+                            "title": [
+                                {"text": {"content": title}}
+                            ]
                         }
-                    }
+                    },
                 },
             }
 
@@ -177,16 +178,17 @@ class AdnanAIDecisionService:
         return {"command": None, "payload": {}}
 
     # ============================================================
-    # ENTRYPOINT — FAZA 4
+    # ENTRYPOINT — FAZA 7.3
     # ============================================================
     def process_ceo_instruction(self, text: str) -> Dict[str, Any]:
         lower = text.lower()
 
-        # MEMORY LEARNING (LOCAL ONLY)
+        # MEMORY (LOCAL ONLY)
         if "zapamti" in lower:
             self.personality_engine.learn_from_text(text)
             return {
                 "decision_candidate": False,
+                "executor": None,
                 "command": None,
                 "payload": {},
                 "system_response": "Zabilježeno.",
@@ -198,15 +200,21 @@ class AdnanAIDecisionService:
         if not command_block["command"]:
             return {
                 "decision_candidate": False,
+                "executor": None,
                 "command": None,
                 "payload": {},
                 "system_response": "Razumijem.",
             }
 
-        # FAZA 4: SAMO KANDIDAT — BEZ IZVRŠENJA
+        # --------------------------------------------------------
+        # FAZA 7.3 — FORMAL DELEGATION CONTRACT
+        # --------------------------------------------------------
         return {
             "decision_candidate": True,
+            "executor": "notion_ops",
             "command": command_block["command"],
             "payload": command_block["payload"],
+            "origin": "adnan.ai",
+            "confirmed": False,
             "system_response": natural_response(command_block["command"]),
         }
