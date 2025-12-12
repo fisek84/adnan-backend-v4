@@ -2,8 +2,10 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional
 import json
 
-
-BASE_PATH = Path(__file__).resolve().parent.parent / "adnan_ai" / "sops"
+# TAČAN PATH:
+# services/sop_knowledge_registry.py
+# → services/adnan_ai/sops/*.json
+BASE_PATH = Path(__file__).resolve().parent / "adnan_ai" / "sops"
 
 
 class SOPKnowledgeRegistry:
@@ -57,7 +59,6 @@ class SOPKnowledgeRegistry:
         """
         Dohvata SOP po ID-u.
         """
-
         path = BASE_PATH / f"{sop_id}.json"
         if not path.exists():
             return None
