@@ -27,7 +27,7 @@ from services.adnan_state_service import load_state
 from services.action_workflow_service import ActionWorkflowService
 
 # ================================================================
-# NOTION (READ-ONLY KNOWLEDGE)
+# NOTION (READ-ONLY KNOWLEDGE → SNAPSHOT)
 # ================================================================
 from services.notion_service import NotionService
 
@@ -52,6 +52,24 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("gateway")
 
 app = FastAPI()
+
+
+# ================================================================
+# GLOBAL SERVICES (SINGLETONS)
+# ================================================================
+personality_engine = PersonalityEngine()
+orchestrator = ContextOrchestrator(identity, mode, state)
+workflow_service = ActionWorkflowService()
+
+# ------------------------------------------------
+# NOTION READ-ONLY SERVICE (SNAPSHOT SOURCE)
+# ------------------------------------------------
+notion_service = NotionService(
+    api_key=os.getenv("NOTION_API_KEY"),
+    goals_db_id=os.getenv("NOTION_GOALS_DB_ID"),
+    tasks_db_id=os.getenv("NOTION_TASKS_DB_ID"),
+    projects_db_id=os.getenv("NOTION_PROJECTS_DB_ID"),
+)
 
 
 # ================================================================
@@ -82,27 +100,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-# ================================================================
-# GLOBAL SERVICES (SINGLETONS)
-# ================================================================
-personality_engine = PersonalityEngine()
-orchestrator = ContextOrchestrator(identity, mode, state)
-workflow_service = ActionWorkflowService()
-
-# ------------------------------------------------
-# NOTION READ-ONLY KNOWLEDGE SERVICE
-# ------------------------------------------------
-notion_service = NotionService(
-    api_key=os.getenv("NOTION_API_KEY"),
-    goals_db_id=os.getenv("NOTION_GOALS_DB_ID"),
-    tasks_db_id=os.getenv("NOTION_TASKS_DB_ID"),
-    projects_db_id=os.getenv("NOTION_PROJECTS_DB_ID"),
-)
-
-# ATTACH KNOWLEDGE TO CEO BRAIN
-orchestrator.attach_notion_knowledge(notion_service)
 
 
 # ================================================================
