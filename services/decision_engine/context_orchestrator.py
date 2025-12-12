@@ -42,10 +42,7 @@ class ContextOrchestrator:
         self.decision_engine = AdnanAIDecisionService()
         self.memory_engine = MemoryService()
 
-        # SOP KNOWLEDGE
         self.sop_registry = SOPKnowledgeRegistry()
-
-        # CONVERSATION STATE INTELLIGENCE
         self.conversation_state = ConversationStateService()
 
     # ============================================================
@@ -133,14 +130,17 @@ class ContextOrchestrator:
             })
 
         # ============================================================
-        # CONFIRMATION  ✅ POPRAVKA JE OVDJE
+        # CONFIRMATION  ✅ KLJUČNA POPRAVKA
         # ============================================================
+        state = self.conversation_state.get()  # 🔥 OBAVEZNO REFRESH
+
         if (
             state["state"] == "DECISION_PENDING"
             and state["expected_input"] == "confirmation"
-            and any(k in normalized for k in CONFIRMATION_KEYWORDS)
+            and normalized in CONFIRMATION_KEYWORDS
         ):
             pending = state.get("pending_decision") or {}
+
             execution = self.decision_engine.process_ceo_instruction(
                 pending.get("text", "")
             )
