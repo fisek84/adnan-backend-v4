@@ -8,11 +8,15 @@ from services.decision_engine.playbook_engine import PlaybookEngine
 from services.adnan_ai_decision_service import AdnanAIDecisionService
 from services.memory_service import MemoryService
 
+# READ-ONLY KNOWLEDGE
+from services.notion_service import NotionService
+
 
 class ContextOrchestrator:
     """
     CEO-level orchestrator.
 
+    FAZA 1: READ-ONLY poslovna svijest (Notion knowledge)
     FAZA 2: chat kontinuitet
     FAZA 4–6: SOP → playbook → execution plan → delegation
     FAZA 20: NON-SOP semantic business objects
@@ -38,7 +42,20 @@ class ContextOrchestrator:
         self.decision_engine = AdnanAIDecisionService()
         self.memory_engine = MemoryService()
 
+        # READ-ONLY Notion knowledge (injected later via service container)
+        self.notion_knowledge: Optional[NotionService] = None
+
         self._last_human_answer: Optional[str] = None
+
+    # ============================================================
+    # KNOWLEDGE INJECTION (SAFE)
+    # ============================================================
+    def attach_notion_knowledge(self, notion_service: NotionService):
+        """
+        Attach READ-ONLY Notion knowledge service.
+        Nikad se ne koristi za execution.
+        """
+        self.notion_knowledge = notion_service
 
     # ============================================================
     # MAIN ORCHESTRATION
@@ -70,7 +87,12 @@ class ContextOrchestrator:
             )
 
         elif context_type in {"business", "notion", "agent"}:
-            result = self._delegate_operation(user_input)
+            # PRVO: pokušaj READ-ONLY razumijevanja
+            knowledge_result = self._handle_business_knowledge(user_input)
+            if knowledge_result:
+                result = knowledge_result
+            else:
+                result = self._delegate_operation(user_input)
 
         elif context_type == "meta":
             result = self._handle_meta(user_input)
@@ -98,7 +120,55 @@ class ContextOrchestrator:
         }
 
     # ============================================================
-    # NON-SOP BUSINESS DELEGATION (FIX)
+    # READ-ONLY BUSINESS KNOWLEDGE (CO-CEO SVJESNOST)
+    # ============================================================
+    def _handle_business_knowledge(self, user_input: str) -> Optional[Dict[str, Any]]:
+        """
+        Omogućava CEO-u da PRIČA o firmi bez ikakve egzekucije.
+        """
+        if not self.notion_knowledge:
+            return None
+
+        lower = user_input.lower()
+
+        snapshot = self.notion_knowledge.get_knowledge_snapshot()
+        if not snapshot or not snapshot.get("last_sync"):
+            return None
+
+        if any(w in lower for w in ["koji ciljevi", "ciljevi", "goals"]):
+            return {
+                "type": "knowledge",
+                "response": {
+                    "topic": "goals",
+                    "count": len(snapshot["goals"]),
+                    "items": [g["name"] for g in snapshot["goals"]],
+                },
+            }
+
+        if any(w in lower for w in ["taskovi", "zadaci", "tasks"]):
+            return {
+                "type": "knowledge",
+                "response": {
+                    "topic": "tasks",
+                    "count": len(snapshot["tasks"]),
+                    "items": [t["name"] for t in snapshot["tasks"]],
+                },
+            }
+
+        if any(w in lower for w in ["projekti", "projects"]):
+            return {
+                "type": "knowledge",
+                "response": {
+                    "topic": "projects",
+                    "count": len(snapshot["projects"]),
+                    "items": [p["name"] for p in snapshot["projects"]],
+                },
+            }
+
+        return None
+
+    # ============================================================
+    # NON-SOP BUSINESS DELEGATION (UNCHANGED)
     # ============================================================
     def _delegate_operation(self, user_input: str) -> Dict[str, Any]:
 
@@ -108,9 +178,6 @@ class ContextOrchestrator:
 
         lower = user_input.lower()
 
-        # -----------------------------
-        # GOAL SEMANTIC OBJECT
-        # -----------------------------
         if command == "create_database_entry" and any(
             k in lower for k in ["cilj", "goal", "objective"]
         ):

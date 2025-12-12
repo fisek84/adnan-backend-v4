@@ -2,13 +2,22 @@ import aiohttp
 import asyncio
 from typing import Dict, Any, Optional
 import logging
+from datetime import datetime
 
 
 class NotionService:
     """
     Finalna stabilna verzija Notion servisa.
-    - async metode (koristi ih Orchestrator SYNC wrapper)
-    - sync wrapper funkcije: process_sync(), smart_process_sync(), handle_sop_sync()
+
+    POSTOJEĆE (NE DIRATI):
+    - async metode za execution
+    - sync wrapperi
+    - smart_process / SOP execution
+
+    DODANO (FAZA 1):
+    - READ-ONLY knowledge ingestion
+    - snapshot poslovne istine
+    - bez ikakvog execution-a
     """
 
     def __init__(
@@ -25,6 +34,16 @@ class NotionService:
 
         self.session: Optional[aiohttp.ClientSession] = None
         self.logger = logging.getLogger(__name__)
+
+        # --------------------------------------------------------------
+        # READ-ONLY KNOWLEDGE SNAPSHOT (CO-CEO SVJESNOST)
+        # --------------------------------------------------------------
+        self.knowledge_snapshot: Dict[str, Any] = {
+            "last_sync": None,
+            "goals": [],
+            "tasks": [],
+            "projects": [],
+        }
 
     # ---------------------------------------------------------------------
     # INTERNAL SESSION HANDLING
@@ -51,14 +70,13 @@ class NotionService:
                     return {"ok": False, "status": status, "error": text}
 
                 data = await response.json() if text else {}
-
                 return {"ok": True, "status": status, "data": data}
 
         except Exception as e:
             return {"ok": False, "status": 500, "error": str(e)}
 
     # ---------------------------------------------------------------------
-    # BASIC ASYNC WRAPPERS
+    # BASIC ASYNC WRAPPERS (EXECUTION — NE DIRATI)
     # ---------------------------------------------------------------------
     async def create_page(self, payload: Dict[str, Any]):
         return await self._safe_request("POST", "https://api.notion.com/v1/pages", payload)
@@ -84,10 +102,6 @@ class NotionService:
     # SYNC ADAPTER (FASTAPI-SAFE)
     # ---------------------------------------------------------------------
     def _sync(self, coro):
-        """
-        Sigurni sync adapter koji NE koristi asyncio.run()
-        i time NE ruši FastAPI event loop.
-        """
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
@@ -97,7 +111,7 @@ class NotionService:
             return asyncio.run(coro)
 
     # ---------------------------------------------------------------------
-    # SMART PROCESS (ASYNC)
+    # SMART PROCESS (EXECUTION — NE DIRATI)
     # ---------------------------------------------------------------------
     async def smart_process(self, user_input: str, target_db: str):
         if not target_db:
@@ -105,34 +119,26 @@ class NotionService:
 
         text = user_input.lower()
 
-        # CREATE
         if any(w in text for w in ["kreiraj", "napravi", "dodaj", "create"]):
             title = user_input.strip()
             payload = {
                 "parent": {"database_id": target_db},
-                "properties": {"Name": {"title": [{"text": {"content": title}}]}}
+                "properties": {"Name": {"title": [{"text": {"content": title}}]}},
             }
             return await self.create_page(payload)
 
-        # QUERY
         if any(w in text for w in ["prikaži", "pokaži", "query", "lista", "list"]):
             return await self.query_database(target_db)
 
         return {"ok": True, "note": "SmartProcess: nije prepoznata operacija.", "db": target_db}
 
-    # ---------------------------------------------------------------------
-    # SYNC SMART PROCESS
-    # ---------------------------------------------------------------------
     def smart_process_sync(self, user_input: str, target_db: str):
         return self._sync(self.smart_process(user_input, target_db))
 
     # ---------------------------------------------------------------------
-    # GENERAL PROCESS (ASYNC)
+    # GENERAL PROCESS (EXECUTION — NE DIRATI)
     # ---------------------------------------------------------------------
     async def process(self, user_input: str):
-        """
-        General fuzzy matching prema bazi kroz Playbook Engine.
-        """
         from services.decision_engine.playbook_engine import get_db_id
 
         db = get_db_id(user_input)
@@ -141,12 +147,11 @@ class NotionService:
 
         return await self.smart_process(user_input, db)
 
-    # SYNC WRAPPER
     def process_sync(self, user_input: str):
         return self._sync(self.process(user_input))
 
     # ---------------------------------------------------------------------
-    # SOP PROCESS
+    # SOP PROCESS (EXECUTION — NE DIRATI)
     # ---------------------------------------------------------------------
     async def handle_sop(self, user_input: str):
         from services.decision_engine.playbook_engine import get_db_id
@@ -157,6 +162,66 @@ class NotionService:
 
         return await self.smart_process(user_input, sop_db)
 
-    # SYNC WRAPPER
     def handle_sop_sync(self, user_input: str):
         return self._sync(self.handle_sop(user_input))
+
+    # =====================================================================
+    # ================== FAZA 1 — READ ONLY COO / CEO ======================
+    # =====================================================================
+
+    async def _read_db_snapshot(self, db_id: str):
+        """
+        Interna READ-ONLY metoda.
+        Nikad ne piše.
+        Nikad ne mijenja.
+        """
+        res = await self.query_database(db_id)
+        if not res.get("ok"):
+            return []
+
+        items = []
+        for r in res["data"].get("results", []):
+            props = r.get("properties", {})
+            name = ""
+            if "Name" in props and props["Name"]["title"]:
+                name = props["Name"]["title"][0]["text"]["content"]
+
+            items.append({
+                "id": r.get("id"),
+                "name": name,
+                "raw": props,
+            })
+
+        return items
+
+    async def sync_knowledge_snapshot(self):
+        """
+        Periodično čitanje Notiona.
+        Ovo je 'poslovna svijest' Adnan.AI-ja.
+        """
+        self.logger.info(">> Syncing Notion knowledge snapshot")
+
+        self.knowledge_snapshot["goals"] = await self._read_db_snapshot(self.goals_db_id)
+        self.knowledge_snapshot["tasks"] = await self._read_db_snapshot(self.tasks_db_id)
+        self.knowledge_snapshot["projects"] = await self._read_db_snapshot(self.projects_db_id)
+        self.knowledge_snapshot["last_sync"] = datetime.utcnow().isoformat()
+
+        return {
+            "ok": True,
+            "summary": "Knowledge snapshot updated",
+            "counts": {
+                "goals": len(self.knowledge_snapshot["goals"]),
+                "tasks": len(self.knowledge_snapshot["tasks"]),
+                "projects": len(self.knowledge_snapshot["projects"]),
+            },
+        }
+
+    def sync_knowledge_snapshot_sync(self):
+        return self._sync(self.sync_knowledge_snapshot())
+
+    def get_knowledge_snapshot(self) -> Dict[str, Any]:
+        """
+        READ-ONLY getter.
+        Ovdje CEO 'zna firmu'.
+        """
+        return self.knowledge_snapshot

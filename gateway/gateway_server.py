@@ -27,6 +27,11 @@ from services.adnan_state_service import load_state
 from services.action_workflow_service import ActionWorkflowService
 
 # ================================================================
+# NOTION (READ-ONLY KNOWLEDGE)
+# ================================================================
+from services.notion_service import NotionService
+
+# ================================================================
 # VOICE
 # ================================================================
 from routers.voice_router import router as voice_router
@@ -47,6 +52,15 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("gateway")
 
 app = FastAPI()
+
+
+# ================================================================
+# STARTUP — INITIAL KNOWLEDGE SYNC
+# ================================================================
+@app.on_event("startup")
+async def startup_event():
+    logger.info(">> Startup: syncing Notion knowledge snapshot")
+    await notion_service.sync_knowledge_snapshot()
 
 
 # ================================================================
@@ -76,6 +90,19 @@ app.add_middleware(
 personality_engine = PersonalityEngine()
 orchestrator = ContextOrchestrator(identity, mode, state)
 workflow_service = ActionWorkflowService()
+
+# ------------------------------------------------
+# NOTION READ-ONLY KNOWLEDGE SERVICE
+# ------------------------------------------------
+notion_service = NotionService(
+    api_key=os.getenv("NOTION_API_KEY"),
+    goals_db_id=os.getenv("NOTION_GOALS_DB_ID"),
+    tasks_db_id=os.getenv("NOTION_TASKS_DB_ID"),
+    projects_db_id=os.getenv("NOTION_PROJECTS_DB_ID"),
+)
+
+# ATTACH KNOWLEDGE TO CEO BRAIN
+orchestrator.attach_notion_knowledge(notion_service)
 
 
 # ================================================================
