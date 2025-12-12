@@ -6,6 +6,13 @@ class ContextClassifier:
     Canonical Context Classifier — Adnan.AI / Evolia OS
     """
 
+    # READ-ONLY / REPORTING INTENT (MORA BITI IZNAD SOP)
+    READ_ONLY_KEYWORDS = [
+        "koji", "koje", "pokaži", "pokazi", "prikaži", "prikazi",
+        "spisak", "lista", "status", "pregled", "izvještaj", "izvjestaj",
+        "report", "šta imam", "sta imam",
+    ]
+
     SOP_KEYWORDS = [
         "sop", "procedure", "procedura",
         "proces", "workflow", "playbook",
@@ -14,23 +21,24 @@ class ContextClassifier:
     ]
 
     BUSINESS_KEYWORDS = [
-        "task", "tasks", "zadaci",
-        "project", "projects", "projekti",
-        "goal", "goals", "cilj", "ciljevi",
-        "biznis", "kompanija", "firma",
-        "operacije", "plan", "analiza", "strategija",
+        "task", "project", "goal", "biznis",
+        "kompanija", "firma", "operacije",
+        "plan", "analiza", "strategija",
+        "cilj", "ciljevi", "zadaci", "taskovi", "projekti",
+        "kpi", "lead", "leads",
     ]
 
     NOTION_KEYWORDS = [
         "notion", "baza", "database", "entry",
         "page", "kreiraj", "napravi",
         "izmijeni", "update", "query",
-        "prikaži", "pokaži",
+        "prikaži", "pokaži", "prikazi", "pokazi",
     ]
 
     AGENT_KEYWORDS = [
         "agent", "agents", "automation",
-        "bot", "izvrši", "delegiraj",
+        "bot", "izvrši", "izvrsi", "delegiraj",
+        "pokreni", "uradi",
     ]
 
     MEMORY_KEYWORDS = [
@@ -51,91 +59,47 @@ class ContextClassifier:
         "koji si",
     ]
 
-    # ============================
-    # NEW: BUSINESS QUESTIONS
-    # ============================
-    BUSINESS_QUESTIONS = [
-        "koji su mi",
-        "koji su moji",
-        "šta su mi",
-        "sta su mi",
-        "šta imam",
-        "sta imam",
-        "koliko imam",
-        "pregled",
-        "lista",
-    ]
-
     def classify(
         self,
         user_input: str,
         identity_reasoning: Dict[str, Any],
     ) -> Dict[str, Any]:
-        text = user_input.lower().strip()
+        text = (user_input or "").lower().strip()
         tags: List[str] = []
 
-        # --------------------------------
-        # MEMORY
-        # --------------------------------
         if any(k in text for k in self.MEMORY_KEYWORDS):
             context_type = "memory"
             tags.append("memory")
 
-        # --------------------------------
-        # SOP
-        # --------------------------------
-        elif any(k in text for k in self.SOP_KEYWORDS):
-            context_type = "sop"
-            tags.append("sop")
-
-        # --------------------------------
-        # NOTION (explicit)
-        # --------------------------------
-        elif any(k in text for k in self.NOTION_KEYWORDS):
-            context_type = "notion"
-            tags.append("notion")
-
-        # --------------------------------
-        # AGENT
-        # --------------------------------
-        elif any(k in text for k in self.AGENT_KEYWORDS):
-            context_type = "agent"
-            tags.append("agent")
-
-        # --------------------------------
-        # META
-        # --------------------------------
-        elif any(k in text for k in self.META_KEYWORDS):
-            context_type = "meta"
-            tags.append("meta")
-
-        # --------------------------------
-        # IDENTITY
-        # --------------------------------
         elif any(q in text for q in self.IDENTITY_QUESTIONS):
             context_type = "identity"
             tags.append("identity")
 
-        # --------------------------------
-        # BUSINESS — QUESTION BASED (NEW)
-        # --------------------------------
-        elif (
-            any(q in text for q in self.BUSINESS_QUESTIONS)
-            and any(k in text for k in self.BUSINESS_KEYWORDS)
-        ):
-            context_type = "business"
-            tags.append("business")
+        elif any(k in text for k in self.META_KEYWORDS):
+            context_type = "meta"
+            tags.append("meta")
 
-        # --------------------------------
-        # BUSINESS — KEYWORD BASED
-        # --------------------------------
+        # READ-ONLY knowledge/reporting MUST preempt SOP execution intent
+        elif any(k in text for k in self.READ_ONLY_KEYWORDS):
+            context_type = "knowledge"
+            tags.append("knowledge")
+
+        elif any(k in text for k in self.SOP_KEYWORDS):
+            context_type = "sop"
+            tags.append("sop")
+
+        elif any(k in text for k in self.NOTION_KEYWORDS):
+            context_type = "notion"
+            tags.append("notion")
+
+        elif any(k in text for k in self.AGENT_KEYWORDS):
+            context_type = "agent"
+            tags.append("agent")
+
         elif any(k in text for k in self.BUSINESS_KEYWORDS):
             context_type = "business"
             tags.append("business")
 
-        # --------------------------------
-        # FALLBACK CHAT
-        # --------------------------------
         else:
             context_type = "chat"
             tags.append("chat")
@@ -143,5 +107,5 @@ class ContextClassifier:
         return {
             "context_type": context_type,
             "context_tags": tags,
-            "confidence": 0.9,
+            "confidence": 0.85,
         }

@@ -41,7 +41,7 @@ class ContextOrchestrator:
         self.decision_engine = AdnanAIDecisionService()
         self.memory_engine = MemoryService()
 
-        # READ-ONLY Notion knowledge
+        # READ-ONLY Notion knowledge (injectovan u startupu)
         self.notion_knowledge: Optional[NotionService] = None
 
         self._last_human_answer: Optional[str] = None
@@ -50,6 +50,10 @@ class ContextOrchestrator:
     # KNOWLEDGE INJECTION
     # ============================================================
     def attach_notion_knowledge(self, notion_service: NotionService):
+        """
+        READ-ONLY Notion knowledge.
+        Nikad se ne koristi za execution.
+        """
         self.notion_knowledge = notion_service
 
     # ============================================================
@@ -70,10 +74,19 @@ class ContextOrchestrator:
         elif context_type == "memory":
             result = self._handle_memory(user_input)
 
+        elif context_type == "knowledge":
+            # ČIST READ-ONLY REPORTING
+            knowledge = self._handle_business_knowledge(user_input)
+            result = knowledge if knowledge else {
+                "type": "knowledge",
+                "response": "Nema dostupnih podataka za traženi upit.",
+            }
+
         elif context_type == "sop":
             result = self._handle_sop(user_input, identity_reasoning, classification)
 
         elif context_type in {"business", "notion", "agent"}:
+            # prvo pokušaj READ-ONLY znanje
             knowledge = self._handle_business_knowledge(user_input)
             result = knowledge if knowledge else self._delegate_operation(user_input)
 
@@ -81,7 +94,10 @@ class ContextOrchestrator:
             result = self._handle_meta(user_input)
 
         else:
-            result = {"type": "unknown", "response": "Nepoznat kontekst."}
+            result = {
+                "type": "unknown",
+                "response": "Nepoznat kontekst.",
+            }
 
         final_output = self.response_engine.format_response(
             identity_reasoning=identity_reasoning,
@@ -97,7 +113,7 @@ class ContextOrchestrator:
         }
 
     # ============================================================
-    # READ-ONLY KNOWLEDGE (UNIFIED)
+    # READ-ONLY KNOWLEDGE (GLOBAL + PER-DB)
     # ============================================================
     def _handle_business_knowledge(self, user_input: str) -> Optional[Dict[str, Any]]:
         if not self.notion_knowledge:
@@ -109,8 +125,11 @@ class ContextOrchestrator:
 
         lower = user_input.lower()
 
-        # GLOBAL REPORT
-        if any(w in lower for w in ["report", "izvještaj", "pregled svega", "cijela firma"]):
+        # GLOBAL REPORT (CEO overview)
+        if any(w in lower for w in [
+            "report", "izvještaj", "izvjestaj",
+            "pregled svega", "cijela firma", "stanje firme",
+        ]):
             return {
                 "type": "knowledge",
                 "response": {
@@ -119,15 +138,16 @@ class ContextOrchestrator:
                 },
             }
 
-        # SPECIFIC DATABASE QUERY
+        # POJEDINAČNA BAZA
         for key, db in snapshot["databases"].items():
-            if key in lower or db.get("label", "").lower() in lower:
+            label = (db.get("label") or "").lower()
+            if key in lower or label in lower:
                 return {
                     "type": "knowledge",
                     "response": {
                         "topic": key,
-                        "count": len(db["items"]),
-                        "items": [item["name"] for item in db["items"]],
+                        "count": len(db.get("items", [])),
+                        "items": [item.get("name") for item in db.get("items", [])],
                     },
                 }
 
@@ -176,7 +196,10 @@ class ContextOrchestrator:
         )
 
         if playbook_result.get("type") != "sop_execution":
-            return {"type": "sop", "response": "SOP nije moguće izvršiti."}
+            return {
+                "type": "sop",
+                "response": "SOP nije moguće izvršiti.",
+            }
 
         return {
             "type": "delegation",
