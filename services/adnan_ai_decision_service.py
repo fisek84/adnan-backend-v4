@@ -11,7 +11,7 @@ from services.decision_engine.static_memory_engine import StaticMemoryEngine
 from services.decision_engine.dynamic_memory import DynamicMemoryEngine
 from services.decision_engine.personality_engine import PersonalityEngine
 
-# ✅ SOP KNOWLEDGE
+# SOP KNOWLEDGE
 from services.sop_knowledge_registry import SOPKnowledgeRegistry
 
 
@@ -22,7 +22,7 @@ BASE_PATH = Path(__file__).resolve().parent.parent / "identity"
 
 
 # ================================================================
-# DATABASE MAP (LOGICAL KEYS ONLY)
+# DATABASE MAP
 # ================================================================
 DATABASE_MAP = {
     "task": "tasks",
@@ -70,21 +70,21 @@ def extract_title_from_text(text: str) -> str:
 
 def natural_response(command: str) -> str:
     return {
-        "create_database_entry": "Mogu kreirati novi zapis u Notionu.",
-        "update_database_entry": "Mogu ažurirati zapis u Notionu.",
-        "delete_page": "Mogu obrisati zapis iz Notiona.",
-        "query_database": "Mogu prikupiti podatke iz Notiona.",
-    }.get(command, "Mogu izvršiti zahtjev.")
+        "create_database_entry": "Kreiram novi zapis.",
+        "update_database_entry": "Ažuriram postojeći zapis.",
+        "delete_page": "Brišem zapis.",
+        "query_database": "Prikupljam podatke.",
+        "execute_sop": "SOP je potvrđen i ide u izvršenje.",
+    }.get(command, "Izvršavam zahtjev.")
 
 
 # ================================================================
-# CEO DECISION SERVICE — FAZA 7.3 (DELEGATION CONTRACT)
+# CEO DECISION SERVICE — KANONSKI
 # ================================================================
 class AdnanAIDecisionService:
     """
-    CEO Brain — prirodni jezik → DELEGACIJSKI UGOVOR.
-    - NEMA direktnog izvršenja
-    - Eksplicitni executor: notion_ops
+    CEO Brain — prirodni jezik → DELEGATION CONTRACT
+    NEMA izvršenja.
     """
 
     def __init__(self):
@@ -99,10 +99,8 @@ class AdnanAIDecisionService:
         self.sop_mapper = SOPMapper()
         self.static_memory_engine = StaticMemoryEngine(self.static_memory)
         self.dynamic_memory_engine = DynamicMemoryEngine({})
-
         self.personality_engine = PersonalityEngine()
 
-        # SOP KNOWLEDGE (READ-ONLY)
         self.sop_registry = SOPKnowledgeRegistry()
 
     # ============================================================
@@ -116,34 +114,76 @@ class AdnanAIDecisionService:
             return json.load(f)
 
     # ============================================================
-    # 🆕 SOP → DECISION PROPOSAL (READ-ONLY)
+    # ENTRYPOINT
     # ============================================================
-    def propose_decision_from_sop(self, sop_id: str) -> Dict[str, Any]:
-        """
-        CEO-level prijedlog odluke na osnovu SOP znanja.
-        - READ-ONLY
-        - NEMA izvršenja
-        - NEMA delegacije
-        """
+    def process_ceo_instruction(self, text: str) -> Dict[str, Any]:
+        lower = text.lower().strip()
 
-        sop = self.sop_registry.get_sop(sop_id, mode="summary")
-        if not sop:
+        # ========================================================
+        # 🟢 SOP EXECUTION — OVO JE KLJUČ
+        # ========================================================
+        if lower.startswith("execute sop:"):
+            sop_id = lower.replace("execute sop:", "").strip()
+
+            sop = self.sop_registry.get_sop(sop_id, mode="summary")
+            if not sop:
+                return {
+                    "decision_candidate": False,
+                    "executor": None,
+                    "command": None,
+                    "payload": {},
+                    "system_response": "Nepoznat SOP.",
+                }
+
             return {
-                "type": "noop",
-                "message": "Nepoznat SOP.",
+                "decision_candidate": False,
+                "executor": "sop_execution_manager",
+                "command": "execute_sop",
+                "payload": {
+                    "sop_id": sop_id,
+                    "sop_name": sop["name"],
+                },
+                "origin": "adnan.ai",
+                "confirmed": True,
+                "system_response": f"SOP '{sop['name']}' je potvrđen za izvršenje.",
+            }
+
+        # ========================================================
+        # MEMORY
+        # ========================================================
+        if "zapamti" in lower:
+            self.personality_engine.learn_from_text(text)
+            return {
+                "decision_candidate": False,
+                "executor": None,
+                "command": None,
+                "payload": {},
+                "system_response": "Zabilježeno.",
+            }
+
+        # ========================================================
+        # NOTION INTENTS
+        # ========================================================
+        intent = self._detect_intent(text)
+        command_block = self._build_command(intent)
+
+        if not command_block["command"]:
+            return {
+                "decision_candidate": False,
+                "executor": None,
+                "command": None,
+                "payload": {},
+                "system_response": "Razumijem.",
             }
 
         return {
-            "type": "decision_candidate",
-            "source": "sop_knowledge",
-            "sop": sop["name"],
-            "proposal": (
-                f"Na osnovu SOP-a '{sop['name']}' "
-                "predlažem da započnemo njegovu primjenu "
-                "kroz odgovarajući operativni workflow."
-            ),
-            "requires_confirmation": True,
-            "read_only": True,
+            "decision_candidate": True,
+            "executor": "notion_ops",
+            "command": command_block["command"],
+            "payload": command_block["payload"],
+            "origin": "adnan.ai",
+            "confirmed": False,
+            "system_response": natural_response(command_block["command"]),
         }
 
     # ============================================================
@@ -151,7 +191,6 @@ class AdnanAIDecisionService:
     # ============================================================
     def _detect_intent(self, text: str) -> Dict[str, Any]:
         t = text.lower()
-
         action = None
         for act, patterns in ACTION_PATTERNS.items():
             if fuzzy_match(t, patterns, 70):
@@ -168,7 +207,7 @@ class AdnanAIDecisionService:
         }
 
     # ============================================================
-    # COMMAND BUILDER (DELEGATION-ONLY)
+    # COMMAND BUILDER
     # ============================================================
     def _build_command(self, intent: Dict[str, Any]) -> Dict[str, Any]:
         action = intent.get("action")
@@ -192,9 +231,7 @@ class AdnanAIDecisionService:
                     "database_key": db_key,
                     "properties": {
                         "Name": {
-                            "title": [
-                                {"text": {"content": title}}
-                            ]
+                            "title": [{"text": {"content": title}}]
                         }
                     },
                 },
@@ -213,45 +250,3 @@ class AdnanAIDecisionService:
             }
 
         return {"command": None, "payload": {}}
-
-    # ============================================================
-    # ENTRYPOINT — FAZA 7.3
-    # ============================================================
-    def process_ceo_instruction(self, text: str) -> Dict[str, Any]:
-        lower = text.lower()
-
-        # MEMORY (LOCAL ONLY)
-        if "zapamti" in lower:
-            self.personality_engine.learn_from_text(text)
-            return {
-                "decision_candidate": False,
-                "executor": None,
-                "command": None,
-                "payload": {},
-                "system_response": "Zabilježeno.",
-            }
-
-        intent = self._detect_intent(text)
-        command_block = self._build_command(intent)
-
-        if not command_block["command"]:
-            return {
-                "decision_candidate": False,
-                "executor": None,
-                "command": None,
-                "payload": {},
-                "system_response": "Razumijem.",
-            }
-
-        # --------------------------------------------------------
-        # FAZA 7.3 — FORMAL DELEGATION CONTRACT
-        # --------------------------------------------------------
-        return {
-            "decision_candidate": True,
-            "executor": "notion_ops",
-            "command": command_block["command"],
-            "payload": command_block["payload"],
-            "origin": "adnan.ai",
-            "confirmed": False,
-            "system_response": natural_response(command_block["command"]),
-        }
