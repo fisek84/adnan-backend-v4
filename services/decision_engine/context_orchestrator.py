@@ -10,6 +10,7 @@ from services.adnan_ai_decision_service import AdnanAIDecisionService
 from services.memory_service import MemoryService
 from services.knowledge_snapshot_service import KnowledgeSnapshotService
 from services.sop_knowledge_registry import SOPKnowledgeRegistry
+from services.conversation_state_service import ConversationStateService
 
 
 CONFIRMATION_KEYWORDS = {
@@ -24,6 +25,7 @@ class ContextOrchestrator:
     FAZA 1–8: postojeće ponašanje
     FAZA 17: Intent hardening + confirmation binding
     FAZA SOP-KI: SOP Knowledge Intelligence (READ-ONLY)
+    FAZA CSI: Conversation State Intelligence
     """
 
     def __init__(
@@ -46,68 +48,81 @@ class ContextOrchestrator:
 
         # SOP KNOWLEDGE
         self.sop_registry = SOPKnowledgeRegistry()
-        self._last_sop_list: Optional[List[Dict[str, Any]]] = None
-        self._active_sop: Optional[str] = None
 
-        # Pending decision
+        # CONVERSATION STATE INTELLIGENCE (CANONICAL)
+        self.conversation_state = ConversationStateService()
+
+        # Pending decision (execution)
         self._pending_decision: Optional[str] = None
         self._pending_fingerprint: Optional[str] = None
 
     async def run(self, user_input: str) -> Dict[str, Any]:
         normalized = (user_input or "").lower().strip()
+        state = self.conversation_state.get()
 
         # ============================================================
-        # SOP LIST (READ-ONLY)
+        # SOP LIST REQUEST
         # ============================================================
         if normalized in {"sop", "pokaži sop", "pokazi sop", "lista sop"}:
             sops = self.sop_registry.list_sops()
-            self._last_sop_list = sops
+            self.conversation_state.set_sop_list(sops)
 
-            lines = ["Imamo sljedeće SOP-ove:"]
-            for i, sop in enumerate(sops, start=1):
-                lines.append(f"{i}. {sop['name']} (v{sop.get('version', '1.0')})")
-
-            lines.append("Reci broj (1, 2, 3…) ili ime SOP-a.")
+            numbered = [
+                f"{i+1}. {sop['name']} (v{sop.get('version', '1.0')})"
+                for i, sop in enumerate(sops)
+            ]
 
             return self._final_read_only({
                 "type": "sop_list",
-                "response": "\n".join(lines)
+                "response": {
+                    "message": "Ovo su SOP-ovi u sistemu. Reci broj (1, 2, 3…) ili ime SOP-a.",
+                    "items": numbered,
+                }
             })
 
         # ============================================================
-        # SOP NUMERIC SELECTION
+        # SOP NUMERIC SELECTION (CSI)
         # ============================================================
-        if normalized.isdigit() and self._last_sop_list:
-            idx = int(normalized) - 1
-            if 0 <= idx < len(self._last_sop_list):
-                sop_meta = self._last_sop_list[idx]
-                self._active_sop = sop_meta["id"]
+        if state["state"] == "SOP_LIST" and state["expected_input"] == "sop_selection":
+            if normalized.isdigit():
+                index = int(normalized) - 1
+                sops = state.get("sop_list", [])
 
-                sop = self.sop_registry.get_sop(self._active_sop, mode="full")
-                playbook = self.playbook_engine.evaluate(
-                    user_input=sop_meta["name"],
-                    identity_reasoning={},
-                    context={"context_type": "sop"},
-                )
+                if 0 <= index < len(sops):
+                    sop_meta = sops[index]
+                    sop_id = sop_meta["id"]
 
-                return self._final_read_only({
-                    "type": "sop_detail",
-                    "response": {
-                        "sop": sop["content"],
-                        "playbook": playbook,
-                        "hint": "Ako želiš izvršenje, napiši: izvrši ovaj sop",
-                    },
-                })
+                    self.conversation_state.set_active_sop(sop_id)
+
+                    sop = self.sop_registry.get_sop(sop_id, mode="full")
+                    playbook = self.playbook_engine.evaluate(
+                        user_input=sop_meta["name"],
+                        identity_reasoning={},
+                        context={"context_type": "sop"},
+                    )
+
+                    return self._final_read_only({
+                        "type": "sop_detail",
+                        "response": {
+                            "sop": sop["content"],
+                            "playbook": playbook,
+                            "hint": "Ako želiš izvršenje, napiši: izvrši ovaj sop",
+                        },
+                    })
+
+            # invalid input → reset SOP flow
+            self.conversation_state.set_idle()
 
         # ============================================================
-        # SOP NAME SELECTION
+        # SOP NAME SELECTION (CSI)
         # ============================================================
-        if self._last_sop_list:
-            for sop_meta in self._last_sop_list:
+        if state["state"] == "SOP_LIST":
+            for sop_meta in state.get("sop_list", []):
                 if sop_meta["name"].lower() in normalized:
-                    self._active_sop = sop_meta["id"]
+                    sop_id = sop_meta["id"]
+                    self.conversation_state.set_active_sop(sop_id)
 
-                    sop = self.sop_registry.get_sop(self._active_sop, mode="full")
+                    sop = self.sop_registry.get_sop(sop_id, mode="full")
                     playbook = self.playbook_engine.evaluate(
                         user_input=sop_meta["name"],
                         identity_reasoning={},
@@ -126,8 +141,13 @@ class ContextOrchestrator:
         # ============================================================
         # SOP EXECUTION REQUEST (PENDING)
         # ============================================================
-        if self._active_sop and "izvrši" in normalized:
-            self._set_pending(f"execute sop:{self._active_sop}")
+        if state["state"] == "SOP_ACTIVE" and "izvrši" in normalized:
+            fingerprint = hashlib.sha256(normalized.encode()).hexdigest()
+            self.conversation_state.set_pending_decision(
+                text=f"execute sop:{state['active_sop_id']}",
+                fingerprint=fingerprint,
+            )
+
             return self._final_read_only({
                 "type": "decision_candidate",
                 "response": "Želiš li potvrditi izvršenje ovog SOP-a? (da / ok)",
@@ -136,12 +156,19 @@ class ContextOrchestrator:
         # ============================================================
         # CONFIRMATION
         # ============================================================
-        if self._pending_decision and self._is_confirmation(normalized):
+        if (
+            state["state"] == "DECISION_PENDING"
+            and state["expected_input"] == "confirmation"
+            and normalized in CONFIRMATION_KEYWORDS
+        ):
+            pending = state.get("pending_decision") or {}
             execution = self.decision_engine.process_ceo_instruction(
-                self._pending_decision
+                pending.get("text", "")
             )
+
+            self.conversation_state.set_executing()
             self.memory_engine.set_active_decision(execution)
-            self._clear_pending()
+            self.conversation_state.set_idle()
 
             return {
                 "success": True,
@@ -160,11 +187,11 @@ class ContextOrchestrator:
             }
 
         # ============================================================
-        # FALLBACK
+        # FALLBACK (READ-ONLY CHAT)
         # ============================================================
         return self._final_read_only({
             "type": "chat",
-            "response": "Razumio sam. Nastavi."
+            "response": "Razumio sam. Nastavi.",
         })
 
     # ============================================================
@@ -183,14 +210,3 @@ class ContextOrchestrator:
             "result": result,
             "final_output": final,
         }
-
-    def _set_pending(self, text: str):
-        self._pending_decision = text
-        self._pending_fingerprint = hashlib.sha256(text.encode()).hexdigest()
-
-    def _clear_pending(self):
-        self._pending_decision = None
-        self._pending_fingerprint = None
-
-    def _is_confirmation(self, text: str) -> bool:
-        return text in CONFIRMATION_KEYWORDS
