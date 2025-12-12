@@ -6,7 +6,7 @@ from services.memory_service import MemoryService
 
 class PlaybookEngine:
     """
-    BUSINESS PLAYBOOK ENGINE — FAZA 4–7 + FAZA 9.1 + FAZA 9.2 (CEO level)
+    BUSINESS PLAYBOOK ENGINE — FAZA 4–7 + FAZA 9.1 + FAZA 9.2 + FAZA 9.3 (CEO level)
 
     Pravila:
     - prepoznaje SOP intent
@@ -15,6 +15,7 @@ class PlaybookEngine:
     - FAZA 9.1: READ-ONLY SOP bias (learning signal)
     - FAZA 9.2: READ-ONLY SOP chaining recommendation (CEO suggestion)
     - FAZA 9.3: READ-ONLY SOP historical success rate (CEO signal)
+    - FAZA SOP-KI: READ-ONLY execution plan preview
     - NEMA izvršenja
     - NEMA odlučivanja
     - NEMA pisanja u memoriju
@@ -71,9 +72,12 @@ class PlaybookEngine:
                 "type": "sop_execution",
                 "sop": sop_name,
                 "execution_plan": base_plan,
+                "execution_plan_preview": self.preview_execution_plan({
+                    "steps": base_plan
+                }),
                 "variants": self._build_variants(sop_name, base_plan),
                 "sop_bias": sop_bias,
-                "sop_success_rate": sop_success_rate,  # FAZA 9.3
+                "sop_success_rate": sop_success_rate,
                 "recommendation": recommendation,
             }
 
@@ -133,6 +137,34 @@ class PlaybookEngine:
                 },
             }
         ]
+
+    # ============================================================
+    # FAZA SOP-KI — EXECUTION PLAN PREVIEW (READ-ONLY)
+    # ============================================================
+    def preview_execution_plan(self, sop_content: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        READ-ONLY preview plana izvršenja SOP-a.
+        NEMA izvršenja.
+        """
+
+        steps = sop_content.get("steps", [])
+        preview: List[Dict[str, Any]] = []
+
+        for index, step in enumerate(steps):
+            preview.append({
+                "order": index + 1,
+                "step": step.get("step"),
+                "agent": step.get("agent"),
+                "command": step.get("command"),
+                "critical": step.get("critical", False),
+            })
+
+        return {
+            "type": "execution_plan_preview",
+            "count": len(preview),
+            "steps": preview,
+            "read_only": True,
+        }
 
     # ============================================================
     # FAZA 7.2 — VARIANTS (DESCRIPTIVE ONLY)

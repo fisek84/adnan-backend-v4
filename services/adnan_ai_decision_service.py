@@ -11,6 +11,9 @@ from services.decision_engine.static_memory_engine import StaticMemoryEngine
 from services.decision_engine.dynamic_memory import DynamicMemoryEngine
 from services.decision_engine.personality_engine import PersonalityEngine
 
+# ✅ SOP KNOWLEDGE
+from services.sop_knowledge_registry import SOPKnowledgeRegistry
+
 
 # ================================================================
 # PATHS — CANONICAL
@@ -99,6 +102,9 @@ class AdnanAIDecisionService:
 
         self.personality_engine = PersonalityEngine()
 
+        # SOP KNOWLEDGE (READ-ONLY)
+        self.sop_registry = SOPKnowledgeRegistry()
+
     # ============================================================
     # LOADERS
     # ============================================================
@@ -108,6 +114,37 @@ class AdnanAIDecisionService:
             return {}
         with open(path, "r", encoding="utf-8-sig") as f:
             return json.load(f)
+
+    # ============================================================
+    # 🆕 SOP → DECISION PROPOSAL (READ-ONLY)
+    # ============================================================
+    def propose_decision_from_sop(self, sop_id: str) -> Dict[str, Any]:
+        """
+        CEO-level prijedlog odluke na osnovu SOP znanja.
+        - READ-ONLY
+        - NEMA izvršenja
+        - NEMA delegacije
+        """
+
+        sop = self.sop_registry.get_sop(sop_id, mode="summary")
+        if not sop:
+            return {
+                "type": "noop",
+                "message": "Nepoznat SOP.",
+            }
+
+        return {
+            "type": "decision_candidate",
+            "source": "sop_knowledge",
+            "sop": sop["name"],
+            "proposal": (
+                f"Na osnovu SOP-a '{sop['name']}' "
+                "predlažem da započnemo njegovu primjenu "
+                "kroz odgovarajući operativni workflow."
+            ),
+            "requires_confirmation": True,
+            "read_only": True,
+        }
 
     # ============================================================
     # INTENT DETECTION

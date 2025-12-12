@@ -1,4 +1,4 @@
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import hashlib
 
 from services.decision_engine.identity_reasoning import IdentityReasoningEngine
@@ -9,6 +9,7 @@ from services.decision_engine.playbook_engine import PlaybookEngine
 from services.adnan_ai_decision_service import AdnanAIDecisionService
 from services.memory_service import MemoryService
 from services.knowledge_snapshot_service import KnowledgeSnapshotService
+from services.sop_knowledge_registry import SOPKnowledgeRegistry
 
 
 CONFIRMATION_KEYWORDS = {
@@ -22,6 +23,7 @@ class ContextOrchestrator:
 
     FAZA 1–8: postojeće ponašanje
     FAZA 17: Intent hardening + confirmation binding
+    FAZA SOP-KI: SOP Knowledge Intelligence (READ-ONLY)
     """
 
     def __init__(
@@ -42,68 +44,103 @@ class ContextOrchestrator:
         self.decision_engine = AdnanAIDecisionService()
         self.memory_engine = MemoryService()
 
-        # FAZA 17 — hardened pending decision
+        # SOP KNOWLEDGE
+        self.sop_registry = SOPKnowledgeRegistry()
+        self._last_sop_list: Optional[List[Dict[str, Any]]] = None
+        self._active_sop: Optional[str] = None
+
+        # Pending decision
         self._pending_decision: Optional[str] = None
         self._pending_fingerprint: Optional[str] = None
 
     async def run(self, user_input: str) -> Dict[str, Any]:
-
         normalized = (user_input or "").lower().strip()
 
         # ============================================================
-        # FAZA 8 — STATUS QUERY
+        # SOP LIST (READ-ONLY)
         # ============================================================
-        if normalized in {"status", "gdje smo", "šta radimo", "sta radimo"}:
-            active = self.memory_engine.get_active_decision()
-            result = {
-                "type": "status",
-                "response": active or "Nema aktivne odluke."
-            }
+        if normalized in {"sop", "pokaži sop", "pokazi sop", "lista sop"}:
+            sops = self.sop_registry.list_sops()
+            self._last_sop_list = sops
 
-            final_output = self.response_engine.format_response(
-                identity_reasoning=None,
-                classification={"context_type": "status"},
-                result=result,
-            )
+            lines = ["Imamo sljedeće SOP-ove:"]
+            for i, sop in enumerate(sops, start=1):
+                lines.append(f"{i}. {sop['name']} (v{sop.get('version', '1.0')})")
 
-            return {
-                "success": True,
-                "context_type": "status",
-                "decision_intent": "read_only",
-                "result": result,
-                "final_output": final_output,
-            }
+            lines.append("Reci broj (1, 2, 3…) ili ime SOP-a.")
+
+            return self._final_read_only({
+                "type": "sop_list",
+                "response": "\n".join(lines)
+            })
 
         # ============================================================
-        # FAZA 6 + FAZA 17 — CONFIRMATION GUARD (HARDENED)
+        # SOP NUMERIC SELECTION
         # ============================================================
-        if self._pending_decision and not self._is_confirmation(normalized):
-            # ako korisnik krene novu temu → poništi pending
-            self._clear_pending()
-            return {
-                "success": True,
-                "context_type": "confirmation_cancelled",
-                "decision_intent": "cancelled",
-                "result": {
-                    "type": "decision_candidate",
-                    "message": "Prethodna odluka je poništena. Možemo nastaviti dalje.",
-                },
-                "final_output": {
-                    "final_answer": "Prethodna odluka je poništena."
-                },
-            }
+        if normalized.isdigit() and self._last_sop_list:
+            idx = int(normalized) - 1
+            if 0 <= idx < len(self._last_sop_list):
+                sop_meta = self._last_sop_list[idx]
+                self._active_sop = sop_meta["id"]
+
+                sop = self.sop_registry.get_sop(self._active_sop, mode="full")
+                playbook = self.playbook_engine.evaluate(
+                    user_input=sop_meta["name"],
+                    identity_reasoning={},
+                    context={"context_type": "sop"},
+                )
+
+                return self._final_read_only({
+                    "type": "sop_detail",
+                    "response": {
+                        "sop": sop["content"],
+                        "playbook": playbook,
+                        "hint": "Ako želiš izvršenje, napiši: izvrši ovaj sop",
+                    },
+                })
 
         # ============================================================
-        # FAZA 5/6 → FAZA 7 — CONFIRMATION ACCEPTED (BOUND)
+        # SOP NAME SELECTION
+        # ============================================================
+        if self._last_sop_list:
+            for sop_meta in self._last_sop_list:
+                if sop_meta["name"].lower() in normalized:
+                    self._active_sop = sop_meta["id"]
+
+                    sop = self.sop_registry.get_sop(self._active_sop, mode="full")
+                    playbook = self.playbook_engine.evaluate(
+                        user_input=sop_meta["name"],
+                        identity_reasoning={},
+                        context={"context_type": "sop"},
+                    )
+
+                    return self._final_read_only({
+                        "type": "sop_detail",
+                        "response": {
+                            "sop": sop["content"],
+                            "playbook": playbook,
+                            "hint": "Ako želiš izvršenje, napiši: izvrši ovaj sop",
+                        },
+                    })
+
+        # ============================================================
+        # SOP EXECUTION REQUEST (PENDING)
+        # ============================================================
+        if self._active_sop and "izvrši" in normalized:
+            self._set_pending(f"execute sop:{self._active_sop}")
+            return self._final_read_only({
+                "type": "decision_candidate",
+                "response": "Želiš li potvrditi izvršenje ovog SOP-a? (da / ok)",
+            })
+
+        # ============================================================
+        # CONFIRMATION
         # ============================================================
         if self._pending_decision and self._is_confirmation(normalized):
             execution = self.decision_engine.process_ceo_instruction(
                 self._pending_decision
             )
-
-            # FAZA 8 — STORE ACTIVE DECISION
             self.memory_engine.set_active_decision(execution)
-
             self._clear_pending()
 
             return {
@@ -112,162 +149,48 @@ class ContextOrchestrator:
                 "decision_intent": "confirmed",
                 "result": {
                     "type": "delegation",
-                    "agent": "ops_layer",
                     "delegation": execution,
                 },
                 "final_output": {
                     "final_answer": execution.get(
                         "system_response",
-                        "Zadatak je potvrđen i delegiran."
+                        "SOP je potvrđen i delegiran."
                     )
                 },
             }
 
         # ============================================================
-        # NORMAL FLOW
+        # FALLBACK
         # ============================================================
-        identity_reasoning = self.reasoner.generate_reasoning(user_input)
-        classification = self.classifier.classify(user_input, identity_reasoning)
-        context_type = classification.get("context_type")
+        return self._final_read_only({
+            "type": "chat",
+            "response": "Razumio sam. Nastavi."
+        })
 
-        decision_intent = self._derive_decision_intent(context_type)
-
-        if context_type == "identity":
-            result = self._handle_identity()
-
-        elif context_type == "chat":
-            result = self._handle_chat(user_input)
-
-        elif context_type == "memory":
-            result = self._handle_memory(user_input)
-
-        elif context_type == "knowledge":
-            knowledge = self._handle_business_knowledge(user_input)
-            result = knowledge if knowledge else self._knowledge_help_result()
-
-        elif context_type == "sop":
-            self._set_pending(user_input)
-            result = {
-                "type": "decision_candidate",
-                "message": "Prepoznat SOP. Želiš li da pripremim i izvršim plan?",
-            }
-
-        elif context_type in {"business", "notion", "agent"}:
-            self._set_pending(user_input)
-            result = {
-                "type": "decision_candidate",
-                "message": "Prepoznata je potencijalna odluka. Da li potvrđuješ izvršenje?",
-            }
-
-        elif context_type == "meta":
-            result = self._handle_meta(user_input)
-
-        else:
-            result = {
-                "type": "unknown",
-                "response": "Nepoznat kontekst.",
-            }
-
-        final_output = self.response_engine.format_response(
-            identity_reasoning=identity_reasoning,
-            classification=classification,
+    # ============================================================
+    # HELPERS
+    # ============================================================
+    def _final_read_only(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        final = self.response_engine.format_response(
+            identity_reasoning=None,
+            classification={"context_type": "knowledge"},
             result=result,
         )
-
         return {
             "success": True,
-            "context_type": context_type,
-            "decision_intent": decision_intent,
+            "context_type": "knowledge",
+            "decision_intent": "read_only",
             "result": result,
-            "final_output": final_output,
+            "final_output": final,
         }
 
-    # ============================================================
-    # FAZA 17 — PENDING MANAGEMENT
-    # ============================================================
     def _set_pending(self, text: str):
         self._pending_decision = text
-        self._pending_fingerprint = self._fingerprint(text)
+        self._pending_fingerprint = hashlib.sha256(text.encode()).hexdigest()
 
     def _clear_pending(self):
         self._pending_decision = None
         self._pending_fingerprint = None
 
-    def _fingerprint(self, text: str) -> str:
-        return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
     def _is_confirmation(self, text: str) -> bool:
         return text in CONFIRMATION_KEYWORDS
-
-    def _derive_decision_intent(self, context_type: str) -> str:
-        if context_type in {"knowledge", "chat", "identity", "meta", "status"}:
-            return "read_only"
-        if context_type in {"business", "notion", "agent", "sop"}:
-            return "decision_candidate"
-        return "unknown"
-
-    # ============================================================
-    # READ-ONLY KNOWLEDGE
-    # ============================================================
-    def _handle_business_knowledge(self, user_input: str) -> Optional[Dict[str, Any]]:
-        if not KnowledgeSnapshotService.is_ready():
-            return None
-
-        snapshot = KnowledgeSnapshotService.get_snapshot()
-        databases = snapshot.get("databases")
-        if not databases:
-            return None
-
-        lower = (user_input or "").lower().strip()
-
-        for key, db in databases.items():
-            label = (db.get("label") or "").lower()
-            if key in lower or (label and label in lower):
-                items = db.get("items", [])
-                names = [
-                    it.get("name") if isinstance(it, dict) else str(it)
-                    for it in items if it
-                ]
-                return {
-                    "type": "knowledge",
-                    "response": {
-                        "topic": key,
-                        "count": len(names),
-                        "items": names,
-                    },
-                }
-
-        return None
-
-    def _knowledge_help_result(self) -> Dict[str, Any]:
-        snapshot = KnowledgeSnapshotService.get_snapshot()
-        databases = snapshot.get("databases") or {}
-
-        items = [f"{k} → {v.get('label') or k}" for k, v in databases.items()]
-
-        return {
-            "type": "knowledge",
-            "response": {
-                "topic": "help",
-                "count": len(items),
-                "items": items,
-            },
-        }
-
-    # ============================================================
-    # OTHER HANDLERS
-    # ============================================================
-    def _handle_identity(self) -> Dict[str, Any]:
-        return {
-            "type": "identity",
-            "response": "Ja sam Adnan.AI — digitalni CEO sistema Evolia.",
-        }
-
-    def _handle_chat(self, user_input: str) -> Dict[str, Any]:
-        return {"type": "chat", "response": user_input}
-
-    def _handle_memory(self, user_input: str) -> Dict[str, Any]:
-        return {"type": "memory", "response": self.memory_engine.process(user_input)}
-
-    def _handle_meta(self, user_input: str) -> Dict[str, Any]:
-        return {"type": "meta", "response": {"input": user_input}}

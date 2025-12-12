@@ -127,7 +127,7 @@ async def execute(req: CommandRequest):
         logger.info(">> /ops/execute %s", req.command)
 
         # ------------------------------------------------------------
-        # ACTIVE DECISION GUARD (FAZA 8)
+        # ACTIVE DECISION GUARD
         # ------------------------------------------------------------
         if memory_service.get_active_decision():
             return {
@@ -142,7 +142,7 @@ async def execute(req: CommandRequest):
         )
 
         # ------------------------------------------------------------
-        # 1. ORCHESTRATOR (CEO BRAIN)
+        # 1. ORCHESTRATOR
         # ------------------------------------------------------------
         orch = await orchestrator.run(user_text)
         context_type = orch.get("context_type")
@@ -151,16 +151,64 @@ async def execute(req: CommandRequest):
         # ------------------------------------------------------------
         # 2. READ-ONLY CONTEXTS
         # ------------------------------------------------------------
-        if context_type in {"identity", "chat", "memory", "meta", "knowledge", "status"}:
+        if context_type in {
+            "identity", "chat", "memory",
+            "meta", "knowledge", "status"
+        }:
             return {
                 "success": True,
                 "final_answer": orch["final_output"]["final_answer"],
                 "engine_output": orch,
             }
 
-        # ------------------------------------------------------------
-        # 3. DELEGATION → GOVERNANCE → EXECUTION
-        # ------------------------------------------------------------
+        # ============================================================
+        # 3A. SOP EXECUTION (KANONSKI)
+        # ============================================================
+        if result.get("type") == "sop_execution":
+            execution_plan = result.get("execution_plan")
+
+            if not execution_plan:
+                return {
+                    "success": False,
+                    "final_answer": "SOP nema execution plan.",
+                }
+
+            # Active decision
+            memory_service.set_active_decision({
+                "type": "sop_execution",
+                "sop": result.get("sop"),
+            })
+
+            workflow = {
+                "type": "sop_execution",
+                "execution_plan": execution_plan,
+            }
+
+            workflow_result = await workflow_service.execute_workflow(workflow)
+
+            success = bool(workflow_result.get("success"))
+
+            memory_service.record_execution(
+                decision_type="sop",
+                key=result.get("sop"),
+                success=success,
+            )
+
+            memory_service.clear_active_decision()
+
+            return {
+                "success": success,
+                "final_answer": (
+                    "SOP je uspješno izvršen."
+                    if success
+                    else "SOP nije uspješno izvršen."
+                ),
+                "engine_output": workflow_result,
+            }
+
+        # ============================================================
+        # 3B. LEGACY DELEGATION (POSTOJEĆI FLOW)
+        # ============================================================
         if result.get("type") == "delegation":
             delegation = result.get("delegation", {})
             command = delegation.get("command")
@@ -173,9 +221,6 @@ async def execute(req: CommandRequest):
                     "engine_output": orch,
                 }
 
-            # --------------------------------------------------------
-            # FAZA 19 — GOVERNANCE CHECK (FINAL GATE)
-            # --------------------------------------------------------
             governance = governance_service.evaluate(
                 role=payload.get("role", "user"),
                 context_type=context_type,
@@ -191,9 +236,6 @@ async def execute(req: CommandRequest):
                     "governance": governance,
                 }
 
-            # --------------------------------------------------------
-            # FAZA 8 — SET ACTIVE DECISION
-            # --------------------------------------------------------
             memory_service.set_active_decision({
                 "command": command,
                 "payload": payload,
@@ -211,9 +253,6 @@ async def execute(req: CommandRequest):
 
             workflow_result = await workflow_service.execute_workflow(workflow)
 
-            # ---------------------------------------------------------
-            # CONFIRMED DERIVATION (KANONSKI)
-            # ---------------------------------------------------------
             steps = workflow_result.get("steps_results", [])
             confirmed = any(
                 step.get("result", {}).get("confirmed") is True
@@ -228,25 +267,14 @@ async def execute(req: CommandRequest):
 
             memory_service.clear_active_decision()
 
-            if not confirmed:
-                return {
-                    "success": True,
-                    "final_answer": "Akcija je predložena, ali nije potvrđena.",
-                    "engine_output": {
-                        "context_type": "workflow_not_confirmed",
-                        "workflow": workflow,
-                        "workflow_result": workflow_result,
-                    },
-                }
-
             return {
-                "success": True,
-                "final_answer": "Akcija je uspješno izvršena.",
-                "engine_output": {
-                    "context_type": "workflow_executed",
-                    "workflow": workflow,
-                    "workflow_result": workflow_result,
-                },
+                "success": confirmed,
+                "final_answer": (
+                    "Akcija je uspješno izvršena."
+                    if confirmed
+                    else "Akcija nije potvrđena."
+                ),
+                "engine_output": workflow_result,
             }
 
         # ------------------------------------------------------------
