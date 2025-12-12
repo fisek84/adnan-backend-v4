@@ -8,7 +8,6 @@ from .playbook_engine import PlaybookEngine
 
 from services.adnan_ai_decision_service import AdnanAIDecisionService
 from services.memory_service import MemoryService
-from services.knowledge_snapshot_service import KnowledgeSnapshotService
 from services.sop_knowledge_registry import SOPKnowledgeRegistry
 from services.conversation_state_service import ConversationStateService
 
@@ -21,8 +20,6 @@ class ContextOrchestrator:
     """
     CEO-level orchestrator.
 
-    FAZA 1–8: postojeće ponašanje
-    FAZA 17: Intent hardening + confirmation binding
     FAZA SOP-KI: SOP Knowledge Intelligence (READ-ONLY)
     FAZA CSI: Conversation State Intelligence
     """
@@ -48,25 +45,24 @@ class ContextOrchestrator:
         # SOP KNOWLEDGE
         self.sop_registry = SOPKnowledgeRegistry()
 
-        # CONVERSATION STATE INTELLIGENCE (CANONICAL)
+        # CONVERSATION STATE INTELLIGENCE
         self.conversation_state = ConversationStateService()
 
-        # Pending decision (execution)
-        self._pending_decision: Optional[str] = None
-        self._pending_fingerprint: Optional[str] = None
-
+    # ============================================================
+    # MAIN ENTRY
+    # ============================================================
     async def run(self, user_input: str) -> Dict[str, Any]:
         normalized = (user_input or "").lower().strip()
         state = self.conversation_state.get()
 
         # ============================================================
-        # SOP LIST REQUEST
+        # SOP LIST
         # ============================================================
         if normalized in {"sop", "pokaži sop", "pokazi sop", "lista sop"}:
             sops = self.sop_registry.list_sops()
             self.conversation_state.set_sop_list(sops)
 
-            numbered = [
+            items = [
                 f"{i+1}. {sop['name']} (v{sop.get('version', '1.0')})"
                 for i, sop in enumerate(sops)
             ]
@@ -74,13 +70,13 @@ class ContextOrchestrator:
             return self._final_read_only({
                 "type": "sop_list",
                 "response": {
-                    "message": "Ovo su SOP-ovi u sistemu. Reci broj (1, 2, 3…) ili ime SOP-a.",
-                    "items": numbered,
-                }
+                    "topic": "SOP_LIST",
+                    "items": items,
+                },
             })
 
         # ============================================================
-        # SOP NUMERIC SELECTION (CSI)
+        # SOP NUMERIC SELECTION
         # ============================================================
         if state["state"] == "SOP_LIST" and state["expected_input"] == "sop_selection":
             if normalized.isdigit():
@@ -94,54 +90,38 @@ class ContextOrchestrator:
                     self.conversation_state.set_active_sop(sop_id)
 
                     sop = self.sop_registry.get_sop(sop_id, mode="full")
-                    playbook = self.playbook_engine.evaluate(
-                        user_input=sop_meta["name"],
-                        identity_reasoning={},
-                        context={"context_type": "sop"},
-                    )
+                    content = sop["content"]
+
+                    items = [
+                        f"Naziv: {content.get('name')}",
+                        f"Verzija: {content.get('version')}",
+                        f"Opis: {content.get('description', '')}",
+                        "",
+                        "Koraci:",
+                        *[
+                            f"{step.get('step')}. {step.get('title')}"
+                            for step in content.get("steps", [])
+                        ],
+                        "",
+                        "Ako želiš izvršenje, napiši: izvrši ovaj sop",
+                    ]
 
                     return self._final_read_only({
                         "type": "sop_detail",
                         "response": {
-                            "sop": sop["content"],
-                            "playbook": playbook,
-                            "hint": "Ako želiš izvršenje, napiši: izvrši ovaj sop",
+                            "topic": "SOP",
+                            "items": items,
                         },
                     })
 
-            # invalid input → reset SOP flow
             self.conversation_state.set_idle()
 
         # ============================================================
-        # SOP NAME SELECTION (CSI)
-        # ============================================================
-        if state["state"] == "SOP_LIST":
-            for sop_meta in state.get("sop_list", []):
-                if sop_meta["name"].lower() in normalized:
-                    sop_id = sop_meta["id"]
-                    self.conversation_state.set_active_sop(sop_id)
-
-                    sop = self.sop_registry.get_sop(sop_id, mode="full")
-                    playbook = self.playbook_engine.evaluate(
-                        user_input=sop_meta["name"],
-                        identity_reasoning={},
-                        context={"context_type": "sop"},
-                    )
-
-                    return self._final_read_only({
-                        "type": "sop_detail",
-                        "response": {
-                            "sop": sop["content"],
-                            "playbook": playbook,
-                            "hint": "Ako želiš izvršenje, napiši: izvrši ovaj sop",
-                        },
-                    })
-
-        # ============================================================
-        # SOP EXECUTION REQUEST (PENDING)
+        # SOP EXECUTION REQUEST
         # ============================================================
         if state["state"] == "SOP_ACTIVE" and "izvrši" in normalized:
             fingerprint = hashlib.sha256(normalized.encode()).hexdigest()
+
             self.conversation_state.set_pending_decision(
                 text=f"execute sop:{state['active_sop_id']}",
                 fingerprint=fingerprint,
@@ -186,7 +166,7 @@ class ContextOrchestrator:
             }
 
         # ============================================================
-        # FALLBACK (READ-ONLY CHAT)
+        # FALLBACK
         # ============================================================
         return self._final_read_only({
             "type": "chat",
@@ -194,7 +174,7 @@ class ContextOrchestrator:
         })
 
     # ============================================================
-    # HELPERS
+    # READ-ONLY WRAPPER
     # ============================================================
     def _final_read_only(self, result: Dict[str, Any]) -> Dict[str, Any]:
         final = self.response_engine.format_response(
