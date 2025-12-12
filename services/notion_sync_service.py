@@ -1,7 +1,7 @@
-# services/notion_sync_service.py
-
 import asyncio
 import logging
+
+from services.knowledge_snapshot_service import KnowledgeSnapshotService
 
 
 class NotionSyncService:
@@ -203,3 +203,27 @@ class NotionSyncService:
             "handled_by": safe("Handled By", "text"),
             "progress": 0,
         }
+
+    # ------------------------------------------------------
+    # FAZA 1 — READ-ONLY KNOWLEDGE SNAPSHOT
+    # ------------------------------------------------------
+    async def sync_knowledge_snapshot(self) -> bool:
+        """
+        Notion → KnowledgeSnapshotService
+
+        ❌ Ne dira postojeće sync flowove
+        ❌ Nema executiona
+        ❌ Read-only svijest sistema
+        """
+        self.logger.info("🧠 Syncing Notion knowledge snapshot...")
+
+        snapshot = await self.notion.build_knowledge_snapshot()
+
+        if not snapshot:
+            self.logger.warning("⚠️ Knowledge snapshot empty or failed")
+            return False
+
+        KnowledgeSnapshotService.update_snapshot(snapshot)
+
+        self.logger.info("✅ Knowledge snapshot synced")
+        return True
