@@ -1,4 +1,4 @@
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List, Tuple
 
 from services.decision_engine.identity_reasoning import IdentityReasoningEngine
 from services.decision_engine.context_classifier import ContextClassifier
@@ -77,10 +77,7 @@ class ContextOrchestrator:
         elif context_type == "knowledge":
             # ČIST READ-ONLY REPORTING
             knowledge = self._handle_business_knowledge(user_input)
-            result = knowledge if knowledge else {
-                "type": "knowledge",
-                "response": "Nema dostupnih podataka za traženi upit.",
-            }
+            result = knowledge if knowledge else self._knowledge_help_result()
 
         elif context_type == "sop":
             result = self._handle_sop(user_input, identity_reasoning, classification)
@@ -113,19 +110,22 @@ class ContextOrchestrator:
         }
 
     # ============================================================
-    # READ-ONLY KNOWLEDGE (GLOBAL + PER-DB)
+    # READ-ONLY KNOWLEDGE (GLOBAL + GROUPED + PER-DB)
     # ============================================================
     def _handle_business_knowledge(self, user_input: str) -> Optional[Dict[str, Any]]:
         if not self.notion_knowledge:
             return None
 
         snapshot = self.notion_knowledge.get_knowledge_snapshot()
-        if not snapshot or not snapshot.get("databases"):
+        databases = snapshot.get("databases") if isinstance(snapshot, dict) else None
+        if not databases:
             return None
 
-        lower = user_input.lower()
+        lower = (user_input or "").lower().strip()
 
+        # ----------------------------
         # GLOBAL REPORT (CEO overview)
+        # ----------------------------
         if any(w in lower for w in [
             "report", "izvještaj", "izvjestaj",
             "pregled svega", "cijela firma", "stanje firme",
@@ -134,24 +134,172 @@ class ContextOrchestrator:
                 "type": "knowledge",
                 "response": {
                     "topic": "full_report",
-                    "databases": snapshot["databases"],
+                    "databases": databases,
                 },
             }
 
-        # POJEDINAČNA BAZA
-        for key, db in snapshot["databases"].items():
+        # ----------------------------
+        # GROUPED TOPICS (SOP / AGENTS)
+        # ----------------------------
+        # "pokaži sop", "koje sop imamo", "outreach sop", itd.
+        if "sop" in lower:
+            grouped = self._aggregate_group(databases, include_if_key_contains=["sop"])
+            if grouped:
+                return {
+                    "type": "knowledge",
+                    "response": {
+                        "topic": "sop",
+                        "count": len(grouped),
+                        "items": grouped,
+                    },
+                }
+            return None
+
+        # "koje agente imamo"
+        if any(w in lower for w in ["agent", "agenti", "agents"]):
+            grouped = self._aggregate_group(databases, include_if_key_contains=["agent"])
+            if grouped:
+                return {
+                    "type": "knowledge",
+                    "response": {
+                        "topic": "agents",
+                        "count": len(grouped),
+                        "items": grouped,
+                    },
+                }
+            return None
+
+        # ----------------------------
+        # PER-DB MATCH (key ili label)
+        # ----------------------------
+        for key, db in databases.items():
             label = (db.get("label") or "").lower()
-            if key in lower or label in lower:
+            if key in lower or (label and label in lower):
+                items = db.get("items", [])
+                names = []
+                for it in items:
+                    if isinstance(it, dict):
+                        names.append(it.get("name") or "")
+                    else:
+                        names.append(str(it))
+                names = [n for n in names if n]
+
                 return {
                     "type": "knowledge",
                     "response": {
                         "topic": key,
-                        "count": len(db.get("items", [])),
-                        "items": [item.get("name") for item in db.get("items", [])],
+                        "count": len(names),
+                        "items": names,
                     },
                 }
 
+        # ----------------------------
+        # COMMON NATURAL LANGUAGE MAP
+        # ----------------------------
+        # "koji su mi ciljevi", "koji su mi zadaci", itd.
+        if any(w in lower for w in ["cilj", "ciljevi", "goals"]):
+            return self._best_effort_topic(databases, prefer_keys=["goals", "active_goals", "completed_goals", "blocked_goals"])
+
+        if any(w in lower for w in ["zadaci", "taskovi", "tasks"]):
+            return self._best_effort_topic(databases, prefer_keys=["tasks"])
+
+        if any(w in lower for w in ["projekti", "projects", "project"]):
+            return self._best_effort_topic(databases, prefer_keys=["projects", "agent_projects"])
+
+        if any(w in lower for w in ["kpi", "metric", "metrics"]):
+            return self._best_effort_topic(databases, prefer_keys=["kpi", "ai_weekly_summary"])
+
+        if any(w in lower for w in ["lead", "leadovi", "leads"]):
+            return self._best_effort_topic(databases, prefer_keys=["lead"])
+
         return None
+
+    def _aggregate_group(
+        self,
+        databases: Dict[str, Any],
+        include_if_key_contains: List[str],
+    ) -> List[str]:
+        out: List[str] = []
+        for key, db in databases.items():
+            k = (key or "").lower()
+            if any(token in k for token in include_if_key_contains):
+                label = db.get("label") or key
+                count = len(db.get("items", []) or [])
+                out.append(f"{label} ({count})")
+        return out
+
+    def _best_effort_topic(
+        self,
+        databases: Dict[str, Any],
+        prefer_keys: List[str],
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Ako snapshot koristi drugačije key-eve, pokušaj pogoditi najbolji match.
+        """
+        lower_keys = {k.lower(): k for k in databases.keys()}
+
+        for pk in prefer_keys:
+            for key_l, original_key in lower_keys.items():
+                if pk in key_l:
+                    db = databases.get(original_key, {})
+                    items = db.get("items", []) or []
+                    names: List[str] = []
+                    for it in items:
+                        if isinstance(it, dict):
+                            names.append(it.get("name") or "")
+                        else:
+                            names.append(str(it))
+                    names = [n for n in names if n]
+                    return {
+                        "type": "knowledge",
+                        "response": {
+                            "topic": original_key,
+                            "count": len(names),
+                            "items": names,
+                        },
+                    }
+        return None
+
+    def _knowledge_help_result(self) -> Dict[str, Any]:
+        """
+        READ-ONLY fallback: pokaži šta je trenutno dostupno u snapshotu.
+        (Nikad string, da ne ruši formatter.)
+        """
+        if not self.notion_knowledge:
+            return {
+                "type": "knowledge",
+                "response": {
+                    "topic": "help",
+                    "count": 0,
+                    "items": ["Notion knowledge nije attachovan."],
+                },
+            }
+
+        snapshot = self.notion_knowledge.get_knowledge_snapshot()
+        databases = snapshot.get("databases") if isinstance(snapshot, dict) else None
+        if not databases:
+            return {
+                "type": "knowledge",
+                "response": {
+                    "topic": "help",
+                    "count": 0,
+                    "items": ["Snapshot još nije spreman ili nema baza."],
+                },
+            }
+
+        items = []
+        for key, db in databases.items():
+            label = db.get("label") or key
+            items.append(f"{key} → {label}")
+
+        return {
+            "type": "knowledge",
+            "response": {
+                "topic": "help",
+                "count": len(items),
+                "items": items,
+            },
+        }
 
     # ============================================================
     # DELEGATION (UNCHANGED)
