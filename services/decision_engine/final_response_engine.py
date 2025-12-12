@@ -4,13 +4,6 @@ from typing import Dict, Any
 class FinalResponseEngine:
     """
     FINAL RESPONSE ENGINE — FAZA 2 + FAZA 10
-
-    FAZA 10:
-    - READ-ONLY explainability
-    - confidence tier + confidence score
-    - NEMA izvršenja
-    - NEMA memorije
-    - NEMA logike odlučivanja
     """
 
     def __init__(self, identity: Dict[str, Any]):
@@ -28,9 +21,6 @@ class FinalResponseEngine:
 
         context_type = classification.get("context_type")
 
-        # -----------------------------
-        # KNOWLEDGE (READ-ONLY)
-        # -----------------------------
         if context_type == "knowledge":
             return {
                 "final_answer": self._format_knowledge(result),
@@ -54,7 +44,7 @@ class FinalResponseEngine:
         }
 
     # ============================================================
-    # FAZA 10 — EXPLAINABILITY
+    # EXPLAINABILITY
     # ============================================================
     def _build_explainability(
         self,
@@ -73,70 +63,25 @@ class FinalResponseEngine:
             "read_only": True,
         }
 
-        if context_type in {"chat", "identity", "meta"}:
-            explanation["reasoning"].append(
-                "Informativni odgovor bez poslovne odluke."
-            )
-
-        if result.get("type") == "decision_candidate":
-            explanation["reasoning"].append(
-                "Prepoznata je potencijalna odluka, ali nije izvršena."
-            )
-
-        if result.get("type") == "delegation":
-            explanation["reasoning"].append(
-                "Odluka je potvrđena i delegirana izvršnom agentu."
-            )
-
-        if "recommendation" in result:
-            explanation["reasoning"].append(
-                "Preporuka je bazirana na historijskim podacima (READ-ONLY signal)."
-            )
-
-        if not explanation["reasoning"]:
-            explanation["reasoning"].append(
-                "Nema operativnih implikacija."
-            )
-
+        explanation["reasoning"].append("Nema operativnih implikacija.")
         return explanation
 
-    def _confidence_level(
-        self,
-        context_type: str,
-        result: Dict[str, Any],
-    ) -> str:
-
-        if context_type in {"chat", "identity"}:
+    def _confidence_level(self, context_type: str, result: Dict[str, Any]) -> str:
+        if result.get("type") in {"delegation"}:
             return "high"
-
-        if result.get("type") == "decision_candidate":
+        if result.get("type") in {"decision_candidate"}:
             return "medium"
-
-        if result.get("type") == "delegation":
-            return "high"
-
-        return "low"
+        return "high"
 
     def _confidence_score(self, tier: str) -> float:
-        """
-        Stabilan, deterministički mapping.
-        NEMA ML-a.
-        """
-        return {
-            "high": 0.9,
-            "medium": 0.6,
-            "low": 0.3,
-        }.get(tier, 0.2)
+        return {"high": 0.9, "medium": 0.6, "low": 0.3}.get(tier, 0.2)
 
     def _explain_read_only(self, context_type: str) -> Dict[str, Any]:
         return {
             "context_type": context_type,
             "confidence_tier": "high",
             "confidence_score": 0.95,
-            "reasoning": [
-                "Sistem je u READ-ONLY režimu.",
-                "Nema odluka niti izvršenja.",
-            ],
+            "reasoning": ["READ-ONLY odgovor."],
             "read_only": True,
         }
 
@@ -149,29 +94,12 @@ class FinalResponseEngine:
         raw: Any,
         result: Dict[str, Any],
     ) -> str:
-
-        if context_type == "identity":
-            return raw or "Ja sam Adnan.AI."
-
-        if context_type == "chat":
-            return raw.strip() if isinstance(raw, str) else "Razumijem."
-
-        if context_type == "memory":
-            return "Zabilježeno."
-
-        if result.get("type") == "decision_candidate":
-            return result.get("message", "Prepoznata je potencijalna odluka.")
-
-        if result.get("type") == "delegation":
-            return result.get(
-                "system_response",
-                "Odluka je delegirana odgovarajućem agentu."
-            )
-
-        return self._format_generic(raw)
+        if isinstance(raw, str):
+            return raw
+        return "U redu."
 
     # ============================================================
-    # KNOWLEDGE FORMAT
+    # KNOWLEDGE FORMAT (FIX)
     # ============================================================
     def _format_knowledge(self, result: Dict[str, Any]) -> str:
         response = result.get("response")
@@ -180,23 +108,21 @@ class FinalResponseEngine:
             return response
 
         if not isinstance(response, dict):
-            return "Nema dostupnih podataka."
-
-        topic = response.get("topic")
-
-        if topic == "full_report":
-            lines = ["Pregled sistema:"]
-            for key, db in response.get("databases", {}).items():
-                label = db.get("label", key)
-                count = len(db.get("items", []))
-                lines.append(f"- {label}: {count}")
-            return "\n".join(lines)
+            return "Nema zapisa."
 
         items = response.get("items", [])
         if not items:
             return "Nema zapisa."
 
-        lines = [f"{topic.upper()}:"]
+        # 🔒 SAFE TOPIC RESOLUTION
+        topic = (
+            response.get("topic")
+            or result.get("type")
+            or "informacije"
+        )
+
+        lines = [f"{str(topic).upper()}:"]
+
         for item in items:
             lines.append(f"- {item}")
 
@@ -208,11 +134,6 @@ class FinalResponseEngine:
     def _format_generic(self, raw: Any) -> str:
         if raw is None:
             return "U redu."
-
         if isinstance(raw, str):
             return raw
-
-        if isinstance(raw, dict):
-            return raw.get("summary") or "Operacija završena."
-
         return str(raw)
