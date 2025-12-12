@@ -24,7 +24,7 @@ class ContextOrchestrator:
     FAZA 2: CEO conversation
     FAZA 3: Intent ↔ Decision split
     FAZA 4: Controlled delegation
-    FAZA 5: Explicit confirmation → execution
+    FAZA 5/6: Explicit confirmation → delegation
     """
 
     def __init__(
@@ -45,19 +45,13 @@ class ContextOrchestrator:
         self.decision_engine = AdnanAIDecisionService()
         self.memory_engine = MemoryService()
 
-        # FAZA 5 — confirmation state
         self._pending_decision: Optional[str] = None
 
-    # ============================================================
-    # MAIN ORCHESTRATION
-    # ============================================================
     async def run(self, user_input: str) -> Dict[str, Any]:
 
         normalized = (user_input or "").lower().strip()
 
-        # --------------------------------------------------------
-        # FAZA 5 — CONFIRMATION CHECK
-        # --------------------------------------------------------
+        # FAZA 5/6 — CONFIRMATION CHECK
         if self._pending_decision and self._is_confirmation(normalized):
             execution = self.decision_engine.process_ceo_instruction(
                 self._pending_decision
@@ -136,11 +130,8 @@ class ContextOrchestrator:
             "final_output": final_output,
         }
 
-    # ============================================================
-    # HELPERS
-    # ============================================================
     def _is_confirmation(self, text: str) -> bool:
-        return text in CONFIRMATION_KEYWORDS
+        return any(k in text for k in CONFIRMATION_KEYWORDS)
 
     def _derive_decision_intent(self, context_type: str) -> str:
         if context_type in {"knowledge", "chat", "identity", "meta"}:
@@ -149,9 +140,6 @@ class ContextOrchestrator:
             return "decision_candidate"
         return "unknown"
 
-    # ============================================================
-    # READ-ONLY KNOWLEDGE
-    # ============================================================
     def _handle_business_knowledge(self, user_input: str) -> Optional[Dict[str, Any]]:
         if not KnowledgeSnapshotService.is_ready():
             return None
@@ -210,9 +198,6 @@ class ContextOrchestrator:
             },
         }
 
-    # ============================================================
-    # OTHER HANDLERS
-    # ============================================================
     def _handle_identity(self) -> Dict[str, Any]:
         return {
             "type": "identity",

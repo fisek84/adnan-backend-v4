@@ -1,72 +1,36 @@
-# services/knowledge_snapshot_service.py
-
-from typing import Dict, Any
-import threading
-import time
+import logging
+from typing import Dict, Any, Optional
+from datetime import datetime
 
 
 class KnowledgeSnapshotService:
     """
-    Read-only internal knowledge snapshot.
-    Purpose:
-    - Hold normalized, structured view of the company state
-    - NO execution
-    - NO decision making
-    - NO side effects
+    Global, read-only snapshot poslovnog znanja iz Notiona.
+    Jedini izvor svijesti za Adnan.AI (FAZA 1).
     """
 
-    _lock = threading.Lock()
-    _snapshot: Dict[str, Any] = {
-        "meta": {
-            "last_updated": None,
-            "source": "notion"
-        },
-        "goals": [],
-        "tasks": [],
-        "projects": [],
-        "sops": [],
-        "agents": [],
-        "databases": {}
-    }
+    _snapshot: Optional[Dict[str, Any]] = None
+    _ready: bool = False
+    _last_sync: Optional[str] = None
+
+    logger = logging.getLogger("knowledge_snapshot")
+    logger.setLevel(logging.INFO)
 
     @classmethod
     def update_snapshot(cls, data: Dict[str, Any]) -> None:
-        """
-        Replace snapshot atomically.
-        Called ONLY by sync layer.
-        """
-        with cls._lock:
-            cls._snapshot = {
-                **cls._snapshot,
-                **data,
-                "meta": {
-                    **cls._snapshot.get("meta", {}),
-                    "last_updated": time.time(),
-                    "source": "notion"
-                }
-            }
+        cls._snapshot = data
+        cls._ready = True
+        cls._last_sync = datetime.utcnow().isoformat()
+        cls.logger.info("📸 Knowledge snapshot updated")
 
     @classmethod
     def get_snapshot(cls) -> Dict[str, Any]:
-        """
-        Full read-only snapshot.
-        """
-        with cls._lock:
-            return cls._snapshot.copy()
-
-    @classmethod
-    def get_section(cls, section: str) -> Any:
-        """
-        Read-only access to a single knowledge section
-        (goals, tasks, sops, projects, agents, databases)
-        """
-        with cls._lock:
-            return cls._snapshot.get(section)
+        return {
+            "ready": cls._ready,
+            "last_sync": cls._last_sync,
+            "databases": cls._snapshot or {},
+        }
 
     @classmethod
     def is_ready(cls) -> bool:
-        """
-        Snapshot readiness check.
-        """
-        with cls._lock:
-            return cls._snapshot.get("meta", {}).get("last_updated") is not None
+        return cls._ready
