@@ -1,4 +1,4 @@
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, Optional, List
 
 from services.decision_engine.identity_reasoning import IdentityReasoningEngine
 from services.decision_engine.context_classifier import ContextClassifier
@@ -9,14 +9,14 @@ from services.adnan_ai_decision_service import AdnanAIDecisionService
 from services.memory_service import MemoryService
 
 # READ-ONLY KNOWLEDGE
-from services.notion_service import NotionService
+from services.knowledge_snapshot_service import KnowledgeSnapshotService
 
 
 class ContextOrchestrator:
     """
     CEO-level orchestrator.
 
-    FAZA 1: READ-ONLY poslovna svijest (Notion knowledge)
+    FAZA 1: READ-ONLY poslovna svijest (Knowledge Snapshot)
     FAZA 2: chat kontinuitet
     FAZA 4–6: SOP → playbook → execution plan → delegation
     """
@@ -41,20 +41,7 @@ class ContextOrchestrator:
         self.decision_engine = AdnanAIDecisionService()
         self.memory_engine = MemoryService()
 
-        # READ-ONLY Notion knowledge (injectovan u startupu)
-        self.notion_knowledge: Optional[NotionService] = None
-
         self._last_human_answer: Optional[str] = None
-
-    # ============================================================
-    # KNOWLEDGE INJECTION
-    # ============================================================
-    def attach_notion_knowledge(self, notion_service: NotionService):
-        """
-        READ-ONLY Notion knowledge.
-        Nikad se ne koristi za execution.
-        """
-        self.notion_knowledge = notion_service
 
     # ============================================================
     # MAIN ORCHESTRATION
@@ -75,7 +62,6 @@ class ContextOrchestrator:
             result = self._handle_memory(user_input)
 
         elif context_type == "knowledge":
-            # ČIST READ-ONLY REPORTING
             knowledge = self._handle_business_knowledge(user_input)
             result = knowledge if knowledge else self._knowledge_help_result()
 
@@ -83,7 +69,6 @@ class ContextOrchestrator:
             result = self._handle_sop(user_input, identity_reasoning, classification)
 
         elif context_type in {"business", "notion", "agent"}:
-            # prvo pokušaj READ-ONLY znanje
             knowledge = self._handle_business_knowledge(user_input)
             result = knowledge if knowledge else self._delegate_operation(user_input)
 
@@ -110,22 +95,19 @@ class ContextOrchestrator:
         }
 
     # ============================================================
-    # READ-ONLY KNOWLEDGE (GLOBAL + GROUPED + PER-DB)
+    # READ-ONLY KNOWLEDGE (IZ SNAPSHOTA)
     # ============================================================
     def _handle_business_knowledge(self, user_input: str) -> Optional[Dict[str, Any]]:
-        if not self.notion_knowledge:
+        if not KnowledgeSnapshotService.is_ready():
             return None
 
-        snapshot = self.notion_knowledge.get_knowledge_snapshot()
-        databases = snapshot.get("databases") if isinstance(snapshot, dict) else None
+        snapshot = KnowledgeSnapshotService.get_snapshot()
+        databases = snapshot.get("databases")
         if not databases:
             return None
 
         lower = (user_input or "").lower().strip()
 
-        # ----------------------------
-        # GLOBAL REPORT (CEO overview)
-        # ----------------------------
         if any(w in lower for w in [
             "report", "izvještaj", "izvjestaj",
             "pregled svega", "cijela firma", "stanje firme",
@@ -138,10 +120,6 @@ class ContextOrchestrator:
                 },
             }
 
-        # ----------------------------
-        # GROUPED TOPICS (SOP / AGENTS)
-        # ----------------------------
-        # "pokaži sop", "koje sop imamo", "outreach sop", itd.
         if "sop" in lower:
             grouped = self._aggregate_group(databases, include_if_key_contains=["sop"])
             if grouped:
@@ -153,9 +131,7 @@ class ContextOrchestrator:
                         "items": grouped,
                     },
                 }
-            return None
 
-        # "koje agente imamo"
         if any(w in lower for w in ["agent", "agenti", "agents"]):
             grouped = self._aggregate_group(databases, include_if_key_contains=["agent"])
             if grouped:
@@ -167,23 +143,16 @@ class ContextOrchestrator:
                         "items": grouped,
                     },
                 }
-            return None
 
-        # ----------------------------
-        # PER-DB MATCH (key ili label)
-        # ----------------------------
         for key, db in databases.items():
             label = (db.get("label") or "").lower()
             if key in lower or (label and label in lower):
                 items = db.get("items", [])
-                names = []
-                for it in items:
-                    if isinstance(it, dict):
-                        names.append(it.get("name") or "")
-                    else:
-                        names.append(str(it))
-                names = [n for n in names if n]
-
+                names = [
+                    it.get("name") if isinstance(it, dict) else str(it)
+                    for it in items
+                    if it
+                ]
                 return {
                     "type": "knowledge",
                     "response": {
@@ -192,25 +161,6 @@ class ContextOrchestrator:
                         "items": names,
                     },
                 }
-
-        # ----------------------------
-        # COMMON NATURAL LANGUAGE MAP
-        # ----------------------------
-        # "koji su mi ciljevi", "koji su mi zadaci", itd.
-        if any(w in lower for w in ["cilj", "ciljevi", "goals"]):
-            return self._best_effort_topic(databases, prefer_keys=["goals", "active_goals", "completed_goals", "blocked_goals"])
-
-        if any(w in lower for w in ["zadaci", "taskovi", "tasks"]):
-            return self._best_effort_topic(databases, prefer_keys=["tasks"])
-
-        if any(w in lower for w in ["projekti", "projects", "project"]):
-            return self._best_effort_topic(databases, prefer_keys=["projects", "agent_projects"])
-
-        if any(w in lower for w in ["kpi", "metric", "metrics"]):
-            return self._best_effort_topic(databases, prefer_keys=["kpi", "ai_weekly_summary"])
-
-        if any(w in lower for w in ["lead", "leadovi", "leads"]):
-            return self._best_effort_topic(databases, prefer_keys=["lead"])
 
         return None
 
@@ -228,69 +178,11 @@ class ContextOrchestrator:
                 out.append(f"{label} ({count})")
         return out
 
-    def _best_effort_topic(
-        self,
-        databases: Dict[str, Any],
-        prefer_keys: List[str],
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Ako snapshot koristi drugačije key-eve, pokušaj pogoditi najbolji match.
-        """
-        lower_keys = {k.lower(): k for k in databases.keys()}
-
-        for pk in prefer_keys:
-            for key_l, original_key in lower_keys.items():
-                if pk in key_l:
-                    db = databases.get(original_key, {})
-                    items = db.get("items", []) or []
-                    names: List[str] = []
-                    for it in items:
-                        if isinstance(it, dict):
-                            names.append(it.get("name") or "")
-                        else:
-                            names.append(str(it))
-                    names = [n for n in names if n]
-                    return {
-                        "type": "knowledge",
-                        "response": {
-                            "topic": original_key,
-                            "count": len(names),
-                            "items": names,
-                        },
-                    }
-        return None
-
     def _knowledge_help_result(self) -> Dict[str, Any]:
-        """
-        READ-ONLY fallback: pokaži šta je trenutno dostupno u snapshotu.
-        (Nikad string, da ne ruši formatter.)
-        """
-        if not self.notion_knowledge:
-            return {
-                "type": "knowledge",
-                "response": {
-                    "topic": "help",
-                    "count": 0,
-                    "items": ["Notion knowledge nije attachovan."],
-                },
-            }
+        snapshot = KnowledgeSnapshotService.get_snapshot()
+        databases = snapshot.get("databases") or {}
 
-        snapshot = self.notion_knowledge.get_knowledge_snapshot()
-        databases = snapshot.get("databases") if isinstance(snapshot, dict) else None
-        if not databases:
-            return {
-                "type": "knowledge",
-                "response": {
-                    "topic": "help",
-                    "count": 0,
-                    "items": ["Snapshot još nije spreman ili nema baza."],
-                },
-            }
-
-        items = []
-        for key, db in databases.items():
-            label = db.get("label") or key
-            items.append(f"{key} → {label}")
+        items = [f"{k} → {v.get('label') or k}" for k, v in databases.items()]
 
         return {
             "type": "knowledge",
