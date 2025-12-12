@@ -1,18 +1,13 @@
 {
   "id": "test_sop",
-  "name": "Test SOP – Backend Validation",
+  "name": "Test SOP",
   "version": "1.0",
-  "description": "Minimalni SOP za testiranje CSI i SOP execution flowa.",
+  "description": "Minimalni test SOP",
   "steps": [
     {
       "step": 1,
-      "title": "Provjera sistema",
-      "description": "Provjeriti da li svi servisi rade."
-    },
-    {
-      "step": 2,
-      "title": "Validacija CSI-ja",
-      "description": "Provjeriti da li numerički izbor i potvrda rade."
+      "title": "Test korak",
+      "action": "noop"
     }
   ]
 }
