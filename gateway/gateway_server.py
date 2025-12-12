@@ -90,36 +90,7 @@ app.include_router(voice_router)
 
 
 # ================================================================
-# PERSONALITY ROUTES
-# ================================================================
-@app.get("/ops/get_personality")
-async def get_personality():
-    return {
-        "success": True,
-        "personality": personality_engine.get_personality()
-    }
-
-
-@app.post("/ops/reset_personality")
-async def reset_personality():
-    personality_engine.reset()
-    return {"success": True}
-
-
-@app.post("/ops/teach_personality")
-async def teach_personality(req: dict):
-    text = req.get("text")
-    category = req.get("category", "values")
-
-    if not text:
-        raise HTTPException(400, "Missing field: text")
-
-    personality_engine.add_trait(category, text)
-    return {"success": True}
-
-
-# ================================================================
-# /ops/execute — CEO → ORCHESTRATOR → WORKFLOW → EXECUTION
+# /ops/execute — CEO → ORCHESTRATOR → (OPTIONAL) EXECUTION
 # ================================================================
 @app.post("/ops/execute")
 async def execute(req: CommandRequest):
@@ -140,7 +111,7 @@ async def execute(req: CommandRequest):
         result = orch.get("result", {})
 
         # ------------------------------------------------------------
-        # 2. NON-EXECUTING CONTEXTS
+        # 2. NON-EXECUTING CONTEXTS (READ-ONLY)
         # ------------------------------------------------------------
         if context_type in {"identity", "chat", "memory", "meta"}:
             return {
@@ -150,7 +121,7 @@ async def execute(req: CommandRequest):
             }
 
         # ------------------------------------------------------------
-        # 3. SOP DELEGATION → SOPExecutionManager
+        # 3. SOP DELEGATION (EXECUTION WITH VERIFICATION)
         # ------------------------------------------------------------
         if (
             result.get("type") == "delegation"
@@ -163,9 +134,20 @@ async def execute(req: CommandRequest):
 
             workflow_result = await workflow_service.execute_workflow(workflow)
 
+            if not workflow_result or not workflow_result.get("confirmed"):
+                return {
+                    "success": True,
+                    "final_answer": "Predložio sam izvršenje SOP-a, ali ono još nije potvrđeno.",
+                    "engine_output": {
+                        "context_type": "sop_proposed",
+                        "workflow": workflow,
+                        "workflow_result": workflow_result,
+                    },
+                }
+
             return {
                 "success": True,
-                "final_answer": "SOP je izvršen.",
+                "final_answer": "SOP je uspješno izvršen.",
                 "engine_output": {
                     "context_type": "sop_execution",
                     "workflow": workflow,
@@ -174,7 +156,7 @@ async def execute(req: CommandRequest):
             }
 
         # ------------------------------------------------------------
-        # 4. GENERIC DELEGATION → WORKFLOW ENGINE
+        # 4. GENERIC DELEGATION (PROPOSE FIRST, EXECUTE ONLY IF CONFIRMED)
         # ------------------------------------------------------------
         if result.get("type") == "delegation":
             delegation = result.get("delegation", {})
@@ -200,9 +182,20 @@ async def execute(req: CommandRequest):
 
             workflow_result = await workflow_service.execute_workflow(workflow)
 
+            if not workflow_result or not workflow_result.get("confirmed"):
+                return {
+                    "success": True,
+                    "final_answer": "Predložio sam akciju, ali izvršenje još nije potvrđeno.",
+                    "engine_output": {
+                        "context_type": "workflow_proposed",
+                        "workflow": workflow,
+                        "workflow_result": workflow_result,
+                    },
+                }
+
             return {
                 "success": True,
-                "final_answer": "Zadatak je izvršen.",
+                "final_answer": "Akcija je uspješno izvršena.",
                 "engine_output": {
                     "context_type": "workflow_execution",
                     "workflow": workflow,
@@ -211,7 +204,7 @@ async def execute(req: CommandRequest):
             }
 
         # ------------------------------------------------------------
-        # 5. FALLBACK
+        # 5. FALLBACK — CEO RESPONSE ONLY
         # ------------------------------------------------------------
         return {
             "success": True,
