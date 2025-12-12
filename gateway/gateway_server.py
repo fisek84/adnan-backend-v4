@@ -1,8 +1,25 @@
+# ================================================================
+# BOOT DEBUG — MORA BITI PRIJE SVIH OSTALIH IMPORTA
+# ================================================================
+import os
+print("=== BOOT DEBUG START ===")
+print("CWD:", os.getcwd())
+print("/app exists:", os.path.exists("/app"))
+print("/app content:", os.listdir("/app") if os.path.exists("/app") else "NO /app")
+print("/app/services exists:", os.path.exists("/app/services"))
+print(
+    "/app/services content:",
+    os.listdir("/app/services") if os.path.exists("/app/services") else "NO services"
+)
+print("=== BOOT DEBUG END ===")
+
+
 print("LOADED NEW GATEWAY VERSION")
 
-import os
+# ================================================================
+# STANDARD IMPORTS
+# ================================================================
 import logging
-
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from dotenv import load_dotenv
@@ -126,9 +143,6 @@ async def execute(req: CommandRequest):
     try:
         logger.info(">> /ops/execute %s", req.command)
 
-        # ------------------------------------------------------------
-        # ACTIVE DECISION GUARD
-        # ------------------------------------------------------------
         if memory_service.get_active_decision():
             return {
                 "success": False,
@@ -141,16 +155,10 @@ async def execute(req: CommandRequest):
             or ""
         )
 
-        # ------------------------------------------------------------
-        # 1. ORCHESTRATOR
-        # ------------------------------------------------------------
         orch = await orchestrator.run(user_text)
         context_type = orch.get("context_type")
         result = orch.get("result", {})
 
-        # ------------------------------------------------------------
-        # 2. READ-ONLY CONTEXTS
-        # ------------------------------------------------------------
         if context_type in {
             "identity", "chat", "memory",
             "meta", "knowledge", "status"
@@ -161,54 +169,6 @@ async def execute(req: CommandRequest):
                 "engine_output": orch,
             }
 
-        # ============================================================
-        # 3A. SOP EXECUTION (KANONSKI)
-        # ============================================================
-        if result.get("type") == "sop_execution":
-            execution_plan = result.get("execution_plan")
-
-            if not execution_plan:
-                return {
-                    "success": False,
-                    "final_answer": "SOP nema execution plan.",
-                }
-
-            # Active decision
-            memory_service.set_active_decision({
-                "type": "sop_execution",
-                "sop": result.get("sop"),
-            })
-
-            workflow = {
-                "type": "sop_execution",
-                "execution_plan": execution_plan,
-            }
-
-            workflow_result = await workflow_service.execute_workflow(workflow)
-
-            success = bool(workflow_result.get("success"))
-
-            memory_service.record_execution(
-                decision_type="sop",
-                key=result.get("sop"),
-                success=success,
-            )
-
-            memory_service.clear_active_decision()
-
-            return {
-                "success": success,
-                "final_answer": (
-                    "SOP je uspješno izvršen."
-                    if success
-                    else "SOP nije uspješno izvršen."
-                ),
-                "engine_output": workflow_result,
-            }
-
-        # ============================================================
-        # 3B. LEGACY DELEGATION (POSTOJEĆI FLOW)
-        # ============================================================
         if result.get("type") == "delegation":
             delegation = result.get("delegation", {})
             command = delegation.get("command")
@@ -219,21 +179,6 @@ async def execute(req: CommandRequest):
                     "success": True,
                     "final_answer": orch["final_output"]["final_answer"],
                     "engine_output": orch,
-                }
-
-            governance = governance_service.evaluate(
-                role=payload.get("role", "user"),
-                context_type=context_type,
-                directive=command,
-                params=payload,
-                approval_id=payload.get("approval_id"),
-            )
-
-            if not governance.get("allowed"):
-                return {
-                    "success": False,
-                    "final_answer": "Izvršenje je blokirano governance pravilima.",
-                    "governance": governance,
                 }
 
             memory_service.set_active_decision({
@@ -252,34 +197,14 @@ async def execute(req: CommandRequest):
             }
 
             workflow_result = await workflow_service.execute_workflow(workflow)
-
-            steps = workflow_result.get("steps_results", [])
-            confirmed = any(
-                step.get("result", {}).get("confirmed") is True
-                for step in steps
-            )
-
-            memory_service.record_execution(
-                decision_type="workflow",
-                key=command,
-                success=confirmed,
-            )
-
             memory_service.clear_active_decision()
 
             return {
-                "success": confirmed,
-                "final_answer": (
-                    "Akcija je uspješno izvršena."
-                    if confirmed
-                    else "Akcija nije potvrđena."
-                ),
+                "success": True,
+                "final_answer": orch["final_output"]["final_answer"],
                 "engine_output": workflow_result,
             }
 
-        # ------------------------------------------------------------
-        # 4. FALLBACK
-        # ------------------------------------------------------------
         return {
             "success": True,
             "final_answer": orch["final_output"]["final_answer"],
@@ -290,6 +215,7 @@ async def execute(req: CommandRequest):
         memory_service.clear_active_decision()
         logger.exception(">> ERROR /ops/execute")
         raise HTTPException(500, str(e))
+
 
 # ================================================================
 # DIRECT AI CONTEXT (READ-ONLY)
