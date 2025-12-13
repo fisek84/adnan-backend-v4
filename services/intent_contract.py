@@ -1,4 +1,4 @@
-# C:\adnan-backend-v4\services\intent_contract.py
+# services/intent_contract.py
 
 from enum import Enum
 from dataclasses import dataclass
@@ -10,14 +10,15 @@ from typing import Optional, Dict, Any
 # ============================================================
 
 class IntentType(Enum):
-    NONE = "none"                          # small talk / irrelevant
-    LIST_SOPS = "list_sops"                # "pokaži sop-ove"
-    VIEW_SOP = "view_sop"                  # "onaj drugi"
+    NONE = "none"                            # small talk / irrelevant
+    LIST_SOPS = "list_sops"                  # "pokaži sop-ove"
+    VIEW_SOP = "view_sop"                    # "onaj drugi"
     REQUEST_EXECUTION = "request_execution"  # "pokreni ovo"
-    CONFIRM = "confirm"                    # "može", "ok", "da"
-    CANCEL = "cancel"                      # "ne", "odustani"
+    CREATE = "create"                        # "kreiraj", "napravi", "dodaj"
+    CONFIRM = "confirm"                      # "može", "ok", "da"
+    CANCEL = "cancel"                        # "ne", "odustani"
     ASK_CLARIFICATION = "ask_clarification"  # "šta je ovo?"
-    RESET = "reset"                        # "kreni ispočetka"
+    RESET = "reset"                          # "kreni ispočetka"
 
 
 # ============================================================

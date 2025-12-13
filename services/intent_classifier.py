@@ -45,10 +45,16 @@ class IntentClassifier:
             return Intent(IntentType.VIEW_SOP, 0.7)
 
         # ----------------------------------------------------
-        # REQUEST EXECUTION
+        # REQUEST EXECUTION (SOP)
         # ----------------------------------------------------
         if self._match(t, r"\b(pokreni|izvrši|uradi|startaj)\b"):
             return Intent(IntentType.REQUEST_EXECUTION, 0.9)
+
+        # ----------------------------------------------------
+        # WRITE — CREATE (FAZA F5.1)
+        # ----------------------------------------------------
+        if self._match(t, r"\b(kreiraj|napravi|dodaj|create|add)\b"):
+            return Intent(IntentType.CREATE, 0.9)
 
         # ----------------------------------------------------
         # CONFIRM
