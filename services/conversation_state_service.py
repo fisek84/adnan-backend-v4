@@ -47,7 +47,7 @@ class ConversationState:
     RULES:
     - DATA ONLY (no decisions, no execution)
     - Runtime CSI snapshot
-    - Persisted only to support continuity, not reasoning
+    - Persisted only to support continuity
     """
 
     state: str = CSIState.IDLE.value
@@ -90,9 +90,9 @@ class ConversationStateService:
 
     - Persists CSI snapshot
     - Emits CSI audit events
-    - No business logic
-    - No decisions
-    - No execution
+    - NO business logic
+    - NO decisions
+    - NO execution
     """
 
     def __init__(self):
@@ -117,7 +117,12 @@ class ConversationStateService:
             self._save_state(s, reason="load_error")
             return s
 
-    def _audit(self, previous: ConversationState, current: ConversationState, reason: str):
+    def _audit(
+        self,
+        previous: ConversationState,
+        current: ConversationState,
+        reason: str,
+    ) -> None:
         try:
             event = {
                 "ts": datetime.utcnow().isoformat(),
@@ -131,13 +136,20 @@ class ConversationStateService:
         except Exception:
             pass  # audit must never break CSI
 
-    def _save_state(self, s: ConversationState, reason: str):
-        previous = self._state
+    def _save_state(self, s: ConversationState, reason: str) -> None:
+        # INIT-SAFE: previous may not exist
+        previous = getattr(self, "_state", None)
+
         s.ts = time.time()
         with open(STATE_FILE, "w", encoding="utf-8") as f:
             json.dump(s.to_dict(), f, indent=2, ensure_ascii=False)
+
+        # update in-memory state AFTER persist
         self._state = s
-        self._audit(previous, s, reason)
+
+        # audit only when previous exists
+        if previous is not None:
+            self._audit(previous, s, reason)
 
     # -------------------------
     # Public API
