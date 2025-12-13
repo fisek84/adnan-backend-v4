@@ -21,11 +21,14 @@ async def list_sops():
     Vraća listu svih SOP-ova (metadata).
     READ-ONLY.
     """
-    _csi.enter_sop_list()
+    sops = _registry.list_sops()
+
+    # CSI → SOP_LIST
+    _csi.set_sop_list(sops)
 
     return {
         "success": True,
-        "sops": _registry.list_sops(),
+        "sops": sops,
     }
 
 # ============================================================
@@ -44,7 +47,8 @@ async def get_sop(
     if sop is None:
         raise HTTPException(status_code=404, detail="SOP not found")
 
-    _csi.enter_sop_active(sop_id)
+    # CSI → SOP_ACTIVE
+    _csi.set_sop_active(sop_id)
 
     return {
         "success": True,
