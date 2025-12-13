@@ -80,7 +80,6 @@ class ConversationState:
     active_sop_id: Optional[str] = None
     pending_decision: Optional[Dict[str, Any]] = None
     request_id: Optional[str] = None
-    execution_id: Optional[str] = None
     last_update_reason: Optional[str] = None
     ts: float = 0.0
 
@@ -103,11 +102,9 @@ class ConversationState:
             active_sop_id=data.get("active_sop_id"),
             pending_decision=data.get("pending_decision"),
             request_id=data.get("request_id"),
-            execution_id=data.get("execution_id"),
             last_update_reason=data.get("last_update_reason"),
             ts=float(data.get("ts") or 0.0),
         )
-
 
 # ============================================================
 # SERVICE
@@ -118,11 +115,14 @@ class ConversationStateService:
     CSI — V1.0 FINAL STATE AUTHORITY
     """
 
-    LOCKED = True  # V1.0 FINAL LOCK
+    LOCKED = True  # V1.0 HARD LOCK
 
     def __init__(self):
         BASE_PATH.mkdir(parents=True, exist_ok=True)
-        self._state: ConversationState = self._load()
+
+        # BOOTSTRAP SAFE INIT
+        self._state: Optional[ConversationState] = None
+        self._state = self._load()
 
     # -------------------------
     # IO
@@ -130,7 +130,7 @@ class ConversationStateService:
     def _load(self) -> ConversationState:
         if not STATE_FILE.exists():
             s = ConversationState(ts=time.time(), sop_list=[])
-            self._persist(s, "init")
+            self._persist(s, reason="init", bootstrap=True)
             return s
 
         try:
@@ -138,12 +138,12 @@ class ConversationStateService:
                 return ConversationState.from_dict(json.load(f))
         except Exception:
             s = ConversationState(ts=time.time(), sop_list=[])
-            self._persist(s, "load_error")
+            self._persist(s, reason="load_error", bootstrap=True)
             return s
 
     def _audit(
         self,
-        prev: ConversationState,
+        prev: Optional[ConversationState],
         curr: ConversationState,
         reason: str,
         illegal: bool = False,
@@ -151,21 +151,31 @@ class ConversationStateService:
         try:
             with open(AUDIT_FILE, "a", encoding="utf-8") as f:
                 f.write(json.dumps({
-                    "timestamp": time.time(),
-                    "from": prev.state,
+                    "ts": datetime.utcnow().isoformat(),
+                    "from": prev.state if prev else None,
                     "to": curr.state,
                     "reason": reason,
                     "illegal": illegal,
                     "request_id": curr.request_id,
-                    "execution_id": curr.execution_id,
                 }) + "\n")
         except Exception:
             pass
 
-    def _persist(self, s: ConversationState, reason: str, illegal: bool = False):
-        prev_snapshot = copy.deepcopy(self._state)
+    def _persist(
+        self,
+        s: ConversationState,
+        *,
+        reason: str,
+        illegal: bool = False,
+        bootstrap: bool = False,
+    ):
+        prev_snapshot = None
+        if not bootstrap and self._state is not None:
+            prev_snapshot = copy.deepcopy(self._state)
+
         with open(STATE_FILE, "w", encoding="utf-8") as f:
             json.dump(s.to_dict(), f, indent=2, ensure_ascii=False)
+
         self._state = s
         self._audit(prev_snapshot, s, reason, illegal=illegal)
 
@@ -178,7 +188,6 @@ class ConversationStateService:
         *,
         reason: str,
         request_id: Optional[str],
-        execution_id: Optional[str] = None,
     ):
         current = self._state.state
 
@@ -198,10 +207,10 @@ class ConversationStateService:
 
         self._state.state = new_state
         self._state.request_id = request_id
-        self._state.execution_id = execution_id
         self._state.last_update_reason = reason
         self._state.ts = time.time()
-        self._persist(self._state, reason)
+
+        self._persist(self._state, reason=reason)
 
     # -------------------------
     # PUBLIC API
@@ -209,16 +218,11 @@ class ConversationStateService:
     def get(self) -> Dict[str, Any]:
         return self._state.to_dict()
 
-    def set_executing(
-        self,
-        request_id: Optional[str] = None,
-        execution_id: Optional[str] = None,
-    ):
+    def set_executing(self, request_id: Optional[str] = None):
         self._transition(
             CSIState.EXECUTING.value,
             reason="set_executing",
             request_id=request_id,
-            execution_id=execution_id,
         )
         return self.get()
 
