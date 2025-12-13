@@ -17,7 +17,7 @@ class BinderResult:
 
 
 # ============================================================
-# INTENT → CSI STATE BINDER
+# INTENT → CSI STATE BINDER (KANONSKI)
 # ============================================================
 
 class IntentCSIBinder:
@@ -27,7 +27,8 @@ class IntentCSIBinder:
     RULES:
     - No execution
     - No decisions
-    - State transitions validated by CSI rules
+    - RESET uvijek dozvoljen
+    - EXECUTING je zaključan osim RESET-a
     """
 
     def bind(self, intent: Intent, current_state: str) -> BinderResult:
@@ -37,7 +38,7 @@ class IntentCSIBinder:
             return BinderResult(next_state=CSIState.IDLE.value)
 
         # ----------------------------------------------------
-        # GLOBAL RESET
+        # GLOBAL RESET (HARD OVERRIDE)
         # ----------------------------------------------------
         if intent.type == IntentType.RESET:
             return BinderResult(
@@ -83,7 +84,7 @@ class IntentCSIBinder:
                 desired_state = CSIState.IDLE.value
 
         # ----------------------------------------------------
-        # DECISION PENDING (CRITICAL FIX)
+        # DECISION PENDING (STRICT)
         # ----------------------------------------------------
         elif state == CSIState.DECISION_PENDING:
             if intent.type == IntentType.CONFIRM:
@@ -95,7 +96,7 @@ class IntentCSIBinder:
                 action = "cancel_execution"
 
             else:
-                # IGNORE everything else (CREATE, LIST, etc.)
+                # IGNORE everything else
                 return BinderResult(
                     next_state=CSIState.DECISION_PENDING.value,
                     action=None,
@@ -105,7 +106,11 @@ class IntentCSIBinder:
         # EXECUTING (LOCKED)
         # ----------------------------------------------------
         elif state == CSIState.EXECUTING:
-            desired_state = CSIState.EXECUTING.value
+            # RESET je već uhvaćen gore
+            return BinderResult(
+                next_state=CSIState.EXECUTING.value,
+                action=None,
+            )
 
         # ----------------------------------------------------
         # VALIDATION (KANONSKA)
