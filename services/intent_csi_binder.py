@@ -40,7 +40,10 @@ class IntentCSIBinder:
         # GLOBAL RESET
         # ----------------------------------------------------
         if intent.type == IntentType.RESET:
-            return BinderResult(next_state=CSIState.IDLE.value, action="reset")
+            return BinderResult(
+                next_state=CSIState.IDLE.value,
+                action="reset",
+            )
 
         desired_state = state.value
         action: Optional[str] = None
@@ -49,9 +52,15 @@ class IntentCSIBinder:
         # IDLE
         # ----------------------------------------------------
         if state == CSIState.IDLE:
+
             if intent.type == IntentType.LIST_SOPS:
                 desired_state = CSIState.SOP_LIST.value
                 action = "list_sops"
+
+            # ✅ FAZA F5.1 — CREATE INTENT (CONTROLLED)
+            elif intent.type == IntentType.CREATE:
+                desired_state = CSIState.DECISION_PENDING.value
+                action = "create"
 
         # ----------------------------------------------------
         # SOP LIST
