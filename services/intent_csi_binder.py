@@ -1,6 +1,7 @@
-# C:\adnan-backend-v4\services\intent_csi_binder.py
+# services/intent_csi_binder.py
 
 from typing import Optional
+
 from services.intent_contract import Intent, IntentType
 from services.conversation_state_service import CSIState
 from services.csi_state_machine import CSIStateMachine
@@ -13,7 +14,7 @@ from services.csi_state_machine import CSIStateMachine
 class BinderResult:
     def __init__(self, next_state: str, action: Optional[str] = None):
         self.next_state = next_state
-        self.action = action  # signal only, no execution
+        self.action = action  # signal only, NO execution
 
 
 # ============================================================
@@ -22,14 +23,12 @@ class BinderResult:
 
 class IntentCSIBinder:
     """
-    Deterministic mapping:
-    (IntentType + CSIState) → next CSIState
+    Deterministic CSI binder.
 
     RULES:
     - No execution
-    - No decision making
-    - No heuristics
-    - State transitions MUST be allowed by CSIStateMachine
+    - No decisions
+    - State transitions validated by CSIStateMachine
     """
 
     def __init__(self):
@@ -43,10 +42,10 @@ class IntentCSIBinder:
             return BinderResult(next_state=CSIState.IDLE.value)
 
         # ----------------------------------------------------
-        # GLOBAL RESET (always allowed)
+        # GLOBAL RESET
         # ----------------------------------------------------
         if intent.type == IntentType.RESET:
-            return BinderResult(next_state=CSIState.IDLE.value)
+            return BinderResult(next_state=CSIState.IDLE.value, action="reset")
 
         desired_state = state.value
         action: Optional[str] = None
@@ -94,17 +93,17 @@ class IntentCSIBinder:
                 action = "cancel_execution"
 
         # ----------------------------------------------------
-        # EXECUTING (no transitions allowed from intent)
+        # EXECUTING (LOCKED)
         # ----------------------------------------------------
         elif state == CSIState.EXECUTING:
             desired_state = CSIState.EXECUTING.value
 
         # ----------------------------------------------------
-        # VALIDATION VIA STATE MACHINE
+        # VALIDATION (POZICIONI ARGUMENTI — KLJUČNO)
         # ----------------------------------------------------
         if not self._sm.is_transition_allowed(
-            current_state=state.value,
-            next_state=desired_state,
+            state.value,
+            desired_state,
         ):
             # illegal transition → ignore intent
             return BinderResult(next_state=state.value)
