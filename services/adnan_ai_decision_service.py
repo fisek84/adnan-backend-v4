@@ -114,13 +114,13 @@ class AdnanAIDecisionService:
             return json.load(f)
 
     # ============================================================
-    # ENTRYPOINT
+    # ENTRYPOINT — LEGACY (RAW TEXT)
     # ============================================================
     def process_ceo_instruction(self, text: str) -> Dict[str, Any]:
         lower = text.lower().strip()
 
         # ========================================================
-        # 🟢 SOP EXECUTION — OVO JE KLJUČ
+        # 🟢 SOP EXECUTION — LEGACY PATH
         # ========================================================
         if lower.startswith("execute sop:"):
             sop_id = lower.replace("execute sop:", "").strip()
@@ -162,7 +162,7 @@ class AdnanAIDecisionService:
             }
 
         # ========================================================
-        # NOTION INTENTS
+        # NOTION INTENTS — LEGACY
         # ========================================================
         intent = self._detect_intent(text)
         command_block = self._build_command(intent)
@@ -187,7 +187,7 @@ class AdnanAIDecisionService:
         }
 
     # ============================================================
-    # INTENT DETECTION
+    # INTENT DETECTION — LEGACY
     # ============================================================
     def _detect_intent(self, text: str) -> Dict[str, Any]:
         t = text.lower()
@@ -207,7 +207,7 @@ class AdnanAIDecisionService:
         }
 
     # ============================================================
-    # COMMAND BUILDER
+    # COMMAND BUILDER — LEGACY
     # ============================================================
     def _build_command(self, intent: Dict[str, Any]) -> Dict[str, Any]:
         action = intent.get("action")
@@ -250,3 +250,74 @@ class AdnanAIDecisionService:
             }
 
         return {"command": None, "payload": {}}
+
+    # ============================================================
+    # CSI / INTENT ADAPTER — KANONSKI
+    # ============================================================
+    def build_decision(
+        self,
+        action: str,
+        intent: str,
+        confidence: float,
+        csi_state: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """
+        Adapter entrypoint.
+        Accepts structured signal from CSI pipeline.
+        DOES NOT execute.
+        """
+
+        # Safety: no action, no decision
+        if not action:
+            return {
+                "decision_candidate": False,
+                "executor": None,
+                "command": None,
+                "payload": {},
+                "system_response": "Razumijem.",
+            }
+
+        # SOP execution confirmed by CSI
+        if action == "request_execution":
+            sop_id = csi_state.get("active_sop_id")
+            if not sop_id:
+                return {
+                    "decision_candidate": False,
+                    "executor": None,
+                    "command": None,
+                    "payload": {},
+                    "system_response": "Nema aktivnog SOP-a.",
+                }
+
+            sop = self.sop_registry.get_sop(sop_id, mode="summary")
+            if not sop:
+                return {
+                    "decision_candidate": False,
+                    "executor": None,
+                    "command": None,
+                    "payload": {},
+                    "system_response": "Nepoznat SOP.",
+                }
+
+            return {
+                "decision_candidate": True,
+                "executor": "sop_execution_manager",
+                "command": "execute_sop",
+                "payload": {
+                    "sop_id": sop_id,
+                    "sop_name": sop["name"],
+                },
+                "origin": "adnan.ai",
+                "confirmed": True,
+                "confidence": confidence,
+                "system_response": f"SOP '{sop['name']}' je spreman za izvršenje.",
+            }
+
+        # Unknown action → safe no-op
+        return {
+            "decision_candidate": False,
+            "executor": None,
+            "command": None,
+            "payload": {},
+            "system_response": "Razumijem.",
+        }

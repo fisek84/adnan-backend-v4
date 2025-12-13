@@ -1,7 +1,10 @@
 import os
 import json
-from services.identity_loader import load_adnan_mode
+from typing import Dict, Any
 
+# ================================================================
+# INTERNAL HELPERS
+# ================================================================
 
 def load_json_file(path: str):
     if not os.path.exists(path):
@@ -10,6 +13,12 @@ def load_json_file(path: str):
     # UTF-8 BOM safe
     with open(path, "r", encoding="utf-8-sig") as f:
         return json.load(f)
+
+
+def save_json_file(path: str, data: Dict[str, Any]) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
 
 
 def resolve_path(filename: str) -> str:
@@ -33,43 +42,57 @@ def resolve_path(filename: str) -> str:
 
 
 # ================================================================
-# MAIN MODE LOADER (USED BY ORCHESTRATOR + GATEWAY)
+# CANONICAL MODE LOAD / SAVE
 # ================================================================
-def load_mode():
+
+def load_mode() -> Dict[str, Any]:
     """
     Loads persisted Adnan.AI operating mode.
-    Example file: identity/mode.json
+    Canonical file: identity/mode.json
     """
     path = resolve_path("mode.json")
     return load_json_file(path)
 
 
-# ================================================================
-# MINIMAL RUNTIME MODE
-# ================================================================
-def get_adnan_mode():
+def save_mode(mode: Dict[str, Any]) -> None:
     """
-    Legacy compatibility — returns current mode in a safe form.
-    Not used by orchestrator, but kept for backward compatibility.
+    Persists Adnan.AI operating mode.
+    Used by:
+    - AutoDegradationService
+    - future AutoRecoveryService
+    """
+    path = resolve_path("mode.json")
+    save_json_file(path, mode)
+
+
+# ================================================================
+# LEGACY / BACKWARD COMPATIBILITY
+# ================================================================
+
+def get_adnan_mode() -> Dict[str, Any]:
+    """
+    Legacy compatibility accessor.
+
+    Returns a SAFE subset for UI / older modules.
     """
     try:
-        mode = load_adnan_mode()
+        mode = load_mode()
         return {
-            "active_mode": mode.get("active_mode", "ceo"),
-            "description": mode.get("description", "Evolia Operational Mode")
+            "active_mode": mode.get("current_mode", "operational"),
+            "description": mode.get(
+                "description",
+                "Evolia Operational Mode"
+            ),
         }
     except Exception:
         return {
-            "active_mode": "ceo",
-            "description": "Default Mode (fallback)"
+            "active_mode": "operational",
+            "description": "Default Mode (fallback)",
         }
 
 
-# ================================================================
-# RUNTIME ACCESSOR
-# ================================================================
-def get_runtime_mode():
+def get_runtime_mode() -> Dict[str, Any]:
     """
-    Returns safe mode snapshot for UI or runtime modules.
+    Returns runtime-safe mode snapshot.
     """
     return get_adnan_mode()

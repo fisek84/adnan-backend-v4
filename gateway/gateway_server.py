@@ -13,7 +13,6 @@ print(
 )
 print("=== BOOT DEBUG END ===")
 
-
 print("LOADED NEW GATEWAY VERSION")
 
 # ================================================================
@@ -59,10 +58,12 @@ from services.memory_service import MemoryService
 from services.notion_service import NotionService
 
 # ================================================================
-# VOICE
+# ROUTERS
 # ================================================================
 from routers.voice_router import router as voice_router
-
+from routers.adnan_ai_router import router as adnan_ai_router
+from routers.metrics_router import router as metrics_router
+from routers.alerting_router import router as alerting_router
 
 # ================================================================
 # INITIAL LOAD
@@ -133,7 +134,13 @@ class CommandRequest(BaseModel):
     command: str
     payload: dict
 
+# ================================================================
+# ROUTER REGISTRATION
+# ================================================================
 app.include_router(voice_router)
+app.include_router(adnan_ai_router)
+app.include_router(metrics_router)
+app.include_router(alerting_router)
 
 # ================================================================
 # /ops/execute — CEO → ORCHESTRATOR → GOVERNANCE → EXECUTION
@@ -146,7 +153,10 @@ async def execute(req: CommandRequest):
         if memory_service.get_active_decision():
             return {
                 "success": False,
-                "final_answer": "Postoji aktivna odluka. Potrebno je završiti ili otkazati prije nove.",
+                "final_answer": (
+                    "Postoji aktivna odluka. "
+                    "Potrebno je završiti ili otkazati prije nove."
+                ),
             }
 
         user_text = (
@@ -215,7 +225,6 @@ async def execute(req: CommandRequest):
         memory_service.clear_active_decision()
         logger.exception(">> ERROR /ops/execute")
         raise HTTPException(500, str(e))
-
 
 # ================================================================
 # DIRECT AI CONTEXT (READ-ONLY)
