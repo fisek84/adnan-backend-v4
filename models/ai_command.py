@@ -1,17 +1,31 @@
 from pydantic import BaseModel, Field
 from typing import Optional, Any, Dict
-import logging  # Dodajemo logovanje
+import logging
+import uuid
 
-# Inicijalizujemo logger
+
+# ============================================================
+# LOGGER SETUP
+# ============================================================
+
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
+
+# ============================================================
+# AI COMMAND / REQUEST CONTEXT (CANONICAL)
+# ============================================================
+
 class AICommand(BaseModel):
     """
-    Universal command structure for AI operations.
-    This model is used to drive AI agents, processors, and
-    command pipelines across the entire Evolia system.
+    Canonical AI Request Context.
+    This object travels through the entire pipeline:
+    API → Intent → CSI → Decision → Awareness → Execution → Response
     """
+
+    # --------------------------------------------------------
+    # CORE COMMAND
+    # --------------------------------------------------------
 
     command: str = Field(
         ...,
@@ -28,35 +42,82 @@ class AICommand(BaseModel):
         description="Agent executing the command (e.g., 'Adnan.AI', 'Planner', 'SyncBot')"
     )
 
-    params: Optional[Dict[str, Any]] = Field(
+    params: Dict[str, Any] = Field(
         default_factory=dict,
         description="Additional parameters / modifiers for the command"
     )
 
-    metadata: Optional[Dict[str, Any]] = Field(
+    metadata: Dict[str, Any] = Field(
         default_factory=dict,
         description="Execution metadata: routing, tokens, context flags, etc."
     )
+
+    # --------------------------------------------------------
+    # REQUEST CONTEXT (V0.1 FOUNDATION)
+    # --------------------------------------------------------
+
+    request_id: str = Field(
+        default_factory=lambda: str(uuid.uuid4()),
+        description="Unique request identifier (traceable across entire system)"
+    )
+
+    identity_snapshot: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Loaded identity snapshot at request time"
+    )
+
+    state_snapshot: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Loaded system state snapshot at request time"
+    )
+
+    mode_snapshot: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Active operating mode snapshot"
+    )
+
+    execution_state: Optional[str] = Field(
+        None,
+        description="Execution lifecycle state (IDLE, WAITING_APPROVAL, EXECUTING, COMPLETED, FAILED)"
+    )
+
+    awareness_flags: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Awareness hints (waiting_for_confirmation, clarification_needed, etc.)"
+    )
+
+    # --------------------------------------------------------
+    # Pydantic config
+    # --------------------------------------------------------
 
     class Config:
         extra = "forbid"
         validate_assignment = True
 
-    # Logovanje komandi
+
+    # ========================================================
+    # LOGGING HELPERS
+    # ========================================================
+
     @classmethod
     def log_command(cls, command: "AICommand"):
-        logger.info(f"Received AI command: {command.command}")
-        logger.debug(f"Command input: {command.input}")
-        logger.debug(f"Command agent: {command.agent}")
-        logger.debug(f"Command params: {command.params}")
-        logger.debug(f"Command metadata: {command.metadata}")
+        logger.info(
+            f"[AICommand] {command.command} | request_id={command.request_id}"
+        )
+        logger.debug(f"[AICommand] input={command.input}")
+        logger.debug(f"[AICommand] agent={command.agent}")
+        logger.debug(f"[AICommand] params={command.params}")
+        logger.debug(f"[AICommand] metadata={command.metadata}")
+        logger.debug(f"[AICommand] execution_state={command.execution_state}")
+        logger.debug(f"[AICommand] awareness_flags={command.awareness_flags}")
 
-    # Logovanje grešaka pri izvršenju komandi
     @classmethod
     def log_command_error(cls, command: "AICommand", error: str):
-        logger.error(f"Error executing AI command: {command.command}")
-        logger.error(f"Error details: {error}")
-        logger.debug(f"Failed command input: {command.input}")
-        logger.debug(f"Command agent: {command.agent}")
-        logger.debug(f"Command params: {command.params}")
-        logger.debug(f"Command metadata: {command.metadata}")
+        logger.error(
+            f"[AICommand ERROR] {command.command} | request_id={command.request_id}"
+        )
+        logger.error(f"[AICommand ERROR] details={error}")
+        logger.debug(f"[AICommand ERROR] input={command.input}")
+        logger.debug(f"[AICommand ERROR] agent={command.agent}")
+        logger.debug(f"[AICommand ERROR] params={command.params}")
+        logger.debug(f"[AICommand ERROR] metadata={command.metadata}")

@@ -30,6 +30,18 @@ class ExecutionGovernanceService:
         self.approvals = ApprovalStateService()
         self.safety = ActionSafetyService()
 
+        # --------------------------------------------------------
+        # GOVERNANCE LIMITS — CANONICAL (V1.0)
+        # --------------------------------------------------------
+        self.governance_limits = {
+            "max_execution_time_seconds": 30,
+            "retry_policy": {
+                "enabled": False,
+                "max_retries": 0,
+            },
+            "escalation_signal": None,
+        }
+
     # ============================================================
     # PUBLIC API
     # ============================================================
@@ -48,7 +60,8 @@ class ExecutionGovernanceService:
             "allowed": bool,
             "reason": "...",
             "source": "...",
-            "read_only": True
+            "read_only": True,
+            "governance": {...}
         }
         """
 
@@ -118,6 +131,7 @@ class ExecutionGovernanceService:
             "reason": "Execution allowed by governance.",
             "source": "governance",
             "read_only": True,
+            "governance": self.governance_limits,
         }
 
     # ============================================================
@@ -129,4 +143,5 @@ class ExecutionGovernanceService:
             "reason": reason,
             "source": source,
             "read_only": True,
+            "governance": self.governance_limits,
         }

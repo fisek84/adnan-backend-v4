@@ -1,6 +1,7 @@
 from typing import Dict, Any, List, Optional
 import asyncio
 import logging
+from datetime import datetime
 
 from services.agents_service import AgentsService
 
@@ -9,29 +10,18 @@ logger = logging.getLogger(__name__)
 
 class SOPExecutionManager:
     """
-    SOPExecutionManager
+    SOPExecutionManager — FIRST-CLASS SOP EXECUTION (V0.5)
 
-    FAZA 4:
-    - paralelni koraci
-    - critical flag
-    - status tracking
+    SOP IS:
+    - Identifiable
+    - Executable
+    - Stateful
+    - Measurable
 
-    FAZA 6:
-    - SOP auto-optimizacija (reorder / skip)
-    - execution-level learning (step + agent)
-
-    FAZA 7.1:
-    - confidence tiers (low / medium / high)
-    - soft-skip
-    - criticality hardening
-
-    FAZA 8:
-    - delegation scoring (8.1)
-    - agent preference resolution (8.2)
-    - delegation metadata propagation (8.4)
-
-    FAZA 9:
-    - cross-SOP bias signal (READ-ONLY)
+    RULES:
+    - SOP lifecycle is explicit
+    - Steps remain atomic
+    - NO decisions
     """
 
     CONFIDENCE_HIGH = 0.95
@@ -47,13 +37,18 @@ class SOPExecutionManager:
         self.agents = AgentsService()
 
     # ============================================================
-    # PUBLIC ENTRYPOINT
+    # PUBLIC ENTRYPOINT — SOP EXECUTION
     # ============================================================
     async def execute_plan(
         self,
         execution_plan: List[Dict[str, Any]],
         current_sop: Optional[str] = None,
+        *,
+        request_id: Optional[str] = None,
     ) -> Dict[str, Any]:
+
+        sop_started_at = datetime.utcnow().isoformat()
+
         execution_plan = self._optimize_execution_plan(
             execution_plan,
             current_sop=current_sop,
@@ -66,7 +61,7 @@ class SOPExecutionManager:
             step = execution_plan[i]
 
             # --------------------------------------------
-            # PARALELNI BLOK
+            # PARALLEL BLOCK
             # --------------------------------------------
             if step.get("parallel") is True:
                 parallel_steps = [step]
@@ -83,12 +78,17 @@ class SOPExecutionManager:
                     r["status"] == "failed" and r.get("critical")
                     for r in parallel_results
                 ):
-                    return self._aggregate_results(results)
+                    return self._finalize_sop(
+                        results,
+                        current_sop,
+                        sop_started_at,
+                        request_id,
+                    )
 
                 continue
 
             # --------------------------------------------
-            # SEKVENCIJALNI KORAK
+            # SEQUENTIAL STEP
             # --------------------------------------------
             step_result = await self._execute_step(step)
             results.append(step_result)
@@ -98,10 +98,65 @@ class SOPExecutionManager:
 
             i += 1
 
-        return self._aggregate_results(results)
+        return self._finalize_sop(
+            results,
+            current_sop,
+            sop_started_at,
+            request_id,
+        )
 
     # ============================================================
-    # FAZA 8 + FAZA 9 — OPTIMIZATION + CROSS-SOP BIAS
+    # FINALIZE SOP
+    # ============================================================
+    def _finalize_sop(
+        self,
+        results: List[Dict[str, Any]],
+        sop_id: Optional[str],
+        started_at: str,
+        request_id: Optional[str],
+    ) -> Dict[str, Any]:
+
+        done = [r for r in results if r["status"] == "done"]
+        failed = [r for r in results if r["status"] == "failed"]
+
+        success = len(failed) == 0
+        execution_state = "COMPLETED" if success else "FAILED"
+
+        try:
+            from services.memory_service import MemoryService
+            mem = MemoryService()
+            mem.store_decision_outcome(
+                decision_type="sop",
+                context_type="sop",
+                target=sop_id,
+                success=success,
+                metadata={
+                    "completed_steps": len(done),
+                    "failed_steps": len(failed),
+                },
+            )
+        except Exception:
+            pass
+
+        return {
+            "success": success,
+            "execution_state": execution_state,
+            "sop_id": sop_id,
+            "request_id": request_id,
+            "started_at": started_at,
+            "finished_at": datetime.utcnow().isoformat(),
+            "summary": (
+                "SOP uspješno izvršen."
+                if success
+                else "SOP djelimično ili neuspješno izvršen."
+            ),
+            "completed_steps": len(done),
+            "failed_steps": failed,
+            "results": results,
+        }
+
+    # ============================================================
+    # OPTIMIZATION + BIAS (UNCHANGED LOGIC)
     # ============================================================
     def _optimize_execution_plan(
         self,
@@ -189,7 +244,7 @@ class SOPExecutionManager:
         return await asyncio.gather(*tasks)
 
     # ============================================================
-    # STEP EXECUTION
+    # STEP EXECUTION (UNCHANGED)
     # ============================================================
     async def _execute_step(self, step: Dict[str, Any]) -> Dict[str, Any]:
         step_id = step.get("step")
@@ -240,44 +295,4 @@ class SOPExecutionManager:
             "confirmed": True,
             "result": result,
             "delegation_meta": delegation_meta,
-        }
-
-    # ============================================================
-    # AGGREGATION
-    # ============================================================
-    def _aggregate_results(self, results: List[Dict[str, Any]]) -> Dict[str, Any]:
-        done = [r for r in results if r["status"] == "done"]
-        failed = [r for r in results if r["status"] == "failed"]
-
-        success = len(failed) == 0
-        confirmed = success
-
-        try:
-            from services.memory_service import MemoryService
-
-            mem = MemoryService()
-            mem.store_decision_outcome(
-                decision_type="sop",
-                context_type="sop",
-                target=None,
-                success=success,
-                metadata={
-                    "completed_steps": len(done),
-                    "failed_steps": len(failed),
-                },
-            )
-        except Exception:
-            pass
-
-        return {
-            "success": success,
-            "confirmed": confirmed,
-            "summary": (
-                "SOP uspješno izvršen."
-                if success
-                else "SOP djelimično ili neuspješno izvršen."
-            ),
-            "completed_steps": len(done),
-            "failed_steps": failed,
-            "results": results,
         }

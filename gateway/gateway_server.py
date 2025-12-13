@@ -1,28 +1,42 @@
 # ================================================================
-# BOOT DEBUG — MORA BITI PRIJE SVIH OSTALIH IMPORTA
+# SYSTEM VERSION (V1.0 FREEZE MARKER)
 # ================================================================
 import os
-print("=== BOOT DEBUG START ===")
-print("CWD:", os.getcwd())
-print("/app exists:", os.path.exists("/app"))
-print("/app content:", os.listdir("/app") if os.path.exists("/app") else "NO /app")
-print("/app/services exists:", os.path.exists("/app/services"))
-print(
-    "/app/services content:",
-    os.listdir("/app/services") if os.path.exists("/app/services") else "NO services"
-)
-print("=== BOOT DEBUG END ===")
+import time
 
-print("LOADED NEW GATEWAY VERSION")
+from system_version import (
+    SYSTEM_NAME,
+    VERSION,
+    ARCH_LOCK,
+    RELEASE_CHANNEL,
+)
+
+# ================================================================
+# OS SAFETY CONTROLS (V1.0 HARDENING)
+# ================================================================
+OS_ENABLED = os.getenv("OS_ENABLED", "true").lower() == "true"
+OPS_SAFE_MODE = os.getenv("OPS_SAFE_MODE", "false").lower() == "true"
+
+_LAST_CALL_TS = 0.0
+MIN_INTERVAL_SECONDS = 0.5
 
 # ================================================================
 # STANDARD IMPORTS
 # ================================================================
 import logging
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
+
+# ================================================================
+# CORE MODELS / SERVICES
+# ================================================================
+from models.ai_command import AICommand
+from services.conversation_state_service import ConversationStateService
+from services.awareness_service import AwarenessService
+from services.response_formatter import ResponseFormatter
 
 # ================================================================
 # DECISION / ORCHESTRATION
@@ -38,22 +52,18 @@ from services.adnan_mode_service import load_mode
 from services.adnan_state_service import load_state
 
 # ================================================================
-# EXECUTION LAYER (KANONSKI)
+# EXECUTION / GOVERNANCE
 # ================================================================
 from services.action_workflow_service import ActionWorkflowService
-
-# ================================================================
-# GOVERNANCE (FAZA 19)
-# ================================================================
 from services.execution_governance_service import ExecutionGovernanceService
 
 # ================================================================
-# MEMORY (FAZA 8.1)
+# MEMORY
 # ================================================================
 from services.memory_service import MemoryService
 
 # ================================================================
-# NOTION (READ-ONLY KNOWLEDGE → SNAPSHOT)
+# NOTION (READ-ONLY SNAPSHOT)
 # ================================================================
 from services.notion_service import NotionService
 
@@ -72,8 +82,6 @@ identity = load_identity()
 mode = load_mode()
 state = load_state()
 
-print("CURRENT FILE LOADED FROM:", os.path.abspath(__file__))
-
 load_dotenv(".env")
 
 logging.basicConfig(level=logging.INFO)
@@ -82,7 +90,7 @@ logger = logging.getLogger("gateway")
 app = FastAPI()
 
 # ================================================================
-# GLOBAL SERVICES (SINGLETONS)
+# GLOBAL SINGLETON SERVICES
 # ================================================================
 personality_engine = PersonalityEngine()
 orchestrator = ContextOrchestrator(identity, mode, state)
@@ -90,9 +98,13 @@ workflow_service = ActionWorkflowService()
 memory_service = MemoryService()
 governance_service = ExecutionGovernanceService()
 
-# ------------------------------------------------
-# NOTION READ-ONLY SERVICE (SNAPSHOT SOURCE)
-# ------------------------------------------------
+conversation_state_service = ConversationStateService()
+awareness_service = AwarenessService()
+response_formatter = ResponseFormatter()
+
+# ================================================================
+# NOTION SERVICE
+# ================================================================
 notion_service = NotionService(
     api_key=os.getenv("NOTION_API_KEY"),
     goals_db_id=os.getenv("NOTION_GOALS_DB_ID"),
@@ -101,7 +113,31 @@ notion_service = NotionService(
 )
 
 # ================================================================
-# STARTUP — INITIAL KNOWLEDGE SYNC
+# GLOBAL ERROR HANDLER
+# ================================================================
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.exception("GLOBAL ERROR")
+
+    awareness = awareness_service.build_snapshot(
+        command=None,
+        csi_state=conversation_state_service.get(),
+    )
+
+    return JSONResponse(
+        status_code=500,
+        content=response_formatter.format(
+            intent="system_error",
+            confidence=1.0,
+            csi_state=conversation_state_service.get(),
+            execution_result={"success": False},
+            awareness=awareness,
+            request_id=None,
+        ),
+    )
+
+# ================================================================
+# STARTUP
 # ================================================================
 @app.on_event("startup")
 async def startup_event():
@@ -135,7 +171,7 @@ class CommandRequest(BaseModel):
     payload: dict
 
 # ================================================================
-# ROUTER REGISTRATION
+# ROUTERS
 # ================================================================
 app.include_router(voice_router)
 app.include_router(adnan_ai_router)
@@ -143,103 +179,111 @@ app.include_router(metrics_router)
 app.include_router(alerting_router)
 
 # ================================================================
-# /ops/execute — CEO → ORCHESTRATOR → GOVERNANCE → EXECUTION
+# /ops/execute — AWARE OPERATOR PIPELINE (CSI ENFORCED)
 # ================================================================
 @app.post("/ops/execute")
 async def execute(req: CommandRequest):
-    try:
-        logger.info(">> /ops/execute %s", req.command)
+    global _LAST_CALL_TS
 
-        if memory_service.get_active_decision():
-            return {
-                "success": False,
-                "final_answer": (
-                    "Postoji aktivna odluka. "
-                    "Potrebno je završiti ili otkazati prije nove."
-                ),
-            }
-
-        user_text = (
-            req.payload.get("text")
-            or req.payload.get("query")
-            or ""
+    if not OS_ENABLED:
+        awareness = awareness_service.build_snapshot(
+            command=None,
+            csi_state=conversation_state_service.get(),
+        )
+        return response_formatter.format(
+            intent=req.command,
+            confidence=1.0,
+            csi_state=conversation_state_service.get(),
+            execution_result={"success": False},
+            awareness=awareness,
+            request_id=None,
         )
 
-        orch = await orchestrator.run(user_text)
-        context_type = orch.get("context_type")
-        result = orch.get("result", {})
+    now = time.time()
+    if now - _LAST_CALL_TS < MIN_INTERVAL_SECONDS:
+        awareness = awareness_service.build_snapshot(
+            command=None,
+            csi_state=conversation_state_service.get(),
+        )
+        return response_formatter.format(
+            intent=req.command,
+            confidence=1.0,
+            csi_state=conversation_state_service.get(),
+            execution_result={"success": False},
+            awareness=awareness,
+            request_id=None,
+        )
+    _LAST_CALL_TS = now
 
-        if context_type in {
-            "identity", "chat", "memory",
-            "meta", "knowledge", "status"
-        }:
-            return {
-                "success": True,
-                "final_answer": orch["final_output"]["final_answer"],
-                "engine_output": orch,
-            }
+    command = AICommand(
+        command=req.command,
+        input=req.payload,
+        identity_snapshot=identity,
+        state_snapshot=state,
+        mode_snapshot=mode,
+    )
 
-        if result.get("type") == "delegation":
-            delegation = result.get("delegation", {})
-            command = delegation.get("command")
-            payload = delegation.get("payload") or {}
+    user_text = req.payload.get("text") or req.payload.get("query") or ""
+    orch = await orchestrator.run(user_text)
+    decision_output = orch.get("result", {})
 
-            if not command:
-                return {
-                    "success": True,
-                    "final_answer": orch["final_output"]["final_answer"],
-                    "engine_output": orch,
-                }
+    awareness = awareness_service.build_snapshot(
+        command=command,
+        csi_state=conversation_state_service.get(),
+        decision=decision_output,
+    )
 
-            memory_service.set_active_decision({
-                "command": command,
-                "payload": payload,
-            })
+    execution_result = None
+
+    if decision_output.get("type") == "delegation":
+        delegation = decision_output.get("delegation", {})
+        cmd = delegation.get("command")
+        payload = delegation.get("payload") or {}
+
+        if cmd:
+            conversation_state_service.set_executing(
+                request_id=command.request_id
+            )
 
             workflow = {
                 "type": "workflow",
                 "steps": [
-                    {
-                        "directive": command,
-                        "params": payload,
-                    }
+                    {"directive": cmd, "params": payload}
                 ],
             }
 
-            workflow_result = await workflow_service.execute_workflow(workflow)
-            memory_service.clear_active_decision()
+            execution_result = await workflow_service.execute_workflow(workflow)
 
-            return {
-                "success": True,
-                "final_answer": orch["final_output"]["final_answer"],
-                "engine_output": workflow_result,
-            }
+            execution_state = execution_result.get("execution_state")
 
-        return {
-            "success": True,
-            "final_answer": orch["final_output"]["final_answer"],
-            "engine_output": orch,
-        }
+            if execution_state:
+                conversation_state_service.sync_from_execution(
+                    execution_state=execution_state,
+                    request_id=command.request_id,
+                )
 
-    except Exception as e:
-        memory_service.clear_active_decision()
-        logger.exception(">> ERROR /ops/execute")
-        raise HTTPException(500, str(e))
+    return response_formatter.format(
+        intent=req.command,
+        confidence=1.0,
+        csi_state=conversation_state_service.get(),
+        decision=decision_output,
+        execution_result=execution_result,
+        awareness=awareness,
+        request_id=command.request_id,
+    )
 
 # ================================================================
-# DIRECT AI CONTEXT (READ-ONLY)
+# DIRECT AI CONTEXT
 # ================================================================
 @app.post("/ai/context")
 async def ai_context(req: dict):
     user_input = req.get("text")
-
     if not user_input:
         raise HTTPException(400, "Missing field: text")
 
-    result = await orchestrator.run(user_input)
+    orch = await orchestrator.run(user_input)
 
     return {
         "success": True,
-        "final_answer": result["final_output"]["final_answer"],
-        "engine_output": result,
+        "engine_output": orch,
     }

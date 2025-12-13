@@ -1,74 +1,145 @@
 import os
 import json
+from typing import Dict, Any
 
 
-def load_json_file(path: str):
+# ============================================================
+# CORE JSON LOADER (UTF-8 BOM SAFE)
+# ============================================================
+
+def load_json_file(path: str) -> Dict[str, Any]:
     """
-    Loads JSON files and automatically strips UTF-8 BOM if present.
-    Prevents JSONDecodeError: Unexpected UTF-8 BOM.
+    Loads JSON file safely.
+    - Strips UTF-8 BOM if present
+    - Fails fast on invalid JSON
     """
     if not os.path.exists(path):
-        raise FileNotFoundError(f"Identity file not found: {path}")
+        raise FileNotFoundError(f"[IDENTITY] File not found: {path}")
 
-    with open(path, "r", encoding="utf-8-sig") as f:
-        return json.load(f)
+    try:
+        with open(path, "r", encoding="utf-8-sig") as f:
+            return json.load(f)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"[IDENTITY] Invalid JSON in {path}: {e}") from e
 
+
+# ============================================================
+# PATH RESOLUTION (ENV-AGNOSTIC)
+# ============================================================
 
 def resolve_path(filename: str) -> str:
     """
-    Resolves correct identity directory regardless of:
-    - Local development
-    - Docker container
-    - Render deployment
+    Resolves identity directory path regardless of runtime:
+    - local
+    - docker
+    - render
     """
-    current_dir = os.path.dirname(os.path.abspath(__file__))   # /app/services/
-    project_root = os.path.abspath(os.path.join(current_dir, ".."))  # /app/
+    current_dir = os.path.dirname(os.path.abspath(__file__))   # /app/services
+    project_root = os.path.abspath(os.path.join(current_dir, ".."))  # /app
     identity_dir = os.path.join(project_root, "identity")       # /app/identity
     return os.path.join(identity_dir, filename)
 
 
 # ============================================================
-# LOADERS FOR REAL FILES (WITHOUT adnan_ai_ PREFIX)
+# VALIDATION (STRICT — FAIL FAST)
+# ============================================================
+
+def validate_identity_payload(payload: Dict[str, Any], required_keys: list, name: str):
+    if not isinstance(payload, dict):
+        raise ValueError(f"[IDENTITY] {name} must be a JSON object")
+
+    missing = [k for k in required_keys if k not in payload]
+    if missing:
+        raise ValueError(
+            f"[IDENTITY] {name} missing required keys: {missing}"
+        )
+
+
+# ============================================================
+# LOADERS (CANONICAL — SOURCE OF TRUTH)
 # ============================================================
 
 def load_adnan_identity():
-    return load_json_file(resolve_path("identity.json"))
+    data = load_json_file(resolve_path("identity.json"))
+    validate_identity_payload(
+        data,
+        required_keys=["name", "role", "version"],
+        name="identity.json"
+    )
+    return data
 
 
 def load_adnan_memory():
-    return load_json_file(resolve_path("memory.json"))
+    data = load_json_file(resolve_path("memory.json"))
+    validate_identity_payload(
+        data,
+        required_keys=["short_term", "long_term"],
+        name="memory.json"
+    )
+    return data
 
 
 def load_adnan_kernel():
-    return load_json_file(resolve_path("kernel.json"))
+    data = load_json_file(resolve_path("kernel.json"))
+    validate_identity_payload(
+        data,
+        required_keys=["principles", "constraints"],
+        name="kernel.json"
+    )
+    return data
 
 
 def load_adnan_static_memory():
-    return load_json_file(resolve_path("static_memory.json"))
+    data = load_json_file(resolve_path("static_memory.json"))
+    validate_identity_payload(
+        data,
+        required_keys=["facts"],
+        name="static_memory.json"
+    )
+    return data
 
 
 def load_adnan_mode():
-    return load_json_file(resolve_path("mode.json"))
+    data = load_json_file(resolve_path("mode.json"))
+    validate_identity_payload(
+        data,
+        required_keys=["current_mode"],
+        name="mode.json"
+    )
+    return data
 
 
 def load_adnan_state():
-    return load_json_file(resolve_path("state.json"))
+    data = load_json_file(resolve_path("state.json"))
+    validate_identity_payload(
+        data,
+        required_keys=["status"],
+        name="state.json"
+    )
+    return data
 
 
-# Optional — if your engine needs this
 def load_decision_engine_config():
-    return load_json_file(resolve_path("decision_engine.json"))
+    data = load_json_file(resolve_path("decision_engine.json"))
+    validate_identity_payload(
+        data,
+        required_keys=["strategy"],
+        name="decision_engine.json"
+    )
+    return data
 
 
 # ============================================================
-# BACKWARD COMPATIBILITY FOR gateway_server.py
+# BACKWARD COMPATIBILITY (DO NOT REMOVE)
 # ============================================================
 
 def load_identity():
     return load_adnan_identity()
 
+
 def load_mode():
     return load_adnan_mode()
+
 
 def load_state():
     return load_adnan_state()

@@ -1,17 +1,19 @@
-# services/notion_ops/ops_engine.py
-
 import os
-from datetime import datetime
 from typing import Dict, Any, List
 from notion_client import Client
 
 
 class NotionOpsEngine:
     """
-    NotionOpsEngine — Canonical Agent Worker
+    NotionOpsEngine — V1.0 OPS REALITY WORKER
 
-    FAZA 3 / KORAK 3:
-    - Svaka operacija se auditira u Notion (agent_exchange)
+    RULES:
+    - Executes REAL side-effects
+    - Returns MINIMAL OPS RESULT
+    - NO lifecycle fields
+    - NO execution state
+    - NO request / identity awareness
+    - Best-effort audit ONLY
     """
 
     def __init__(self):
@@ -22,88 +24,72 @@ class NotionOpsEngine:
             "tasks": os.getenv("NOTION_TASKS_DB_ID"),
             "projects": os.getenv("NOTION_PROJECTS_DB_ID"),
             "agent_exchange": os.getenv("NOTION_AGENT_EXCHANGE_DB_ID"),
-            "agent_projects": os.getenv("NOTION_AGENT_PROJECTS_DB_ID"),
-            "active_goals": os.getenv("NOTION_ACTIVE_GOALS_DB_ID"),
-            "blocked_goals": os.getenv("NOTION_BLOCKED_GOALS_DB_ID"),
-            "completed_goals": os.getenv("NOTION_COMPLETED_GOALS_DB_ID"),
-            "ai_weekly_summary": os.getenv("NOTION_AI_WEEKLY_SUMMARY_DB_ID"),
         }
 
     # ============================================================
-    # PUBLIC AGENT ENTRYPOINT
+    # PUBLIC OPS ENTRYPOINT
     # ============================================================
-    async def execute(self, command: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    async def execute(
+        self,
+        *,
+        command: str,
+        payload: Dict[str, Any],
+    ) -> Dict[str, Any]:
+
         try:
             if command == "query_database":
-                result = self._query_database(payload)
+                raw = self._query_database(payload)
 
             elif command == "create_database_entry":
-                result = self._create_database_entry(payload)
+                raw = self._create_database_entry(payload)
 
             elif command == "update_database_entry":
-                result = self._update_database_entry(payload)
+                raw = self._update_database_entry(payload)
 
             elif command == "create_page":
-                result = self._create_page(payload)
+                raw = self._create_page(payload)
 
             elif command == "retrieve_page_content":
-                result = self._retrieve_page_content(payload)
+                raw = self._retrieve_page_content(payload)
 
             elif command == "delete_page":
-                result = self._delete_page(payload)
+                raw = self._delete_page(payload)
 
             else:
-                result = {
+                raw = {
                     "success": False,
                     "summary": "Nepoznata Notion operacija.",
-                    "command": command,
                 }
 
-            # ----------------------------------------------------
-            # AUDIT (BEST EFFORT)
-            # ----------------------------------------------------
-            self._audit_operation(
-                command=command,
-                payload=payload,
-                result=result,
-            )
-
-            return result
+            self._audit_operation(command, raw)
+            return self._normalize(raw)
 
         except Exception as e:
-            error_result = {
+            raw = {
                 "success": False,
                 "summary": str(e),
             }
-
-            self._audit_operation(
-                command=command,
-                payload=payload,
-                result=error_result,
-            )
-
-            return error_result
+            self._audit_operation(command, raw)
+            return self._normalize(raw)
 
     # ============================================================
-    # AUDIT
+    # NORMALIZATION (OPS CONTRACT)
     # ============================================================
-    def _audit_operation(
-        self,
-        command: str,
-        payload: Dict[str, Any],
-        result: Dict[str, Any],
-    ):
-        """
-        Persist agent action into Notion Agent Exchange DB.
-        Nikad ne smije srušiti glavnu operaciju.
-        """
+    def _normalize(self, raw: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "success": bool(raw.get("success")),
+            "summary": raw.get("summary", ""),
+            "details": raw,
+        }
+
+    # ============================================================
+    # AUDIT (BEST-EFFORT)
+    # ============================================================
+    def _audit_operation(self, command: str, result: Dict[str, Any]) -> None:
         try:
             db_id = self.db_registry.get("agent_exchange")
             if not db_id:
                 return
-
-            summary = result.get("summary", "")
-            database_key = payload.get("database_key", "")
 
             self.notion.pages.create(
                 parent={"database_id": db_id},
@@ -112,7 +98,7 @@ class NotionOpsEngine:
                         "title": [
                             {
                                 "text": {
-                                    "content": f"{command} @ {datetime.utcnow().isoformat()}"
+                                    "content": f"{command}"
                                 }
                             }
                         ]
@@ -122,11 +108,6 @@ class NotionOpsEngine:
                             {"text": {"content": command}}
                         ]
                     },
-                    "Database": {
-                        "rich_text": [
-                            {"text": {"content": str(database_key)}}
-                        ]
-                    },
                     "Status": {
                         "select": {
                             "name": "SUCCESS" if result.get("success") else "FAILED"
@@ -134,17 +115,16 @@ class NotionOpsEngine:
                     },
                     "Summary": {
                         "rich_text": [
-                            {"text": {"content": summary}}
+                            {"text": {"content": result.get("summary", "")}}
                         ]
                     },
                 },
             )
         except Exception:
-            # Audit MUST NOT break execution
-            pass
+            pass  # audit must NEVER break ops
 
     # ============================================================
-    # HELPERS
+    # HELPERS / OPERATIONS (UNCHANGED LOGIC)
     # ============================================================
     def _get_db_id(self, key: str) -> str:
         db_id = self.db_registry.get(key)
@@ -163,41 +143,30 @@ class NotionOpsEngine:
                         titles.append(title_items[0].get("plain_text", ""))
         return titles
 
-    # ============================================================
-    # OPERATIONS
-    # ============================================================
     def _query_database(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         db_key = payload.get("database_key")
         if not db_key:
             return {"success": False, "summary": "database_key je obavezan."}
 
-        db_id = self._get_db_id(db_key)
-        res = self.notion.databases.query(database_id=db_id)
-
+        res = self.notion.databases.query(database_id=self._get_db_id(db_key))
         results = res.get("results", [])
-        titles = self._extract_titles(results)
-
         return {
             "success": True,
             "summary": f"Pronađeno {len(results)} zapisa.",
-            "items": titles,
+            "items": self._extract_titles(results),
             "count": len(results),
         }
 
     def _create_database_entry(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         db_key = payload.get("database_key")
         properties = payload.get("properties")
-
         if not db_key or not properties:
             return {"success": False, "summary": "database_key i properties su obavezni."}
 
-        db_id = self._get_db_id(db_key)
-
         page = self.notion.pages.create(
-            parent={"database_id": db_id},
+            parent={"database_id": self._get_db_id(db_key)},
             properties=properties,
         )
-
         return {
             "success": True,
             "summary": "Zapis je kreiran.",
@@ -208,15 +177,10 @@ class NotionOpsEngine:
     def _update_database_entry(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         page_id = payload.get("page_id")
         properties = payload.get("properties")
-
         if not page_id or not properties:
             return {"success": False, "summary": "page_id i properties su obavezni."}
 
-        page = self.notion.pages.update(
-            page_id=page_id,
-            properties=properties,
-        )
-
+        page = self.notion.pages.update(page_id=page_id, properties=properties)
         return {
             "success": True,
             "summary": "Zapis je ažuriran.",
@@ -226,18 +190,14 @@ class NotionOpsEngine:
 
     def _create_page(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         parent_id = payload.get("parent_page_id")
-        properties = payload.get("properties", {})
-        children = payload.get("children", [])
-
         if not parent_id:
             return {"success": False, "summary": "parent_page_id je obavezan."}
 
         page = self.notion.pages.create(
             parent={"page_id": parent_id},
-            properties=properties,
-            children=children,
+            properties=payload.get("properties", {}),
+            children=payload.get("children", []),
         )
-
         return {
             "success": True,
             "summary": "Stranica je kreirana.",
@@ -251,12 +211,10 @@ class NotionOpsEngine:
             return {"success": False, "summary": "page_id je obavezan."}
 
         blocks = self.notion.blocks.children.list(block_id=page_id)
-        count = len(blocks.get("results", []))
-
         return {
             "success": True,
-            "summary": f"Učitano {count} blokova.",
-            "count": count,
+            "summary": f"Učitano {len(blocks.get('results', []))} blokova.",
+            "count": len(blocks.get("results", [])),
         }
 
     def _delete_page(self, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -265,7 +223,6 @@ class NotionOpsEngine:
             return {"success": False, "summary": "page_id je obavezan."}
 
         self.notion.pages.update(page_id=page_id, archived=True)
-
         return {
             "success": True,
             "summary": "Stranica je arhivirana.",
