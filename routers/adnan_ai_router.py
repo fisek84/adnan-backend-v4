@@ -45,16 +45,16 @@ class AdnanAIInput(BaseModel):
 
 
 # ============================================================
-# NATURAL LANGUAGE ENTRYPOINT (FULL FLOW)
+# NATURAL LANGUAGE ENTRYPOINT
 # ============================================================
 
 @router.post("/input")
 async def adnan_ai_input(payload: AdnanAIInput):
     """
-    Canonical Adnan.AI natural language entrypoint.
+    Canonical Adnan.AI entrypoint.
 
     FLOW:
-    Intent → CSI → Decision → Governance → EXEC → CSI WRITE-BACK → Response
+    Intent → CSI → Decision → Governance → Execution → CSI write-back → Response
     """
 
     try:
@@ -63,34 +63,6 @@ async def adnan_ai_input(payload: AdnanAIInput):
             raise HTTPException(status_code=400, detail="Empty input")
 
         MetricsService.incr("input.total")
-
-        # --------------------------------------------------
-        # APPROVAL COMMAND (FAZA D6)
-        # --------------------------------------------------
-        if user_text.lower() == "approve":
-            csi = conversation_state.get()
-            approval_id = csi.get("pending_decision", {}).get("approval_id")
-
-            if not approval_id:
-                return {
-                    "ok": False,
-                    "response": {"message": "Nema aktivnog approval zahtjeva."},
-                    "state": csi["state"],
-                }
-
-            updated = approval_service.approve_next_level(
-                approval_id=approval_id,
-                approved_by="ceo",
-            )
-
-            return {
-                "ok": True,
-                "response": {
-                    "message": "Approval nivo odobren.",
-                    "approval": updated,
-                },
-                "state": csi["state"],
-            }
 
         # --------------------------------------------------
         # 1. INTENT CLASSIFICATION
@@ -121,22 +93,34 @@ async def adnan_ai_input(payload: AdnanAIInput):
             binder_result.action,
         )
 
-        MetricsService.incr(f"csi.transition.{binder_result.next_state}")
+        # --------------------------------------------------
+        # 4. APPLY CSI TRANSITION (CANONICAL)
+        # --------------------------------------------------
+        if binder_result.action == "reset":
+            conversation_state.reset()
+            csi_snapshot = conversation_state.get()
+
+        else:
+            if binder_result.next_state != current_state:
+
+                if binder_result.next_state == CSIState.IDLE.value:
+                    conversation_state.set_idle()
+
+                elif binder_result.next_state == CSIState.EXECUTING.value:
+                    conversation_state.set_executing()
+
+                else:
+                    # SOP_LIST, SOP_ACTIVE, DECISION_PENDING
+                    conversation_state._state.state = binder_result.next_state
+                    conversation_state._persist(
+                        conversation_state._state,
+                        reason="intent_binding",
+                    )
+
+            csi_snapshot = conversation_state.get()
 
         # --------------------------------------------------
-        # 4. APPLY CSI TRANSITION (SAFE)
-        # --------------------------------------------------
-        if binder_result.next_state != current_state:
-            conversation_state.apply_execution_state(
-                next_csi_state=binder_result.next_state,
-                request_id=None,
-                reason="intent_binding",
-            )
-
-        csi_snapshot = conversation_state.get()
-
-        # --------------------------------------------------
-        # 5. DECISION BUILDING
+        # 5. DECISION BUILDING (NO EXECUTION)
         # --------------------------------------------------
         decision = None
         if binder_result.action:
@@ -154,7 +138,6 @@ async def adnan_ai_input(payload: AdnanAIInput):
         if decision and decision.get("confirmed") and decision.get("decision_candidate"):
 
             policy = governance_service.evaluate(decision)
-
             if not policy["allowed"]:
                 return {
                     "ok": False,
@@ -164,16 +147,12 @@ async def adnan_ai_input(payload: AdnanAIInput):
 
             execution_result = await execution_orchestrator.execute(decision)
 
-            conversation_state.apply_execution_state(
-                next_csi_state=execution_result.get("csi_next_state"),
-                request_id=execution_result.get("execution_id"),
-                reason="execution_result",
-            )
-
+            # EXECUTION FINISHED → CSI BACK TO IDLE
+            conversation_state.set_idle()
             csi_snapshot = conversation_state.get()
 
         # --------------------------------------------------
-        # 7. RESPONSE
+        # 7. RESPONSE FORMAT
         # --------------------------------------------------
         response = response_formatter.format(
             intent=intent.type.value,

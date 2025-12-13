@@ -112,15 +112,16 @@ class ConversationState:
 
 class ConversationStateService:
     """
-    CSI — V1.1 FINAL STATE AUTHORITY (FAZA D4)
+    CSI — V1.0 FINAL STATE AUTHORITY
 
     RULES:
     - All transitions MUST go through _transition
-    - Execution results MUST write back via apply_execution_state
-    - Illegal transitions are audited
+    - Illegal transitions are soft-failed and audited
+    - READ-ONLY SOP handling in Version C
+    - RESET has explicit override to IDLE only
     """
 
-    LOCKED = True  # HARD LOCK
+    LOCKED = True  # V1.0 HARD LOCK
 
     def __init__(self):
         BASE_PATH.mkdir(parents=True, exist_ok=True)
@@ -190,22 +191,32 @@ class ConversationStateService:
         *,
         reason: str,
         request_id: Optional[str],
+        force: bool = False,
     ):
         current = self._state.state
 
-        if self.LOCKED and new_state not in ALLOWED_TRANSITIONS.get(current, set()):
-            logger.error(
-                "ILLEGAL CSI TRANSITION: %s → %s | reason=%s",
-                current,
-                new_state,
-                reason,
-            )
-            self._persist(
-                self._state,
-                reason=f"illegal_transition:{reason}",
-                illegal=True,
-            )
-            return
+        # ----------------------------------------------------
+        # RESET OVERRIDE — only allowed target is IDLE
+        # ----------------------------------------------------
+        if force:
+            if new_state != CSIState.IDLE.value:
+                logger.error("FORCE transition blocked: only IDLE allowed | requested=%s", new_state)
+                self._persist(self._state, reason=f"illegal_force:{reason}", illegal=True)
+                return
+        else:
+            if self.LOCKED and new_state not in ALLOWED_TRANSITIONS.get(current, set()):
+                logger.error(
+                    "ILLEGAL CSI TRANSITION: %s → %s | reason=%s",
+                    current,
+                    new_state,
+                    reason,
+                )
+                self._persist(
+                    self._state,
+                    reason=f"illegal_transition:{reason}",
+                    illegal=True,
+                )
+                return
 
         self._state.state = new_state
         self._state.request_id = request_id
@@ -219,6 +230,23 @@ class ConversationStateService:
     # -------------------------
     def get(self) -> Dict[str, Any]:
         return self._state.to_dict()
+
+    def reset(self):
+        """
+        HARD RESET to IDLE from any state (canonical override).
+        """
+        self._transition(
+            CSIState.IDLE.value,
+            reason="reset",
+            request_id=None,
+            force=True,
+        )
+        # also clear volatile fields
+        self._state.expected_input = "free"
+        self._state.active_sop_id = None
+        self._state.pending_decision = None
+        self._persist(self._state, reason="reset_cleared")
+        return self.get()
 
     def set_idle(self, request_id: Optional[str] = None):
         self._transition(
@@ -257,27 +285,4 @@ class ConversationStateService:
         )
         self._state.active_sop_id = sop_id
         self._persist(self._state, reason="sop_active_selected")
-        return self.get()
-
-    # -------------------------
-    # EXECUTION WRITE-BACK (FAZA D4)
-    # -------------------------
-    def apply_execution_state(
-        self,
-        *,
-        next_csi_state: Optional[str],
-        request_id: Optional[str],
-        reason: str,
-    ):
-        """
-        Canonical write-back entrypoint from ExecutionOrchestrator.
-        """
-        if not next_csi_state:
-            return self.get()
-
-        self._transition(
-            next_csi_state,
-            reason=reason,
-            request_id=request_id,
-        )
         return self.get()
