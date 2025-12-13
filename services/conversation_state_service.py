@@ -41,7 +41,7 @@ ALLOWED_TRANSITIONS = {
         CSIState.IDLE.value,
     },
     CSIState.SOP_ACTIVE.value: {
-        CSIState.EXECUTING.value,
+        CSIState.DECISION_PENDING.value,
         CSIState.IDLE.value,
     },
     CSIState.DECISION_PENDING.value: {
@@ -113,14 +113,18 @@ class ConversationState:
 class ConversationStateService:
     """
     CSI — V1.0 FINAL STATE AUTHORITY
+
+    RULES:
+    - All transitions MUST go through _transition
+    - Illegal transitions are soft-failed and audited
+    - READ-ONLY SOP handling in Version C
     """
 
     LOCKED = True  # V1.0 HARD LOCK
 
     def __init__(self):
         BASE_PATH.mkdir(parents=True, exist_ok=True)
-        self._state: Optional[ConversationState] = None
-        self._state = self._load()
+        self._state: ConversationState = self._load()
 
     # -------------------------
     # IO
@@ -216,14 +220,6 @@ class ConversationStateService:
     def get(self) -> Dict[str, Any]:
         return self._state.to_dict()
 
-    def set_executing(self, request_id: Optional[str] = None):
-        self._transition(
-            CSIState.EXECUTING.value,
-            reason="set_executing",
-            request_id=request_id,
-        )
-        return self.get()
-
     def set_idle(self, request_id: Optional[str] = None):
         self._transition(
             CSIState.IDLE.value,
@@ -232,22 +228,41 @@ class ConversationStateService:
         )
         return self.get()
 
-    # ============================================================
-    # SOP READ — VERZIJA C (READ-ONLY)
-    # ============================================================
-    def enter_sop_list(self):
+    def set_executing(self, request_id: Optional[str] = None):
         self._transition(
-            CSIState.SOP_LIST.value,
-            reason="enter_sop_list",
-            request_id=None,
+            CSIState.EXECUTING.value,
+            reason="set_executing",
+            request_id=request_id,
         )
         return self.get()
 
-    def enter_sop_active(self, sop_id: str):
-        self._state.active_sop_id = sop_id
+    # -------------------------
+    # SOP STATES (VERSION C — READ ONLY)
+    # -------------------------
+    def set_sop_list(self, sops: List[Dict[str, Any]]):
+        """
+        Enter SOP_LIST state with available SOPs.
+        READ-ONLY.
+        """
+        self._transition(
+            CSIState.SOP_LIST.value,
+            reason="set_sop_list",
+            request_id=self._state.request_id,
+        )
+        self._state.sop_list = sops
+        self._persist(self._state, reason="sop_list_loaded")
+        return self.get()
+
+    def set_sop_active(self, sop_id: str):
+        """
+        Enter SOP_ACTIVE state.
+        READ-ONLY.
+        """
         self._transition(
             CSIState.SOP_ACTIVE.value,
-            reason="enter_sop_active",
-            request_id=None,
+            reason="set_sop_active",
+            request_id=self._state.request_id,
         )
+        self._state.active_sop_id = sop_id
+        self._persist(self._state, reason="sop_active_selected")
         return self.get()
