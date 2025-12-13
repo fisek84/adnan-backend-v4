@@ -1,107 +1,85 @@
-# C:\adnan-backend-v4\services\response_formatter.py
+# services/response_formatter.py
 
-from typing import Dict, Any, Optional
+from typing import Any, Dict, Optional
 
 
 class ResponseFormatter:
     """
-    Explainability & Response Formatter
+    Canonical response formatter.
 
     RULES:
-    - No technical explanations
-    - No architecture leakage
-    - Natural, CEO-grade responses
+    - Backend controls ALL wording
+    - Frontend only renders message
+    - No instruction-like prompts
+    - No bot-style repetition
     """
 
     def format(
         self,
-        *,
         intent: str,
         confidence: float,
         csi_state: Dict[str, Any],
         decision: Optional[Dict[str, Any]] = None,
         execution_result: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """
-        Canonical response builder.
-        """
 
-        # --------------------------------------------------
-        # EXECUTION RESULT (AGENT FINISHED)
-        # --------------------------------------------------
-        if execution_result:
-            return self._format_execution_result(execution_result)
-
-        # --------------------------------------------------
-        # DECISION PHASE
-        # --------------------------------------------------
-        if decision:
-            return self._format_decision(decision, confidence)
-
-        # --------------------------------------------------
-        # CSI-ONLY RESPONSE
-        # --------------------------------------------------
-        return self._format_csi_state(intent, csi_state)
-
-    # ======================================================
-    # INTERNAL FORMATTERS
-    # ======================================================
-
-    def _format_execution_result(self, result: Dict[str, Any]) -> Dict[str, Any]:
-        if result.get("success"):
-            return {
-                "message": result.get("summary", "Završeno."),
-                "status": "done",
-            }
-
-        return {
-            "message": result.get("summary", "Došlo je do problema."),
-            "status": "failed",
-            "details": result.get("failed_steps"),
-        }
-
-    def _format_decision(self, decision: Dict[str, Any], confidence: float) -> Dict[str, Any]:
-        if decision.get("confirmed"):
-            return {
-                "message": decision.get(
-                    "system_response",
-                    "Spremno za izvršenje."
-                ),
-                "status": "awaiting_execution",
-                "confidence": round(confidence, 2),
-            }
-
-        return {
-            "message": decision.get(
-                "system_response",
-                "Trebam potvrdu."
-            ),
-            "status": "awaiting_confirmation",
-            "confidence": round(confidence, 2),
-        }
-
-    def _format_csi_state(self, intent: str, csi_state: Dict[str, Any]) -> Dict[str, Any]:
         state = csi_state.get("state")
 
-        if state == "SOP_LIST":
+        # --------------------------------------------------
+        # EXECUTION RESULT HAS PRIORITY
+        # --------------------------------------------------
+        if execution_result:
+            if execution_result.get("success"):
+                return {
+                    "message": "Završeno. Sve je prošlo bez problema.",
+                    "state": state,
+                }
             return {
-                "message": "Koji SOP želiš pogledati?",
-                "status": "awaiting_selection",
+                "message": "Zaustavljeno. Došlo je do greške tokom izvršenja.",
+                "state": state,
             }
 
+        # --------------------------------------------------
+        # DECISION PENDING (CONFIRMATION)
+        # --------------------------------------------------
+        if decision and decision.get("decision_candidate") and not decision.get("confirmed"):
+            msg = decision.get("system_response") or "Želiš li da nastavim?"
+            return {
+                "message": msg,
+                "state": state,
+            }
+
+        # --------------------------------------------------
+        # EXECUTING
+        # --------------------------------------------------
+        if state == "EXECUTING":
+            return {
+                "message": "Radim. Javit ću kad završim.",
+                "state": state,
+            }
+
+        # --------------------------------------------------
+        # SOP ACTIVE (VIEWED, NOT EXECUTED)
+        # --------------------------------------------------
         if state == "SOP_ACTIVE":
             return {
-                "message": "Želiš li da pokrenem ovaj SOP?",
-                "status": "awaiting_confirmation",
+                "message": "Ovo je aktivni SOP. Reci ako želiš da ga izvršim.",
+                "state": state,
             }
 
-        if state == "DECISION_PENDING":
+        # --------------------------------------------------
+        # SOP LIST
+        # --------------------------------------------------
+        if state == "SOP_LIST":
             return {
-                "message": "Da li da nastavim?",
-                "status": "awaiting_confirmation",
+                "message": "Evo dostupnih SOP-ova.",
+                "state": state,
             }
 
+        # --------------------------------------------------
+        # DEFAULT / IDLE
+        # --------------------------------------------------
         return {
-            "message": "Razumijem.",
-            "status": "idle",
+            "message": "Razumijem. Nastavi.",
+            "state": state,
         }
