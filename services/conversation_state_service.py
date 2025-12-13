@@ -119,8 +119,6 @@ class ConversationStateService:
 
     def __init__(self):
         BASE_PATH.mkdir(parents=True, exist_ok=True)
-
-        # BOOTSTRAP SAFE INIT
         self._state: Optional[ConversationState] = None
         self._state = self._load()
 
@@ -231,5 +229,25 @@ class ConversationStateService:
             CSIState.IDLE.value,
             reason="set_idle",
             request_id=request_id,
+        )
+        return self.get()
+
+    # ============================================================
+    # SOP READ — VERZIJA C (READ-ONLY)
+    # ============================================================
+    def enter_sop_list(self):
+        self._transition(
+            CSIState.SOP_LIST.value,
+            reason="enter_sop_list",
+            request_id=None,
+        )
+        return self.get()
+
+    def enter_sop_active(self, sop_id: str):
+        self._state.active_sop_id = sop_id
+        self._transition(
+            CSIState.SOP_ACTIVE.value,
+            reason="enter_sop_active",
+            request_id=None,
         )
         return self.get()

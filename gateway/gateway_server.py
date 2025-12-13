@@ -1,5 +1,5 @@
 # ================================================================
-# SYSTEM VERSION (V1.0 FREEZE MARKER)
+# SYSTEM VERSION (V1.1 — VERZIJA C)
 # ================================================================
 import os
 import time
@@ -12,7 +12,7 @@ from system_version import (
 )
 
 # ================================================================
-# OS SAFETY CONTROLS (V1.0 HARDENING)
+# OS SAFETY CONTROLS
 # ================================================================
 OS_ENABLED = os.getenv("OS_ENABLED", "true").lower() == "true"
 OPS_SAFE_MODE = os.getenv("OPS_SAFE_MODE", "false").lower() == "true"
@@ -74,6 +74,7 @@ from routers.voice_router import router as voice_router
 from routers.adnan_ai_router import router as adnan_ai_router
 from routers.metrics_router import router as metrics_router
 from routers.alerting_router import router as alerting_router
+from routers.sop_query_router import router as sop_router
 
 # ================================================================
 # INITIAL LOAD
@@ -171,15 +172,16 @@ class CommandRequest(BaseModel):
     payload: dict
 
 # ================================================================
-# ROUTERS
+# ROUTERS REGISTRATION
 # ================================================================
 app.include_router(voice_router)
 app.include_router(adnan_ai_router)
 app.include_router(metrics_router)
 app.include_router(alerting_router)
+app.include_router(sop_router)
 
 # ================================================================
-# /ops/execute — AWARE OPERATOR PIPELINE (CSI ENFORCED)
+# /ops/execute — AWARE OPERATOR PIPELINE
 # ================================================================
 @app.post("/ops/execute")
 async def execute(req: CommandRequest):

@@ -3,8 +3,7 @@ from typing import Dict, Any, List, Optional
 import json
 
 # TAČAN PATH:
-# services/sop_knowledge_registry.py
-# → services/adnan_ai/sops/*.json
+# services/adnan_ai/sops/*.json
 BASE_PATH = Path(__file__).resolve().parent / "adnan_ai" / "sops"
 
 
@@ -21,7 +20,8 @@ class SOPKnowledgeRegistry:
     """
 
     def __init__(self):
-        BASE_PATH.mkdir(parents=True, exist_ok=True)
+        # READ-ONLY: ne diramo filesystem
+        pass
 
     # ============================================================
     # LIST
@@ -31,6 +31,9 @@ class SOPKnowledgeRegistry:
         Vraća listu svih SOP-ova (metadata).
         """
         sops: List[Dict[str, Any]] = []
+
+        if not BASE_PATH.exists():
+            return sops
 
         for path in BASE_PATH.glob("*.json"):
             try:
@@ -59,6 +62,9 @@ class SOPKnowledgeRegistry:
         """
         Dohvata SOP po ID-u.
         """
+        if mode not in {"summary", "full"}:
+            return None
+
         path = BASE_PATH / f"{sop_id}.json"
         if not path.exists():
             return None
