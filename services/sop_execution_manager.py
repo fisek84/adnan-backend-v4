@@ -10,19 +10,15 @@ logger = logging.getLogger(__name__)
 
 class SOPExecutionManager:
     """
-    SOPExecutionManager — FIRST-CLASS SOP EXECUTION (V0.5)
-
-    SOP IS:
-    - Identifiable
-    - Executable
-    - Stateful
-    - Measurable
+    SOPExecutionManager — EXECUTION GATED (FAZA E2)
 
     RULES:
-    - SOP lifecycle is explicit
-    - Steps remain atomic
-    - NO decisions
+    - No decisions
+    - No governance
+    - Pass-through execution context only
     """
+
+    EXECUTION_ENABLED = False  # 🔒 HARD GATE
 
     CONFIDENCE_HIGH = 0.95
     CONFIDENCE_MEDIUM = 0.75
@@ -46,6 +42,19 @@ class SOPExecutionManager:
         *,
         request_id: Optional[str] = None,
     ) -> Dict[str, Any]:
+
+        if not self.EXECUTION_ENABLED:
+            logger.warning("SOP execution blocked (EXECUTION_ENABLED = False)")
+            return {
+                "success": False,
+                "execution_state": "BLOCKED",
+                "sop_id": current_sop,
+                "request_id": request_id,
+                "started_at": None,
+                "finished_at": None,
+                "summary": "SOP execution is currently disabled.",
+                "results": [],
+            }
 
         sop_started_at = datetime.utcnow().isoformat()
 
@@ -71,26 +80,27 @@ class SOPExecutionManager:
                     parallel_steps.append(execution_plan[i])
                     i += 1
 
-                parallel_results = await self._execute_parallel(parallel_steps)
+                parallel_results = await self._execute_parallel(
+                    parallel_steps,
+                    current_sop=current_sop,
+                )
                 results.extend(parallel_results)
 
                 if any(
                     r["status"] == "failed" and r.get("critical")
                     for r in parallel_results
                 ):
-                    return self._finalize_sop(
-                        results,
-                        current_sop,
-                        sop_started_at,
-                        request_id,
-                    )
+                    break
 
                 continue
 
             # --------------------------------------------
             # SEQUENTIAL STEP
             # --------------------------------------------
-            step_result = await self._execute_step(step)
+            step_result = await self._execute_step(
+                step,
+                current_sop=current_sop,
+            )
             results.append(step_result)
 
             if step_result["status"] == "failed" and step_result.get("critical"):
@@ -122,22 +132,6 @@ class SOPExecutionManager:
         success = len(failed) == 0
         execution_state = "COMPLETED" if success else "FAILED"
 
-        try:
-            from services.memory_service import MemoryService
-            mem = MemoryService()
-            mem.store_decision_outcome(
-                decision_type="sop",
-                context_type="sop",
-                target=sop_id,
-                success=success,
-                metadata={
-                    "completed_steps": len(done),
-                    "failed_steps": len(failed),
-                },
-            )
-        except Exception:
-            pass
-
         return {
             "success": success,
             "execution_state": execution_state,
@@ -156,7 +150,7 @@ class SOPExecutionManager:
         }
 
     # ============================================================
-    # OPTIMIZATION + BIAS (UNCHANGED LOGIC)
+    # OPTIMIZATION (UNCHANGED)
     # ============================================================
     def _optimize_execution_plan(
         self,
@@ -169,13 +163,6 @@ class SOPExecutionManager:
             mem = MemoryService()
             optimized: List[Dict[str, Any]] = []
 
-            cross_sop_bias: List[Dict[str, Any]] = []
-            if current_sop:
-                try:
-                    cross_sop_bias = mem.get_cross_sop_bias(current_sop)
-                except Exception:
-                    cross_sop_bias = []
-
             for step in execution_plan:
                 step_id = step.get("step")
                 agent = step.get("agent")
@@ -187,47 +174,19 @@ class SOPExecutionManager:
 
                 success_rate = stats.get("success_rate", 0.5) if stats else 0.5
 
-                if success_rate >= self.CONFIDENCE_HIGH:
-                    tier = "high"
-                elif success_rate >= self.CONFIDENCE_MEDIUM:
-                    tier = "medium"
-                else:
-                    tier = "low"
+                tier = (
+                    "high"
+                    if success_rate >= self.CONFIDENCE_HIGH
+                    else "medium"
+                    if success_rate >= self.CONFIDENCE_MEDIUM
+                    else "low"
+                )
 
-                delegation_score = round(
+                step["delegation_score"] = round(
                     success_rate * self.TIER_MULTIPLIER[tier], 2
                 )
 
-                bias_boost = 0.0
-                for b in cross_sop_bias:
-                    if b.get("to") == step_id:
-                        bias_boost = b.get("success_rate", 0.0) * 0.1
-                        break
-
-                effective_confidence = success_rate + bias_boost
-
-                step["_confidence"] = effective_confidence
-                step["delegation_score"] = delegation_score
-                step["preferred_agent"] = agent
-                step["cross_sop_bias"] = round(bias_boost, 2)
-
-                if tier == "high":
-                    continue
-
-                if tier == "medium" and step.get("critical"):
-                    step["critical"] = False
-
                 optimized.append(step)
-
-            optimized.sort(
-                key=lambda s: (
-                    s.get("parallel", False),
-                    -s.get("_confidence", 0.5),
-                )
-            )
-
-            for s in optimized:
-                s.pop("_confidence", None)
 
             return optimized
 
@@ -238,45 +197,47 @@ class SOPExecutionManager:
     # PARALLEL EXECUTION
     # ============================================================
     async def _execute_parallel(
-        self, steps: List[Dict[str, Any]]
+        self,
+        steps: List[Dict[str, Any]],
+        *,
+        current_sop: Optional[str],
     ) -> List[Dict[str, Any]]:
-        tasks = [self._execute_step(step) for step in steps]
+        tasks = [
+            self._execute_step(step, current_sop=current_sop)
+            for step in steps
+        ]
         return await asyncio.gather(*tasks)
 
     # ============================================================
-    # STEP EXECUTION (UNCHANGED)
+    # STEP EXECUTION (HARDENED)
     # ============================================================
-    async def _execute_step(self, step: Dict[str, Any]) -> Dict[str, Any]:
+    async def _execute_step(
+        self,
+        step: Dict[str, Any],
+        *,
+        current_sop: Optional[str],
+    ) -> Dict[str, Any]:
+
         step_id = step.get("step")
-        agent = step.get("preferred_agent") or step.get("agent")
         command = step.get("command")
         payload = step.get("payload", {})
         critical = step.get("critical", False)
 
+        execution_context = {
+            "allowed": True,
+            "source": "sop_execution_manager",
+            "csi_state": "EXECUTING",
+            "sop_id": current_sop,
+            "step": step_id,
+        }
+
         result = await self.agents.execute(
             command=command,
             payload=payload,
+            execution_context=execution_context,
         )
 
-        delegation_meta = {
-            "agent": agent,
-            "preferred_agent": step.get("preferred_agent"),
-            "delegation_score": step.get("delegation_score"),
-            "cross_sop_bias": step.get("cross_sop_bias"),
-        }
-
         success = bool(result.get("success"))
-
-        try:
-            from services.memory_service import MemoryService
-            mem = MemoryService()
-            mem.record_execution(
-                decision_type="sop",
-                key=f"{agent}:{step_id}",
-                success=success,
-            )
-        except Exception:
-            pass
 
         if not success:
             return {
@@ -285,7 +246,6 @@ class SOPExecutionManager:
                 "critical": critical,
                 "confirmed": False,
                 "error": result,
-                "delegation_meta": delegation_meta,
             }
 
         return {
@@ -294,5 +254,4 @@ class SOPExecutionManager:
             "critical": critical,
             "confirmed": True,
             "result": result,
-            "delegation_meta": delegation_meta,
         }

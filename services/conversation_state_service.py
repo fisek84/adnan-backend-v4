@@ -112,15 +112,15 @@ class ConversationState:
 
 class ConversationStateService:
     """
-    CSI — V1.0 FINAL STATE AUTHORITY
+    CSI — V1.1 FINAL STATE AUTHORITY (FAZA D4)
 
     RULES:
     - All transitions MUST go through _transition
-    - Illegal transitions are soft-failed and audited
-    - READ-ONLY SOP handling in Version C
+    - Execution results MUST write back via apply_execution_state
+    - Illegal transitions are audited
     """
 
-    LOCKED = True  # V1.0 HARD LOCK
+    LOCKED = True  # HARD LOCK
 
     def __init__(self):
         BASE_PATH.mkdir(parents=True, exist_ok=True)
@@ -240,10 +240,6 @@ class ConversationStateService:
     # SOP STATES (VERSION C — READ ONLY)
     # -------------------------
     def set_sop_list(self, sops: List[Dict[str, Any]]):
-        """
-        Enter SOP_LIST state with available SOPs.
-        READ-ONLY.
-        """
         self._transition(
             CSIState.SOP_LIST.value,
             reason="set_sop_list",
@@ -254,10 +250,6 @@ class ConversationStateService:
         return self.get()
 
     def set_sop_active(self, sop_id: str):
-        """
-        Enter SOP_ACTIVE state.
-        READ-ONLY.
-        """
         self._transition(
             CSIState.SOP_ACTIVE.value,
             reason="set_sop_active",
@@ -265,4 +257,27 @@ class ConversationStateService:
         )
         self._state.active_sop_id = sop_id
         self._persist(self._state, reason="sop_active_selected")
+        return self.get()
+
+    # -------------------------
+    # EXECUTION WRITE-BACK (FAZA D4)
+    # -------------------------
+    def apply_execution_state(
+        self,
+        *,
+        next_csi_state: Optional[str],
+        request_id: Optional[str],
+        reason: str,
+    ):
+        """
+        Canonical write-back entrypoint from ExecutionOrchestrator.
+        """
+        if not next_csi_state:
+            return self.get()
+
+        self._transition(
+            next_csi_state,
+            reason=reason,
+            request_id=request_id,
+        )
         return self.get()

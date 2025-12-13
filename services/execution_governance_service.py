@@ -1,18 +1,13 @@
 # services/execution_governance_service.py
 
 """
-EXECUTION GOVERNANCE SERVICE — FAZA 19 (FINAL LOCKDOWN)
+EXECUTION GOVERNANCE SERVICE — FAZA D2 (EXPLICIT APPROVAL)
 
 Uloga:
 - centralna, zadnja tačka odluke prije izvršenja
-- kombinuje signale iz:
-  - PolicyService
-  - RBACService
-  - ApprovalStateService
-  - ActionSafetyService
 - NE izvršava ništa
 - NE donosi poslovne odluke
-- vraća determinističku odluku: ALLOWED / BLOCKED
+- vraća determinističku odluku + CSI tranziciju
 """
 
 from typing import Dict, Any, Optional
@@ -30,9 +25,6 @@ class ExecutionGovernanceService:
         self.approvals = ApprovalStateService()
         self.safety = ActionSafetyService()
 
-        # --------------------------------------------------------
-        # GOVERNANCE LIMITS — CANONICAL (V1.0)
-        # --------------------------------------------------------
         self.governance_limits = {
             "max_execution_time_seconds": 30,
             "retry_policy": {
@@ -55,14 +47,7 @@ class ExecutionGovernanceService:
         approval_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        Vraća:
-        {
-            "allowed": bool,
-            "reason": "...",
-            "source": "...",
-            "read_only": True,
-            "governance": {...}
-        }
+        Returns deterministic execution decision + CSI transition.
         """
 
         # --------------------------------------------------------
@@ -104,17 +89,21 @@ class ExecutionGovernanceService:
             )
 
         # --------------------------------------------------------
-        # 5. APPROVAL STATE (IF REQUIRED)
+        # 5. APPROVAL STATE
         # --------------------------------------------------------
         if approval_id:
             if not self.approvals.is_fully_approved(approval_id):
-                return self._block(
-                    reason="Required approvals are not completed.",
-                    source="approval",
-                )
+                return {
+                    "allowed": False,
+                    "reason": "Awaiting required approvals.",
+                    "source": "approval",
+                    "read_only": True,
+                    "next_csi_state": "DECISION_PENDING",
+                    "governance": self.governance_limits,
+                }
 
         # --------------------------------------------------------
-        # 6. GLOBAL POLICY (FINAL)
+        # 6. GLOBAL POLICY
         # --------------------------------------------------------
         global_policy = self.policy.get_global_policy()
         if not global_policy.get("allow_write_actions", True):
@@ -124,13 +113,14 @@ class ExecutionGovernanceService:
             )
 
         # --------------------------------------------------------
-        # ALLOWED
+        # ALLOWED → EXECUTION
         # --------------------------------------------------------
         return {
             "allowed": True,
             "reason": "Execution allowed by governance.",
             "source": "governance",
             "read_only": True,
+            "next_csi_state": "EXECUTING",
             "governance": self.governance_limits,
         }
 
@@ -143,5 +133,6 @@ class ExecutionGovernanceService:
             "reason": reason,
             "source": source,
             "read_only": True,
+            "next_csi_state": "IDLE",
             "governance": self.governance_limits,
         }

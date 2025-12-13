@@ -14,13 +14,12 @@ class SOPKnowledgeRegistry:
     Pravila:
     - READ-ONLY
     - svi SOP-ovi su fajlovi
+    - filename = canonical SOP ID
     - nema logike izvršenja
     - nema memorije
-    - ovo je znanje, ne akcija
     """
 
     def __init__(self):
-        # READ-ONLY: ne diramo filesystem
         pass
 
     # ============================================================
@@ -36,13 +35,15 @@ class SOPKnowledgeRegistry:
             return sops
 
         for path in BASE_PATH.glob("*.json"):
+            sop_id = path.stem  # CANONICAL ID
+
             try:
                 with open(path, "r", encoding="utf-8") as f:
                     data = json.load(f)
 
                 sops.append({
-                    "id": data.get("id") or path.stem,
-                    "name": data.get("name", path.stem),
+                    "id": sop_id,
+                    "name": data.get("name", sop_id),
                     "version": data.get("version", "1.0"),
                     "description": data.get("description", ""),
                 })
@@ -60,7 +61,7 @@ class SOPKnowledgeRegistry:
         mode: str = "summary",  # summary | full
     ) -> Optional[Dict[str, Any]]:
         """
-        Dohvata SOP po ID-u.
+        Dohvata SOP po ID-u (filename = ID).
         """
         if mode not in {"summary", "full"}:
             return None
@@ -74,8 +75,8 @@ class SOPKnowledgeRegistry:
 
         if mode == "summary":
             return {
-                "id": data.get("id"),
-                "name": data.get("name"),
+                "id": sop_id,
+                "name": data.get("name", sop_id),
                 "version": data.get("version"),
                 "description": data.get("description"),
                 "steps": [
@@ -89,8 +90,8 @@ class SOPKnowledgeRegistry:
 
         # FULL
         return {
-            "id": data.get("id"),
-            "name": data.get("name"),
+            "id": sop_id,
+            "name": data.get("name", sop_id),
             "version": data.get("version"),
             "description": data.get("description"),
             "content": data,

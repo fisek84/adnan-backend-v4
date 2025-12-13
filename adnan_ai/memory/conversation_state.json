@@ -1,0 +1,10 @@
+{
+  "state": "IDLE",
+  "expected_input": "free",
+  "sop_list": [],
+  "active_sop_id": null,
+  "pending_decision": null,
+  "request_id": null,
+  "last_update_reason": null,
+  "ts": 1765623334.0527468
+}

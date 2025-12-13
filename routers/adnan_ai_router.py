@@ -7,6 +7,7 @@ import logging
 from services.intent_classifier import IntentClassifier
 from services.intent_csi_binder import IntentCSIBinder
 from services.conversation_state_service import ConversationStateService, CSIState
+from services.approval_state_service import ApprovalStateService
 
 from services.adnan_ai_decision_service import AdnanAIDecisionService
 from services.execution_orchestrator import ExecutionOrchestrator
@@ -27,6 +28,7 @@ logger.setLevel(logging.INFO)
 intent_classifier = IntentClassifier()
 intent_binder = IntentCSIBinder()
 conversation_state = ConversationStateService()
+approval_service = ApprovalStateService()
 
 decision_service = AdnanAIDecisionService()
 execution_orchestrator = ExecutionOrchestrator()
@@ -52,7 +54,7 @@ async def adnan_ai_input(payload: AdnanAIInput):
     Canonical Adnan.AI natural language entrypoint.
 
     FLOW:
-    Intent → CSI → Decision → Governance → EXEC → Response
+    Intent → CSI → Decision → Governance → EXEC → CSI WRITE-BACK → Response
     """
 
     try:
@@ -60,10 +62,35 @@ async def adnan_ai_input(payload: AdnanAIInput):
         if not user_text:
             raise HTTPException(status_code=400, detail="Empty input")
 
-        # ==================================================
-        # METRICS — INPUT
-        # ==================================================
         MetricsService.incr("input.total")
+
+        # --------------------------------------------------
+        # APPROVAL COMMAND (FAZA D6)
+        # --------------------------------------------------
+        if user_text.lower() == "approve":
+            csi = conversation_state.get()
+            approval_id = csi.get("pending_decision", {}).get("approval_id")
+
+            if not approval_id:
+                return {
+                    "ok": False,
+                    "response": {"message": "Nema aktivnog approval zahtjeva."},
+                    "state": csi["state"],
+                }
+
+            updated = approval_service.approve_next_level(
+                approval_id=approval_id,
+                approved_by="ceo",
+            )
+
+            return {
+                "ok": True,
+                "response": {
+                    "message": "Approval nivo odobren.",
+                    "approval": updated,
+                },
+                "state": csi["state"],
+            }
 
         # --------------------------------------------------
         # 1. INTENT CLASSIFICATION
@@ -97,32 +124,19 @@ async def adnan_ai_input(payload: AdnanAIInput):
         MetricsService.incr(f"csi.transition.{binder_result.next_state}")
 
         # --------------------------------------------------
-        # 4. APPLY CSI TRANSITION (DATA ONLY)
+        # 4. APPLY CSI TRANSITION (SAFE)
         # --------------------------------------------------
         if binder_result.next_state != current_state:
-            if binder_result.next_state == CSIState.IDLE.value:
-                conversation_state.set_idle()
+            conversation_state.apply_execution_state(
+                next_csi_state=binder_result.next_state,
+                request_id=None,
+                reason="intent_binding",
+            )
 
-            elif binder_result.next_state == CSIState.SOP_LIST.value:
-                conversation_state._state.state = CSIState.SOP_LIST.value
-                conversation_state._save_state(conversation_state._state)
-
-            elif binder_result.next_state == CSIState.SOP_ACTIVE.value:
-                conversation_state._state.state = CSIState.SOP_ACTIVE.value
-                conversation_state._save_state(conversation_state._state)
-
-            elif binder_result.next_state == CSIState.DECISION_PENDING.value:
-                conversation_state._state.state = CSIState.DECISION_PENDING.value
-                conversation_state._save_state(conversation_state._state)
-
-            elif binder_result.next_state == CSIState.EXECUTING.value:
-                conversation_state.set_executing()
-
-        # refresh snapshot after transition
         csi_snapshot = conversation_state.get()
 
         # --------------------------------------------------
-        # 5. DECISION BUILDING (NO EXECUTION)
+        # 5. DECISION BUILDING
         # --------------------------------------------------
         decision = None
         if binder_result.action:
@@ -133,13 +147,8 @@ async def adnan_ai_input(payload: AdnanAIInput):
                 csi_state=csi_snapshot,
             )
 
-        if decision:
-            MetricsService.incr("decision.created")
-            if decision.get("confirmed"):
-                MetricsService.incr("decision.confirmed")
-
         # --------------------------------------------------
-        # 6. GOVERNANCE + EXECUTION (ONLY IF CONFIRMED)
+        # 6. GOVERNANCE + EXECUTION
         # --------------------------------------------------
         execution_result = None
         if decision and decision.get("confirmed") and decision.get("decision_candidate"):
@@ -147,34 +156,24 @@ async def adnan_ai_input(payload: AdnanAIInput):
             policy = governance_service.evaluate(decision)
 
             if not policy["allowed"]:
-                MetricsService.incr("governance.blocked")
-                MetricsService.emit("governance.block", {
-                    "reason": policy["reason"],
-                })
-
                 return {
                     "ok": False,
-                    "response": {
-                        "message": policy["reason"],
-                        "status": "blocked",
-                    },
+                    "response": {"message": policy["reason"]},
                     "state": conversation_state.get()["state"],
                 }
 
             execution_result = await execution_orchestrator.execute(decision)
 
-            MetricsService.incr("execution.total")
-            if execution_result.get("success"):
-                MetricsService.incr("execution.success")
-            else:
-                MetricsService.incr("execution.failed")
+            conversation_state.apply_execution_state(
+                next_csi_state=execution_result.get("csi_next_state"),
+                request_id=execution_result.get("execution_id"),
+                reason="execution_result",
+            )
 
-            # after execution → CSI back to IDLE
-            conversation_state.set_idle()
             csi_snapshot = conversation_state.get()
 
         # --------------------------------------------------
-        # 7. RESPONSE FORMATTING (CEO-GRADE)
+        # 7. RESPONSE
         # --------------------------------------------------
         response = response_formatter.format(
             intent=intent.type.value,

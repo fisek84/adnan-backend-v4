@@ -87,6 +87,12 @@ class AdnanAIDecisionService:
     NEMA izvršenja.
     """
 
+    WRITE_COMMANDS = {
+        "create_database_entry",
+        "update_database_entry",
+        "delete_page",
+    }
+
     def __init__(self):
         self.identity = self._load("identity.json")
         self.kernel = self._load("kernel.json")
@@ -176,7 +182,7 @@ class AdnanAIDecisionService:
                 "system_response": "Razumijem.",
             }
 
-        return {
+        decision = {
             "decision_candidate": True,
             "executor": "notion_ops",
             "command": command_block["command"],
@@ -185,6 +191,14 @@ class AdnanAIDecisionService:
             "confirmed": False,
             "system_response": natural_response(command_block["command"]),
         }
+
+        # ========================================================
+        # FAZA F3 — WRITE INTENT PROPAGATION
+        # ========================================================
+        if command_block["command"] in self.WRITE_COMMANDS:
+            decision["write_intent"] = True
+
+        return decision
 
     # ============================================================
     # INTENT DETECTION — LEGACY
@@ -261,13 +275,7 @@ class AdnanAIDecisionService:
         confidence: float,
         csi_state: Dict[str, Any],
     ) -> Dict[str, Any]:
-        """
-        Adapter entrypoint.
-        Accepts structured signal from CSI pipeline.
-        DOES NOT execute.
-        """
 
-        # Safety: no action, no decision
         if not action:
             return {
                 "decision_candidate": False,
@@ -277,7 +285,6 @@ class AdnanAIDecisionService:
                 "system_response": "Razumijem.",
             }
 
-        # SOP execution confirmed by CSI
         if action == "request_execution":
             sop_id = csi_state.get("active_sop_id")
             if not sop_id:
@@ -313,7 +320,6 @@ class AdnanAIDecisionService:
                 "system_response": f"SOP '{sop['name']}' je spreman za izvršenje.",
             }
 
-        # Unknown action → safe no-op
         return {
             "decision_candidate": False,
             "executor": None,

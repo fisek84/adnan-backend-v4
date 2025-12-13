@@ -1,7 +1,7 @@
 import logging
 import uuid
 from datetime import datetime
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from services.notion_ops.ops_engine import NotionOpsEngine
 
@@ -11,19 +11,13 @@ logging.basicConfig(level=logging.INFO)
 
 class AgentsService:
     """
-    AgentsService — FAZA 3 / KORAK 2
-
-    FAZA 7.3:
-    - pasivna agent load awareness (execution stats)
-
-    FAZA 8.3:
-    - soft overload protection (READ-ONLY SIGNAL)
+    AgentsService — FAZA E1 (EXECUTION HARDENING)
 
     Pravila:
-    - NEMA sync/async miješanja
-    - NEMA asyncio.run
-    - NEMA schedulera
-    - JSON serializable output
+    - Agent NE SMIJE izvršavati bez eksplicitnog execution_context
+    - NEMA odluka
+    - NEMA governance
+    - NEMA CSI mutacija
     """
 
     OVERLOAD_MIN_TOTAL = 5
@@ -34,16 +28,39 @@ class AgentsService:
         self.agent_name = "notion_ops"
 
     # ============================================================
-    # PUBLIC ASYNC ENTRYPOINT
+    # PUBLIC ASYNC ENTRYPOINT (HARDENED)
     # ============================================================
-    async def execute(self, command: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    async def execute(
+        self,
+        *,
+        command: str,
+        payload: Dict[str, Any],
+        execution_context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+
+        # --------------------------------------------------------
+        # HARD EXECUTION GATE (FAZA E1)
+        # --------------------------------------------------------
+        if not execution_context or execution_context.get("allowed") is not True:
+            logger.error(
+                "[AgentsService] BLOCKED execution | context=%s",
+                execution_context,
+            )
+            return {
+                "success": False,
+                "summary": "Agent execution blocked by missing or invalid execution context.",
+                "job": None,
+            }
+
         job_id = str(uuid.uuid4())
         started_at = datetime.utcnow().isoformat()
 
         logger.info(
-            "[AgentsService] job_id=%s command=%s",
+            "[AgentsService] job_id=%s command=%s source=%s csi=%s",
             job_id,
             command,
+            execution_context.get("source"),
+            execution_context.get("csi_state"),
         )
 
         job = {
@@ -55,13 +72,11 @@ class AgentsService:
             "finished_at": None,
             "result": None,
             "error": None,
-            "agent_state": None,  # FAZA 8.3
+            "agent_state": None,
+            "execution_context": execution_context,
         }
 
         try:
-            # ----------------------------------------------------
-            # RUNNING
-            # ----------------------------------------------------
             job["status"] = "running"
 
             if command in {
@@ -76,17 +91,11 @@ class AgentsService:
             else:
                 raise ValueError("Nepoznata ili nepodržana agent operacija.")
 
-            # ----------------------------------------------------
-            # DONE
-            # ----------------------------------------------------
             job["status"] = "done"
             job["result"] = result
             job["finished_at"] = datetime.utcnow().isoformat()
 
-            # FAZA 7.3 — RECORD AGENT SUCCESS
             self._record_agent_execution(success=True)
-
-            # FAZA 8.3 — EVALUATE AGENT STATE (SOFT)
             job["agent_state"] = self._evaluate_agent_state()
 
             return {
@@ -102,10 +111,7 @@ class AgentsService:
             job["error"] = str(e)
             job["finished_at"] = datetime.utcnow().isoformat()
 
-            # FAZA 7.3 — RECORD AGENT FAILURE
             self._record_agent_execution(success=False)
-
-            # FAZA 8.3 — EVALUATE AGENT STATE (SOFT)
             job["agent_state"] = self._evaluate_agent_state()
 
             return {
@@ -118,10 +124,6 @@ class AgentsService:
     # FAZA 7.3 — PASSIVE AGENT STATS
     # ============================================================
     def _record_agent_execution(self, success: bool):
-        """
-        Pasivno bilježenje execution signala.
-        Nikad ne smije srušiti agenta.
-        """
         try:
             from services.memory_service import MemoryService
 
@@ -138,10 +140,6 @@ class AgentsService:
     # FAZA 8.3 — SOFT OVERLOAD EVALUATION
     # ============================================================
     def _evaluate_agent_state(self) -> str:
-        """
-        READ-ONLY evaluacija stanja agenta.
-        NEMA side-effecta.
-        """
         try:
             from services.memory_service import MemoryService
 

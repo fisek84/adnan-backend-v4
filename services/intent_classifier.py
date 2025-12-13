@@ -1,4 +1,4 @@
-# C:\adnan-backend-v4\services\intent_classifier.py
+# services/intent_classifier.py
 
 import re
 from typing import Optional
@@ -33,9 +33,9 @@ class IntentClassifier:
             return Intent(IntentType.RESET, 0.95)
 
         # ----------------------------------------------------
-        # LIST SOPs
+        # LIST SOPs (ROBUST)
         # ----------------------------------------------------
-        if self._match(t, r"\b(pokaži|prikaži|listaj|daj).*(sop|procedure|procedura)\b"):
+        if self._match(t, r"\b(sop|procedure|procedura)\b"):
             return Intent(IntentType.LIST_SOPS, 0.9)
 
         # ----------------------------------------------------

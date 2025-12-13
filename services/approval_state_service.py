@@ -1,15 +1,14 @@
 # services/approval_state_service.py
 
 """
-APPROVAL STATE SERVICE — FAZA 18 (DESCRIPTIVE ONLY)
+APPROVAL STATE SERVICE — FAZA D5 (MINIMAL LIFECYCLE)
 
 Uloga:
 - modelira stanje višeslojnih odobrenja
-- veže se za approval_id
-- prati koji nivoi su odobreni / koji nedostaju
+- approval ima kontrolisan lifecycle
 - NEMA izvršenja
 - NEMA automatike
-- READ-ONLY signal za CEO / UI / Gateway
+- deterministički approval tok
 """
 
 from typing import Dict, Any, List, Optional
@@ -18,12 +17,11 @@ from datetime import datetime
 
 class ApprovalStateService:
     def __init__(self):
-        # In-memory state (kanonski READ-ONLY za ovu fazu)
-        # Ključ: approval_id
+        # In-memory state (kanonski za FAZU D)
         self._approvals: Dict[str, Dict[str, Any]] = {}
 
     # ============================================================
-    # CREATE / REGISTER (DESCRIPTIVE)
+    # CREATE / REGISTER
     # ============================================================
     def register_approval(
         self,
@@ -33,20 +31,52 @@ class ApprovalStateService:
         initiated_by: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """
-        Registruje novo approval stanje.
-        Ne znači da je išta odobreno.
-        """
 
         if approval_id not in self._approvals:
             self._approvals[approval_id] = {
                 "approval_id": approval_id,
                 "required_levels": list(required_levels),
                 "approved_levels": [],
+                "approval_log": [],
                 "initiated_by": initiated_by,
                 "created_at": datetime.utcnow().isoformat(),
                 "metadata": metadata or {},
             }
+
+        return self.get_state(approval_id)
+
+    # ============================================================
+    # APPROVE (ONE LEVEL AT A TIME)
+    # ============================================================
+    def approve_next_level(
+        self,
+        *,
+        approval_id: str,
+        approved_by: str,
+        note: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+
+        state = self._approvals.get(approval_id)
+        if not state:
+            return None
+
+        approved = state.get("approved_levels", [])
+        required = state.get("required_levels", [])
+
+        if len(approved) >= len(required):
+            return self.get_state(approval_id)
+
+        next_level = required[len(approved)]
+
+        approved.append(next_level)
+        state["approved_levels"] = approved
+
+        state["approval_log"].append({
+            "level": next_level,
+            "approved_by": approved_by,
+            "note": note,
+            "ts": datetime.utcnow().isoformat(),
+        })
 
         return self.get_state(approval_id)
 
@@ -109,6 +139,7 @@ class ApprovalStateService:
                 required[len(approved)] if len(approved) < len(required) else None
             ),
             "fully_approved": approved == required,
+            "approval_log": list(state.get("approval_log", [])),
             "initiated_by": state.get("initiated_by"),
             "created_at": state.get("created_at"),
             "metadata": state.get("metadata", {}),

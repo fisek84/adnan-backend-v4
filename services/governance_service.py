@@ -6,14 +6,26 @@ from datetime import datetime
 
 class GovernanceService:
     """
-    Governance / Policy Layer
+    Governance / Policy Layer — FAZA F2 (EXPLICIT WRITE INTENT)
 
     PURPOSE:
     - Final permission check before execution
-    - No decisions
-    - No execution
+    - HARD global write gate
+    - Explicit write intent required
     - Deterministic rules only
     """
+
+    # ============================================================
+    # GLOBAL WRITE SWITCH (FAZA F1)
+    # ============================================================
+    GLOBAL_WRITE_ENABLED = True  # 🔓 ENABLED — FAZA F4
+
+    WRITE_COMMANDS = {
+        "create_database_entry",
+        "update_database_entry",
+        "create_page",
+        "delete_page",
+    }
 
     def __init__(self):
         pass
@@ -32,21 +44,31 @@ class GovernanceService:
         }
         """
 
-        # --------------------------------------------------
-        # BASIC VALIDATION
-        # --------------------------------------------------
         if not decision:
             return self._deny("Nema odluke za evaluaciju.")
 
         executor = decision.get("executor")
         command = decision.get("command")
-        payload = decision.get("payload", {})
 
         if not executor or not command:
             return self._deny("Nepotpuna odluka.")
 
         # --------------------------------------------------
-        # TIME-BASED RULE (EXAMPLE)
+        # WRITE INTENT + GLOBAL WRITE LOCK (FAZA F2)
+        # --------------------------------------------------
+        if command in self.WRITE_COMMANDS:
+            if not self.GLOBAL_WRITE_ENABLED:
+                return self._deny(
+                    "Global WRITE je onemogućen (safety lock)."
+                )
+
+            if decision.get("write_intent") is not True:
+                return self._deny(
+                    "WRITE operacija zahtijeva eksplicitni write_intent."
+                )
+
+        # --------------------------------------------------
+        # TIME-BASED RULE (SECONDARY)
         # --------------------------------------------------
         hour = datetime.utcnow().hour
         if executor == "notion_ops" and hour < 5:

@@ -68,6 +68,11 @@ from services.memory_service import MemoryService
 from services.notion_service import NotionService
 
 # ================================================================
+# SOP
+# ================================================================
+from services.sop_knowledge_registry import SOPKnowledgeRegistry
+
+# ================================================================
 # ROUTERS
 # ================================================================
 from routers.voice_router import router as voice_router
@@ -102,6 +107,8 @@ governance_service = ExecutionGovernanceService()
 conversation_state_service = ConversationStateService()
 awareness_service = AwarenessService()
 response_formatter = ResponseFormatter()
+
+sop_registry = SOPKnowledgeRegistry()
 
 # ================================================================
 # NOTION SERVICE
@@ -187,6 +194,56 @@ app.include_router(sop_router)
 async def execute(req: CommandRequest):
     global _LAST_CALL_TS
 
+    user_text = (req.payload.get("text") or req.payload.get("query") or "").strip().lower()
+    csi_state = conversation_state_service.get()
+
+    # ============================================================
+    # SOP READ — LIST (KORAK 1)
+    # ============================================================
+    if user_text in {"pokaži sop", "pokazi sop", "show sop"}:
+        conversation_state_service.set_sop_list()
+
+        sop_list = sop_registry.list_sops()
+
+        awareness = awareness_service.build_snapshot(
+            command=None,
+            csi_state=conversation_state_service.get(),
+        )
+
+        return response_formatter.format(
+            intent="sop_list",
+            confidence=1.0,
+            csi_state=conversation_state_service.get(),
+            execution_result={"sops": sop_list},
+            awareness=awareness,
+            request_id=None,
+        )
+
+    # ============================================================
+    # SOP READ — SELECT (KORAK 2)
+    # ============================================================
+    if csi_state == "SOP_LIST":
+        sop = sop_registry.get_sop(user_text, mode="full")
+        if sop:
+            conversation_state_service.set_sop_active(sop_id=user_text)
+
+            awareness = awareness_service.build_snapshot(
+                command=None,
+                csi_state=conversation_state_service.get(),
+            )
+
+            return response_formatter.format(
+                intent="sop_active",
+                confidence=1.0,
+                csi_state=conversation_state_service.get(),
+                execution_result={"sop": sop},
+                awareness=awareness,
+                request_id=None,
+            )
+
+    # ============================================================
+    # STANDARD FLOW
+    # ============================================================
     if not OS_ENABLED:
         awareness = awareness_service.build_snapshot(
             command=None,
@@ -225,7 +282,6 @@ async def execute(req: CommandRequest):
         mode_snapshot=mode,
     )
 
-    user_text = req.payload.get("text") or req.payload.get("query") or ""
     orch = await orchestrator.run(user_text)
     decision_output = orch.get("result", {})
 
@@ -256,14 +312,6 @@ async def execute(req: CommandRequest):
 
             execution_result = await workflow_service.execute_workflow(workflow)
 
-            execution_state = execution_result.get("execution_state")
-
-            if execution_state:
-                conversation_state_service.sync_from_execution(
-                    execution_state=execution_state,
-                    request_id=command.request_id,
-                )
-
     return response_formatter.format(
         intent=req.command,
         confidence=1.0,
@@ -273,19 +321,3 @@ async def execute(req: CommandRequest):
         awareness=awareness,
         request_id=command.request_id,
     )
-
-# ================================================================
-# DIRECT AI CONTEXT
-# ================================================================
-@app.post("/ai/context")
-async def ai_context(req: dict):
-    user_input = req.get("text")
-    if not user_input:
-        raise HTTPException(400, "Missing field: text")
-
-    orch = await orchestrator.run(user_input)
-
-    return {
-        "success": True,
-        "engine_output": orch,
-    }

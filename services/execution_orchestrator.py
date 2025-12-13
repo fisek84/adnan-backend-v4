@@ -5,34 +5,33 @@ from uuid import uuid4
 
 from services.sop_execution_manager import SOPExecutionManager
 from services.notion_ops.ops_engine import NotionOpsEngine
+from services.execution_governance_service import ExecutionGovernanceService
 
 logger = logging.getLogger(__name__)
 
 
 class ExecutionOrchestrator:
     """
-    ExecutionOrchestrator — V1.1 EXECUTION → CSI CONTRACT AUTHORITY
+    ExecutionOrchestrator — V1.2 EXECUTION → CSI ENFORCED
 
     RULES:
-    - ALL executors MUST comply with this contract
-    - This is the ONLY place execution results are normalized
-    - CSI transition intent is EXPLICIT
+    - Governance decision is MANDATORY
+    - CSI transition is enforced BEFORE execution
+    - No execution without explicit EXECUTING state
     """
 
-    # ============================================================
-    # EXECUTION STATE LOCK (V1.1)
-    # ============================================================
     STATE_COMPLETED = "COMPLETED"
     STATE_FAILED = "FAILED"
 
     CSI_COMPLETED = "COMPLETED"
     CSI_FAILED = "FAILED"
 
-    CONTRACT_VERSION = "1.1"
+    CONTRACT_VERSION = "1.2"
 
     def __init__(self):
         self._sop_executor = SOPExecutionManager()
         self._notion_executor = NotionOpsEngine()
+        self._governance = ExecutionGovernanceService()
 
     async def execute(
         self,
@@ -60,6 +59,38 @@ class ExecutionOrchestrator:
             )
 
         # --------------------------------------------------
+        # GOVERNANCE (FAZA D3)
+        # --------------------------------------------------
+        governance = self._governance.evaluate(
+            role=decision.get("role", "system"),
+            context_type=decision.get("context_type", "sop"),
+            directive=command,
+            params=payload,
+            approval_id=decision.get("approval_id"),
+        )
+
+        next_csi = governance.get("next_csi_state")
+
+        if not governance.get("allowed") or next_csi != "EXECUTING":
+            return {
+                "execution_id": execution_id,
+                "success": False,
+                "execution_state": "BLOCKED",
+                "csi_next_state": next_csi,
+                "executor": executor,
+                "summary": governance.get("reason"),
+                "started_at": started_at,
+                "finished_at": datetime.utcnow().isoformat(),
+                "details": {"governance": governance},
+                "audit": {
+                    "contract_version": self.CONTRACT_VERSION,
+                    "executor": executor,
+                    "success": False,
+                    "timestamp": datetime.utcnow().isoformat(),
+                },
+            }
+
+        # --------------------------------------------------
         # DRY RUN
         # --------------------------------------------------
         if dry_run:
@@ -77,7 +108,7 @@ class ExecutionOrchestrator:
 
         try:
             # --------------------------------------------------
-            # ROUTING
+            # ROUTING (EXECUTING ONLY)
             # --------------------------------------------------
             if executor == "sop_execution_manager":
                 execution_plan = payload.get("execution_plan")
@@ -110,9 +141,6 @@ class ExecutionOrchestrator:
                     started_at=started_at,
                 )
 
-            # --------------------------------------------------
-            # CONTRACT ENFORCEMENT
-            # --------------------------------------------------
             if not isinstance(raw, dict):
                 return self._fail(
                     execution_id=execution_id,
@@ -142,7 +170,7 @@ class ExecutionOrchestrator:
             )
 
     # ============================================================
-    # CONTRACT HELPERS (PRIVATE)
+    # CONTRACT HELPERS
     # ============================================================
     def _success(
         self,
