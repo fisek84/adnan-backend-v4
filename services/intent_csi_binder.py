@@ -3,8 +3,7 @@
 from typing import Optional
 
 from services.intent_contract import Intent, IntentType
-from services.conversation_state_service import CSIState
-from services.csi_state_machine import CSIStateMachine
+from services.conversation_state_service import CSIState, ALLOWED_TRANSITIONS
 
 
 # ============================================================
@@ -28,17 +27,13 @@ class IntentCSIBinder:
     RULES:
     - No execution
     - No decisions
-    - State transitions validated by CSIStateMachine
+    - State transitions validated by CSI rules
     """
-
-    def __init__(self):
-        self._sm = CSIStateMachine()
 
     def bind(self, intent: Intent, current_state: str) -> BinderResult:
         try:
             state = CSIState(current_state)
         except Exception:
-            # hard safety fallback
             return BinderResult(next_state=CSIState.IDLE.value)
 
         # ----------------------------------------------------
@@ -89,7 +84,7 @@ class IntentCSIBinder:
                 action = "confirm_execution"
 
             elif intent.type == IntentType.CANCEL:
-                desired_state = CSIState.CANCELLED.value
+                desired_state = CSIState.IDLE.value
                 action = "cancel_execution"
 
         # ----------------------------------------------------
@@ -99,13 +94,10 @@ class IntentCSIBinder:
             desired_state = CSIState.EXECUTING.value
 
         # ----------------------------------------------------
-        # VALIDATION (POZICIONI ARGUMENTI — KLJUČNO)
+        # VALIDATION (KANONSKA)
         # ----------------------------------------------------
-        if not self._sm.is_transition_allowed(
-            state.value,
-            desired_state,
-        ):
-            # illegal transition → ignore intent
+        allowed = ALLOWED_TRANSITIONS.get(state.value, set())
+        if desired_state not in allowed:
             return BinderResult(next_state=state.value)
 
         return BinderResult(
