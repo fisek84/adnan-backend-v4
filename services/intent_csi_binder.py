@@ -52,12 +52,10 @@ class IntentCSIBinder:
         # IDLE
         # ----------------------------------------------------
         if state == CSIState.IDLE:
-
             if intent.type == IntentType.LIST_SOPS:
                 desired_state = CSIState.SOP_LIST.value
                 action = "list_sops"
 
-            # ✅ FAZA F5.1 — CREATE INTENT (CONTROLLED)
             elif intent.type == IntentType.CREATE:
                 desired_state = CSIState.DECISION_PENDING.value
                 action = "create"
@@ -85,7 +83,7 @@ class IntentCSIBinder:
                 desired_state = CSIState.IDLE.value
 
         # ----------------------------------------------------
-        # DECISION PENDING
+        # DECISION PENDING (CRITICAL FIX)
         # ----------------------------------------------------
         elif state == CSIState.DECISION_PENDING:
             if intent.type == IntentType.CONFIRM:
@@ -95,6 +93,13 @@ class IntentCSIBinder:
             elif intent.type == IntentType.CANCEL:
                 desired_state = CSIState.IDLE.value
                 action = "cancel_execution"
+
+            else:
+                # IGNORE everything else (CREATE, LIST, etc.)
+                return BinderResult(
+                    next_state=CSIState.DECISION_PENDING.value,
+                    action=None,
+                )
 
         # ----------------------------------------------------
         # EXECUTING (LOCKED)
