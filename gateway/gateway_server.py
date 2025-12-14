@@ -200,7 +200,7 @@ class CommandRequest(BaseModel):
     payload: dict
 
 # ================================================================
-# /ops/execute — CSI-CENTRIC PIPELINE
+# /ops/execute — CSI-CENTRIC PIPELINE (DEBUG ENABLED)
 # ================================================================
 @app.post("/ops/execute")
 async def execute(req: CommandRequest):
@@ -245,43 +245,10 @@ async def execute(req: CommandRequest):
     orch = await orchestrator.run(user_text)
     decision_output = orch.get("result", {})
 
-    awareness = awareness_service.build_snapshot(
-        command=command,
-        csi_state=conversation_state_service.get(),
-        decision=decision_output,
-    )
-
-    execution_result = None
-
-    if decision_output.get("type") == "delegation":
-        delegation = decision_output.get("delegation", {})
-        cmd = delegation.get("command")
-        payload = delegation.get("payload") or {}
-
-        if cmd:
-            conversation_state_service.set_executing(
-                request_id=command.request_id
-            )
-
-            workflow = {
-                "type": "workflow",
-                "steps": [
-                    {"directive": cmd, "params": payload}
-                ],
-            }
-
-            execution_result = await workflow_service.execute_workflow(workflow)
-
-            conversation_state_service.set_idle(
-                request_id=command.request_id
-            )
-
-    return response_formatter.format(
-        intent=req.command,
-        confidence=1.0,
-        csi_state=conversation_state_service.get(),
-        decision=decision_output,
-        execution_result=execution_result,
-        awareness=awareness,
-        request_id=command.request_id,
-    )
+    # ============================================================
+    # 🔴 DEBUG — OVO JE KLJUČNO
+    # ============================================================
+    return {
+        "DEBUG_decision_output": decision_output,
+        "csi": conversation_state_service.get(),
+    }
