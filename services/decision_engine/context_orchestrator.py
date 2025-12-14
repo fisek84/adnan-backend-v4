@@ -63,11 +63,14 @@ class ContextOrchestrator:
     async def run(self, user_input: str) -> Dict[str, Any]:
         text = (user_input or "").strip()
 
-        # 🔒 CSI SNAPSHOT (READ-ONLY)
-        csi = self.conversation_state.get() or {}
-        csi_state = csi.get("state") or "IDLE"
-        request_id = csi.get("request_id")
+        # 🔒 CSI SNAPSHOT — READ ONLY (routing only)
+        csi_snapshot = self.conversation_state.get() or {}
+        csi_state = csi_snapshot.get("state") or "IDLE"
+        request_id = csi_snapshot.get("request_id")
 
+        # -------------------------------------------------
+        # TELEMETRY — AUTONOMY (READ ONLY)
+        # -------------------------------------------------
         self.telemetry.emit(
             TelemetryEvent.now(
                 event_type="autonomy_evaluated",
@@ -76,7 +79,9 @@ class ContextOrchestrator:
             )
         )
 
-        # 1️⃣ INTENT
+        # -------------------------------------------------
+        # 1. INTENT
+        # -------------------------------------------------
         intent = self.intent_classifier.classify(text)
 
         self.telemetry.emit(
@@ -87,7 +92,9 @@ class ContextOrchestrator:
             )
         )
 
-        # 2️⃣ BIND
+        # -------------------------------------------------
+        # 2. BIND
+        # -------------------------------------------------
         bind = self.intent_binder.bind(intent, csi_state)
 
         self.telemetry.emit(
@@ -99,9 +106,9 @@ class ContextOrchestrator:
             )
         )
 
-        # =========================
+        # =================================================
         # RESET
-        # =========================
+        # =================================================
         if bind.action == "reset":
             self.conversation_state.set_idle(request_id=request_id)
             return self._final({
@@ -109,9 +116,9 @@ class ContextOrchestrator:
                 "message": "Stanje je resetovano. Spreman sam.",
             })
 
-        # =========================
+        # =================================================
         # GOAL CREATE
-        # =========================
+        # =================================================
         if bind.action == "create_goal":
             goal_object = {
                 "text": bind.payload.get("text"),
@@ -130,14 +137,13 @@ class ContextOrchestrator:
                 "message": "Cilj je prepoznat. Potvrdi ili otkaži.",
             })
 
-        # 🔁 REFRESH CSI (OBAVEZNO)
-        csi = self.conversation_state.get()
-
-        # =========================
-        # GOAL CONFIRM / CANCEL
-        # =========================
+        # =================================================
+        # GOAL CONFIRM / CANCEL  ✅ FIXED
+        # =================================================
         if bind.action == "confirm_goal":
-            goal = csi.get("goal_draft")
+            fresh_csi = self.conversation_state.get()
+            goal = fresh_csi.get("goal_draft")
+
             if goal:
                 self.memory_engine.store_goal(goal)
 
@@ -151,11 +157,13 @@ class ContextOrchestrator:
             self.conversation_state.set_idle(request_id=request_id)
             return self._final({"type": "goal_cancelled"})
 
-        # =========================
+        # =================================================
         # PLAN CREATE
-        # =========================
+        # =================================================
         if bind.action == "create_plan":
-            goal = csi.get("goal_draft")
+            fresh_csi = self.conversation_state.get()
+            goal = fresh_csi.get("goal_draft")
+
             if not goal:
                 return self._fallback()
 
@@ -179,29 +187,33 @@ class ContextOrchestrator:
                 "message": "Plan je generisan. Potvrdi ili otkaži.",
             })
 
-        # 🔁 REFRESH CSI
-        csi = self.conversation_state.get()
-
-        # =========================
-        # PLAN CONFIRM / CANCEL
-        # =========================
+        # =================================================
+        # PLAN CONFIRM / CANCEL  ✅ FIXED
+        # =================================================
         if bind.action == "confirm_plan":
-            plan = csi.get("plan_draft")
+            fresh_csi = self.conversation_state.get()
+            plan = fresh_csi.get("plan_draft")
+
             if plan:
                 self.memory_engine.store_plan(plan)
 
             self.conversation_state.set_idle(request_id=request_id)
-            return self._final({"type": "plan_confirmed", "plan": plan})
+            return self._final({
+                "type": "plan_confirmed",
+                "plan": plan,
+            })
 
         if bind.action == "cancel_plan":
             self.conversation_state.set_idle(request_id=request_id)
             return self._final({"type": "plan_cancelled"})
 
-        # =========================
+        # =================================================
         # TASKS FROM PLAN
-        # =========================
+        # =================================================
         if bind.action == "generate_tasks_from_plan":
-            plan = csi.get("plan_draft")
+            fresh_csi = self.conversation_state.get()
+            plan = fresh_csi.get("plan_draft")
+
             if not plan:
                 return self._fallback()
 
