@@ -16,7 +16,7 @@ from services.conversation_state_service import ConversationStateService
 from services.autonomy.autonomy_hook import AutonomyHook
 from services.autonomy.kill_switch import AutonomyKillSwitch
 from services.autonomy.feature_flags import AutonomyFeatureFlags
-from services.autonomy.safe_mode import SafeMode
+from services.autonomy.safe_mode import AutonomySafeMode
 
 # ===============================
 # BLOK 8 — OBSERVABILITY
@@ -57,7 +57,7 @@ class ContextOrchestrator:
         # =====================================================
         kill_switch = AutonomyKillSwitch()
         feature_flags = AutonomyFeatureFlags()
-        safe_mode = SafeMode()
+        safe_mode = AutonomySafeMode()
 
         self.autonomy = AutonomyHook(
             conversation_state,
