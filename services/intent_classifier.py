@@ -22,10 +22,22 @@ class IntentClassifier:
             t = text.strip().lower()
 
             # ---------------------------------
-            # RESET
+            # RESET (HIGHEST PRIORITY)
             # ---------------------------------
-            if re.search(r"\b(reset|kreni ispočetka|počni ponovo)\b", t):
+            if re.search(r"\b(reset|kreni ispočetka|počni ponovo|pocni ponovo)\b", t):
                 return Intent(IntentType.RESET, 1.0)
+
+            # ---------------------------------
+            # GOAL CONFIRM — FAZA 3 (FINAL FIX)
+            # ---------------------------------
+            if re.search(r"\b(potvrdi cilj|potvrđujem cilj|confirm goal)\b", t):
+                return Intent(IntentType.GOAL_CONFIRM, 0.95)
+
+            # ---------------------------------
+            # GOAL CANCEL — FAZA 3
+            # ---------------------------------
+            if re.search(r"\b(otkaži cilj|otkazi cilj|cancel goal)\b", t):
+                return Intent(IntentType.GOAL_CANCEL, 0.95)
 
             # ---------------------------------
             # CONFIRM / CANCEL (GENERIC)
@@ -45,13 +57,13 @@ class IntentClassifier:
             # ---------------------------------
             # TASKS FROM PLAN
             # ---------------------------------
-            if re.search(r"\b(generiši taskove|taskovi iz plana|razloži plan)\b", t):
+            if re.search(r"\b(generiši taskove|generisi taskove|taskovi iz plana|razloži plan|razlozi plan)\b", t):
                 return Intent(IntentType.TASK_GENERATE_FROM_PLAN, 0.9)
 
             # ---------------------------------
             # PLAN CREATE
             # ---------------------------------
-            if re.search(r"\b(plan|planiraj|napravi plan|razradi plan)\b", t):
+            if re.search(r"\b(napravi plan|razradi plan|planiraj|plan)\b", t):
                 return Intent(IntentType.PLAN_CREATE, 0.9, payload={"text": text})
 
             # ---------------------------------
@@ -66,6 +78,9 @@ class IntentClassifier:
             if re.search(r"\b(task|zadatak|uraditi|to do)\b", t):
                 return Intent(IntentType.TASK_CREATE, 0.9, payload={"text": text})
 
+            # ---------------------------------
+            # FALLBACK CHAT
+            # ---------------------------------
             return Intent(IntentType.CHAT, 1.0)
 
         except Exception:
