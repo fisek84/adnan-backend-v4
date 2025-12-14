@@ -69,9 +69,9 @@ from services.action_workflow_service import ActionWorkflowService
 from services.notion_service import NotionService
 
 # ================================================================
-# ROUTERS (OPS / AUDIT)
+# ROUTERS (AUDIT)
 # ================================================================
-from routers.audit_router import router as audit_router  # ✅ DODANO
+from routers.audit_router import router as audit_router
 
 # ================================================================
 # INITIAL LOAD (FAIL FAST)
@@ -95,10 +95,10 @@ app = FastAPI(
 # ================================================================
 # INCLUDE ROUTERS
 # ================================================================
-app.include_router(audit_router)  # ✅ DODANO
+app.include_router(audit_router)
 
 # ================================================================
-# ROOT + HEALTH (PLATFORM ONLY)
+# ROOT + HEALTH
 # ================================================================
 @app.get("/")
 async def root():
@@ -120,7 +120,7 @@ async def health_check():
     return {"status": "ok"}
 
 # ================================================================
-# SINGLETON SERVICES (KANON)
+# SINGLETON SERVICES
 # ================================================================
 conversation_state_service = ConversationStateService()
 awareness_service = AwarenessService()
@@ -146,7 +146,7 @@ notion_service = NotionService(
 )
 
 # ================================================================
-# GLOBAL ERROR HANDLER (SAFE)
+# GLOBAL ERROR HANDLER
 # ================================================================
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
@@ -170,7 +170,7 @@ async def global_exception_handler(request: Request, exc: Exception):
     )
 
 # ================================================================
-# STARTUP (DETERMINISTIC)
+# STARTUP
 # ================================================================
 @app.on_event("startup")
 async def startup_event():
@@ -181,7 +181,7 @@ async def startup_event():
     logger.info("🟢 System boot completed. READY.")
 
 # ================================================================
-# CORS (LOCKED)
+# CORS
 # ================================================================
 app.add_middleware(
     CORSMiddleware,
@@ -212,9 +212,6 @@ async def execute(req: CommandRequest):
     if OPS_SAFE_MODE:
         raise HTTPException(status_code=403, detail="OPS_SAFE_MODE enabled")
 
-    # ============================================================
-    # RATE LIMIT
-    # ============================================================
     now = time.time()
     if now - _LAST_CALL_TS < MIN_INTERVAL_SECONDS:
         awareness = awareness_service.build_snapshot(
@@ -231,9 +228,6 @@ async def execute(req: CommandRequest):
         )
     _LAST_CALL_TS = now
 
-    # ============================================================
-    # ORCHESTRATION
-    # ============================================================
     command = AICommand(
         command=req.command,
         input=req.payload,
@@ -259,9 +253,6 @@ async def execute(req: CommandRequest):
 
     execution_result = None
 
-    # ============================================================
-    # EXECUTION (STRICT)
-    # ============================================================
     if decision_output.get("type") == "delegation":
         delegation = decision_output.get("delegation", {})
         cmd = delegation.get("command")
