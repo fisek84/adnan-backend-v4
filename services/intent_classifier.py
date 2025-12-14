@@ -9,7 +9,7 @@ class IntentClassifier:
 
     RULES:
     - Text parsing ONLY here
-    - Order MATTERS
+    - Order MATTERS (GOAL > PLAN > TASK)
     - No CSI access
     - NEVER throws
     """
@@ -38,19 +38,23 @@ class IntentClassifier:
                 return Intent(IntentType.RESET, 0.95)
 
             # ----------------------------------------------------
-            # REQUEST EXECUTION (SAMO EKSPLICITNO)
+            # REQUEST EXECUTION (EXPLICIT ONLY)
             # ----------------------------------------------------
             if self._match(t, r"\b(pokreni|izvrši|izvrsi|startaj)\b"):
                 return Intent(IntentType.REQUEST_EXECUTION, 0.95)
 
             # ----------------------------------------------------
-            # TASK GENERATION FROM PLAN — FAZA 4
+            # GOAL CREATE — FAZA 3 (MORA BITI PRIJE TASK)
             # ----------------------------------------------------
             if self._match(
                 t,
-                r"\b(razloži plan|razlozi plan|napravi taskove iz plana|generiši taskove|taskovi iz plana)\b",
+                r"\b(želim|zelim|cilj|goal|postati|da budem|da postanem)\b",
             ):
-                return Intent(IntentType.TASK_GENERATE_FROM_PLAN, 0.95)
+                return Intent(
+                    type=IntentType.GOAL_CREATE,
+                    confidence=0.9,
+                    payload={"text": text},
+                )
 
             # ----------------------------------------------------
             # PLAN CREATE — FAZA 4
@@ -63,21 +67,20 @@ class IntentClassifier:
                 )
 
             # ----------------------------------------------------
-            # TASK CREATE — FAZA 3
+            # TASK GENERATION FROM PLAN — FAZA 4
+            # ----------------------------------------------------
+            if self._match(
+                t,
+                r"\b(razloži plan|razlozi plan|napravi taskove iz plana|generiši taskove|taskovi iz plana)\b",
+            ):
+                return Intent(IntentType.TASK_GENERATE_FROM_PLAN, 0.95)
+
+            # ----------------------------------------------------
+            # TASK CREATE — FAZA 3 (NAKON GOAL)
             # ----------------------------------------------------
             if self._match(t, r"\b(moram|treba da|uraditi|zadatak|task|to do)\b"):
                 return Intent(
                     type=IntentType.TASK_CREATE,
-                    confidence=0.9,
-                    payload={"text": text},
-                )
-
-            # ----------------------------------------------------
-            # GOAL CREATE — FAZA 3
-            # ----------------------------------------------------
-            if self._match(t, r"\b(želim|zelim|cilj|goal|postati|da budem|da postanem)\b"):
-                return Intent(
-                    type=IntentType.GOAL_CREATE,
                     confidence=0.9,
                     payload={"text": text},
                 )
@@ -116,22 +119,20 @@ class IntentClassifier:
                 return Intent(IntentType.LIST_SOPS, 0.9)
 
             # ----------------------------------------------------
-            # CREATE (GENERIC)
+            # GENERIC CREATE
             # ----------------------------------------------------
             if self._match(t, r"\b(kreiraj|napravi|dodaj|create|add)\b"):
                 return Intent(IntentType.CREATE, 0.9)
 
             # ----------------------------------------------------
-            # FALLBACK — KANONSKI
+            # FALLBACK — CHAT
             # ----------------------------------------------------
             return self._fallback()
 
         except Exception:
-            # ❗ KANON: classifier NIKAD ne smije rušiti sistem
             return self._fallback()
 
     def _fallback(self) -> Intent:
-        # Ne prepoznato = CHAT (nikad NONE)
         return Intent(type=IntentType.CHAT, confidence=1.0)
 
     def _match(self, text: str, pattern: str) -> bool:
