@@ -41,7 +41,7 @@ class IntentCSIBinder:
         try:
             state = CSIState(current_state)
         except Exception:
-            return BinderResult(next_state=CSIState.IDLE.value)
+            state = CSIState.IDLE
 
         # ----------------------------------------------------
         # GLOBAL RESET (HIGHEST PRIORITY)
@@ -63,7 +63,7 @@ class IntentCSIBinder:
 
         desired_state = state.value
         action: Optional[str] = None
-        payload: Optional[dict] = None
+        payload: dict = {}
 
         # ----------------------------------------------------
         # IDLE
@@ -76,12 +76,19 @@ class IntentCSIBinder:
             elif intent.type == IntentType.GOAL_CREATE:
                 desired_state = CSIState.GOAL_DRAFT.value
                 action = "create_goal"
-                payload = intent.payload
+                payload = intent.payload or {}
 
             elif intent.type == IntentType.TASK_CREATE:
                 desired_state = CSIState.TASK_DRAFT.value
                 action = "create_task"
-                payload = intent.payload
+                payload = intent.payload or {}
+
+            else:
+                # fallback chat — ostajemo u IDLE
+                return BinderResult(
+                    next_state=CSIState.IDLE.value,
+                    action="chat",
+                )
 
         # ----------------------------------------------------
         # GOAL DRAFT (FAZA 3)
@@ -98,7 +105,7 @@ class IntentCSIBinder:
             elif intent.type == IntentType.PLAN_CREATE:
                 desired_state = CSIState.PLAN_DRAFT.value
                 action = "create_plan"
-                payload = intent.payload
+                payload = intent.payload or {}
 
         # ----------------------------------------------------
         # PLAN DRAFT (FAZA 4)
@@ -112,11 +119,8 @@ class IntentCSIBinder:
                 desired_state = CSIState.IDLE.value
                 action = "cancel_plan"
 
-            # ================================
-            # TASK GENERATION FROM PLAN (FAZA 4)  ✅
-            # ================================
             elif intent.type == IntentType.TASK_GENERATE_FROM_PLAN:
-                desired_state = CSIState.PLAN_DRAFT.value  # ostajemo u plan kontekstu
+                desired_state = CSIState.PLAN_DRAFT.value
                 action = "generate_tasks_from_plan"
 
         # ----------------------------------------------------
@@ -138,7 +142,7 @@ class IntentCSIBinder:
             if intent.type == IntentType.VIEW_SOP:
                 desired_state = CSIState.SOP_ACTIVE.value
                 action = "select_sop"
-                payload = intent.payload
+                payload = intent.payload or {}
 
             elif intent.type == IntentType.CANCEL:
                 desired_state = CSIState.IDLE.value
@@ -157,7 +161,7 @@ class IntentCSIBinder:
                 action = "cancel"
 
         # ----------------------------------------------------
-        # DECISION PENDING (FAZA 1 — SOP FLOW)
+        # DECISION PENDING
         # ----------------------------------------------------
         elif state == CSIState.DECISION_PENDING:
             if intent.type == IntentType.CONFIRM:
