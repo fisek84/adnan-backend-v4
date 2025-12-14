@@ -1,9 +1,11 @@
+# services/audit_service.py
+
 """
-AUDIT SERVICE — FAZA 9 (INCIDENT REVIEW)
+AUDIT SERVICE — FAZA 11 (EXECUTION AUDIT + KPI)
 
 Uloga:
 - centralni audit uvid
-- incident-centric snapshot
+- execution + incident + KPI snapshot
 - READ-ONLY
 - nema izvršenja
 - nema mutacije stanja
@@ -37,26 +39,58 @@ class AuditService:
         return records[-limit:]
 
     # ============================================================
-    # EXECUTION AUDIT
+    # EXECUTION AUDIT (RAW)
     # ============================================================
     def get_execution_audit(
         self,
-        decision_type: Optional[str] = None,
-        key: Optional[str] = None,
+        context_type: Optional[str] = None,
+        directive: Optional[str] = None,
     ) -> Dict[str, Any]:
+        """
+        Raw execution governance statistics.
+        """
 
         stats = self.memory.memory.get("execution_stats", {})
 
-        if decision_type and key:
-            return stats.get(f"{decision_type}:{key}", {})
+        if context_type and directive:
+            return stats.get(f"{context_type}:{directive}", {})
 
-        if decision_type:
+        if context_type:
             return {
                 k: v for k, v in stats.items()
-                if k.startswith(f"{decision_type}:")
+                if k.startswith(f"{context_type}:")
             }
 
         return stats
+
+    # ============================================================
+    # EXECUTION KPI SNAPSHOT (AGGREGATED)
+    # ============================================================
+    def get_execution_kpis(self) -> Dict[str, Any]:
+        """
+        Aggregated execution KPIs across all directives.
+        """
+
+        stats = self.memory.memory.get("execution_stats", {})
+
+        total = 0
+        allowed = 0
+        blocked = 0
+
+        for entry in stats.values():
+            total += entry.get("total", 0)
+            allowed += entry.get("allowed", 0)
+            blocked += entry.get("blocked", 0)
+
+        success_rate = (allowed / total) if total > 0 else None
+
+        return {
+            "total_decisions": total,
+            "allowed": allowed,
+            "blocked": blocked,
+            "success_rate": success_rate,
+            "read_only": True,
+        }
 
     # ============================================================
     # SOP AUDIT
@@ -76,7 +110,7 @@ class AuditService:
         return self.memory.get_active_decision()
 
     # ============================================================
-    # INCIDENT REVIEW (FAZA 9 / #29)
+    # INCIDENT REVIEW (FAILED / BLOCKED)
     # ============================================================
     def get_incidents(
         self,
@@ -95,16 +129,18 @@ class AuditService:
         return incidents[-limit:]
 
     # ============================================================
-    # FULL AUDIT SNAPSHOT
+    # FULL AUDIT SNAPSHOT (COMPLIANCE)
     # ============================================================
     def get_full_audit_snapshot(self) -> Dict[str, Any]:
         """
-        Compliance / enterprise snapshot
+        Enterprise / compliance snapshot
         """
+
         return {
             "active_decision": self.get_active_decision(),
             "decision_outcomes": self.get_audit_log(limit=50),
             "incidents": self.get_incidents(limit=20),
             "execution_stats": self.get_execution_audit(),
+            "execution_kpis": self.get_execution_kpis(),
             "read_only": True,
         }
