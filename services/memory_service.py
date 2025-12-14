@@ -35,6 +35,10 @@ class MemoryService:
         self.memory.setdefault("execution_stats", {})
         self.memory.setdefault("cross_sop_relations", {})
 
+        # FAZA 3 / 4 — STRUCTURED MEMORY
+        self.memory.setdefault("goals", [])
+        self.memory.setdefault("plans", [])
+
         # FAZA 8 — ACTIVE DECISION MEMORY
         self.memory.setdefault("active_decision", None)
 
@@ -82,7 +86,41 @@ class MemoryService:
         return self.memory["entries"][-limit:]
 
     # ============================================================
-    # FAZA 8 — CEO DECISION MEMORY (NEW)
+    # FAZA 3 — GOALS
+    # ============================================================
+    def store_goal(self, goal: Dict[str, Any]):
+        """
+        Persist confirmed goal (FAZA 3).
+        """
+        if not goal:
+            return
+
+        self.memory["goals"].append({
+            **goal,
+            "confirmed_at": self._now(),
+        })
+
+        self._save()
+
+    # ============================================================
+    # FAZA 4 — PLANS
+    # ============================================================
+    def store_plan(self, plan: Dict[str, Any]):
+        """
+        Persist confirmed plan (FAZA 4).
+        """
+        if not plan:
+            return
+
+        self.memory["plans"].append({
+            **plan,
+            "confirmed_at": self._now(),
+        })
+
+        self._save()
+
+    # ============================================================
+    # FAZA 8 — CEO DECISION MEMORY
     # ============================================================
     def set_active_decision(self, decision: Dict[str, Any]):
         """
@@ -132,9 +170,6 @@ class MemoryService:
         if len(self.memory["decision_outcomes"]) > 100:
             self.memory["decision_outcomes"].pop(0)
 
-        # --------------------------------------------------------
-        # FAZA 9.1 — CROSS-SOP RELATIONS
-        # --------------------------------------------------------
         if decision_type == "sop":
             prev_sop = (metadata or {}).get("previous_sop")
             current_sop = target
@@ -160,6 +195,9 @@ class MemoryService:
 
         self._save()
 
+    # ============================================================
+    # FAZA 6–9 — READ-ONLY ANALYTICS
+    # ============================================================
     def sop_success_rate(self, sop_key: str) -> float:
         outcomes = [
             o for o in self.memory.get("decision_outcomes", [])
@@ -180,101 +218,3 @@ class MemoryService:
                 weighted_success += w
 
         return round(weighted_success / total_weight, 2) if total_weight else 0.0
-
-    # ============================================================
-    # FAZA 6–7 — EXECUTION STATS
-    # ============================================================
-    def record_execution(self, decision_type: str, key: str, success: bool):
-        entry = self.memory["execution_stats"].setdefault(
-            f"{decision_type}:{key}",
-            {"total": 0, "success": 0, "history": []},
-        )
-
-        entry["total"] += 1
-        if success:
-            entry["success"] += 1
-
-        entry["history"].append({"success": success, "ts": self._now()})
-        if len(entry["history"]) > 200:
-            entry["history"] = entry["history"][-200:]
-
-        self._save()
-
-    def get_execution_stats(
-        self, decision_type: str, key: str
-    ) -> Optional[Dict[str, Any]]:
-        entry = self.memory.get("execution_stats", {}).get(
-            f"{decision_type}:{key}"
-        )
-
-        if not entry or not entry.get("history"):
-            return None
-
-        weighted_success = 0.0
-        total_weight = 0.0
-
-        for h in entry["history"]:
-            w = self._decay_weight(h.get("ts", self._now()))
-            total_weight += w
-            if h.get("success"):
-                weighted_success += w
-
-        if not total_weight:
-            return None
-
-        return {
-            "total": entry.get("total", 0),
-            "success": entry.get("success", 0),
-            "success_rate": round(weighted_success / total_weight, 2),
-        }
-
-    # ============================================================
-    # FAZA 9.2 — CROSS-SOP READ-ONLY API
-    # ============================================================
-    def get_cross_sop_stats(
-        self, from_sop: str, to_sop: str
-    ) -> Optional[Dict[str, Any]]:
-        key = f"{from_sop}->{to_sop}"
-        rel = self.memory.get("cross_sop_relations", {}).get(key)
-
-        if not rel or not rel.get("history"):
-            return None
-
-        weighted_success = 0.0
-        total_weight = 0.0
-
-        for h in rel["history"]:
-            w = self._decay_weight(h.get("ts", self._now()))
-            total_weight += w
-            if h.get("success"):
-                weighted_success += w
-
-        if not total_weight:
-            return None
-
-        return {
-            "from": from_sop,
-            "to": to_sop,
-            "total": rel.get("total", 0),
-            "success": rel.get("success", 0),
-            "success_rate": round(weighted_success / total_weight, 2),
-        }
-
-    def get_cross_sop_bias(self, current_sop: str) -> List[Dict[str, Any]]:
-        """
-        Vraća SOP-ove koji imaju dobar success rate NAKON current_sop.
-        READ-ONLY signal za CEO / Playbook.
-        """
-        results: List[Dict[str, Any]] = []
-
-        for key, rel in self.memory.get("cross_sop_relations", {}).items():
-            if not key.startswith(f"{current_sop}->"):
-                continue
-
-            _, next_sop = key.split("->", 1)
-            stats = self.get_cross_sop_stats(current_sop, next_sop)
-            if stats:
-                results.append(stats)
-
-        results.sort(key=lambda r: r["success_rate"], reverse=True)
-        return results
