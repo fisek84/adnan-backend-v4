@@ -82,6 +82,15 @@ class IntentClassifier:
                 return Intent(IntentType.TASK_GENERATE_FROM_PLAN, 0.9)
 
             # ---------------------------------
+            # GOALS LIST / QUERY (READ-ONLY)
+            # ---------------------------------
+            if re.search(
+                r"\b(daj|prikaži|pokazi|listaj|show)\b.*\b(cilj|ciljevi|ciljeva|ciljevima)\b",
+                t
+            ):
+                return Intent(IntentType.GOALS_LIST, 1.0)
+
+            # ---------------------------------
             # PLAN CREATE
             # ---------------------------------
             if re.search(r"\b(napravi plan|razradi plan|planiraj)\b", t):

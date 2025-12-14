@@ -23,6 +23,7 @@ class IntentType(Enum):
     GOAL_CREATE = "goal_create"
     GOAL_CONFIRM = "goal_confirm"
     GOAL_CANCEL = "goal_cancel"
+    GOALS_LIST = "goals_list"   # ← DODANO (READ-ONLY)
 
     # =====================================================
     # FAZA 4 — PLANS
@@ -40,9 +41,9 @@ class IntentType(Enum):
     TASK_CONFIRM = "task_confirm"
     TASK_CANCEL = "task_cancel"
 
-    TASK_START = "task_start"      # user says: "pokreni zadatak"
+    TASK_START = "task_start"        # user says: "pokreni zadatak"
     TASK_COMPLETE = "task_complete"  # user says: "zadatak je gotov"
-    TASK_FAIL = "task_fail"        # user says: "zadatak nije uspio"
+    TASK_FAIL = "task_fail"          # user says: "zadatak nije uspio"
 
     # =====================================================
     # SOP
