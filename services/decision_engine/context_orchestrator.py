@@ -12,13 +12,12 @@ from services.memory_service import MemoryService
 from services.sop_knowledge_registry import SOPKnowledgeRegistry
 from services.conversation_state_service import ConversationStateService
 
+from services.agent_router.agent_router import AgentRouter
+
 from services.autonomy.autonomy_hook import AutonomyHook
 from services.autonomy.kill_switch import AutonomyKillSwitch
 from services.autonomy.feature_flags import AutonomyFeatureFlags
 from services.autonomy.safe_mode import AutonomySafeMode
-
-from services.observability.telemetry_emitter import TelemetryEmitter
-from services.observability.telemetry_event import TelemetryEvent
 
 
 class ContextOrchestrator:
@@ -48,6 +47,8 @@ class ContextOrchestrator:
         self.sop_registry = SOPKnowledgeRegistry()
         self.conversation_state = conversation_state
 
+        self.agent_router = AgentRouter()
+
         self.autonomy = AutonomyHook(
             conversation_state=conversation_state,
             kill_switch=AutonomyKillSwitch(),
@@ -55,192 +56,126 @@ class ContextOrchestrator:
             safe_mode=AutonomySafeMode(),
         )
 
-        self.telemetry = TelemetryEmitter()
-
     # =====================================================
     # MAIN LOOP
     # =====================================================
     async def run(self, user_input: str) -> Dict[str, Any]:
         text = (user_input or "").strip()
 
-        # 🔒 CSI SNAPSHOT — READ ONLY (routing only)
         csi_snapshot = self.conversation_state.get() or {}
         csi_state = csi_snapshot.get("state") or "IDLE"
         request_id = csi_snapshot.get("request_id")
 
-        # -------------------------------------------------
-        # TELEMETRY — AUTONOMY (READ ONLY)
-        # -------------------------------------------------
-        self.telemetry.emit(
-            TelemetryEvent.now(
-                event_type="autonomy_evaluated",
-                csi_state=csi_state,
-                payload={"signal": False},
-            )
-        )
-
-        # -------------------------------------------------
-        # 1. INTENT
-        # -------------------------------------------------
         intent = self.intent_classifier.classify(text)
-
-        self.telemetry.emit(
-            TelemetryEvent.now(
-                event_type="intent_classified",
-                csi_state=csi_state,
-                intent=intent.type.value,
-            )
-        )
-
-        # -------------------------------------------------
-        # 2. BIND
-        # -------------------------------------------------
         bind = self.intent_binder.bind(intent, csi_state)
 
-        self.telemetry.emit(
-            TelemetryEvent.now(
-                event_type="csi_bound",
-                csi_state=csi_state,
-                intent=intent.type.value,
-                action=bind.action,
-            )
-        )
-
-        # =================================================
-        # RESET
-        # =================================================
+        # ---------------- RESET ----------------
         if bind.action == "reset":
             self.conversation_state.set_idle(request_id=request_id)
-            return self._final({
-                "type": "reset",
-                "message": "Stanje je resetovano. Spreman sam.",
-            })
+            return self._final({"type": "reset"})
 
-        # =================================================
-        # GOAL CREATE
-        # =================================================
+        # ---------------- GOAL ----------------
         if bind.action == "create_goal":
-            goal_object = {
+            goal = {
                 "text": bind.payload.get("text"),
                 "status": "draft",
                 "created_at": time.time(),
             }
+            self.conversation_state.set_goal_draft(goal=goal, request_id=request_id)
+            return self._final({"type": "goal_draft", "goal": goal})
 
-            self.conversation_state.set_goal_draft(
-                goal=goal_object,
-                request_id=request_id,
-            )
-
-            return self._final({
-                "type": "goal_draft",
-                "goal": goal_object,
-                "message": "Cilj je prepoznat. Potvrdi ili otkaži.",
-            })
-
-        # =================================================
-        # GOAL CONFIRM / CANCEL  ✅ FIXED
-        # =================================================
         if bind.action == "confirm_goal":
-            fresh_csi = self.conversation_state.get()
-            goal = fresh_csi.get("goal_draft")
-
+            goal = self.conversation_state.get().get("goal_draft")
             if goal:
                 self.memory_engine.store_goal(goal)
-
             self.conversation_state.set_idle(request_id=request_id)
-            return self._final({
-                "type": "goal_confirmed",
-                "goal": goal,
-            })
+            return self._final({"type": "goal_confirmed", "goal": goal})
 
         if bind.action == "cancel_goal":
             self.conversation_state.set_idle(request_id=request_id)
             return self._final({"type": "goal_cancelled"})
 
-        # =================================================
-        # PLAN CREATE
-        # =================================================
+        # ---------------- PLAN ----------------
         if bind.action == "create_plan":
-            fresh_csi = self.conversation_state.get()
-            goal = fresh_csi.get("goal_draft")
-
+            goal = self.conversation_state.get().get("goal_draft")
             if not goal:
                 return self._fallback()
 
+            self.conversation_state.set_plan_create(request_id=request_id)
             plan = self.decision_engine.generate_plan_from_goal(goal)
 
-            plan_object = {
+            plan_obj = {
                 "goal": goal,
                 "plan": plan,
                 "status": "draft",
                 "created_at": time.time(),
             }
 
-            self.conversation_state.set_plan_draft(
-                plan=plan_object,
-                request_id=request_id,
-            )
+            self.conversation_state.set_plan_draft(plan=plan_obj, request_id=request_id)
+            return self._final({"type": "plan_draft", "plan": plan_obj})
 
-            return self._final({
-                "type": "plan_draft",
-                "plan": plan_object,
-                "message": "Plan je generisan. Potvrdi ili otkaži.",
-            })
-
-        # =================================================
-        # PLAN CONFIRM / CANCEL  ✅ FIXED
-        # =================================================
         if bind.action == "confirm_plan":
-            fresh_csi = self.conversation_state.get()
-            plan = fresh_csi.get("plan_draft")
-
+            plan = self.conversation_state.get().get("plan_draft")
             if plan:
                 self.memory_engine.store_plan(plan)
-
+            self.conversation_state.confirm_plan(request_id=request_id)
             self.conversation_state.set_idle(request_id=request_id)
-            return self._final({
-                "type": "plan_confirmed",
-                "plan": plan,
-            })
+            return self._final({"type": "plan_confirmed", "plan": plan})
 
         if bind.action == "cancel_plan":
             self.conversation_state.set_idle(request_id=request_id)
             return self._final({"type": "plan_cancelled"})
 
-        # =================================================
-        # TASKS FROM PLAN
-        # =================================================
-        if bind.action == "generate_tasks_from_plan":
-            fresh_csi = self.conversation_state.get()
-            plan = fresh_csi.get("plan_draft")
-
-            if not plan:
-                return self._fallback()
-
-            tasks = self.decision_engine.generate_tasks_from_plan(plan)
-
-            task_drafts = [{
-                "text": t,
-                "origin": "plan",
+        # ---------------- TASK ----------------
+        if bind.action == "create_task":
+            task = {
+                "text": bind.payload.get("text"),
                 "status": "draft",
                 "created_at": time.time(),
-            } for t in tasks]
+            }
+            self.conversation_state.set_task_create(task=task, request_id=request_id)
+            return self._final({"type": "task_create", "task": task})
 
+        if bind.action == "confirm_task":
+            task = self.conversation_state.get().get("task_draft")
+            self.conversation_state.confirm_task(request_id=request_id)
+            return self._final({"type": "task_confirmed", "task": task})
+
+        if bind.action == "start_task":
+            self.conversation_state.start_task(request_id=request_id)
+
+            task = self.conversation_state.get().get("task_draft")
+            if not task:
+                self.conversation_state.fail_task(request_id=request_id)
+                return self._final({"type": "task_failed", "reason": "no_task"})
+
+            command = {
+                "command": "create_database_entry",
+                "payload": task,
+            }
+
+            result = await self.agent_router.execute(command)
+
+            if result.get("success"):
+                self.conversation_state.complete_task(request_id=request_id)
+                self.conversation_state.set_idle(request_id=request_id)
+                return self._final({
+                    "type": "task_done",
+                    "agent_result": result,
+                })
+
+            self.conversation_state.fail_task(request_id=request_id)
+            self.conversation_state.set_idle(request_id=request_id)
             return self._final({
-                "type": "task_drafts_from_plan",
-                "tasks": task_drafts,
+                "type": "task_failed",
+                "agent_result": result,
             })
 
         return self._fallback()
 
-    # =====================================================
-    # HELPERS
-    # =====================================================
-    def _fallback(self) -> Dict[str, Any]:
-        return self._final({
-            "type": "chat",
-            "message": "Razumijem. Nastavi.",
-        })
+    # ---------------- HELPERS ----------------
+    def _fallback(self):
+        return self._final({"type": "chat", "message": "Razumijem."})
 
     def _final(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         final = self.response_engine.format_response(

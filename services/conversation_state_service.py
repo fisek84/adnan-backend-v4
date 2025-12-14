@@ -18,6 +18,8 @@ logger = logging.getLogger(__name__)
 
 class CSIState(Enum):
     IDLE = "IDLE"
+
+    # SOP / EXECUTION
     SOP_LIST = "SOP_LIST"
     SOP_ACTIVE = "SOP_ACTIVE"
     DECISION_PENDING = "DECISION_PENDING"
@@ -27,13 +29,22 @@ class CSIState(Enum):
 
     # FAZA 3
     GOAL_DRAFT = "GOAL_DRAFT"
-    TASK_DRAFT = "TASK_DRAFT"
     PROJECT_DRAFT = "PROJECT_DRAFT"
 
     # FAZA 4
+    PLAN_CREATE = "PLAN_CREATE"
     PLAN_DRAFT = "PLAN_DRAFT"
+    PLAN_CONFIRM = "PLAN_CONFIRM"
 
-    # FAZA 5
+    # FAZA 5 — TASK LIFECYCLE
+    TASK_CREATE = "TASK_CREATE"
+    TASK_DRAFT = "TASK_DRAFT"
+    TASK_CONFIRM = "TASK_CONFIRM"
+    TASK_EXECUTING = "TASK_EXECUTING"
+    TASK_DONE = "TASK_DONE"
+    TASK_FAILED = "TASK_FAILED"
+
+    # AUTONOMY (LATER)
     AUTONOMOUS_LOOP = "AUTONOMOUS_LOOP"
 
 
@@ -45,11 +56,50 @@ ALLOWED_TRANSITIONS = {
     CSIState.IDLE.value: {
         CSIState.SOP_LIST.value,
         CSIState.GOAL_DRAFT.value,
-        CSIState.TASK_DRAFT.value,
         CSIState.PROJECT_DRAFT.value,
-        CSIState.PLAN_DRAFT.value,
+        CSIState.PLAN_CREATE.value,
+        CSIState.TASK_CREATE.value,
         CSIState.AUTONOMOUS_LOOP.value,
     },
+
+    # -------- PLAN (FAZA 4) --------
+    CSIState.PLAN_CREATE.value: {
+        CSIState.PLAN_DRAFT.value,
+        CSIState.IDLE.value,
+    },
+    CSIState.PLAN_DRAFT.value: {
+        CSIState.PLAN_CONFIRM.value,
+        CSIState.IDLE.value,
+    },
+    CSIState.PLAN_CONFIRM.value: {
+        CSIState.IDLE.value,
+    },
+
+    # -------- TASK (FAZA 5) --------
+    CSIState.TASK_CREATE.value: {
+        CSIState.TASK_DRAFT.value,
+        CSIState.IDLE.value,
+    },
+    CSIState.TASK_DRAFT.value: {
+        CSIState.TASK_CONFIRM.value,
+        CSIState.IDLE.value,
+    },
+    CSIState.TASK_CONFIRM.value: {
+        CSIState.TASK_EXECUTING.value,
+        CSIState.IDLE.value,
+    },
+    CSIState.TASK_EXECUTING.value: {
+        CSIState.TASK_DONE.value,
+        CSIState.TASK_FAILED.value,
+    },
+    CSIState.TASK_DONE.value: {
+        CSIState.IDLE.value,
+    },
+    CSIState.TASK_FAILED.value: {
+        CSIState.IDLE.value,
+    },
+
+    # -------- SOP / EXECUTION --------
     CSIState.SOP_LIST.value: {
         CSIState.SOP_ACTIVE.value,
         CSIState.IDLE.value,
@@ -74,18 +124,8 @@ ALLOWED_TRANSITIONS = {
         CSIState.IDLE.value,
         CSIState.AUTONOMOUS_LOOP.value,
     },
-    CSIState.GOAL_DRAFT.value: {
-        CSIState.IDLE.value,
-    },
-    CSIState.TASK_DRAFT.value: {
-        CSIState.IDLE.value,
-    },
-    CSIState.PROJECT_DRAFT.value: {
-        CSIState.IDLE.value,
-    },
-    CSIState.PLAN_DRAFT.value: {
-        CSIState.IDLE.value,
-    },
+
+    # -------- AUTONOMY --------
     CSIState.AUTONOMOUS_LOOP.value: {
         CSIState.IDLE.value,
         CSIState.EXECUTING.value,
@@ -117,9 +157,9 @@ class ConversationState:
     pending_decision: Optional[Dict[str, Any]] = None
 
     goal_draft: Optional[Dict[str, Any]] = None
-    task_draft: Optional[Dict[str, Any]] = None
     project_draft: Optional[Dict[str, Any]] = None
     plan_draft: Optional[Dict[str, Any]] = None
+    task_draft: Optional[Dict[str, Any]] = None
 
     request_id: Optional[str] = None
     last_update_reason: Optional[str] = None
@@ -143,9 +183,9 @@ class ConversationState:
             active_sop_id=data.get("active_sop_id"),
             pending_decision=data.get("pending_decision"),
             goal_draft=data.get("goal_draft"),
-            task_draft=data.get("task_draft"),
             project_draft=data.get("project_draft"),
             plan_draft=data.get("plan_draft"),
+            task_draft=data.get("task_draft"),
             request_id=data.get("request_id"),
             last_update_reason=data.get("last_update_reason"),
             ts=float(data.get("ts") or 0.0),
@@ -221,9 +261,9 @@ class ConversationStateService:
         self._state.active_sop_id = None
         self._state.pending_decision = None
         self._state.goal_draft = None
-        self._state.task_draft = None
         self._state.project_draft = None
         self._state.plan_draft = None
+        self._state.task_draft = None
         self._state.expected_input = "free"
 
     # ---------------- public API ----------------
@@ -237,38 +277,18 @@ class ConversationStateService:
         return self.get()
 
     # =========================
-    # GOAL — FAZA 3
-    # =========================
-
-    def set_goal_draft(self, *, goal: Dict[str, Any], request_id=None):
-        self._transition(
-            CSIState.GOAL_DRAFT.value,
-            reason="set_goal_draft",
-            request_id=request_id,
-        )
-        self._state.goal_draft = goal
-        self._state.expected_input = "goal_confirmation"
-        self._persist(self._state, reason="goal_draft_set")
-        return self.get()
-
-    # =========================
-    # TASK — FAZA 3
-    # =========================
-
-    def set_task_draft(self, *, task: Dict[str, Any], request_id=None):
-        self._transition(
-            CSIState.TASK_DRAFT.value,
-            reason="set_task_draft",
-            request_id=request_id,
-        )
-        self._state.task_draft = task
-        self._state.expected_input = "task_confirmation"
-        self._persist(self._state, reason="task_draft_set")
-        return self.get()
-
-    # =========================
     # PLAN — FAZA 4
     # =========================
+
+    def set_plan_create(self, *, request_id=None):
+        self._transition(
+            CSIState.PLAN_CREATE.value,
+            reason="set_plan_create",
+            request_id=request_id,
+        )
+        self._state.expected_input = "plan_draft"
+        self._persist(self._state, reason="plan_create_set")
+        return self.get()
 
     def set_plan_draft(self, *, plan: Dict[str, Any], request_id=None):
         self._transition(
@@ -279,4 +299,146 @@ class ConversationStateService:
         self._state.plan_draft = plan
         self._state.expected_input = "plan_confirmation"
         self._persist(self._state, reason="plan_draft_set")
+        return self.get()
+
+    def confirm_plan(self, *, request_id=None):
+        self._transition(
+            CSIState.PLAN_CONFIRM.value,
+            reason="confirm_plan",
+            request_id=request_id,
+        )
+        self._state.expected_input = "free"
+        self._persist(self._state, reason="plan_confirmed")
+        return self.get()
+
+    # =========================
+    # TASK — FAZA 5
+    # =========================
+
+    def set_task_create(self, *, task: Dict[str, Any], request_id=None):
+        self._transition(
+            CSIState.TASK_CREATE.value,
+            reason="set_task_create",
+            request_id=request_id,
+        )
+        self._state.task_draft = task
+        self._state.expected_input = "task_draft"
+        self._persist(self._state, reason="task_create_set")
+        return self.get()
+
+    def set_task_draft(self, *, request_id=None):
+        self._transition(
+            CSIState.TASK_DRAFT.value,
+            reason="set_task_draft",
+            request_id=request_id,
+        )
+        self._state.expected_input = "task_confirmation"
+        self._persist(self._state, reason="task_draft_set")
+        return self.get()
+
+    def confirm_task(self, *, request_id=None):
+        self._transition(
+            CSIState.TASK_CONFIRM.value,
+            reason="confirm_task",
+            request_id=request_id,
+        )
+        self._state.expected_input = "task_start"
+        self._persist(self._state, reason="task_confirmed")
+        return self.get()
+
+    def start_task(self, *, request_id=None):
+        self._transition(
+            CSIState.TASK_EXECUTING.value,
+            reason="start_task",
+            request_id=request_id,
+        )
+        self._state.expected_input = "task_execution"
+        self._persist(self._state, reason="task_started")
+        return self.get()
+
+    def complete_task(self, *, request_id=None):
+        self._transition(
+            CSIState.TASK_DONE.value,
+            reason="complete_task",
+            request_id=request_id,
+        )
+        self._state.expected_input = "free"
+        self._persist(self._state, reason="task_done")
+        return self.get()
+
+    def fail_task(self, *, request_id=None):
+        self._transition(
+            CSIState.TASK_FAILED.value,
+            reason="fail_task",
+            request_id=request_id,
+        )
+        self._state.expected_input = "free"
+        self._persist(self._state, reason="task_failed")
+        return self.get()
+
+    # =========================
+    # SOP — FAZA 5.4 (NEW)
+    # =========================
+
+    def set_sop_list(self, *, sops: List[Dict[str, Any]], request_id=None):
+        self._transition(
+            CSIState.SOP_LIST.value,
+            reason="set_sop_list",
+            request_id=request_id,
+        )
+        self._state.sop_list = sops
+        self._state.expected_input = "sop_select"
+        self._persist(self._state, reason="sop_list_set")
+        return self.get()
+
+    def set_sop_active(self, *, sop_id: str, request_id=None):
+        self._transition(
+            CSIState.SOP_ACTIVE.value,
+            reason="set_sop_active",
+            request_id=request_id,
+        )
+        self._state.active_sop_id = sop_id
+        self._state.expected_input = "decision"
+        self._persist(self._state, reason="sop_active_set")
+        return self.get()
+
+    def set_sop_decision_pending(self, *, decision: Dict[str, Any], request_id=None):
+        self._transition(
+            CSIState.DECISION_PENDING.value,
+            reason="set_sop_decision_pending",
+            request_id=request_id,
+        )
+        self._state.pending_decision = decision
+        self._state.expected_input = "execution_start"
+        self._persist(self._state, reason="sop_decision_pending_set")
+        return self.get()
+
+    def start_sop_execution(self, *, request_id=None):
+        self._transition(
+            CSIState.EXECUTING.value,
+            reason="start_sop_execution",
+            request_id=request_id,
+        )
+        self._state.expected_input = "execution"
+        self._persist(self._state, reason="sop_execution_started")
+        return self.get()
+
+    def complete_sop(self, *, request_id=None):
+        self._transition(
+            CSIState.COMPLETED.value,
+            reason="complete_sop",
+            request_id=request_id,
+        )
+        self._clear_context()
+        self._persist(self._state, reason="sop_completed")
+        return self.get()
+
+    def fail_sop(self, *, request_id=None):
+        self._transition(
+            CSIState.FAILED.value,
+            reason="fail_sop",
+            request_id=request_id,
+        )
+        self._clear_context()
+        self._persist(self._state, reason="sop_failed")
         return self.get()

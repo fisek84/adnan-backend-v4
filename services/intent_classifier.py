@@ -28,7 +28,19 @@ class IntentClassifier:
                 return Intent(IntentType.RESET, 1.0)
 
             # ---------------------------------
-            # GOAL CONFIRM / CANCEL  (MORA BITI PRIJE GENERIČNOG)
+            # TASK EXECUTION — FAZA 5 (MORA BITI RANO)
+            # ---------------------------------
+            if re.search(r"\b(pokreni zadatak|start task|započni zadatak)\b", t):
+                return Intent(IntentType.TASK_START, 1.0)
+
+            if re.search(r"\b(zadatak je gotov|završio sam zadatak|task done)\b", t):
+                return Intent(IntentType.TASK_COMPLETE, 1.0)
+
+            if re.search(r"\b(zadatak nije uspio|task failed|neuspješan zadatak)\b", t):
+                return Intent(IntentType.TASK_FAIL, 1.0)
+
+            # ---------------------------------
+            # GOAL CONFIRM / CANCEL
             # ---------------------------------
             if re.search(r"\b(potvrdi cilj|potvrđujem cilj|da cilj)\b", t):
                 return Intent(IntentType.GOAL_CONFIRM, 1.0)
@@ -62,12 +74,6 @@ class IntentClassifier:
 
             if re.fullmatch(r"(ne|nemoj|odustani|prekini|stop|no)", t):
                 return Intent(IntentType.CANCEL, 1.0)
-
-            # ---------------------------------
-            # EXECUTION
-            # ---------------------------------
-            if re.search(r"\b(pokreni|izvrši|izvrsi|startaj)\b", t):
-                return Intent(IntentType.REQUEST_EXECUTION, 0.95)
 
             # ---------------------------------
             # TASKS FROM PLAN

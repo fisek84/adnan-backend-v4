@@ -4,7 +4,7 @@
 import os
 import time
 import logging
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
@@ -18,13 +18,25 @@ from system_version import (
 )
 
 # ================================================================
-# OS SAFETY CONTROLS
+# ENV / BOOTSTRAP
 # ================================================================
+load_dotenv(".env")
+
 OS_ENABLED = os.getenv("OS_ENABLED", "true").lower() == "true"
 OPS_SAFE_MODE = os.getenv("OPS_SAFE_MODE", "false").lower() == "true"
 
+_BOOT_READY = False
 _LAST_CALL_TS = 0.0
 MIN_INTERVAL_SECONDS = 0.5
+
+# ================================================================
+# LOGGING
+# ================================================================
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+)
+logger = logging.getLogger("gateway")
 
 # ================================================================
 # CORE MODELS / SERVICES
@@ -57,28 +69,44 @@ from services.action_workflow_service import ActionWorkflowService
 from services.notion_service import NotionService
 
 # ================================================================
-# INITIAL LOAD
+# INITIAL LOAD (FAIL FAST)
 # ================================================================
-load_dotenv(".env")
+if not OS_ENABLED:
+    logger.critical("❌ OS_ENABLED=false — system will not start.")
+    raise RuntimeError("OS is disabled by configuration.")
 
 identity = load_identity()
 mode = load_mode()
 state = load_state()
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("gateway")
-
-app = FastAPI()
+# ================================================================
+# APP INIT
+# ================================================================
+app = FastAPI(
+    title=SYSTEM_NAME,
+    version=VERSION,
+)
 
 # ================================================================
-# ROOT + HEALTH (PLATFORM ONLY — NO CSI)
+# ROOT + HEALTH (PLATFORM ONLY)
 # ================================================================
 @app.get("/")
 async def root():
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "system": SYSTEM_NAME,
+        "version": VERSION,
+        "release_channel": RELEASE_CHANNEL,
+        "arch_lock": ARCH_LOCK,
+        "safe_mode": OPS_SAFE_MODE,
+        "boot_ready": _BOOT_READY,
+        "read_only": True,
+    }
 
 @app.get("/health")
 async def health_check():
+    if not _BOOT_READY:
+        raise HTTPException(status_code=503, detail="System not ready")
     return {"status": "ok"}
 
 # ================================================================
@@ -92,7 +120,7 @@ orchestrator = ContextOrchestrator(
     identity,
     mode,
     state,
-    conversation_state_service,  # 🔒 CSI SINGLETON
+    conversation_state_service,
 )
 
 workflow_service = ActionWorkflowService()
@@ -108,7 +136,7 @@ notion_service = NotionService(
 )
 
 # ================================================================
-# GLOBAL ERROR HANDLER
+# GLOBAL ERROR HANDLER (SAFE)
 # ================================================================
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
@@ -132,15 +160,18 @@ async def global_exception_handler(request: Request, exc: Exception):
     )
 
 # ================================================================
-# STARTUP
+# STARTUP (DETERMINISTIC)
 # ================================================================
 @app.on_event("startup")
 async def startup_event():
+    global _BOOT_READY
     logger.info(">> Startup: syncing Notion knowledge snapshot")
     await notion_service.sync_knowledge_snapshot()
+    _BOOT_READY = True
+    logger.info("🟢 System boot completed. READY.")
 
 # ================================================================
-# CORS
+# CORS (LOCKED)
 # ================================================================
 app.add_middleware(
     CORSMiddleware,
@@ -159,22 +190,17 @@ class CommandRequest(BaseModel):
     payload: dict
 
 # ================================================================
-# /ops/execute — CSI-CENTRIC PIPELINE (FINAL)
+# /ops/execute — CSI-CENTRIC PIPELINE
 # ================================================================
 @app.post("/ops/execute")
 async def execute(req: CommandRequest):
     global _LAST_CALL_TS
 
-    # ============================================================
-    # INPUT NORMALIZATION (KANONSKI FIX)
-    # ============================================================
-    user_text = (
-        req.payload.get("text")
-        or req.payload.get("input")
-        or ""
-    ).strip()
+    if not _BOOT_READY:
+        raise HTTPException(status_code=503, detail="System not ready")
 
-    csi = conversation_state_service.get()
+    if OPS_SAFE_MODE:
+        raise HTTPException(status_code=403, detail="OPS_SAFE_MODE enabled")
 
     # ============================================================
     # RATE LIMIT
@@ -183,12 +209,12 @@ async def execute(req: CommandRequest):
     if now - _LAST_CALL_TS < MIN_INTERVAL_SECONDS:
         awareness = awareness_service.build_snapshot(
             command=None,
-            csi_state=csi,
+            csi_state=conversation_state_service.get(),
         )
         return response_formatter.format(
             intent=req.command,
             confidence=1.0,
-            csi_state=csi,
+            csi_state=conversation_state_service.get(),
             execution_result={"success": False},
             awareness=awareness,
             request_id=None,
@@ -196,7 +222,7 @@ async def execute(req: CommandRequest):
     _LAST_CALL_TS = now
 
     # ============================================================
-    # ORCHESTRATION (READ / DECISION ONLY)
+    # ORCHESTRATION
     # ============================================================
     command = AICommand(
         command=req.command,
@@ -205,6 +231,12 @@ async def execute(req: CommandRequest):
         state_snapshot=state,
         mode_snapshot=mode,
     )
+
+    user_text = (
+        req.payload.get("text")
+        or req.payload.get("input")
+        or ""
+    ).strip()
 
     orch = await orchestrator.run(user_text)
     decision_output = orch.get("result", {})
@@ -218,7 +250,7 @@ async def execute(req: CommandRequest):
     execution_result = None
 
     # ============================================================
-    # EXECUTION PHASE (CSI PUBLIC API ONLY)
+    # EXECUTION (STRICT)
     # ============================================================
     if decision_output.get("type") == "delegation":
         delegation = decision_output.get("delegation", {})

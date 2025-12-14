@@ -1,17 +1,17 @@
 from fastapi import APIRouter
-from ext.agents.sender import send_to_agent
+from services.agent_router.agent_router import AgentRouter
 
 router = APIRouter()
+agent_router = AgentRouter()
 
-@router.post("/agents/message")
-async def route_message(data: dict):
+
+@router.post("/agents/execute")
+async def execute_agent(command: dict):
     """
-    Očekuje payload:
+    Očekuje DELEGATION CONTRACT:
     {
-        "agent": "writer"  # ili ops, planner...
+        "command": "create_database_entry",
         "payload": {...}
     }
     """
-    agent = data["agent"]
-    payload = data["payload"]
-    return send_to_agent(agent, payload)
+    return await agent_router.execute(command)

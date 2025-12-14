@@ -1,17 +1,11 @@
-# services/audit_service.py
-
 """
-AUDIT SERVICE — FAZA 12 (READ-ONLY)
+AUDIT SERVICE — FAZA 9 (INCIDENT REVIEW)
 
 Uloga:
-- centralni audit uvid u:
-  - decision outcomes
-  - execution history
-  - SOP rezultate
-  - sigurnosne / blokirane ishode
-- koristi isključivo MemoryService
+- centralni audit uvid
+- incident-centric snapshot
+- READ-ONLY
 - nema izvršenja
-- nema pisanja
 - nema mutacije stanja
 """
 
@@ -31,10 +25,6 @@ class AuditService:
         limit: int = 100,
         decision_type: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """
-        Vraća audit log (decision_outcomes).
-        Može se filtrirati po decision_type.
-        """
 
         records = self.memory.memory.get("decision_outcomes", [])
 
@@ -54,9 +44,6 @@ class AuditService:
         decision_type: Optional[str] = None,
         key: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """
-        Vraća execution audit (execution_stats).
-        """
 
         stats = self.memory.memory.get("execution_stats", {})
 
@@ -75,12 +62,6 @@ class AuditService:
     # SOP AUDIT
     # ============================================================
     def get_sop_audit(self, sop_key: str) -> Dict[str, Any]:
-        """
-        Audit za konkretan SOP:
-        - success rate
-        - cross-SOP relacije
-        """
-
         return {
             "sop": sop_key,
             "success_rate": self.memory.sop_success_rate(sop_key),
@@ -89,24 +70,41 @@ class AuditService:
         }
 
     # ============================================================
-    # ACTIVE DECISION AUDIT
+    # ACTIVE DECISION
     # ============================================================
     def get_active_decision(self) -> Optional[Dict[str, Any]]:
-        """
-        Trenutno aktivna odluka (ako postoji).
-        """
         return self.memory.get_active_decision()
+
+    # ============================================================
+    # INCIDENT REVIEW (FAZA 9 / #29)
+    # ============================================================
+    def get_incidents(
+        self,
+        limit: int = 20,
+    ) -> List[Dict[str, Any]]:
+        """
+        Incident = failed / blocked / escalated outcome
+        """
+
+        incidents = []
+
+        for r in self.memory.memory.get("decision_outcomes", []):
+            if r.get("status") in {"failed", "blocked", "escalated"}:
+                incidents.append(r)
+
+        return incidents[-limit:]
 
     # ============================================================
     # FULL AUDIT SNAPSHOT
     # ============================================================
     def get_full_audit_snapshot(self) -> Dict[str, Any]:
         """
-        Jedan poziv za compliance / enterprise audit.
+        Compliance / enterprise snapshot
         """
         return {
             "active_decision": self.get_active_decision(),
             "decision_outcomes": self.get_audit_log(limit=50),
+            "incidents": self.get_incidents(limit=20),
             "execution_stats": self.get_execution_audit(),
             "read_only": True,
         }

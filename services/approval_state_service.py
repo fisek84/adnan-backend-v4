@@ -1,14 +1,12 @@
-# services/approval_state_service.py
-
 """
-APPROVAL STATE SERVICE — FAZA D5 (MINIMAL LIFECYCLE)
+APPROVAL STATE SERVICE — FAZA 8 (ESCALATION READY)
 
 Uloga:
 - modelira stanje višeslojnih odobrenja
-- approval ima kontrolisan lifecycle
+- eksplicitna eskalacija ka čovjeku
+- deterministički approval lifecycle
 - NEMA izvršenja
 - NEMA automatike
-- deterministički approval tok
 """
 
 from typing import Dict, Any, List, Optional
@@ -17,7 +15,7 @@ from datetime import datetime
 
 class ApprovalStateService:
     def __init__(self):
-        # In-memory state (kanonski za FAZU D)
+        # In-memory state (kanonski)
         self._approvals: Dict[str, Dict[str, Any]] = {}
 
     # ============================================================
@@ -30,6 +28,7 @@ class ApprovalStateService:
         required_levels: List[str],
         initiated_by: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        escalation_reason: Optional[str] = None,
     ) -> Dict[str, Any]:
 
         if approval_id not in self._approvals:
@@ -39,9 +38,38 @@ class ApprovalStateService:
                 "approved_levels": [],
                 "approval_log": [],
                 "initiated_by": initiated_by,
+                "escalation_reason": escalation_reason,
                 "created_at": datetime.utcnow().isoformat(),
                 "metadata": metadata or {},
             }
+
+        return self.get_state(approval_id)
+
+    # ============================================================
+    # ESCALATE TO HUMAN (EXPLICIT)
+    # ============================================================
+    def escalate(
+        self,
+        *,
+        approval_id: str,
+        escalated_by: str,
+        reason: str,
+    ) -> Optional[Dict[str, Any]]:
+
+        state = self._approvals.get(approval_id)
+        if not state:
+            return None
+
+        state["approval_log"].append({
+            "level": "ESCALATION",
+            "approved_by": escalated_by,
+            "note": reason,
+            "ts": datetime.utcnow().isoformat(),
+        })
+
+        state["metadata"]["escalated"] = True
+        state["metadata"]["escalated_at"] = datetime.utcnow().isoformat()
+        state["metadata"]["escalation_reason"] = reason
 
         return self.get_state(approval_id)
 
@@ -141,6 +169,7 @@ class ApprovalStateService:
             "fully_approved": approved == required,
             "approval_log": list(state.get("approval_log", [])),
             "initiated_by": state.get("initiated_by"),
+            "escalation_reason": state.get("escalation_reason"),
             "created_at": state.get("created_at"),
             "metadata": state.get("metadata", {}),
             "read_only": True,

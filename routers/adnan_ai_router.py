@@ -110,7 +110,6 @@ async def adnan_ai_input(payload: AdnanAIInput):
                     conversation_state.set_executing()
 
                 else:
-                    # SOP_LIST, SOP_ACTIVE, DECISION_PENDING
                     conversation_state._state.state = binder_result.next_state
                     conversation_state._persist(
                         conversation_state._state,
@@ -172,3 +171,35 @@ async def adnan_ai_input(payload: AdnanAIInput):
     except Exception as e:
         logger.exception("AdnanAI input error")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================
+# FAZA 9 — STATE-DRIVEN UI / OPS ENDPOINTS (READ-ONLY)
+# ============================================================
+
+@router.get("/state")
+def get_system_state():
+    """
+    Canonical system state snapshot.
+    UI / OPS safe.
+    """
+    return {
+        "csi": conversation_state.get(),
+        "approvals": approval_service.get_overview(),
+    }
+
+
+@router.get("/csi")
+def get_csi_state():
+    """
+    CSI-only snapshot.
+    """
+    return conversation_state.get()
+
+
+@router.get("/approvals")
+def get_approval_state():
+    """
+    Approval / escalation snapshot.
+    """
+    return approval_service.get_overview()

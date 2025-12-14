@@ -1,5 +1,3 @@
-# services/autonomy/loop_controller.py
-
 from dataclasses import dataclass
 from typing import Optional, Dict, Any
 
@@ -30,31 +28,22 @@ class LoopController:
     """
     Deterministic autonomy loop governance controller.
 
-    RULES:
-    - Reads CSI state only
-    - Does NOT mutate CSI
-    - Does NOT execute anything
-    - Does NOT suggest actions
-    - Emits governance decisions only
+    FAZA 8 / #21:
+    - CSI-guarded
+    - hard iteration limits
+    - no implicit re-entry
     """
 
     MAX_ITERATIONS = 5
 
     # --------------------------------------------------------
-    # ENTRY GUARD
+    # ENTRY GUARD (HARD CSI CHECK)
     # --------------------------------------------------------
     def can_start_loop(self, csi_state: str) -> bool:
-        """
-        Determines whether autonomy loop evaluation
-        is allowed to run for the given CSI state.
-        """
         try:
-            state = CSIState(csi_state)
+            return CSIState(csi_state) == CSIState.AUTONOMOUS_LOOP
         except Exception:
             return False
-
-        # Conservative: only explicit AUTONOMOUS_LOOP
-        return state == CSIState.AUTONOMOUS_LOOP
 
     # --------------------------------------------------------
     # LOOP GOVERNANCE STEP
@@ -66,46 +55,31 @@ class LoopController:
         csi_state: str,
         last_result: Optional[Dict[str, Any]] = None,
     ) -> LoopResult:
-        """
-        Evaluates a single autonomy loop governance step.
-        """
 
         # -------------------------------
-        # ITERATION LIMIT GUARD
+        # HARD CSI GUARD
+        # -------------------------------
+        if not self.can_start_loop(csi_state):
+            return LoopResult(
+                allow=False,
+                decision="BLOCK",
+                reason="csi_state_not_autonomous",
+                metadata={"state": csi_state},
+            )
+
+        # -------------------------------
+        # ITERATION LIMIT
         # -------------------------------
         if iteration >= self.MAX_ITERATIONS:
             return LoopResult(
                 allow=False,
-                decision="BLOCK",
+                decision="STOP",
                 reason="max_iterations_reached",
                 metadata={"iteration": iteration},
             )
 
         # -------------------------------
-        # CSI VALIDATION
-        # -------------------------------
-        try:
-            state = CSIState(csi_state)
-        except Exception:
-            return LoopResult(
-                allow=False,
-                decision="BLOCK",
-                reason="invalid_csi_state",
-            )
-
-        # -------------------------------
-        # STATE GOVERNANCE
-        # -------------------------------
-        if state != CSIState.AUTONOMOUS_LOOP:
-            return LoopResult(
-                allow=False,
-                decision="BLOCK",
-                reason="loop_not_allowed_from_state",
-                metadata={"state": state.value},
-            )
-
-        # -------------------------------
-        # GOVERNANCE ALLOW
+        # LOOP ALLOW
         # -------------------------------
         return LoopResult(
             allow=True,
@@ -113,7 +87,7 @@ class LoopController:
             reason="loop_allowed",
             metadata={
                 "iteration": iteration,
-                "state": state.value,
+                "state": csi_state,
                 "last_result": last_result,
             },
         )

@@ -1,25 +1,39 @@
 from fastapi import APIRouter
 from services.alerting_service import AlertingService
+from services.metrics_service import MetricsService
+from services.conversation_state_service import ConversationStateService
+from services.approval_state_service import ApprovalStateService
 
 router = APIRouter(prefix="/alerting", tags=["Alerting"])
 
 alerting_service = AlertingService()
+conversation_state = ConversationStateService()
+approval_service = ApprovalStateService()
 
 
 @router.get("/")
 def alerting_status():
     """
-    READ-ONLY Alerting Endpoint
+    READ-ONLY OPS / ADMIN CONSOLE SNAPSHOT
+
+    FAZA 9 / #28
 
     Returns:
-    - ok (bool)
-    - violations (list)
-    - snapshot summary
+    - alert status
+    - violations
+    - system snapshot (CSI, approvals, metrics)
     """
-    result = alerting_service.evaluate()
+
+    alert_result = alerting_service.evaluate()
 
     return {
-        "ok": result["ok"],
-        "violations": result["violations"],
-        "snapshot": result.get("snapshot", {}),
+        "ok": alert_result["ok"],
+        "violations": alert_result["violations"],
+        "snapshot": {
+            "alerts": alert_result.get("snapshot", {}),
+            "csi": conversation_state.get(),
+            "approvals": approval_service.get_overview(),
+            "metrics": MetricsService.snapshot(),
+        },
+        "read_only": True,
     }

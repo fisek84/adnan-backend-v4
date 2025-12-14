@@ -7,13 +7,28 @@ from dataclasses import dataclass
 class AutonomyFeatureFlags:
     """
     Production feature flags for autonomy.
+
+    FAZA 10.2 — SAFETY DEFAULTS
+
+    PRINCIPLE:
+    - Everything OFF by default
+    - Explicit enablement only
     """
-    allow_retry: bool = True
-    allow_fallback: bool = True
+
+    # =========================================================
+    # MASTER GATE
+    # =========================================================
+    autonomy_enabled: bool = False
+
+    # =========================================================
+    # BEHAVIOR FLAGS
+    # =========================================================
+    allow_retry: bool = False
+    allow_fallback: bool = False
     allow_multi_iteration: bool = False
     allow_self_healing: bool = False
 
-    # ===============================
-    # BLOK 9 — CONTROLLED ACTIVATION
-    # ===============================
+    # =========================================================
+    # ACTION EMISSION
+    # =========================================================
     allow_action_proposals: bool = False

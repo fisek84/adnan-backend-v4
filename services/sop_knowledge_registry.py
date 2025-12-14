@@ -96,3 +96,41 @@ class SOPKnowledgeRegistry:
             "description": data.get("description"),
             "content": data,
         }
+
+    # ============================================================
+    # SOP → TASK MAPPING (FAZA 5.4 — KORAK 2)
+    # ============================================================
+    def map_sop_to_tasks(self, sop_id: str) -> List[Dict[str, Any]]:
+        """
+        Deterministički mapira SOP u niz TASK payload-a.
+
+        Pravila:
+        - bez AI
+        - bez heuristike
+        - 1 SOP step = 1 TASK
+        - redoslijed je strogo definisan SOP-om
+        """
+
+        path = BASE_PATH / f"{sop_id}.json"
+        if not path.exists():
+            return []
+
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        steps = data.get("steps", [])
+        tasks: List[Dict[str, Any]] = []
+
+        for idx, step in enumerate(steps, start=1):
+            tasks.append({
+                "task_id": f"{sop_id}_step_{idx}",
+                "sop_id": sop_id,
+                "step": step.get("step", idx),
+                "title": step.get("title"),
+                "description": step.get("description"),
+                "action": step.get("action"),
+                "parameters": step.get("parameters", {}),
+                "order": idx,
+            })
+
+        return tasks

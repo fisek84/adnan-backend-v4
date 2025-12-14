@@ -110,40 +110,69 @@ async def delete_task(
 
     result = await tasks_service.delete_task(task_id)
 
-    # FIX: Proper 404 handling
     if not result["ok"]:
         raise HTTPException(404, f"Task {task_id} not found.")
 
-    # Extract notion_id
     notion_id = result.get("notion_id")
 
-    # Delete from Notion if exists
     if notion_id:
         logger.info(f"Deleting Notion page: {notion_id}")
         notion_res = await notion.delete_page(notion_id)
 
         if notion_res["ok"]:
-            logger.info(f"Deleted from Notion: {notion_id}")
             return {"message": f"Task {task_id} deleted from backend + Notion."}
         else:
-            logger.warning("Task removed locally, but Notion deletion failed.")
             return {
                 "warning": "Task removed locally, but Notion deletion failed.",
                 "notion_error": notion_res["error"]
             }
 
-    # Deleted locally only
     return {"message": f"Task {task_id} deleted locally (no Notion page)."}
 
 
 # ================================
-# LIST TASKS 
+# LIST TASKS
 # ================================
 @router.get("/all")
 async def list_tasks(tasks_service=Depends(get_tasks_service)):
     try:
-        tasks = tasks_service.get_all_tasks()
-        return tasks
+        return tasks_service.get_all_tasks()
     except Exception as e:
         logger.error(f"Failed to list tasks: {e}")
         raise HTTPException(500, "Failed to list tasks")
+
+
+# ============================================================
+# FAZA 9 — PLAN → TASK → EXECUTION VIEW (READ-ONLY)
+# ============================================================
+
+@router.get("/overview")
+async def task_execution_overview(tasks_service=Depends(get_tasks_service)):
+    """
+    State-driven task execution snapshot.
+    UI / OPS safe.
+    """
+
+    tasks = tasks_service.get_all_tasks()
+
+    overview = []
+    for t in tasks:
+        overview.append({
+            "task_id": t.get("id"),
+            "title": t.get("title"),
+            "goal_id": t.get("goal_id"),
+            "status": t.get("status"),
+            "priority": t.get("priority"),
+            "deadline": t.get("deadline"),
+            "notion_url": t.get("notion_url"),
+            "execution": {
+                "assigned": bool(t.get("assigned_agent")),
+                "agent_id": t.get("assigned_agent"),
+                "last_error": t.get("last_error"),
+            },
+        })
+
+    return {
+        "tasks": overview,
+        "read_only": True,
+    }

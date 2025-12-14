@@ -1,10 +1,87 @@
 from datetime import datetime
 from pydantic import BaseModel, Field, validator
-from typing import Optional
+from typing import Optional, Dict, Any
 import logging
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+
+
+class TaskCompensationContract(BaseModel):
+    """
+    Compensation / Rollback declaration for a TASK.
+    FAZA 6 — KORAK 3
+    """
+
+    enabled: bool = Field(
+        False, description="Is compensation supported for this task"
+    )
+
+    compensation_type: Optional[str] = Field(
+        None, description="Type of compensation (rollback, revert, cleanup, etc.)"
+    )
+
+    payload: Optional[Dict[str, Any]] = Field(
+        None, description="Payload required to perform compensation"
+    )
+
+    class Config:
+        extra = "forbid"
+
+
+class TaskExecutionContract(BaseModel):
+    """
+    Execution Contract between TASK and AGENT.
+    FAZA 6 — KORAK 1
+    """
+
+    agent_id: Optional[str] = Field(
+        None, description="Assigned agent ID"
+    )
+    agent_type: Optional[str] = Field(
+        None, description="Agent type (notion, email, human, etc.)"
+    )
+    capability: Optional[str] = Field(
+        None, description="Capability used for execution"
+    )
+
+    execution_status: str = Field(
+        "not_started",
+        description="Execution status: not_started, running, success, failed",
+    )
+
+    started_at: Optional[datetime] = Field(
+        None, description="Execution start timestamp"
+    )
+    finished_at: Optional[datetime] = Field(
+        None, description="Execution finish timestamp"
+    )
+
+    error: Optional[str] = Field(
+        None, description="Execution error if failed"
+    )
+
+    # =========================
+    # COMPENSATION (FAZA 6)
+    # =========================
+    compensation: TaskCompensationContract = Field(
+        default_factory=TaskCompensationContract,
+        description="Compensation / rollback declaration"
+    )
+
+    @validator("execution_status")
+    def validate_execution_status(cls, v):
+        allowed = {"not_started", "running", "success", "failed"}
+        if v not in allowed:
+            raise ValueError(f"Execution status must be one of: {allowed}")
+        return v
+
+    class Config:
+        extra = "forbid"
+        json_encoders = {
+            datetime: lambda v: v.isoformat()
+        }
+
 
 class TaskModel(BaseModel):
     """
@@ -46,6 +123,14 @@ class TaskModel(BaseModel):
     )
     order: int = Field(
         0, description="Sort order for tasks"
+    )
+
+    # =========================
+    # EXECUTION CONTRACT (FAZA 6)
+    # =========================
+    execution: TaskExecutionContract = Field(
+        default_factory=TaskExecutionContract,
+        description="Execution contract and accountability data"
     )
 
     created_at: datetime = Field(

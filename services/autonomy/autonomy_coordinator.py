@@ -1,6 +1,4 @@
-# services/autonomy/autonomy_coordinator.py
-
-from typing import Optional
+from typing import Optional, Dict, Any
 from dataclasses import dataclass
 
 from services.autonomy.activation_contract import AutonomyProposal
@@ -15,6 +13,7 @@ class AutonomyCycleResult:
     loop: Optional[str]
     self_check: Optional[str]
     recovery: Optional[str]
+    reevaluation: Optional[Dict[str, Any]] = None
     proposal: Optional[AutonomyProposal] = None
 
 
@@ -22,11 +21,10 @@ class AutonomyCoordinator:
     """
     Coordinates a single autonomy evaluation cycle.
 
-    RULES:
-    - No decision making
-    - No heuristics
-    - No execution semantics
-    - Aggregation only
+    FAZA 8 / #22:
+    - explicit goal/plan re-evaluation signal
+    - no decisions
+    - no execution
     """
 
     def run_cycle(
@@ -34,8 +32,8 @@ class AutonomyCoordinator:
         *,
         iteration: int,
         csi_state: str,
-        expected_outcome=None,
-        actual_result=None,
+        expected_outcome: Optional[Dict[str, Any]] = None,
+        actual_result: Optional[Dict[str, Any]] = None,
         retry_count: int = 0,
         last_error: Optional[str] = None,
     ) -> AutonomyCycleResult:
@@ -43,13 +41,25 @@ class AutonomyCoordinator:
         Aggregates autonomy evaluation signals.
         """
 
+        # -------------------------------------------------
+        # RE-EVALUATION SIGNAL (DATA ONLY)
+        # -------------------------------------------------
+        reevaluation = {
+            "iteration": iteration,
+            "expected_outcome": expected_outcome,
+            "actual_result": actual_result,
+            "retry_count": retry_count,
+            "last_error": last_error,
+            "needs_review": bool(last_error) or retry_count > 0,
+        }
+
         # Coordinator does NOT generate proposals.
-        # Proposals are produced by dedicated evaluators (e.g. RecoveryStrategy).
         proposal = None
 
         return AutonomyCycleResult(
             loop="evaluated",
             self_check="evaluated",
             recovery="evaluated",
+            reevaluation=reevaluation,
             proposal=proposal,
         )

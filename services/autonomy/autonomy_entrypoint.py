@@ -1,5 +1,3 @@
-# services/autonomy/autonomy_entrypoint.py
-
 from typing import Dict, Any, Optional
 
 from services.conversation_state_service import ConversationStateService, CSIState
@@ -15,11 +13,12 @@ class AutonomyEntryPoint:
     """
     Production-hardened autonomy entry point.
 
+    FAZA 8 / #20 — AUTONOMY ELIGIBILITY RULES
+
     ROLE:
     - Orchestrates autonomy evaluation flow
-    - Enforces hard gates (kill-switch, safe-mode, policy, loop)
-    - Does NOT evaluate
-    - Does NOT mutate results
+    - Enforces ALL hard eligibility gates
+    - Zero mutation, zero side-effects
     """
 
     def __init__(
@@ -40,22 +39,46 @@ class AutonomyEntryPoint:
         self.flags = feature_flags
         self.safe_mode = safe_mode
 
-    # -------------------------------------------------
-    # ENTRY GUARD
-    # -------------------------------------------------
+    # =================================================
+    # AUTONOMY ELIGIBILITY (KANONSKI GATE)
+    # =================================================
     def can_enter(self) -> bool:
-        csi = self.conversation_state.get()
+        """
+        Autonomy may enter ONLY if ALL conditions are met.
+        """
+
         try:
-            return (
-                self.kill_switch.is_enabled()
-                and CSIState(csi.get("state")) == CSIState.AUTONOMOUS_LOOP
-            )
+            csi = self.conversation_state.get()
+            state = CSIState(csi.get("state"))
+
+            # ---- hard CSI requirement
+            if state != CSIState.AUTONOMOUS_LOOP:
+                return False
+
+            # ---- global kill-switch
+            if not self.kill_switch.is_enabled():
+                return False
+
+            # ---- safe mode overrides everything
+            if self.safe_mode.is_enabled():
+                return False
+
+            # ---- feature flag: autonomy master gate
+            if not self.flags.autonomy_enabled:
+                return False
+
+            # ---- minimal context sanity
+            if not csi.get("goal_id"):
+                return False
+
+            return True
+
         except Exception:
             return False
 
-    # -------------------------------------------------
+    # =================================================
     # MAIN ENTRY
-    # -------------------------------------------------
+    # =================================================
     def run(
         self,
         *,
@@ -66,12 +89,8 @@ class AutonomyEntryPoint:
         last_error: Optional[str] = None,
     ) -> Optional[AutonomyCycleResult]:
 
-        # ---- HARD ENTRY GUARD
+        # ---- ELIGIBILITY GATE
         if not self.can_enter():
-            return None
-
-        # ---- SAFE MODE
-        if self.safe_mode.is_enabled():
             return None
 
         csi_state = self.conversation_state.get().get("state")
@@ -89,13 +108,16 @@ class AutonomyEntryPoint:
         policy = self.policy.evaluate(
             csi_state=csi_state,
             iteration=iteration,
-            context={"retry_count": retry_count},
+            context={
+                "retry_count": retry_count,
+                "last_error": last_error,
+            },
         )
 
         if policy.decision == PolicyDecision.DENY:
             return None
 
-        # ---- COORDINATED EVALUATION
+        # ---- COORDINATED AUTONOMY CYCLE
         result = self.coordinator.run_cycle(
             iteration=iteration,
             csi_state=csi_state,
@@ -105,7 +127,7 @@ class AutonomyEntryPoint:
             last_error=last_error,
         )
 
-        # ---- FEATURE FLAG: EMISSION GATE (NO MUTATION)
+        # ---- FEATURE FLAG: ACTION EMISSION
         if not self.flags.allow_action_proposals:
             return AutonomyCycleResult(
                 loop=result.loop,
