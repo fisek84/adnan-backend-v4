@@ -84,21 +84,20 @@ class IntentCSIBinder:
                 payload = intent.payload or {}
 
             else:
-                # fallback chat — ostajemo u IDLE
                 return BinderResult(
                     next_state=CSIState.IDLE.value,
                     action="chat",
                 )
 
         # ----------------------------------------------------
-        # GOAL DRAFT (FAZA 3)
+        # GOAL DRAFT (FAZA 3) — FINAL FIX ✅
         # ----------------------------------------------------
         elif state == CSIState.GOAL_DRAFT:
-            if intent.type == IntentType.GOAL_CONFIRM:
+            if intent.type in (IntentType.GOAL_CONFIRM, IntentType.CONFIRM):
                 desired_state = CSIState.IDLE.value
                 action = "confirm_goal"
 
-            elif intent.type == IntentType.GOAL_CANCEL:
+            elif intent.type in (IntentType.GOAL_CANCEL, IntentType.CANCEL):
                 desired_state = CSIState.IDLE.value
                 action = "cancel_goal"
 
@@ -111,11 +110,11 @@ class IntentCSIBinder:
         # PLAN DRAFT (FAZA 4)
         # ----------------------------------------------------
         elif state == CSIState.PLAN_DRAFT:
-            if intent.type == IntentType.PLAN_CONFIRM:
+            if intent.type in (IntentType.PLAN_CONFIRM, IntentType.CONFIRM):
                 desired_state = CSIState.IDLE.value
                 action = "confirm_plan"
 
-            elif intent.type == IntentType.PLAN_CANCEL:
+            elif intent.type in (IntentType.PLAN_CANCEL, IntentType.CANCEL):
                 desired_state = CSIState.IDLE.value
                 action = "cancel_plan"
 
@@ -127,11 +126,11 @@ class IntentCSIBinder:
         # TASK DRAFT (FAZA 3)
         # ----------------------------------------------------
         elif state == CSIState.TASK_DRAFT:
-            if intent.type == IntentType.TASK_CONFIRM:
+            if intent.type in (IntentType.TASK_CONFIRM, IntentType.CONFIRM):
                 desired_state = CSIState.IDLE.value
                 action = "confirm_task"
 
-            elif intent.type == IntentType.TASK_CANCEL:
+            elif intent.type in (IntentType.TASK_CANCEL, IntentType.CANCEL):
                 desired_state = CSIState.IDLE.value
                 action = "cancel_task"
 
@@ -164,7 +163,7 @@ class IntentCSIBinder:
         # DECISION PENDING
         # ----------------------------------------------------
         elif state == CSIState.DECISION_PENDING:
-            if intent.type == IntentType.CONFIRM:
+            if intent.type in (IntentType.CONFIRM, IntentType.REQUEST_EXECUTION):
                 desired_state = CSIState.EXECUTING.value
                 action = "confirm_execution"
 
