@@ -15,7 +15,7 @@ from services.conversation_state_service import ConversationStateService
 # ✅ FAZA 5 — READ-ONLY AUTONOMY HOOK
 from services.autonomy.autonomy_hook import AutonomyHook
 from services.autonomy.kill_switch import AutonomyKillSwitch
-from services.autonomy.feature_flags import FeatureFlags
+from services.autonomy.feature_flags import AutonomyFeatureFlags
 from services.autonomy.safe_mode import SafeMode
 
 # ===============================
@@ -56,7 +56,7 @@ class ContextOrchestrator:
         # FAZA 5 — AUTONOMY (PASSIVE / READ-ONLY / POLICY-GATED)
         # =====================================================
         kill_switch = AutonomyKillSwitch()
-        feature_flags = FeatureFlags()
+        feature_flags = AutonomyFeatureFlags()
         safe_mode = SafeMode()
 
         self.autonomy = AutonomyHook(
