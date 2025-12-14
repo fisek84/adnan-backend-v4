@@ -60,15 +60,11 @@ class ContextOrchestrator:
         # -------------------------------------------------
         # FAZA 5 — AUTONOMY (PASSIVE / READ-ONLY)
         # -------------------------------------------------
-        kill_switch = AutonomyKillSwitch()
-        feature_flags = AutonomyFeatureFlags()
-        safe_mode = AutonomySafeMode()
-
         self.autonomy = AutonomyHook(
             conversation_state=conversation_state,
-            kill_switch=kill_switch,
-            feature_flags=feature_flags,
-            safe_mode=safe_mode,
+            kill_switch=AutonomyKillSwitch(),
+            feature_flags=AutonomyFeatureFlags(),
+            safe_mode=AutonomySafeMode(),
         )
 
         # -------------------------------------------------
@@ -81,8 +77,11 @@ class ContextOrchestrator:
     # =====================================================
     async def run(self, user_input: str) -> Dict[str, Any]:
         text = (user_input or "").strip()
-        csi = self.conversation_state.get()
-        csi_state = csi.get("state")
+
+        # ✅ KANONSKI CSI GUARD (OVO JE KLJUČNO)
+        csi = self.conversation_state.get() or {}
+        csi_state = csi.get("state") or "IDLE"
+        request_id = csi.get("request_id")
 
         # -------------------------------------------------
         # FAZA 5 — AUTONOMY (READ-ONLY)
@@ -134,9 +133,7 @@ class ContextOrchestrator:
         # RESET
         # -------------------------------------------------
         if bind.action == "reset":
-            self.conversation_state.set_idle(
-                request_id=csi.get("request_id")
-            )
+            self.conversation_state.set_idle(request_id=request_id)
             return self._final({
                 "type": "reset",
                 "message": "Stanje je resetovano. Spreman sam.",
@@ -154,7 +151,7 @@ class ContextOrchestrator:
 
             self.conversation_state.set_goal_draft(
                 goal=goal_object,
-                request_id=csi.get("request_id"),
+                request_id=request_id,
             )
 
             return self._final({
@@ -171,19 +168,11 @@ class ContextOrchestrator:
             if goal:
                 self.memory_engine.store_goal(goal)
 
-            self.conversation_state.set_idle(
-                request_id=csi.get("request_id")
-            )
-
-            return self._final({
-                "type": "goal_confirmed",
-                "goal": goal,
-            })
+            self.conversation_state.set_idle(request_id=request_id)
+            return self._final({"type": "goal_confirmed", "goal": goal})
 
         if bind.action == "cancel_goal":
-            self.conversation_state.set_idle(
-                request_id=csi.get("request_id")
-            )
+            self.conversation_state.set_idle(request_id=request_id)
             return self._final({"type": "goal_cancelled"})
 
         # -------------------------------------------------
@@ -205,7 +194,7 @@ class ContextOrchestrator:
 
             self.conversation_state.set_plan_draft(
                 plan=plan_object,
-                request_id=csi.get("request_id"),
+                request_id=request_id,
             )
 
             return self._final({
@@ -222,19 +211,11 @@ class ContextOrchestrator:
             if plan:
                 self.memory_engine.store_plan(plan)
 
-            self.conversation_state.set_idle(
-                request_id=csi.get("request_id")
-            )
-
-            return self._final({
-                "type": "plan_confirmed",
-                "plan": plan,
-            })
+            self.conversation_state.set_idle(request_id=request_id)
+            return self._final({"type": "plan_confirmed", "plan": plan})
 
         if bind.action == "cancel_plan":
-            self.conversation_state.set_idle(
-                request_id=csi.get("request_id")
-            )
+            self.conversation_state.set_idle(request_id=request_id)
             return self._final({"type": "plan_cancelled"})
 
         # -------------------------------------------------
