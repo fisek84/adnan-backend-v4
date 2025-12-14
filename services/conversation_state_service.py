@@ -25,29 +25,15 @@ class CSIState(Enum):
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
 
-    # ================================
-    # GOALS (FAZA 3)
-    # ================================
+    # FAZA 3
     GOAL_DRAFT = "GOAL_DRAFT"
-
-    # ================================
-    # TASKS (FAZA 3)
-    # ================================
     TASK_DRAFT = "TASK_DRAFT"
-
-    # ================================
-    # PROJECTS (FAZA 3)
-    # ================================
     PROJECT_DRAFT = "PROJECT_DRAFT"
 
-    # ================================
-    # PLANS (FAZA 4)
-    # ================================
+    # FAZA 4
     PLAN_DRAFT = "PLAN_DRAFT"
 
-    # ================================
-    # AUTONOMY (FAZA 5)  ✅ NOVO
-    # ================================
+    # FAZA 5
     AUTONOMOUS_LOOP = "AUTONOMOUS_LOOP"
 
 
@@ -62,7 +48,7 @@ ALLOWED_TRANSITIONS = {
         CSIState.TASK_DRAFT.value,
         CSIState.PROJECT_DRAFT.value,
         CSIState.PLAN_DRAFT.value,
-        CSIState.AUTONOMOUS_LOOP.value,   # ✅
+        CSIState.AUTONOMOUS_LOOP.value,
     },
     CSIState.SOP_LIST.value: {
         CSIState.SOP_ACTIVE.value,
@@ -82,11 +68,11 @@ ALLOWED_TRANSITIONS = {
     },
     CSIState.COMPLETED.value: {
         CSIState.IDLE.value,
-        CSIState.AUTONOMOUS_LOOP.value,   # ✅ self-check loop
+        CSIState.AUTONOMOUS_LOOP.value,
     },
     CSIState.FAILED.value: {
         CSIState.IDLE.value,
-        CSIState.AUTONOMOUS_LOOP.value,   # ✅ recovery loop
+        CSIState.AUTONOMOUS_LOOP.value,
     },
     CSIState.GOAL_DRAFT.value: {
         CSIState.IDLE.value,
@@ -125,6 +111,7 @@ AUDIT_FILE = BASE_PATH / "csi_audit.log"
 class ConversationState:
     state: str = CSIState.IDLE.value
     expected_input: str = "free"
+
     sop_list: List[Dict[str, Any]] = None
     active_sop_id: Optional[str] = None
     pending_decision: Optional[Dict[str, Any]] = None
@@ -166,7 +153,7 @@ class ConversationState:
 
 
 # ============================================================
-# SERVICE
+# SERVICE — CSI FINAL AUTHORITY
 # ============================================================
 
 class ConversationStateService:
@@ -179,6 +166,8 @@ class ConversationStateService:
     def __init__(self):
         BASE_PATH.mkdir(parents=True, exist_ok=True)
         self._state: ConversationState = self._load()
+
+    # ---------------- internal ----------------
 
     def _load(self) -> ConversationState:
         if not STATE_FILE.exists():
@@ -227,9 +216,6 @@ class ConversationStateService:
         self._state.ts = time.time()
         self._persist(self._state, reason=reason)
 
-    def get(self):
-        return self._state.to_dict()
-
     def _clear_context(self):
         self._state.sop_list = []
         self._state.active_sop_id = None
@@ -240,13 +226,56 @@ class ConversationStateService:
         self._state.plan_draft = None
         self._state.expected_input = "free"
 
+    # ---------------- public API ----------------
+
+    def get(self):
+        return self._state.to_dict()
+
     def set_idle(self, request_id=None):
         self._clear_context()
         self._transition(CSIState.IDLE.value, reason="set_idle", request_id=request_id)
         return self.get()
 
+    # =========================
+    # GOAL — FAZA 3
+    # =========================
+
+    def set_goal_draft(self, *, goal: Dict[str, Any], request_id=None):
+        self._transition(
+            CSIState.GOAL_DRAFT.value,
+            reason="set_goal_draft",
+            request_id=request_id,
+        )
+        self._state.goal_draft = goal
+        self._state.expected_input = "goal_confirmation"
+        self._persist(self._state, reason="goal_draft_set")
+        return self.get()
+
+    # =========================
+    # TASK — FAZA 3
+    # =========================
+
+    def set_task_draft(self, *, task: Dict[str, Any], request_id=None):
+        self._transition(
+            CSIState.TASK_DRAFT.value,
+            reason="set_task_draft",
+            request_id=request_id,
+        )
+        self._state.task_draft = task
+        self._state.expected_input = "task_confirmation"
+        self._persist(self._state, reason="task_draft_set")
+        return self.get()
+
+    # =========================
+    # PLAN — FAZA 4
+    # =========================
+
     def set_plan_draft(self, *, plan: Dict[str, Any], request_id=None):
-        self._transition(CSIState.PLAN_DRAFT.value, reason="set_plan_draft", request_id=request_id)
+        self._transition(
+            CSIState.PLAN_DRAFT.value,
+            reason="set_plan_draft",
+            request_id=request_id,
+        )
         self._state.plan_draft = plan
         self._state.expected_input = "plan_confirmation"
         self._persist(self._state, reason="plan_draft_set")
