@@ -18,6 +18,12 @@ class BinderResult:
 class IntentCSIBinder:
     """
     Deterministic CSI binder — FINAL / LOCKED
+
+    PRINCIPLES:
+    - CSI state has priority over intent
+    - GENERIC CONFIRM / CANCEL are resolved by context
+    - No execution logic
+    - No side effects
     """
 
     def bind(self, intent: Intent, current_state: str) -> BinderResult:
@@ -30,16 +36,22 @@ class IntentCSIBinder:
         # RESET (HIGHEST PRIORITY)
         # ------------------------------------------------
         if intent.type == IntentType.RESET:
-            return BinderResult(CSIState.IDLE.value, "reset")
+            return BinderResult(
+                next_state=CSIState.IDLE.value,
+                action="reset",
+            )
 
         # ------------------------------------------------
-        # EXECUTING LOCK
+        # EXECUTING (HARD LOCK)
         # ------------------------------------------------
         if state == CSIState.EXECUTING:
-            return BinderResult(CSIState.EXECUTING.value)
+            return BinderResult(
+                next_state=CSIState.EXECUTING.value,
+                action=None,
+            )
 
         desired_state = state.value
-        action = None
+        action: Optional[str] = None
         payload = intent.payload or {}
 
         # ------------------------------------------------
@@ -55,10 +67,13 @@ class IntentCSIBinder:
                 action = "create_task"
 
             else:
-                return BinderResult(CSIState.IDLE.value, "chat")
+                return BinderResult(
+                    next_state=CSIState.IDLE.value,
+                    action="chat",
+                )
 
         # ------------------------------------------------
-        # GOAL DRAFT  ✅ FINAL FIX
+        # GOAL DRAFT (FAZA 3) — FINAL FIX
         # ------------------------------------------------
         elif state == CSIState.GOAL_DRAFT:
             if intent.type in (IntentType.CONFIRM, IntentType.GOAL_CONFIRM):
@@ -74,7 +89,7 @@ class IntentCSIBinder:
                 action = "create_plan"
 
         # ------------------------------------------------
-        # PLAN DRAFT
+        # PLAN DRAFT (FAZA 4)
         # ------------------------------------------------
         elif state == CSIState.PLAN_DRAFT:
             if intent.type in (IntentType.CONFIRM, IntentType.PLAN_CONFIRM):
@@ -90,10 +105,17 @@ class IntentCSIBinder:
                 action = "generate_tasks_from_plan"
 
         # ------------------------------------------------
-        # VALIDATION
+        # VALIDATION (FINAL GUARD)
         # ------------------------------------------------
         allowed = ALLOWED_TRANSITIONS.get(state.value, set())
         if desired_state not in allowed:
-            return BinderResult(state.value)
+            return BinderResult(
+                next_state=state.value,
+                action=None,
+            )
 
-        return BinderResult(desired_state, action, payload)
+        return BinderResult(
+            next_state=desired_state,
+            action=action,
+            payload=payload,
+        )
