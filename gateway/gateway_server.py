@@ -199,8 +199,40 @@ class CommandRequest(BaseModel):
     command: str
     payload: dict
 
+class UserInputRequest(BaseModel):
+    text: str
+
 # ================================================================
-# /ops/execute — CSI-CENTRIC PIPELINE (DEBUG ENABLED)
+# PUBLIC INPUT — SAFE USER GATEWAY (✔️ DODANO)
+# ================================================================
+@app.post("/adnan-ai/input")
+async def adnan_ai_input(req: UserInputRequest):
+    if not _BOOT_READY:
+        raise HTTPException(status_code=503, detail="System not ready")
+
+    user_text = (req.text or "").strip()
+    if not user_text:
+        raise HTTPException(status_code=400, detail="Empty input")
+
+    orch = await orchestrator.run(user_text)
+    decision_output = orch.get("result", {})
+
+    awareness = awareness_service.build_snapshot(
+        command=None,
+        csi_state=conversation_state_service.get(),
+    )
+
+    return response_formatter.format(
+        intent="user_input",
+        confidence=decision_output.get("confidence", 1.0),
+        csi_state=conversation_state_service.get(),
+        execution_result=decision_output,
+        awareness=awareness,
+        request_id=None,
+    )
+
+# ================================================================
+# /ops/execute — CSI-CENTRIC PIPELINE (INTERNAL / DEBUG)
 # ================================================================
 @app.post("/ops/execute")
 async def execute(req: CommandRequest):
@@ -226,6 +258,7 @@ async def execute(req: CommandRequest):
             awareness=awareness,
             request_id=None,
         )
+
     _LAST_CALL_TS = now
 
     command = AICommand(
@@ -245,9 +278,6 @@ async def execute(req: CommandRequest):
     orch = await orchestrator.run(user_text)
     decision_output = orch.get("result", {})
 
-    # ============================================================
-    # 🔴 DEBUG — OVO JE KLJUČNO
-    # ============================================================
     return {
         "DEBUG_decision_output": decision_output,
         "csi": conversation_state_service.get(),
