@@ -1,10 +1,11 @@
 from enum import Enum
 from dataclasses import dataclass
-from typing import Optional, Dict, Any
+from typing import Optional, Dict
 
 
 class IntentType(Enum):
-    CHAT = "chat"               # ✅ OBAVEZNO
+    CHAT = "chat"
+
     RESET = "reset"
 
     GOAL_CREATE = "goal_create"
@@ -19,18 +20,18 @@ class IntentType(Enum):
     TASK_CONFIRM = "task_confirm"
     TASK_CANCEL = "task_cancel"
 
-    TASK_GENERATE_FROM_PLAN = "task_generate_from_plan"
-
     LIST_SOPS = "list_sops"
     VIEW_SOP = "view_sop"
-    REQUEST_EXECUTION = "request_execution"
 
+    REQUEST_EXECUTION = "request_execution"
     CONFIRM = "confirm"
     CANCEL = "cancel"
+
+    TASK_GENERATE_FROM_PLAN = "task_generate_from_plan"
 
 
 @dataclass
 class Intent:
     type: IntentType
     confidence: float = 1.0
-    payload: Optional[Dict[str, Any]] = None
+    payload: Optional[Dict] = None
