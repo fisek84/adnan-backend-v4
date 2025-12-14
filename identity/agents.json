@@ -1,0 +1,15 @@
+{
+  "notion_ops": {
+    "type": "executor",
+    "capabilities": [
+      "create_database_entry",
+      "update_database_entry",
+      "query_database",
+      "create_page",
+      "retrieve_page_content",
+      "delete_page"
+    ],
+    "enabled": true,
+    "assistant_id": "ENV:NOTION_OPS_ASSISTANT_ID"
+  }
+}

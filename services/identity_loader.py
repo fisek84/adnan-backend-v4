@@ -55,6 +55,26 @@ def validate_identity_payload(payload: Dict[str, Any], required_keys: list, name
         )
 
 
+def validate_agent_definition(agent_id: str, agent: Dict[str, Any]):
+    required_keys = ["type", "capabilities", "enabled"]
+
+    missing = [k for k in required_keys if k not in agent]
+    if missing:
+        raise ValueError(
+            f"[AGENTS] Agent '{agent_id}' missing required keys: {missing}"
+        )
+
+    if not isinstance(agent["capabilities"], list):
+        raise ValueError(
+            f"[AGENTS] Agent '{agent_id}' capabilities must be a list"
+        )
+
+    if not isinstance(agent["enabled"], bool):
+        raise ValueError(
+            f"[AGENTS] Agent '{agent_id}' enabled must be boolean"
+        )
+
+
 # ============================================================
 # LOADERS (CANONICAL — SOURCE OF TRUTH)
 # ============================================================
@@ -126,6 +146,26 @@ def load_decision_engine_config():
         required_keys=["strategy"],
         name="decision_engine.json"
     )
+    return data
+
+
+# ============================================================
+# AGENT IDENTITY & CAPABILITIES (FAZA 7 — KORAK 1)
+# ============================================================
+
+def load_agents_identity() -> Dict[str, Dict[str, Any]]:
+    """
+    Loads agent identity & capability definitions from identity/agents.json.
+    Passive, read-only, no execution.
+    """
+    data = load_json_file(resolve_path("agents.json"))
+
+    if not isinstance(data, dict):
+        raise ValueError("[AGENTS] agents.json must be a JSON object")
+
+    for agent_id, agent in data.items():
+        validate_agent_definition(agent_id, agent)
+
     return data
 
 
