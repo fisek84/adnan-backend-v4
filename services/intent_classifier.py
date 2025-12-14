@@ -22,25 +22,40 @@ class IntentClassifier:
             t = text.strip().lower()
 
             # ---------------------------------
-            # RESET (HIGHEST PRIORITY)
+            # RESET
             # ---------------------------------
-            if re.search(r"\b(reset|kreni ispočetka|počni ponovo|pocni ponovo)\b", t):
+            if re.search(r"\b(reset|kreni ispočetka|počni ponovo)\b", t):
                 return Intent(IntentType.RESET, 1.0)
 
             # ---------------------------------
-            # GOAL CONFIRM — FAZA 3 (FINAL FIX)
+            # GOAL CONFIRM / CANCEL  (MORA BITI PRIJE GENERIČNOG)
             # ---------------------------------
-            if re.search(r"\b(potvrdi cilj|potvrđujem cilj|confirm goal)\b", t):
-                return Intent(IntentType.GOAL_CONFIRM, 0.95)
+            if re.search(r"\b(potvrdi cilj|potvrđujem cilj|da cilj)\b", t):
+                return Intent(IntentType.GOAL_CONFIRM, 1.0)
+
+            if re.search(r"\b(odustani od cilja|otkaži cilj|cancel goal)\b", t):
+                return Intent(IntentType.GOAL_CANCEL, 1.0)
 
             # ---------------------------------
-            # GOAL CANCEL — FAZA 3
+            # PLAN CONFIRM / CANCEL
             # ---------------------------------
-            if re.search(r"\b(otkaži cilj|otkazi cilj|cancel goal)\b", t):
-                return Intent(IntentType.GOAL_CANCEL, 0.95)
+            if re.search(r"\b(potvrdi plan|da plan)\b", t):
+                return Intent(IntentType.PLAN_CONFIRM, 1.0)
+
+            if re.search(r"\b(otkaži plan|odustani od plana)\b", t):
+                return Intent(IntentType.PLAN_CANCEL, 1.0)
 
             # ---------------------------------
-            # CONFIRM / CANCEL (GENERIC)
+            # TASK CONFIRM / CANCEL
+            # ---------------------------------
+            if re.search(r"\b(potvrdi zadatak|da zadatak)\b", t):
+                return Intent(IntentType.TASK_CONFIRM, 1.0)
+
+            if re.search(r"\b(otkaži zadatak|odustani od zadatka)\b", t):
+                return Intent(IntentType.TASK_CANCEL, 1.0)
+
+            # ---------------------------------
+            # GENERIC CONFIRM / CANCEL
             # ---------------------------------
             if re.fullmatch(r"(da|može|moze|ok|okej|yes)", t):
                 return Intent(IntentType.CONFIRM, 1.0)
@@ -57,13 +72,13 @@ class IntentClassifier:
             # ---------------------------------
             # TASKS FROM PLAN
             # ---------------------------------
-            if re.search(r"\b(generiši taskove|generisi taskove|taskovi iz plana|razloži plan|razlozi plan)\b", t):
+            if re.search(r"\b(generiši taskove|taskovi iz plana|razloži plan)\b", t):
                 return Intent(IntentType.TASK_GENERATE_FROM_PLAN, 0.9)
 
             # ---------------------------------
             # PLAN CREATE
             # ---------------------------------
-            if re.search(r"\b(napravi plan|razradi plan|planiraj|plan)\b", t):
+            if re.search(r"\b(napravi plan|razradi plan|planiraj)\b", t):
                 return Intent(IntentType.PLAN_CREATE, 0.9, payload={"text": text})
 
             # ---------------------------------
@@ -78,9 +93,6 @@ class IntentClassifier:
             if re.search(r"\b(task|zadatak|uraditi|to do)\b", t):
                 return Intent(IntentType.TASK_CREATE, 0.9, payload={"text": text})
 
-            # ---------------------------------
-            # FALLBACK CHAT
-            # ---------------------------------
             return Intent(IntentType.CHAT, 1.0)
 
         except Exception:
