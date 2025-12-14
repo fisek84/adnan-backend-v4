@@ -71,8 +71,12 @@ logger = logging.getLogger("gateway")
 app = FastAPI()
 
 # ================================================================
-# HEALTH CHECK (PLATFORM ONLY)
+# ROOT + HEALTH (PLATFORM ONLY — NO CSI)
 # ================================================================
+@app.get("/")
+async def root():
+    return {"status": "ok"}
+
 @app.get("/health")
 async def health_check():
     return {"status": "ok"}
@@ -222,7 +226,6 @@ async def execute(req: CommandRequest):
         payload = delegation.get("payload") or {}
 
         if cmd:
-            # ▶ EXECUTING
             conversation_state_service.set_executing(
                 request_id=command.request_id
             )
@@ -236,7 +239,6 @@ async def execute(req: CommandRequest):
 
             execution_result = await workflow_service.execute_workflow(workflow)
 
-            # ▶ FINAL RESET (CSI owns lifecycle)
             conversation_state_service.set_idle(
                 request_id=command.request_id
             )
