@@ -13,9 +13,6 @@ audit_service = AuditService()
 # ============================================================
 @router.get("/export")
 def export_audit():
-    """
-    Full compliance snapshot (read-only).
-    """
     return {
         "ok": True,
         "data": audit_service.get_full_audit_snapshot(),
@@ -27,9 +24,6 @@ def export_audit():
 # ============================================================
 @router.get("/execution")
 def execution_audit():
-    """
-    Execution governance audit (raw stats).
-    """
     return {
         "ok": True,
         "data": audit_service.get_execution_audit(),
@@ -41,9 +35,6 @@ def execution_audit():
 # ============================================================
 @router.get("/kpis")
 def execution_kpis():
-    """
-    Aggregated execution KPIs.
-    """
     return {
         "ok": True,
         "data": audit_service.get_execution_kpis(),

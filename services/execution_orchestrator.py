@@ -4,11 +4,11 @@ from typing import Dict, Any
 import logging
 from datetime import datetime
 from uuid import uuid4
-import asyncio
 
 from services.sop_execution_manager import SOPExecutionManager
 from services.notion_ops.ops_engine import NotionOpsEngine
 from services.execution_governance_service import ExecutionGovernanceService
+from services.memory_service import MemoryService
 
 from services.identity_loader import load_agents_identity
 from services.agent_health_registry import AgentHealthRegistry
@@ -26,17 +26,19 @@ class ExecutionOrchestrator:
 
     FAZA 6:
     - execution contract
-    - retry / timeout policy
     - partial failure normalization
-    - audit + KPI canonicalization
+    - KPI + audit canonicalization
 
-    FAZA 7 (INTEGRATED):
+    FAZA 7:
     - agent identity
     - health
     - assignment
     - load balancing
     - isolation
     - lifecycle
+
+    FAZA 12:
+    - memory write-path (execution outcomes)
     """
 
     STATE_COMPLETED = "COMPLETED"
@@ -49,29 +51,21 @@ class ExecutionOrchestrator:
     CONTRACT_VERSION = "1.3"
 
     EXECUTION_POLICY = {
-        "retry": {
-            "enabled": False,
-            "max_attempts": 1,
-            "strategy": "none",
-        },
-        "timeout": {
-            "enabled": False,
-            "max_duration_sec": None,
-        },
-        "compensation": {
-            "enabled": False,
-        },
+        "retry": {"enabled": False, "max_attempts": 1},
+        "timeout": {"enabled": False, "max_duration_sec": None},
+        "compensation": {"enabled": False},
     }
 
     def __init__(self):
-        # Existing executors
+        # Executors
         self._sop_executor = SOPExecutionManager()
         self._notion_executor = NotionOpsEngine()
         self._governance = ExecutionGovernanceService()
 
-        # --------------------------------------------------------
-        # AGENT OS (FAZA 7)
-        # --------------------------------------------------------
+        # Memory (FAZA 12)
+        self._memory = MemoryService()
+
+        # Agent OS (FAZA 7)
         self._agents_identity = load_agents_identity()
         self._agent_health = AgentHealthRegistry()
         self._agent_lifecycle = AgentLifecycleService()
@@ -83,7 +77,6 @@ class ExecutionOrchestrator:
             agent_health_registry=self._agent_health,
         )
 
-        # Register all agents in health registry
         for agent_id in self._agents_identity.keys():
             self._agent_health.register_agent(agent_id)
 
@@ -126,86 +119,69 @@ class ExecutionOrchestrator:
             approval_id=decision.get("approval_id"),
         )
 
-        next_csi = governance.get("next_csi_state")
+        if not governance.get("allowed"):
+            self._memory.store_decision_outcome(
+                decision_type="execution",
+                context_type=decision.get("context_type", "sop"),
+                target=command,
+                success=False,
+                metadata={"reason": governance.get("reason"), "state": "blocked"},
+            )
 
-        if not governance.get("allowed") or next_csi != "EXECUTING":
-            finished_at = datetime.utcnow()
-            return {
-                "execution_id": execution_id,
-                "success": False,
-                "execution_state": self.STATE_BLOCKED,
-                "csi_next_state": next_csi,
-                "executor": executor,
-                "summary": governance.get("reason"),
-                "started_at": started_at_iso,
-                "finished_at": finished_at.isoformat(),
-                "details": {
-                    "governance": governance,
-                    "policy": self.EXECUTION_POLICY,
-                },
-                "kpi": self._kpi(
-                    executor=executor,
-                    success=False,
-                    started_at=started_at,
-                    finished_at=finished_at,
-                    has_partial_failure=False,
-                ),
-                "audit": self._audit(
-                    execution_contract=execution_contract,
-                    success=False,
-                    finished_at=finished_at,
-                ),
-            }
+            return self._blocked(
+                execution_contract=execution_contract,
+                governance=governance,
+                started_at=started_at_iso,
+            )
 
         # --------------------------------------------------------
-        # AGENT OS GATES (FAZA 7)
+        # AGENT SELECTION
         # --------------------------------------------------------
         agent_id = self._agent_assignment.assign_agent(command)
 
         if not agent_id:
-            return self._fail(
-                execution_contract=execution_contract,
-                summary="Nijedan agent ne može izvršiti komandu.",
-                started_at=started_at_iso,
+            return self._fail_with_memory(
+                execution_contract,
+                command,
+                decision,
+                "Nijedan agent nije dostupan.",
+                started_at_iso,
             )
 
         if not self._agent_lifecycle.is_active(agent_id):
-            return self._fail(
-                execution_contract=execution_contract,
-                summary=f"Agent '{agent_id}' je deaktiviran.",
-                started_at=started_at_iso,
+            return self._fail_with_memory(
+                execution_contract,
+                command,
+                decision,
+                f"Agent '{agent_id}' je deaktiviran.",
+                started_at_iso,
             )
 
         if self._agent_isolation.is_isolated(agent_id):
-            return self._fail(
-                execution_contract=execution_contract,
-                summary=f"Agent '{agent_id}' je izolovan.",
-                started_at=started_at_iso,
+            return self._fail_with_memory(
+                execution_contract,
+                command,
+                decision,
+                f"Agent '{agent_id}' je izolovan.",
+                started_at_iso,
             )
 
         if not self._load_balancer.can_accept(agent_id):
-            return self._fail(
-                execution_contract=execution_contract,
-                summary=f"Agent '{agent_id}' je preopterećen.",
-                started_at=started_at_iso,
+            return self._fail_with_memory(
+                execution_contract,
+                command,
+                decision,
+                f"Agent '{agent_id}' je preopterećen.",
+                started_at_iso,
             )
 
-        # --------------------------------------------------------
-        # DRY RUN
-        # --------------------------------------------------------
         if dry_run:
-            finished_at = datetime.utcnow()
             return self._success(
                 execution_contract=execution_contract,
                 summary="Simulacija izvršenja.",
                 started_at=started_at_iso,
-                finished_at=finished_at,
-                details={
-                    "command": command,
-                    "payload": payload,
-                    "dry_run": True,
-                    "agent": agent_id,
-                },
+                finished_at=datetime.utcnow(),
+                details={"dry_run": True, "agent": agent_id},
             )
 
         # --------------------------------------------------------
@@ -219,7 +195,19 @@ class ExecutionOrchestrator:
             finished_at = datetime.utcnow()
 
             success = bool(raw.get("success"))
-            has_partial_failure = self._detect_partial_failure(raw)
+            partial = self._detect_partial_failure(raw)
+
+            self._memory.store_decision_outcome(
+                decision_type="execution",
+                context_type=decision.get("context_type", "sop"),
+                target=command,
+                success=success,
+                metadata={
+                    "executor": executor,
+                    "agent": agent_id,
+                    "partial_failure": partial,
+                },
+            )
 
             if not success:
                 self._agent_health.record_error(agent_id)
@@ -229,24 +217,29 @@ class ExecutionOrchestrator:
                 summary=raw.get("summary", ""),
                 started_at=started_at_iso,
                 finished_at=finished_at,
-                details={
-                    **raw,
-                    "agent": agent_id,
-                    "policy": self.EXECUTION_POLICY,
-                },
+                details={**raw, "agent": agent_id},
                 success=success,
-                has_partial_failure=has_partial_failure,
+                has_partial_failure=partial,
             )
 
         except Exception as e:
             self._agent_health.record_error(agent_id)
+
+            self._memory.store_decision_outcome(
+                decision_type="execution",
+                context_type=decision.get("context_type", "sop"),
+                target=command,
+                success=False,
+                metadata={"error": str(e), "agent": agent_id},
+            )
+
             raise
 
         finally:
             self._load_balancer.release(agent_id)
 
     # ============================================================
-    # SINGLE ATTEMPT
+    # INTERNAL EXECUTION
     # ============================================================
     async def _execute_once(self, executor: str, command: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         if executor == "sop_execution_manager":
@@ -256,50 +249,42 @@ class ExecutionOrchestrator:
             )
 
         if executor == "notion_ops":
-            return await self._notion_executor.execute(
-                command=command,
-                payload=payload,
-            )
+            return await self._notion_executor.execute(command=command, payload=payload)
 
         raise RuntimeError(f"Nepoznat executor: {executor}")
 
     # ============================================================
-    # HELPERS (UNCHANGED)
+    # HELPERS
     # ============================================================
     def _detect_partial_failure(self, raw: Dict[str, Any]) -> bool:
-        if raw.get("success"):
-            return False
-        return "results" in raw
+        return not raw.get("success") and "results" in raw
 
-    def _kpi(self, *, executor: str, success: bool,
-             started_at: datetime, finished_at: datetime,
-             has_partial_failure: bool) -> Dict[str, Any]:
+    def _blocked(self, *, execution_contract, governance, started_at):
+        finished_at = datetime.utcnow()
         return {
-            "executor": executor,
-            "success": success,
-            "duration_ms": int((finished_at - started_at).total_seconds() * 1000),
-            "has_partial_failure": has_partial_failure,
+            "execution_id": execution_contract["execution_id"],
+            "success": False,
+            "execution_state": self.STATE_BLOCKED,
+            "csi_next_state": governance.get("next_csi_state"),
+            "executor": execution_contract["executor"],
+            "summary": governance.get("reason"),
+            "started_at": started_at,
+            "finished_at": finished_at.isoformat(),
+            "details": {"governance": governance},
         }
 
-    def _audit(self, *, execution_contract: Dict[str, Any],
-               success: bool, finished_at: datetime) -> Dict[str, Any]:
-        return {
-            "contract": execution_contract,
-            "success": success,
-            "timestamp": finished_at.isoformat(),
-        }
+    def _fail_with_memory(self, contract, command, decision, reason, started_at):
+        self._memory.store_decision_outcome(
+            decision_type="execution",
+            context_type=decision.get("context_type", "sop"),
+            target=command,
+            success=False,
+            metadata={"reason": reason},
+        )
+        return self._fail(contract, reason, started_at)
 
-    def _success(
-        self,
-        *,
-        execution_contract: Dict[str, Any],
-        summary: str,
-        started_at: str,
-        finished_at: datetime,
-        details: Dict[str, Any],
-        success: bool = True,
-        has_partial_failure: bool = False,
-    ) -> Dict[str, Any]:
+    def _success(self, *, execution_contract, summary, started_at,
+                 finished_at, details, success=True, has_partial_failure=False):
         return {
             "execution_id": execution_contract["execution_id"],
             "success": success,
@@ -310,27 +295,9 @@ class ExecutionOrchestrator:
             "started_at": started_at,
             "finished_at": finished_at.isoformat(),
             "details": details,
-            "kpi": self._kpi(
-                executor=execution_contract["executor"],
-                success=success,
-                started_at=datetime.fromisoformat(started_at),
-                finished_at=finished_at,
-                has_partial_failure=has_partial_failure,
-            ),
-            "audit": self._audit(
-                execution_contract=execution_contract,
-                success=success,
-                finished_at=finished_at,
-            ),
         }
 
-    def _fail(
-        self,
-        *,
-        execution_contract: Dict[str, Any],
-        summary: str,
-        started_at: str,
-    ) -> Dict[str, Any]:
+    def _fail(self, execution_contract, summary, started_at):
         finished_at = datetime.utcnow()
         return {
             "execution_id": execution_contract["execution_id"],
@@ -341,19 +308,4 @@ class ExecutionOrchestrator:
             "summary": summary,
             "started_at": started_at,
             "finished_at": finished_at.isoformat(),
-            "details": {
-                "policy": self.EXECUTION_POLICY,
-            },
-            "kpi": self._kpi(
-                executor=execution_contract["executor"],
-                success=False,
-                started_at=datetime.fromisoformat(started_at),
-                finished_at=finished_at,
-                has_partial_failure=False,
-            ),
-            "audit": self._audit(
-                execution_contract=execution_contract,
-                success=False,
-                finished_at=finished_at,
-            ),
         }

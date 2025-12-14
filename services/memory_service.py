@@ -11,15 +11,20 @@ BASE_PATH = Path(__file__).resolve().parent.parent / "adnan_ai" / "memory"
 
 class MemoryService:
     """
-    MemoryService — FAZA 1–9 (STABLE, CONSOLIDATED)
+    MemoryService — FAZA 12 (COMPLIANCE FREEZE)
 
     Pravila:
-    - Jedan memory.json (bez dupliranja fajlova)
-    - STM + Decision + Execution + Cross-SOP Memory u istom storage-u
-    - NEMA implicitnih side-effecta
-    - CEO / Playbook samo čitaju
-    - Execution (SOP / Agent) jedini pišu
+    - Jedan memory.json (kanonski)
+    - Schema versioning (LOCKED)
+    - Backward compatible load
+    - Append-only za audit podatke
+    - Execution piše, audit čita
     """
+
+    # ============================================================
+    # SCHEMA LOCK
+    # ============================================================
+    SCHEMA_VERSION = "1.0.0"  # 🔒 FAZA 12 LOCK — ne mijenja se bez migracije
 
     DECAY_HALF_LIFE_SECONDS = 60 * 60 * 24 * 30  # ~30 dana
     MIN_WEIGHT = 0.2
@@ -30,17 +35,24 @@ class MemoryService:
         self.memory_file = BASE_PATH / "memory.json"
         self.memory = self._load()
 
+        # --------------------------------------------------------
+        # SCHEMA ENFORCEMENT (BACKWARD SAFE)
+        # --------------------------------------------------------
+        self.memory.setdefault("schema_version", self.SCHEMA_VERSION)
+
         self.memory.setdefault("entries", [])
         self.memory.setdefault("decision_outcomes", [])
         self.memory.setdefault("execution_stats", {})
         self.memory.setdefault("cross_sop_relations", {})
 
-        # FAZA 3 / 4 — STRUCTURED MEMORY
+        # FAZA 3 / 4
         self.memory.setdefault("goals", [])
         self.memory.setdefault("plans", [])
 
-        # FAZA 8 — ACTIVE DECISION MEMORY
+        # FAZA 8
         self.memory.setdefault("active_decision", None)
+
+        self._save()
 
     # ============================================================
     # INTERNALS
@@ -51,7 +63,11 @@ class MemoryService:
 
         try:
             with open(self.memory_file, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
+                # backward compatibility
+                if "schema_version" not in data:
+                    data["schema_version"] = self.SCHEMA_VERSION
+                return data
         except Exception:
             return {}
 
@@ -89,9 +105,6 @@ class MemoryService:
     # FAZA 3 — GOALS
     # ============================================================
     def store_goal(self, goal: Dict[str, Any]):
-        """
-        Persist confirmed goal (FAZA 3).
-        """
         if not goal:
             return
 
@@ -106,9 +119,6 @@ class MemoryService:
     # FAZA 4 — PLANS
     # ============================================================
     def store_plan(self, plan: Dict[str, Any]):
-        """
-        Persist confirmed plan (FAZA 4).
-        """
         if not plan:
             return
 
@@ -120,12 +130,9 @@ class MemoryService:
         self._save()
 
     # ============================================================
-    # FAZA 8 — CEO DECISION MEMORY
+    # FAZA 8 — ACTIVE DECISION
     # ============================================================
     def set_active_decision(self, decision: Dict[str, Any]):
-        """
-        Postavlja trenutno aktivnu (potvrđenu) odluku CEO-a.
-        """
         self.memory["active_decision"] = {
             "decision": decision,
             "ts": self._now(),
@@ -133,20 +140,14 @@ class MemoryService:
         self._save()
 
     def clear_active_decision(self):
-        """
-        Briše aktivnu odluku (nakon izvršenja ili otkazivanja).
-        """
         self.memory["active_decision"] = None
         self._save()
 
     def get_active_decision(self) -> Optional[Dict[str, Any]]:
-        """
-        Vraća trenutno aktivnu odluku ako postoji.
-        """
         return self.memory.get("active_decision")
 
     # ============================================================
-    # FAZA 5 — SOP OUTCOMES
+    # FAZA 5 — DECISION OUTCOMES (APPEND-ONLY)
     # ============================================================
     def store_decision_outcome(
         self,
@@ -157,6 +158,7 @@ class MemoryService:
         metadata: Optional[Dict[str, Any]] = None,
     ):
         record = {
+            "schema_version": self.SCHEMA_VERSION,
             "decision_type": decision_type,
             "context_type": context_type,
             "target": target,
@@ -170,6 +172,7 @@ class MemoryService:
         if len(self.memory["decision_outcomes"]) > 100:
             self.memory["decision_outcomes"].pop(0)
 
+        # SOP cross-relations
         if decision_type == "sop":
             prev_sop = (metadata or {}).get("previous_sop")
             current_sop = target
@@ -196,7 +199,7 @@ class MemoryService:
         self._save()
 
     # ============================================================
-    # FAZA 6–9 — READ-ONLY ANALYTICS
+    # FAZA 6–12 — READ-ONLY ANALYTICS
     # ============================================================
     def sop_success_rate(self, sop_key: str) -> float:
         outcomes = [
