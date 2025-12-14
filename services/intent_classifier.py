@@ -9,7 +9,7 @@ class IntentClassifier:
 
     RULES:
     - Text parsing ONLY here
-    - Order MATTERS (GOAL > PLAN > TASK)
+    - Order MATTERS
     - No CSI access
     - NEVER throws
     """
@@ -17,123 +17,56 @@ class IntentClassifier:
     def classify(self, text: Optional[str]) -> Intent:
         try:
             if not text or not text.strip():
-                return self._fallback()
+                return Intent(IntentType.CHAT, 1.0)
 
             t = text.strip().lower()
 
-            # ----------------------------------------------------
-            # NUMERIC INPUT — SOP SELECTION
-            # ----------------------------------------------------
-            if t.isdigit():
-                return Intent(
-                    type=IntentType.VIEW_SOP,
-                    confidence=1.0,
-                    payload={"index": int(t) - 1},
-                )
-
-            # ----------------------------------------------------
+            # ---------------------------------
             # RESET
-            # ----------------------------------------------------
-            if self._match(t, r"\b(reset|kreni ispočetka|počni ponovo)\b"):
-                return Intent(IntentType.RESET, 0.95)
+            # ---------------------------------
+            if re.search(r"\b(reset|kreni ispočetka|počni ponovo)\b", t):
+                return Intent(IntentType.RESET, 1.0)
 
-            # ----------------------------------------------------
-            # REQUEST EXECUTION (EXPLICIT ONLY)
-            # ----------------------------------------------------
-            if self._match(t, r"\b(pokreni|izvrši|izvrsi|startaj)\b"):
+            # ---------------------------------
+            # CONFIRM / CANCEL (GENERIC)
+            # ---------------------------------
+            if re.fullmatch(r"(da|može|moze|ok|okej|yes)", t):
+                return Intent(IntentType.CONFIRM, 1.0)
+
+            if re.fullmatch(r"(ne|nemoj|odustani|prekini|stop|no)", t):
+                return Intent(IntentType.CANCEL, 1.0)
+
+            # ---------------------------------
+            # EXECUTION
+            # ---------------------------------
+            if re.search(r"\b(pokreni|izvrši|izvrsi|startaj)\b", t):
                 return Intent(IntentType.REQUEST_EXECUTION, 0.95)
 
-            # ----------------------------------------------------
-            # GOAL CREATE — FAZA 3 (MORA BITI PRIJE TASK)
-            # ----------------------------------------------------
-            if self._match(
-                t,
-                r"\b(želim|zelim|cilj|goal|postati|da budem|da postanem)\b",
-            ):
-                return Intent(
-                    type=IntentType.GOAL_CREATE,
-                    confidence=0.9,
-                    payload={"text": text},
-                )
+            # ---------------------------------
+            # TASKS FROM PLAN
+            # ---------------------------------
+            if re.search(r"\b(generiši taskove|taskovi iz plana|razloži plan)\b", t):
+                return Intent(IntentType.TASK_GENERATE_FROM_PLAN, 0.9)
 
-            # ----------------------------------------------------
-            # PLAN CREATE — FAZA 4
-            # ----------------------------------------------------
-            if self._match(t, r"\b(plan|planiraj|napravi plan|razradi plan)\b"):
-                return Intent(
-                    type=IntentType.PLAN_CREATE,
-                    confidence=0.9,
-                    payload={"text": text},
-                )
+            # ---------------------------------
+            # PLAN CREATE
+            # ---------------------------------
+            if re.search(r"\b(plan|planiraj|napravi plan|razradi plan)\b", t):
+                return Intent(IntentType.PLAN_CREATE, 0.9, payload={"text": text})
 
-            # ----------------------------------------------------
-            # TASK GENERATION FROM PLAN — FAZA 4
-            # ----------------------------------------------------
-            if self._match(
-                t,
-                r"\b(razloži plan|razlozi plan|napravi taskove iz plana|generiši taskove|taskovi iz plana)\b",
-            ):
-                return Intent(IntentType.TASK_GENERATE_FROM_PLAN, 0.95)
+            # ---------------------------------
+            # GOAL CREATE
+            # ---------------------------------
+            if re.search(r"\b(želim|zelim|cilj|goal|postati)\b", t):
+                return Intent(IntentType.GOAL_CREATE, 0.9, payload={"text": text})
 
-            # ----------------------------------------------------
-            # TASK CREATE — FAZA 3 (NAKON GOAL)
-            # ----------------------------------------------------
-            if self._match(t, r"\b(moram|treba da|uraditi|zadatak|task|to do)\b"):
-                return Intent(
-                    type=IntentType.TASK_CREATE,
-                    confidence=0.9,
-                    payload={"text": text},
-                )
+            # ---------------------------------
+            # TASK CREATE
+            # ---------------------------------
+            if re.search(r"\b(task|zadatak|uraditi|to do)\b", t):
+                return Intent(IntentType.TASK_CREATE, 0.9, payload={"text": text})
 
-            # ----------------------------------------------------
-            # PLAN CONFIRM / CANCEL
-            # ----------------------------------------------------
-            if self._match(t, r"\b(da|može|moze|ok|okej|potvrdi)\b") and self._match(t, r"\b(plan)\b"):
-                return Intent(IntentType.PLAN_CONFIRM, 0.95)
-
-            if self._match(t, r"\b(ne|nemoj|odustani|prekini|stop)\b") and self._match(t, r"\b(plan)\b"):
-                return Intent(IntentType.PLAN_CANCEL, 0.95)
-
-            # ----------------------------------------------------
-            # GOAL CONFIRM / CANCEL
-            # ----------------------------------------------------
-            if self._match(t, r"\b(da|može|moze|ok|okej|potvrdi)\b") and self._match(t, r"\b(goal|cilj)\b"):
-                return Intent(IntentType.GOAL_CONFIRM, 0.95)
-
-            if self._match(t, r"\b(ne|nemoj|odustani|prekini|stop)\b") and self._match(t, r"\b(goal|cilj)\b"):
-                return Intent(IntentType.GOAL_CANCEL, 0.95)
-
-            # ----------------------------------------------------
-            # TASK CONFIRM / CANCEL
-            # ----------------------------------------------------
-            if self._match(t, r"\b(da|može|moze|ok|okej|potvrdi)\b") and self._match(t, r"\b(task|zadatak)\b"):
-                return Intent(IntentType.TASK_CONFIRM, 0.95)
-
-            if self._match(t, r"\b(ne|nemoj|odustani|prekini|stop)\b") and self._match(t, r"\b(task|zadatak)\b"):
-                return Intent(IntentType.TASK_CANCEL, 0.95)
-
-            # ----------------------------------------------------
-            # LIST SOPs
-            # ----------------------------------------------------
-            if self._match(t, r"\b(sop|procedure|procedura)\b"):
-                return Intent(IntentType.LIST_SOPS, 0.9)
-
-            # ----------------------------------------------------
-            # GENERIC CREATE
-            # ----------------------------------------------------
-            if self._match(t, r"\b(kreiraj|napravi|dodaj|create|add)\b"):
-                return Intent(IntentType.CREATE, 0.9)
-
-            # ----------------------------------------------------
-            # FALLBACK — CHAT
-            # ----------------------------------------------------
-            return self._fallback()
+            return Intent(IntentType.CHAT, 1.0)
 
         except Exception:
-            return self._fallback()
-
-    def _fallback(self) -> Intent:
-        return Intent(type=IntentType.CHAT, confidence=1.0)
-
-    def _match(self, text: str, pattern: str) -> bool:
-        return re.search(pattern, text) is not None
+            return Intent(IntentType.CHAT, 1.0)
