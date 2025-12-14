@@ -71,6 +71,13 @@ logger = logging.getLogger("gateway")
 app = FastAPI()
 
 # ================================================================
+# HEALTH CHECK (PLATFORM ONLY)
+# ================================================================
+@app.get("/health")
+async def health_check():
+    return {"status": "ok"}
+
+# ================================================================
 # SINGLETON SERVICES (KANON)
 # ================================================================
 conversation_state_service = ConversationStateService()
