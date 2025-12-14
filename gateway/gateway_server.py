@@ -69,6 +69,11 @@ from services.action_workflow_service import ActionWorkflowService
 from services.notion_service import NotionService
 
 # ================================================================
+# ROUTERS (OPS / AUDIT)
+# ================================================================
+from routers.audit_router import router as audit_router  # ✅ DODANO
+
+# ================================================================
 # INITIAL LOAD (FAIL FAST)
 # ================================================================
 if not OS_ENABLED:
@@ -86,6 +91,11 @@ app = FastAPI(
     title=SYSTEM_NAME,
     version=VERSION,
 )
+
+# ================================================================
+# INCLUDE ROUTERS
+# ================================================================
+app.include_router(audit_router)  # ✅ DODANO
 
 # ================================================================
 # ROOT + HEALTH (PLATFORM ONLY)
