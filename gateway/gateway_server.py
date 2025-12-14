@@ -3,6 +3,12 @@
 # ================================================================
 import os
 import time
+import logging
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+from dotenv import load_dotenv
+from fastapi.middleware.cors import CORSMiddleware
 
 from system_version import (
     SYSTEM_NAME,
@@ -21,16 +27,6 @@ _LAST_CALL_TS = 0.0
 MIN_INTERVAL_SECONDS = 0.5
 
 # ================================================================
-# STANDARD IMPORTS
-# ================================================================
-import logging
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel
-from dotenv import load_dotenv
-from fastapi.middleware.cors import CORSMiddleware
-
-# ================================================================
 # CORE MODELS / SERVICES
 # ================================================================
 from models.ai_command import AICommand
@@ -41,7 +37,6 @@ from services.response_formatter import ResponseFormatter
 # ================================================================
 # DECISION / ORCHESTRATION
 # ================================================================
-from services.decision_engine.personality_engine import PersonalityEngine
 from services.decision_engine.context_orchestrator import ContextOrchestrator
 
 # ================================================================
@@ -52,43 +47,23 @@ from services.adnan_mode_service import load_mode
 from services.adnan_state_service import load_state
 
 # ================================================================
-# EXECUTION / GOVERNANCE
+# EXECUTION
 # ================================================================
 from services.action_workflow_service import ActionWorkflowService
-from services.execution_governance_service import ExecutionGovernanceService
 
 # ================================================================
-# MEMORY
-# ================================================================
-from services.memory_service import MemoryService
-
-# ================================================================
-# NOTION (READ-ONLY SNAPSHOT)
+# NOTION / SOP (READ-ONLY SNAPSHOT)
 # ================================================================
 from services.notion_service import NotionService
 
 # ================================================================
-# SOP
-# ================================================================
-from services.sop_knowledge_registry import SOPKnowledgeRegistry
-
-# ================================================================
-# ROUTERS
-# ================================================================
-from routers.voice_router import router as voice_router
-from routers.adnan_ai_router import router as adnan_ai_router
-from routers.metrics_router import router as metrics_router
-from routers.alerting_router import router as alerting_router
-from routers.sop_query_router import router as sop_router
-
-# ================================================================
 # INITIAL LOAD
 # ================================================================
+load_dotenv(".env")
+
 identity = load_identity()
 mode = load_mode()
 state = load_state()
-
-load_dotenv(".env")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("gateway")
@@ -96,19 +71,20 @@ logger = logging.getLogger("gateway")
 app = FastAPI()
 
 # ================================================================
-# GLOBAL SINGLETON SERVICES
+# SINGLETON SERVICES (KANON)
 # ================================================================
-personality_engine = PersonalityEngine()
-orchestrator = ContextOrchestrator(identity, mode, state)
-workflow_service = ActionWorkflowService()
-memory_service = MemoryService()
-governance_service = ExecutionGovernanceService()
-
 conversation_state_service = ConversationStateService()
 awareness_service = AwarenessService()
 response_formatter = ResponseFormatter()
 
-sop_registry = SOPKnowledgeRegistry()
+orchestrator = ContextOrchestrator(
+    identity,
+    mode,
+    state,
+    conversation_state_service,  # 🔒 CSI SINGLETON
+)
+
+workflow_service = ActionWorkflowService()
 
 # ================================================================
 # NOTION SERVICE
@@ -153,13 +129,6 @@ async def startup_event():
     await notion_service.sync_knowledge_snapshot()
 
 # ================================================================
-# HEALTH
-# ================================================================
-@app.get("/health")
-async def health():
-    return {"status": "ok"}
-
-# ================================================================
 # CORS
 # ================================================================
 app.add_middleware(
@@ -179,101 +148,45 @@ class CommandRequest(BaseModel):
     payload: dict
 
 # ================================================================
-# ROUTERS REGISTRATION
-# ================================================================
-app.include_router(voice_router)
-app.include_router(adnan_ai_router)
-app.include_router(metrics_router)
-app.include_router(alerting_router)
-app.include_router(sop_router)
-
-# ================================================================
-# /ops/execute — AWARE OPERATOR PIPELINE
+# /ops/execute — CSI-CENTRIC PIPELINE (FINAL)
 # ================================================================
 @app.post("/ops/execute")
 async def execute(req: CommandRequest):
     global _LAST_CALL_TS
 
-    user_text = (req.payload.get("text") or req.payload.get("query") or "").strip().lower()
-    csi_state = conversation_state_service.get()
+    # ============================================================
+    # INPUT NORMALIZATION (KANONSKI FIX)
+    # ============================================================
+    user_text = (
+        req.payload.get("text")
+        or req.payload.get("input")
+        or ""
+    ).strip()
+
+    csi = conversation_state_service.get()
 
     # ============================================================
-    # SOP READ — LIST (KORAK 1)
+    # RATE LIMIT
     # ============================================================
-    if user_text in {"pokaži sop", "pokazi sop", "show sop"}:
-        conversation_state_service.set_sop_list()
-
-        sop_list = sop_registry.list_sops()
-
-        awareness = awareness_service.build_snapshot(
-            command=None,
-            csi_state=conversation_state_service.get(),
-        )
-
-        return response_formatter.format(
-            intent="sop_list",
-            confidence=1.0,
-            csi_state=conversation_state_service.get(),
-            execution_result={"sops": sop_list},
-            awareness=awareness,
-            request_id=None,
-        )
-
-    # ============================================================
-    # SOP READ — SELECT (KORAK 2)
-    # ============================================================
-    if csi_state == "SOP_LIST":
-        sop = sop_registry.get_sop(user_text, mode="full")
-        if sop:
-            conversation_state_service.set_sop_active(sop_id=user_text)
-
-            awareness = awareness_service.build_snapshot(
-                command=None,
-                csi_state=conversation_state_service.get(),
-            )
-
-            return response_formatter.format(
-                intent="sop_active",
-                confidence=1.0,
-                csi_state=conversation_state_service.get(),
-                execution_result={"sop": sop},
-                awareness=awareness,
-                request_id=None,
-            )
-
-    # ============================================================
-    # STANDARD FLOW
-    # ============================================================
-    if not OS_ENABLED:
-        awareness = awareness_service.build_snapshot(
-            command=None,
-            csi_state=conversation_state_service.get(),
-        )
-        return response_formatter.format(
-            intent=req.command,
-            confidence=1.0,
-            csi_state=conversation_state_service.get(),
-            execution_result={"success": False},
-            awareness=awareness,
-            request_id=None,
-        )
-
     now = time.time()
     if now - _LAST_CALL_TS < MIN_INTERVAL_SECONDS:
         awareness = awareness_service.build_snapshot(
             command=None,
-            csi_state=conversation_state_service.get(),
+            csi_state=csi,
         )
         return response_formatter.format(
             intent=req.command,
             confidence=1.0,
-            csi_state=conversation_state_service.get(),
+            csi_state=csi,
             execution_result={"success": False},
             awareness=awareness,
             request_id=None,
         )
     _LAST_CALL_TS = now
 
+    # ============================================================
+    # ORCHESTRATION (READ / DECISION ONLY)
+    # ============================================================
     command = AICommand(
         command=req.command,
         input=req.payload,
@@ -293,12 +206,16 @@ async def execute(req: CommandRequest):
 
     execution_result = None
 
+    # ============================================================
+    # EXECUTION PHASE (CSI PUBLIC API ONLY)
+    # ============================================================
     if decision_output.get("type") == "delegation":
         delegation = decision_output.get("delegation", {})
         cmd = delegation.get("command")
         payload = delegation.get("payload") or {}
 
         if cmd:
+            # ▶ EXECUTING
             conversation_state_service.set_executing(
                 request_id=command.request_id
             )
@@ -311,6 +228,11 @@ async def execute(req: CommandRequest):
             }
 
             execution_result = await workflow_service.execute_workflow(workflow)
+
+            # ▶ FINAL RESET (CSI owns lifecycle)
+            conversation_state_service.set_idle(
+                request_id=command.request_id
+            )
 
     return response_formatter.format(
         intent=req.command,

@@ -1,23 +1,29 @@
-import httpx
-from typing import Dict, Optional, Set
+from typing import Dict, Optional
+import os
+import asyncio
+
+from openai import OpenAI
 
 
 class AgentRouter:
     """
-    Centralni mozak delegacije (FAZA 11–12).
+    AgentRouter — KANONSKI AGENT CALLER
 
     - capability-based routing
     - deterministički agent registry
-    - spremno za multi-agent sistem
+    - OpenAI Assistants API execution
+    - backend = orchestrator, ne executor
     """
 
     def __init__(self):
+        self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
         # -------------------------------------------------
-        # AGENT REGISTRY
+        # AGENT REGISTRY (KANON)
         # -------------------------------------------------
         self.agent_registry: Dict[str, Dict] = {
             "notion_ops": {
-                "type": "notion",
+                "type": "executor",
                 "capabilities": {
                     "create_database_entry",
                     "update_database_entry",
@@ -26,7 +32,11 @@ class AgentRouter:
                     "retrieve_page_content",
                     "delete_page",
                 },
-                "endpoint": "http://localhost:8000/ops/execute",
+                # ⚠️ TAČAN Assistant ID iz OpenAI
+                "assistant_id": os.getenv("NOTION_OPS_ASSISTANT_ID"),
+                # Executor mora biti determinističan
+                "response_format": "json_object",
+                "temperature": 0,
             }
         }
 
@@ -36,50 +46,102 @@ class AgentRouter:
     def route(self, command: dict) -> Dict[str, Optional[str]]:
         cmd_name = command.get("command")
         if not cmd_name:
-            return {"agent": None, "endpoint": None}
+            return {"agent": None, "assistant_id": None}
 
         for agent_name, agent in self.agent_registry.items():
             if cmd_name in agent["capabilities"]:
                 return {
                     "agent": agent_name,
-                    "endpoint": agent["endpoint"],
+                    "assistant_id": agent["assistant_id"],
                 }
 
-        return {"agent": None, "endpoint": None}
+        return {"agent": None, "assistant_id": None}
 
     # -------------------------------------------------
-    # EXECUTION
+    # EXECUTION (OPENAI AGENT)
     # -------------------------------------------------
     async def execute(self, command: dict) -> dict:
         route = self.route(command)
 
-        if not route["endpoint"]:
+        if not route.get("assistant_id"):
             return {
                 "success": False,
                 "reason": "no_matching_agent",
                 "command": command,
             }
 
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                route["endpoint"],
-                json={
-                    "command": command.get("command"),
-                    "payload": command,
-                },
-                timeout=30,
-            )
+        assistant_id = route["assistant_id"]
 
         try:
-            agent_response = response.json()
-        except Exception:
-            agent_response = {
-                "error": "invalid_agent_response",
-                "raw_response": response.text,
+            # 1. Create thread
+            thread = self.client.beta.threads.create()
+
+            # 2. Send message (delegation contract)
+            self.client.beta.threads.messages.create(
+                thread_id=thread.id,
+                role="user",
+                content=command,
+            )
+
+            # 3. Run assistant
+            run = self.client.beta.threads.runs.create(
+                thread_id=thread.id,
+                assistant_id=assistant_id,
+                temperature=0,
+                response_format={"type": "json_object"},
+            )
+
+            # 4. Poll run (simple, safe)
+            while True:
+                run = self.client.beta.threads.runs.retrieve(
+                    thread_id=thread.id,
+                    run_id=run.id,
+                )
+
+                if run.status in {"completed", "failed", "cancelled"}:
+                    break
+
+                await asyncio.sleep(0.3)
+
+            if run.status != "completed":
+                return {
+                    "success": False,
+                    "reason": "agent_run_failed",
+                    "status": run.status,
+                }
+
+            # 5. Fetch last message
+            messages = self.client.beta.threads.messages.list(
+                thread_id=thread.id,
+                limit=1,
+            )
+
+            message = messages.data[0]
+
+            if not message.content:
+                return {
+                    "success": False,
+                    "reason": "empty_agent_response",
+                }
+
+            content = message.content[0]
+
+            if content["type"] != "output_json":
+                return {
+                    "success": False,
+                    "reason": "invalid_response_format",
+                    "raw": content,
+                }
+
+            return {
+                "success": True,
+                "agent": route["agent"],
+                "agent_response": content["json"],
             }
 
-        return {
-            "success": True,
-            "agent": route["agent"],
-            "agent_response": agent_response,
-        }
+        except Exception as e:
+            return {
+                "success": False,
+                "reason": "agent_exception",
+                "error": str(e),
+            }

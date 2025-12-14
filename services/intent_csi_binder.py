@@ -1,5 +1,3 @@
-# services/intent_csi_binder.py
-
 from typing import Optional
 
 from services.intent_contract import Intent, IntentType
@@ -11,24 +9,32 @@ from services.conversation_state_service import CSIState, ALLOWED_TRANSITIONS
 # ============================================================
 
 class BinderResult:
-    def __init__(self, next_state: str, action: Optional[str] = None):
+    def __init__(
+        self,
+        next_state: str,
+        action: Optional[str] = None,
+        payload: Optional[dict] = None,
+    ):
         self.next_state = next_state
-        self.action = action  # signal only, NO execution
+        self.action = action
+        self.payload = payload or {}
 
 
 # ============================================================
-# INTENT → CSI STATE BINDER (KANONSKI)
+# INTENT → CSI STATE BINDER (KANONSKI, LOCKED)
 # ============================================================
 
 class IntentCSIBinder:
     """
-    Deterministic CSI binder.
+    Deterministic CSI binder — FINAL.
 
     RULES:
-    - No execution
-    - No decisions
-    - RESET uvijek dozvoljen
-    - EXECUTING je zaključan osim RESET-a
+    - CSI state has absolute priority
+    - Intent is already normalized
+    - NO execution
+    - NO decisions
+    - RESET always wins
+    - EXECUTING is fully locked
     """
 
     def bind(self, intent: Intent, current_state: str) -> BinderResult:
@@ -38,7 +44,7 @@ class IntentCSIBinder:
             return BinderResult(next_state=CSIState.IDLE.value)
 
         # ----------------------------------------------------
-        # GLOBAL RESET (HARD OVERRIDE)
+        # GLOBAL RESET (HIGHEST PRIORITY)
         # ----------------------------------------------------
         if intent.type == IntentType.RESET:
             return BinderResult(
@@ -46,8 +52,18 @@ class IntentCSIBinder:
                 action="reset",
             )
 
+        # ----------------------------------------------------
+        # EXECUTING (HARD LOCK)
+        # ----------------------------------------------------
+        if state == CSIState.EXECUTING:
+            return BinderResult(
+                next_state=CSIState.EXECUTING.value,
+                action=None,
+            )
+
         desired_state = state.value
         action: Optional[str] = None
+        payload: Optional[dict] = None
 
         # ----------------------------------------------------
         # IDLE
@@ -57,9 +73,63 @@ class IntentCSIBinder:
                 desired_state = CSIState.SOP_LIST.value
                 action = "list_sops"
 
-            elif intent.type == IntentType.CREATE:
-                desired_state = CSIState.DECISION_PENDING.value
-                action = "create"
+            elif intent.type == IntentType.GOAL_CREATE:
+                desired_state = CSIState.GOAL_DRAFT.value
+                action = "create_goal"
+                payload = intent.payload
+
+            elif intent.type == IntentType.TASK_CREATE:
+                desired_state = CSIState.TASK_DRAFT.value
+                action = "create_task"
+                payload = intent.payload
+
+        # ----------------------------------------------------
+        # GOAL DRAFT (FAZA 3)
+        # ----------------------------------------------------
+        elif state == CSIState.GOAL_DRAFT:
+            if intent.type == IntentType.GOAL_CONFIRM:
+                desired_state = CSIState.IDLE.value
+                action = "confirm_goal"
+
+            elif intent.type == IntentType.GOAL_CANCEL:
+                desired_state = CSIState.IDLE.value
+                action = "cancel_goal"
+
+            elif intent.type == IntentType.PLAN_CREATE:
+                desired_state = CSIState.PLAN_DRAFT.value
+                action = "create_plan"
+                payload = intent.payload
+
+        # ----------------------------------------------------
+        # PLAN DRAFT (FAZA 4)
+        # ----------------------------------------------------
+        elif state == CSIState.PLAN_DRAFT:
+            if intent.type == IntentType.PLAN_CONFIRM:
+                desired_state = CSIState.IDLE.value
+                action = "confirm_plan"
+
+            elif intent.type == IntentType.PLAN_CANCEL:
+                desired_state = CSIState.IDLE.value
+                action = "cancel_plan"
+
+            # ================================
+            # TASK GENERATION FROM PLAN (FAZA 4)  ✅
+            # ================================
+            elif intent.type == IntentType.TASK_GENERATE_FROM_PLAN:
+                desired_state = CSIState.PLAN_DRAFT.value  # ostajemo u plan kontekstu
+                action = "generate_tasks_from_plan"
+
+        # ----------------------------------------------------
+        # TASK DRAFT (FAZA 3)
+        # ----------------------------------------------------
+        elif state == CSIState.TASK_DRAFT:
+            if intent.type == IntentType.TASK_CONFIRM:
+                desired_state = CSIState.IDLE.value
+                action = "confirm_task"
+
+            elif intent.type == IntentType.TASK_CANCEL:
+                desired_state = CSIState.IDLE.value
+                action = "cancel_task"
 
         # ----------------------------------------------------
         # SOP LIST
@@ -68,9 +138,11 @@ class IntentCSIBinder:
             if intent.type == IntentType.VIEW_SOP:
                 desired_state = CSIState.SOP_ACTIVE.value
                 action = "select_sop"
+                payload = intent.payload
 
             elif intent.type == IntentType.CANCEL:
                 desired_state = CSIState.IDLE.value
+                action = "cancel"
 
         # ----------------------------------------------------
         # SOP ACTIVE
@@ -82,9 +154,10 @@ class IntentCSIBinder:
 
             elif intent.type == IntentType.CANCEL:
                 desired_state = CSIState.IDLE.value
+                action = "cancel"
 
         # ----------------------------------------------------
-        # DECISION PENDING (STRICT)
+        # DECISION PENDING (FAZA 1 — SOP FLOW)
         # ----------------------------------------------------
         elif state == CSIState.DECISION_PENDING:
             if intent.type == IntentType.CONFIRM:
@@ -96,24 +169,13 @@ class IntentCSIBinder:
                 action = "cancel_execution"
 
             else:
-                # IGNORE everything else
                 return BinderResult(
                     next_state=CSIState.DECISION_PENDING.value,
                     action=None,
                 )
 
         # ----------------------------------------------------
-        # EXECUTING (LOCKED)
-        # ----------------------------------------------------
-        elif state == CSIState.EXECUTING:
-            # RESET je već uhvaćen gore
-            return BinderResult(
-                next_state=CSIState.EXECUTING.value,
-                action=None,
-            )
-
-        # ----------------------------------------------------
-        # VALIDATION (KANONSKA)
+        # VALIDATION (FINAL GUARD)
         # ----------------------------------------------------
         allowed = ALLOWED_TRANSITIONS.get(state.value, set())
         if desired_state not in allowed:
@@ -122,4 +184,5 @@ class IntentCSIBinder:
         return BinderResult(
             next_state=desired_state,
             action=action,
+            payload=payload,
         )

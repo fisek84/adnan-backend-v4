@@ -3,7 +3,12 @@ from typing import Dict, Any
 
 class FinalResponseEngine:
     """
-    FINAL RESPONSE ENGINE — FAZA 2 + FAZA 10
+    FINAL RESPONSE ENGINE
+    ROLE:
+    - Formats final output only
+    - No decision logic
+    - No confidence scoring
+    - Read-only explainability
     """
 
     def __init__(self, identity: Dict[str, Any]):
@@ -39,48 +44,29 @@ class FinalResponseEngine:
             "final_answer": final_text,
             "explainability": self._build_explainability(
                 context_type=context_type,
-                result=result,
             ),
         }
 
     # ============================================================
-    # EXPLAINABILITY
+    # EXPLAINABILITY (READ-ONLY, NO CONFIDENCE)
     # ============================================================
     def _build_explainability(
         self,
         context_type: str,
-        result: Dict[str, Any],
     ) -> Dict[str, Any]:
 
-        tier = self._confidence_level(context_type, result)
-        score = self._confidence_score(tier)
-
-        explanation = {
+        return {
             "context_type": context_type,
-            "confidence_tier": tier,
-            "confidence_score": score,
-            "reasoning": [],
+            "reasoning": [
+                "Ovaj odgovor je generisan u read-only režimu.",
+                "Nema operativnih implikacija.",
+            ],
             "read_only": True,
         }
-
-        explanation["reasoning"].append("Nema operativnih implikacija.")
-        return explanation
-
-    def _confidence_level(self, context_type: str, result: Dict[str, Any]) -> str:
-        if result.get("type") in {"delegation"}:
-            return "high"
-        if result.get("type") in {"decision_candidate"}:
-            return "medium"
-        return "high"
-
-    def _confidence_score(self, tier: str) -> float:
-        return {"high": 0.9, "medium": 0.6, "low": 0.3}.get(tier, 0.2)
 
     def _explain_read_only(self, context_type: str) -> Dict[str, Any]:
         return {
             "context_type": context_type,
-            "confidence_tier": "high",
-            "confidence_score": 0.95,
             "reasoning": ["READ-ONLY odgovor."],
             "read_only": True,
         }
@@ -99,7 +85,7 @@ class FinalResponseEngine:
         return "U redu."
 
     # ============================================================
-    # KNOWLEDGE FORMAT (FIX)
+    # KNOWLEDGE FORMAT
     # ============================================================
     def _format_knowledge(self, result: Dict[str, Any]) -> str:
         response = result.get("response")
@@ -114,7 +100,6 @@ class FinalResponseEngine:
         if not items:
             return "Nema zapisa."
 
-        # 🔒 SAFE TOPIC RESOLUTION
         topic = (
             response.get("topic")
             or result.get("type")

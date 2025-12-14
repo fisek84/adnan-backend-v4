@@ -27,10 +27,10 @@ class ResponseFormatter:
     ResponseFormatter — V1.1 SINGLE RESPONSE AUTHORITY
 
     RULES:
-    - This is a LOCKED response contract
+    - LOCKED response contract
     - Backend is the only voice
     - Frontend renders, never interprets
-    - Tone is derived ONLY from awareness
+    - STATE has priority over payload
     """
 
     CONTRACT_VERSION = "1.1"
@@ -54,9 +54,7 @@ class ResponseFormatter:
         )
 
         if awareness_level not in ALLOWED_AWARENESS_LEVELS:
-            raise RuntimeError(
-                f"Illegal awareness level: {awareness_level}"
-            )
+            raise RuntimeError(f"Illegal awareness level: {awareness_level}")
 
         response: Dict[str, Any] = {
             "contract_version": self.CONTRACT_VERSION,
@@ -70,18 +68,18 @@ class ResponseFormatter:
         }
 
         # --------------------------------------------------
-        # CRITICAL AWARENESS OVERRIDE (V1.1)
+        # CRITICAL AWARENESS OVERRIDE
         # --------------------------------------------------
-        if awareness_level == "critical" and execution_result is None:
+        if awareness_level == "critical" and not execution_result:
             response["status"] = "failed"
             response["message"] = "Došlo je do greške u sistemu."
             return self._finalize(response)
 
         # --------------------------------------------------
-        # EXECUTION RESULT (HIGHEST PRIORITY)
+        # REAL EXECUTION RESULT ONLY
         # --------------------------------------------------
-        if execution_result is not None:
-            if execution_result.get("success"):
+        if execution_result and isinstance(execution_result, dict) and "success" in execution_result:
+            if execution_result.get("success") is True:
                 response["status"] = "completed"
                 response["message"] = "Završeno. Sve je prošlo bez problema."
             else:
@@ -90,14 +88,11 @@ class ResponseFormatter:
             return self._finalize(response)
 
         # --------------------------------------------------
-        # DECISION PENDING
+        # DECISION PENDING (STATE-DRIVEN — FAZA D1)
         # --------------------------------------------------
-        if decision and decision.get("decision_candidate") and not decision.get("confirmed"):
+        if state == "DECISION_PENDING":
             response["status"] = "waiting_confirmation"
-            response["message"] = (
-                decision.get("system_response")
-                or "Prije nego nastavim, trebam tvoju potvrdu."
-            )
+            response["message"] = "Čekam tvoju potvrdu. (da / ok)"
             return self._finalize(response)
 
         # --------------------------------------------------
@@ -138,5 +133,4 @@ class ResponseFormatter:
         status = response.get("status")
         if status not in ALLOWED_STATUSES:
             raise RuntimeError(f"Illegal response status: {status}")
-
         return response

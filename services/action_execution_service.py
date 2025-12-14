@@ -4,7 +4,6 @@ import time
 import uuid
 from datetime import datetime
 
-from services.action_dictionary import ACTION_MAP
 from services.agent_router.agent_router import AgentRouter
 
 
@@ -12,10 +11,10 @@ class ActionExecutionService:
     """
     Execution Engine (FAZA 11 → 19)
 
-    FAZA 16: Policy
-    FAZA 17: Single approval
-    FAZA 18: Multi-level approvals
-    FAZA 19: Role-Based Access Control (RBAC)
+    KANONSKI REŽIM:
+    - Backend NE izvršava akcije
+    - Backend radi: RBAC, policy, approval, audit
+    - Izvršenje ide ISKLJUČIVO preko agenata
     """
 
     def __init__(self):
@@ -125,7 +124,7 @@ class ActionExecutionService:
             pass
 
     # ============================================================
-    # PUBLIC EXECUTION
+    # PUBLIC EXECUTION (AGENT ONLY)
     # ============================================================
     def execute(self, directive: str, params: Dict[str, Any]) -> Dict[str, Any]:
         trace_id = str(uuid.uuid4())
@@ -204,48 +203,7 @@ class ActionExecutionService:
                 return result
 
         # -------------------------------
-        # 4. LOKALNA AKCIJA
-        # -------------------------------
-        func = ACTION_MAP.get(directive)
-
-        if func:
-            try:
-                result_value = func(params)
-            except Exception as e:
-                result = {
-                    "executed": False,
-                    "confirmed": False,
-                    "error": "action_failed",
-                    "message": str(e),
-                    "trace": {
-                        **base_trace,
-                        "finished_at": datetime.utcnow().isoformat(),
-                        "latency_ms": int((time.time() - start_ts) * 1000),
-                        "outcome": "failed",
-                    },
-                }
-                self._record_audit(result)
-                return result
-
-            result = {
-                "executed": True,
-                "confirmed": True,
-                "execution_type": "local",
-                "directive": directive,
-                "params": params,
-                "result": result_value,
-                "trace": {
-                    **base_trace,
-                    "finished_at": datetime.utcnow().isoformat(),
-                    "latency_ms": int((time.time() - start_ts) * 1000),
-                    "outcome": "success",
-                },
-            }
-            self._record_audit(result)
-            return result
-
-        # -------------------------------
-        # 5. AGENT ROUTE + EXECUTION
+        # 4. AGENT ROUTE + EXECUTION
         # -------------------------------
         route = self.agent_router.route({"command": directive})
 
@@ -297,7 +255,7 @@ class ActionExecutionService:
             return result
 
         # -------------------------------
-        # 6. SUCCESS
+        # 5. SUCCESS
         # -------------------------------
         result = {
             "executed": True,
