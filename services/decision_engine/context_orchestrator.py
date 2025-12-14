@@ -14,6 +14,9 @@ from services.conversation_state_service import ConversationStateService
 
 # ✅ FAZA 5 — READ-ONLY AUTONOMY HOOK
 from services.autonomy.autonomy_hook import AutonomyHook
+from services.autonomy.kill_switch import KillSwitch
+from services.autonomy.feature_flags import FeatureFlags
+from services.autonomy.safe_mode import SafeMode
 
 # ===============================
 # BLOK 8 — OBSERVABILITY
@@ -49,8 +52,19 @@ class ContextOrchestrator:
         self.sop_registry = SOPKnowledgeRegistry()
         self.conversation_state = conversation_state  # 🔒 CSI SINGLETON
 
-        # ✅ FAZA 5 — PASSIVE AUTONOMY
-        self.autonomy = AutonomyHook(conversation_state)
+        # =====================================================
+        # FAZA 5 — AUTONOMY (PASSIVE / READ-ONLY / POLICY-GATED)
+        # =====================================================
+        kill_switch = KillSwitch()
+        feature_flags = FeatureFlags()
+        safe_mode = SafeMode()
+
+        self.autonomy = AutonomyHook(
+            conversation_state,
+            kill_switch=kill_switch,
+            feature_flags=feature_flags,
+            safe_mode=safe_mode,
+        )
 
         # ===============================
         # BLOK 8 — TELEMETRY
