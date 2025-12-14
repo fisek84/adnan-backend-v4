@@ -12,15 +12,17 @@ from services.memory_service import MemoryService
 from services.sop_knowledge_registry import SOPKnowledgeRegistry
 from services.conversation_state_service import ConversationStateService
 
-# ✅ FAZA 5 — READ-ONLY AUTONOMY HOOK
+# =====================================================
+# FAZA 5 — READ-ONLY AUTONOMY (KANON)
+# =====================================================
 from services.autonomy.autonomy_hook import AutonomyHook
 from services.autonomy.kill_switch import AutonomyKillSwitch
 from services.autonomy.feature_flags import AutonomyFeatureFlags
 from services.autonomy.safe_mode import AutonomySafeMode
 
-# ===============================
+# =====================================================
 # BLOK 8 — OBSERVABILITY
-# ===============================
+# =====================================================
 from services.observability.telemetry_emitter import TelemetryEmitter
 from services.observability.telemetry_event import TelemetryEvent
 
@@ -41,6 +43,9 @@ class ContextOrchestrator:
         self.mode = mode
         self.state = state
 
+        # -------------------------------------------------
+        # CORE
+        # -------------------------------------------------
         self.intent_classifier = IntentClassifier()
         self.intent_binder = IntentCSIBinder()
 
@@ -52,33 +57,36 @@ class ContextOrchestrator:
         self.sop_registry = SOPKnowledgeRegistry()
         self.conversation_state = conversation_state  # 🔒 CSI SINGLETON
 
-        # =====================================================
-        # FAZA 5 — AUTONOMY (PASSIVE / READ-ONLY / POLICY-GATED)
-        # =====================================================
+        # -------------------------------------------------
+        # FAZA 5 — AUTONOMY (PASSIVE / READ-ONLY)
+        # -------------------------------------------------
         kill_switch = AutonomyKillSwitch()
         feature_flags = AutonomyFeatureFlags()
         safe_mode = AutonomySafeMode()
 
         self.autonomy = AutonomyHook(
-            conversation_state,
+            conversation_state=conversation_state,
             kill_switch=kill_switch,
             feature_flags=feature_flags,
             safe_mode=safe_mode,
         )
 
-        # ===============================
-        # BLOK 8 — TELEMETRY
-        # ===============================
+        # -------------------------------------------------
+        # TELEMETRY
+        # -------------------------------------------------
         self.telemetry = TelemetryEmitter()
 
+    # =====================================================
+    # MAIN LOOP
+    # =====================================================
     async def run(self, user_input: str) -> Dict[str, Any]:
         text = (user_input or "").strip()
         csi = self.conversation_state.get()
         csi_state = csi.get("state")
 
-        # =====================================================
-        # FAZA 5 — AUTONOMY (PASSIVE, READ-ONLY)
-        # =====================================================
+        # -------------------------------------------------
+        # FAZA 5 — AUTONOMY (READ-ONLY)
+        # -------------------------------------------------
         autonomy_signal = self.autonomy.evaluate(
             iteration=1,
             expected_outcome=None,
@@ -95,9 +103,9 @@ class ContextOrchestrator:
             )
         )
 
-        # =====================================================
+        # -------------------------------------------------
         # 1. INTENT
-        # =====================================================
+        # -------------------------------------------------
         intent = self.intent_classifier.classify(text)
 
         self.telemetry.emit(
@@ -108,9 +116,9 @@ class ContextOrchestrator:
             )
         )
 
-        # =====================================================
+        # -------------------------------------------------
         # 2. CSI BINDING
-        # =====================================================
+        # -------------------------------------------------
         bind = self.intent_binder.bind(intent, csi_state)
 
         self.telemetry.emit(
@@ -122,9 +130,9 @@ class ContextOrchestrator:
             )
         )
 
-        # =====================================================
-        # RESET — GLOBAL
-        # =====================================================
+        # -------------------------------------------------
+        # RESET
+        # -------------------------------------------------
         if bind.action == "reset":
             self.conversation_state.set_idle(
                 request_id=csi.get("request_id")
@@ -134,9 +142,9 @@ class ContextOrchestrator:
                 "message": "Stanje je resetovano. Spreman sam.",
             })
 
-        # =====================================================
+        # -------------------------------------------------
         # GOAL — CREATE (FAZA 3)
-        # =====================================================
+        # -------------------------------------------------
         if bind.action == "create_goal":
             goal_object = {
                 "text": bind.payload.get("text"),
@@ -155,16 +163,18 @@ class ContextOrchestrator:
                 "message": "Cilj je prepoznat. Potvrdi ili otkaži.",
             })
 
-        # =====================================================
+        # -------------------------------------------------
         # GOAL — CONFIRM / CANCEL
-        # =====================================================
+        # -------------------------------------------------
         if bind.action == "confirm_goal":
             goal = csi.get("goal_draft")
             if goal:
                 self.memory_engine.store_goal(goal)
+
             self.conversation_state.set_idle(
                 request_id=csi.get("request_id")
             )
+
             return self._final({
                 "type": "goal_confirmed",
                 "goal": goal,
@@ -174,13 +184,11 @@ class ContextOrchestrator:
             self.conversation_state.set_idle(
                 request_id=csi.get("request_id")
             )
-            return self._final({
-                "type": "goal_cancelled",
-            })
+            return self._final({"type": "goal_cancelled"})
 
-        # =====================================================
+        # -------------------------------------------------
         # PLAN — CREATE (FAZA 4)
-        # =====================================================
+        # -------------------------------------------------
         if bind.action == "create_plan":
             goal = csi.get("goal_draft")
             if not goal:
@@ -206,16 +214,18 @@ class ContextOrchestrator:
                 "message": "Plan je generisan. Potvrdi ili otkaži.",
             })
 
-        # =====================================================
+        # -------------------------------------------------
         # PLAN — CONFIRM / CANCEL
-        # =====================================================
+        # -------------------------------------------------
         if bind.action == "confirm_plan":
             plan = csi.get("plan_draft")
             if plan:
                 self.memory_engine.store_plan(plan)
+
             self.conversation_state.set_idle(
                 request_id=csi.get("request_id")
             )
+
             return self._final({
                 "type": "plan_confirmed",
                 "plan": plan,
@@ -225,13 +235,11 @@ class ContextOrchestrator:
             self.conversation_state.set_idle(
                 request_id=csi.get("request_id")
             )
-            return self._final({
-                "type": "plan_cancelled",
-            })
+            return self._final({"type": "plan_cancelled"})
 
-        # =====================================================
-        # TASK GENERATION FROM PLAN (FAZA 4)
-        # =====================================================
+        # -------------------------------------------------
+        # TASKS FROM PLAN
+        # -------------------------------------------------
         if bind.action == "generate_tasks_from_plan":
             plan = csi.get("plan_draft")
             if not plan:
@@ -253,8 +261,9 @@ class ContextOrchestrator:
 
         return self._fallback()
 
-    # ---------------- helpers ----------------
-
+    # =====================================================
+    # HELPERS
+    # =====================================================
     def _fallback(self) -> Dict[str, Any]:
         return self._final({
             "type": "chat",
