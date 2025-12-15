@@ -1,15 +1,18 @@
 {
   "notion_ops": {
-    "type": "executor",
+    "type": "openai_assistant",
+    "enabled": true,
+    "assistant_id": "ENV:NOTION_OPS_ASSISTANT_ID",
+    "executor": "notion_ops",
     "capabilities": [
+      "create_task",
+      "update_task",
       "create_database_entry",
       "update_database_entry",
       "query_database",
       "create_page",
       "retrieve_page_content",
       "delete_page"
-    ],
-    "enabled": true,
-    "assistant_id": "ENV:NOTION_OPS_ASSISTANT_ID"
+    ]
   }
 }

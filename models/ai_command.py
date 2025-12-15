@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, root_validator
 from typing import Optional, Any, Dict
 import logging
 import uuid
@@ -20,40 +20,63 @@ class AICommand(BaseModel):
     """
     Canonical AI Request Context.
     This object travels through the entire pipeline:
-    API → Intent → CSI → Decision → Awareness → Execution → Response
+    API → UX → COO → Safety → Execution → Response
     """
 
     # --------------------------------------------------------
-    # CORE COMMAND
+    # CORE COMMAND (SYSTEM LANGUAGE)
     # --------------------------------------------------------
 
     command: str = Field(
         ...,
-        description="Primary name/type of the AI command (e.g., 'summarize', 'plan', 'analyze')",
+        description="Canonical system command name (must exist in action_dictionary)"
     )
+
+    intent: Optional[str] = Field(
+        None,
+        description="High-level semantic intent extracted by COO (non-executable)"
+    )
+
+    source: str = Field(
+        ...,
+        description="Command source (user, voice, agent, system)"
+    )
+
+    validated: bool = Field(
+        default=False,
+        description="Set to True ONLY by COO Translator after full validation"
+    )
+
+    # --------------------------------------------------------
+    # BUSINESS PAYLOAD
+    # --------------------------------------------------------
 
     input: Optional[Any] = Field(
         None,
-        description="Main input payload for the command (text, JSON, dict, list, etc.)"
-    )
-
-    agent: Optional[str] = Field(
-        None,
-        description="Agent executing the command (e.g., 'Adnan.AI', 'Planner', 'SyncBot')"
+        description="Business payload for the command (domain-specific data)"
     )
 
     params: Dict[str, Any] = Field(
         default_factory=dict,
-        description="Additional parameters / modifiers for the command"
+        description="Command modifiers and options (non-business logic)"
+    )
+
+    # --------------------------------------------------------
+    # EXECUTION / ROUTING METADATA
+    # --------------------------------------------------------
+
+    agent: Optional[str] = Field(
+        None,
+        description="Agent responsible for execution"
     )
 
     metadata: Dict[str, Any] = Field(
         default_factory=dict,
-        description="Execution metadata: routing, tokens, context flags, etc."
+        description="Routing, tracing, and technical metadata (NO request_id here)"
     )
 
     # --------------------------------------------------------
-    # REQUEST CONTEXT (V0.1 FOUNDATION)
+    # REQUEST CONTEXT (FOUNDATION)
     # --------------------------------------------------------
 
     request_id: str = Field(
@@ -87,6 +110,21 @@ class AICommand(BaseModel):
     )
 
     # --------------------------------------------------------
+    # NORMALIZATION
+    # --------------------------------------------------------
+
+    @root_validator(pre=True)
+    def normalize_request_id(cls, values):
+        """
+        If request_id is mistakenly passed via metadata,
+        normalize it into the canonical field.
+        """
+        metadata = values.get("metadata") or {}
+        if "request_id" in metadata and "request_id" not in values:
+            values["request_id"] = metadata.pop("request_id")
+        return values
+
+    # --------------------------------------------------------
     # Pydantic config
     # --------------------------------------------------------
 
@@ -102,8 +140,10 @@ class AICommand(BaseModel):
     @classmethod
     def log_command(cls, command: "AICommand"):
         logger.info(
-            f"[AICommand] {command.command} | request_id={command.request_id}"
+            f"[AICommand] {command.command} | request_id={command.request_id} | source={command.source}"
         )
+        logger.debug(f"[AICommand] intent={command.intent}")
+        logger.debug(f"[AICommand] validated={command.validated}")
         logger.debug(f"[AICommand] input={command.input}")
         logger.debug(f"[AICommand] agent={command.agent}")
         logger.debug(f"[AICommand] params={command.params}")
@@ -117,6 +157,9 @@ class AICommand(BaseModel):
             f"[AICommand ERROR] {command.command} | request_id={command.request_id}"
         )
         logger.error(f"[AICommand ERROR] details={error}")
+        logger.debug(f"[AICommand ERROR] intent={command.intent}")
+        logger.debug(f"[AICommand ERROR] source={command.source}")
+        logger.debug(f"[AICommand ERROR] validated={command.validated}")
         logger.debug(f"[AICommand ERROR] input={command.input}")
         logger.debug(f"[AICommand ERROR] agent={command.agent}")
         logger.debug(f"[AICommand ERROR] params={command.params}")

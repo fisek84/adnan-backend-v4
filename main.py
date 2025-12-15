@@ -45,7 +45,7 @@ if missing:
 logger.info("✅ Environment variables validated.")
 
 # ============================================================
-# SINGLE ENTRYPOINT — GATEWAY
+# SINGLE ENTRYPOINT — GATEWAY (LOAD FIRST)
 # ============================================================
 
 try:
@@ -53,6 +53,44 @@ try:
 except Exception as e:
     logger.critical("❌ Failed to load gateway application: %s", e)
     sys.exit(1)
+
+# ============================================================
+# SERVICE INITIALIZATION (CANONICAL)
+# ============================================================
+
+from services.ai_command_service import AICommandService
+from services.coo_translation_service import COOTranslationService
+
+ai_command_service = AICommandService()
+coo_translation_service = COOTranslationService()
+
+logger.info("🧠 Core AI services initialized.")
+
+# ============================================================
+# ROUTER INJECTION — CANONICAL AI ROUTER (/ai/run)
+# ============================================================
+
+from routers.ai_router import set_ai_services
+
+set_ai_services(
+    command_service=ai_command_service,
+    coo=coo_translation_service,
+)
+
+logger.info("🔌 AI services injected into /ai router.")
+
+# ============================================================
+# ROUTER INJECTION — ADNAN AI UX ROUTER (/adnan-ai/input)
+# ============================================================
+
+from routers.adnan_ai_router import set_adnan_ai_services
+
+set_adnan_ai_services(
+    command_service=ai_command_service,
+    coo=coo_translation_service,
+)
+
+logger.info("🔌 AI services injected into /adnan-ai router.")
 
 # ============================================================
 # BOOT CONFIRMATION

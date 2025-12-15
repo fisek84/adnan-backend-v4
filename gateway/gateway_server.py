@@ -41,15 +41,9 @@ logger = logging.getLogger("gateway")
 # ================================================================
 # CORE MODELS / SERVICES
 # ================================================================
-from models.ai_command import AICommand
 from services.conversation_state_service import ConversationStateService
 from services.awareness_service import AwarenessService
 from services.response_formatter import ResponseFormatter
-
-# ================================================================
-# DECISION / ORCHESTRATION
-# ================================================================
-from services.decision_engine.context_orchestrator import ContextOrchestrator
 
 # ================================================================
 # IDENTITY / MODE / STATE
@@ -59,19 +53,15 @@ from services.adnan_mode_service import load_mode
 from services.adnan_state_service import load_state
 
 # ================================================================
-# EXECUTION
-# ================================================================
-from services.action_workflow_service import ActionWorkflowService
-
-# ================================================================
-# NOTION / SOP (READ-ONLY SNAPSHOT)
+# NOTION (READ-ONLY SNAPSHOT)
 # ================================================================
 from services.notion_service import NotionService
 
 # ================================================================
-# ROUTERS (AUDIT)
+# ROUTERS
 # ================================================================
 from routers.audit_router import router as audit_router
+from routers.adnan_ai_router import router as adnan_ai_router
 
 # ================================================================
 # INITIAL LOAD (FAIL FAST)
@@ -96,6 +86,7 @@ app = FastAPI(
 # INCLUDE ROUTERS
 # ================================================================
 app.include_router(audit_router)
+app.include_router(adnan_ai_router)
 
 # ================================================================
 # ROOT + HEALTH
@@ -110,7 +101,7 @@ async def root():
         "arch_lock": ARCH_LOCK,
         "safe_mode": OPS_SAFE_MODE,
         "boot_ready": _BOOT_READY,
-        "read_only": True,
+        "read_only": False,
     }
 
 @app.get("/health")
@@ -125,15 +116,6 @@ async def health_check():
 conversation_state_service = ConversationStateService()
 awareness_service = AwarenessService()
 response_formatter = ResponseFormatter()
-
-orchestrator = ContextOrchestrator(
-    identity,
-    mode,
-    state,
-    conversation_state_service,
-)
-
-workflow_service = ActionWorkflowService()
 
 # ================================================================
 # NOTION SERVICE
@@ -151,22 +133,9 @@ notion_service = NotionService(
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     logger.exception("GLOBAL ERROR")
-
-    awareness = awareness_service.build_snapshot(
-        command=None,
-        csi_state=conversation_state_service.get(),
-    )
-
     return JSONResponse(
         status_code=500,
-        content=response_formatter.format(
-            intent="system_error",
-            confidence=1.0,
-            csi_state=conversation_state_service.get(),
-            execution_result={"success": False},
-            awareness=awareness,
-            request_id=None,
-        ),
+        content={"status": "error", "message": str(exc)},
     )
 
 # ================================================================
@@ -191,94 +160,3 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# ================================================================
-# MODELS
-# ================================================================
-class CommandRequest(BaseModel):
-    command: str
-    payload: dict
-
-class UserInputRequest(BaseModel):
-    text: str
-
-# ================================================================
-# PUBLIC INPUT — SAFE USER GATEWAY (✔️ DODANO)
-# ================================================================
-@app.post("/adnan-ai/input")
-async def adnan_ai_input(req: UserInputRequest):
-    if not _BOOT_READY:
-        raise HTTPException(status_code=503, detail="System not ready")
-
-    user_text = (req.text or "").strip()
-    if not user_text:
-        raise HTTPException(status_code=400, detail="Empty input")
-
-    orch = await orchestrator.run(user_text)
-    decision_output = orch.get("result", {})
-
-    awareness = awareness_service.build_snapshot(
-        command=None,
-        csi_state=conversation_state_service.get(),
-    )
-
-    return response_formatter.format(
-        intent="user_input",
-        confidence=decision_output.get("confidence", 1.0),
-        csi_state=conversation_state_service.get(),
-        execution_result=decision_output,
-        awareness=awareness,
-        request_id=None,
-    )
-
-# ================================================================
-# /ops/execute — CSI-CENTRIC PIPELINE (INTERNAL / DEBUG)
-# ================================================================
-@app.post("/ops/execute")
-async def execute(req: CommandRequest):
-    global _LAST_CALL_TS
-
-    if not _BOOT_READY:
-        raise HTTPException(status_code=503, detail="System not ready")
-
-    if OPS_SAFE_MODE:
-        raise HTTPException(status_code=403, detail="OPS_SAFE_MODE enabled")
-
-    now = time.time()
-    if now - _LAST_CALL_TS < MIN_INTERVAL_SECONDS:
-        awareness = awareness_service.build_snapshot(
-            command=None,
-            csi_state=conversation_state_service.get(),
-        )
-        return response_formatter.format(
-            intent=req.command,
-            confidence=1.0,
-            csi_state=conversation_state_service.get(),
-            execution_result={"success": False},
-            awareness=awareness,
-            request_id=None,
-        )
-
-    _LAST_CALL_TS = now
-
-    command = AICommand(
-        command=req.command,
-        input=req.payload,
-        identity_snapshot=identity,
-        state_snapshot=state,
-        mode_snapshot=mode,
-    )
-
-    user_text = (
-        req.payload.get("text")
-        or req.payload.get("input")
-        or ""
-    ).strip()
-
-    orch = await orchestrator.run(user_text)
-    decision_output = orch.get("result", {})
-
-    return {
-        "DEBUG_decision_output": decision_output,
-        "csi": conversation_state_service.get(),
-    }

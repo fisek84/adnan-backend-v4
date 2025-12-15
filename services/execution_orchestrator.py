@@ -1,12 +1,10 @@
-# FILE: services/execution_orchestrator.py
-
 from typing import Dict, Any
 import logging
 from datetime import datetime
 from uuid import uuid4
 
+from models.ai_command import AICommand
 from services.sop_execution_manager import SOPExecutionManager
-from services.notion_ops.ops_engine import NotionOpsEngine
 from services.execution_governance_service import ExecutionGovernanceService
 from services.memory_service import MemoryService
 
@@ -23,22 +21,7 @@ logger = logging.getLogger(__name__)
 class ExecutionOrchestrator:
     """
     ExecutionOrchestrator — EXECUTION GOVERNANCE CORE
-
-    FAZA 6:
-    - execution contract
-    - partial failure normalization
-    - KPI + audit canonicalization
-
-    FAZA 7:
-    - agent identity
-    - health
-    - assignment
-    - load balancing
-    - isolation
-    - lifecycle
-
-    FAZA 12:
-    - memory write-path (execution outcomes)
+    Canonical AICommand-based executor.
     """
 
     STATE_COMPLETED = "COMPLETED"
@@ -48,7 +31,7 @@ class ExecutionOrchestrator:
     CSI_COMPLETED = "COMPLETED"
     CSI_FAILED = "FAILED"
 
-    CONTRACT_VERSION = "1.3"
+    CONTRACT_VERSION = "2.0"
 
     EXECUTION_POLICY = {
         "retry": {"enabled": False, "max_attempts": 1},
@@ -57,15 +40,13 @@ class ExecutionOrchestrator:
     }
 
     def __init__(self):
-        # Executors
         self._sop_executor = SOPExecutionManager()
-        self._notion_executor = NotionOpsEngine()
         self._governance = ExecutionGovernanceService()
-
-        # Memory (FAZA 12)
         self._memory = MemoryService()
 
-        # Agent OS (FAZA 7)
+        # -------------------------------
+        # AGENT OS (FAZA 7)
+        # -------------------------------
         self._agents_identity = load_agents_identity()
         self._agent_health = AgentHealthRegistry()
         self._agent_lifecycle = AgentLifecycleService()
@@ -77,188 +58,124 @@ class ExecutionOrchestrator:
             agent_health_registry=self._agent_health,
         )
 
-        for agent_id in self._agents_identity.keys():
+        # Agenti su ALIVE na bootu ako su enabled
+        for agent_id, agent in self._agents_identity.items():
             self._agent_health.register_agent(agent_id)
+            if agent.get("enabled", False):
+                self._agent_health.mark_alive(agent_id)
 
     # ============================================================
     # MAIN EXECUTION
     # ============================================================
-    async def execute(self, decision: Dict[str, Any], *, dry_run: bool = False) -> Dict[str, Any]:
-        execution_id = str(uuid4())
-        started_at = datetime.utcnow()
-        started_at_iso = started_at.isoformat()
+    async def execute(self, command: AICommand, *, dry_run: bool = False) -> Dict[str, Any]:
 
-        executor = decision.get("executor")
-        command = decision.get("command")
-        payload = decision.get("payload", {})
+        if not command.validated:
+            raise RuntimeError("Execution attempted on non-validated AICommand.")
+
+        executor = command.metadata.get("executor")
+        if not executor:
+            raise RuntimeError("Missing executor in AICommand metadata.")
+
+        execution_id = str(uuid4())
+        started_at = datetime.utcnow().isoformat()
 
         execution_contract = {
             "execution_id": execution_id,
-            "executor": executor,
-            "command": command,
+            "command": command.command,
             "policy": self.EXECUTION_POLICY,
             "contract_version": self.CONTRACT_VERSION,
-            "started_at": started_at_iso,
+            "started_at": started_at,
         }
-
-        if not executor or not command:
-            return self._fail(
-                execution_contract=execution_contract,
-                summary="Nema izvršne akcije.",
-                started_at=started_at_iso,
-            )
 
         # --------------------------------------------------------
         # GOVERNANCE
         # --------------------------------------------------------
         governance = self._governance.evaluate(
-            role=decision.get("role", "system"),
-            context_type=decision.get("context_type", "sop"),
-            directive=command,
-            params=payload,
-            approval_id=decision.get("approval_id"),
+            role=command.source,
+            context_type=command.metadata.get("context_type", "system"),
+            directive=command.command,
+            params=command.input or {},
+            approval_id=command.metadata.get("approval_id"),
         )
 
         if not governance.get("allowed"):
-            self._memory.store_decision_outcome(
-                decision_type="execution",
-                context_type=decision.get("context_type", "sop"),
-                target=command,
-                success=False,
-                metadata={"reason": governance.get("reason"), "state": "blocked"},
-            )
-
             return self._blocked(
                 execution_contract=execution_contract,
                 governance=governance,
-                started_at=started_at_iso,
+                started_at=started_at,
             )
 
         # --------------------------------------------------------
         # AGENT SELECTION
         # --------------------------------------------------------
-        agent_id = self._agent_assignment.assign_agent(command)
+        agent_id = self._agent_assignment.assign_agent(executor)
 
         if not agent_id:
-            return self._fail_with_memory(
+            return self._fail(
                 execution_contract,
-                command,
-                decision,
                 "Nijedan agent nije dostupan.",
-                started_at_iso,
+                started_at,
             )
 
         if not self._agent_lifecycle.is_active(agent_id):
-            return self._fail_with_memory(
+            return self._fail(
                 execution_contract,
-                command,
-                decision,
                 f"Agent '{agent_id}' je deaktiviran.",
-                started_at_iso,
+                started_at,
             )
 
         if self._agent_isolation.is_isolated(agent_id):
-            return self._fail_with_memory(
+            return self._fail(
                 execution_contract,
-                command,
-                decision,
                 f"Agent '{agent_id}' je izolovan.",
-                started_at_iso,
+                started_at,
             )
 
         if not self._load_balancer.can_accept(agent_id):
-            return self._fail_with_memory(
+            return self._fail(
                 execution_contract,
-                command,
-                decision,
                 f"Agent '{agent_id}' je preopterećen.",
-                started_at_iso,
+                started_at,
             )
 
+        # --------------------------------------------------------
+        # DRY RUN
+        # --------------------------------------------------------
         if dry_run:
             return self._success(
                 execution_contract=execution_contract,
-                summary="Simulacija izvršenja.",
-                started_at=started_at_iso,
+                summary="Simulacija delegiranog izvršenja.",
+                started_at=started_at,
                 finished_at=datetime.utcnow(),
                 details={"dry_run": True, "agent": agent_id},
             )
 
         # --------------------------------------------------------
-        # EXECUTION
+        # EXECUTION (DELEGATED)
         # --------------------------------------------------------
         self._load_balancer.reserve(agent_id)
-        self._agent_health.mark_alive(agent_id)
 
         try:
-            raw = await self._execute_once(executor, command, payload)
             finished_at = datetime.utcnow()
-
-            success = bool(raw.get("success"))
-            partial = self._detect_partial_failure(raw)
-
-            self._memory.store_decision_outcome(
-                decision_type="execution",
-                context_type=decision.get("context_type", "sop"),
-                target=command,
-                success=success,
-                metadata={
-                    "executor": executor,
-                    "agent": agent_id,
-                    "partial_failure": partial,
-                },
-            )
-
-            if not success:
-                self._agent_health.record_error(agent_id)
-
             return self._success(
                 execution_contract=execution_contract,
-                summary=raw.get("summary", ""),
-                started_at=started_at_iso,
+                summary="Zadatak delegiran agentu na izvršenje.",
+                started_at=started_at,
                 finished_at=finished_at,
-                details={**raw, "agent": agent_id},
-                success=success,
-                has_partial_failure=partial,
+                details={
+                    "agent": agent_id,
+                    "executor": executor,
+                    "command": command.command,
+                    "delegated": True,
+                },
+                success=True,
             )
-
-        except Exception as e:
-            self._agent_health.record_error(agent_id)
-
-            self._memory.store_decision_outcome(
-                decision_type="execution",
-                context_type=decision.get("context_type", "sop"),
-                target=command,
-                success=False,
-                metadata={"error": str(e), "agent": agent_id},
-            )
-
-            raise
-
         finally:
             self._load_balancer.release(agent_id)
 
     # ============================================================
-    # INTERNAL EXECUTION
-    # ============================================================
-    async def _execute_once(self, executor: str, command: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        if executor == "sop_execution_manager":
-            return await self._sop_executor.execute_plan(
-                execution_plan=payload.get("execution_plan"),
-                current_sop=payload.get("sop_id"),
-            )
-
-        if executor == "notion_ops":
-            return await self._notion_executor.execute(command=command, payload=payload)
-
-        raise RuntimeError(f"Nepoznat executor: {executor}")
-
-    # ============================================================
     # HELPERS
     # ============================================================
-    def _detect_partial_failure(self, raw: Dict[str, Any]) -> bool:
-        return not raw.get("success") and "results" in raw
-
     def _blocked(self, *, execution_contract, governance, started_at):
         finished_at = datetime.utcnow()
         return {
@@ -266,31 +183,18 @@ class ExecutionOrchestrator:
             "success": False,
             "execution_state": self.STATE_BLOCKED,
             "csi_next_state": governance.get("next_csi_state"),
-            "executor": execution_contract["executor"],
             "summary": governance.get("reason"),
             "started_at": started_at,
             "finished_at": finished_at.isoformat(),
-            "details": {"governance": governance},
         }
 
-    def _fail_with_memory(self, contract, command, decision, reason, started_at):
-        self._memory.store_decision_outcome(
-            decision_type="execution",
-            context_type=decision.get("context_type", "sop"),
-            target=command,
-            success=False,
-            metadata={"reason": reason},
-        )
-        return self._fail(contract, reason, started_at)
-
     def _success(self, *, execution_contract, summary, started_at,
-                 finished_at, details, success=True, has_partial_failure=False):
+                 finished_at, details, success=True):
         return {
             "execution_id": execution_contract["execution_id"],
             "success": success,
             "execution_state": self.STATE_COMPLETED if success else self.STATE_FAILED,
             "csi_next_state": self.CSI_COMPLETED if success else self.CSI_FAILED,
-            "executor": execution_contract["executor"],
             "summary": summary,
             "started_at": started_at,
             "finished_at": finished_at.isoformat(),
@@ -304,7 +208,6 @@ class ExecutionOrchestrator:
             "success": False,
             "execution_state": self.STATE_FAILED,
             "csi_next_state": self.CSI_FAILED,
-            "executor": execution_contract["executor"],
             "summary": summary,
             "started_at": started_at,
             "finished_at": finished_at.isoformat(),

@@ -27,6 +27,7 @@ class RBACService:
                 "can_execute": False,
                 "allowed_actions": {
                     "query_database",
+                    "create_task",   # ⬅️ DODANO — KANONSKI
                 },
             },
             "manager": {
