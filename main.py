@@ -1,7 +1,11 @@
+# C:\adnan-backend-v4\main.py
+
 import os
 import sys
 import logging
 from dotenv import load_dotenv
+
+from uvicorn import run
 
 # ============================================================
 # ENV + PATH
@@ -14,7 +18,7 @@ if BASE_DIR not in sys.path:
 load_dotenv()
 
 # ============================================================
-# LOGGING (BOOTSTRAP SAFE)
+# LOGGING
 # ============================================================
 
 logger = logging.getLogger("adnan_ai_bootstrap")
@@ -24,7 +28,7 @@ logging.basicConfig(
 )
 
 # ============================================================
-# RUNTIME GUARDS — FAIL FAST + HARD VERIFICATION
+# RUNTIME GUARDS
 # ============================================================
 
 REQUIRED_ENV_VARS = [
@@ -32,35 +36,21 @@ REQUIRED_ENV_VARS = [
     "NOTION_OPS_ASSISTANT_ID",
 ]
 
-# 🔎 HARD DEBUG — OVO NAM DAJE ISTINU
-logger.info("ENV CHECK → OPENAI_API_KEY present: %s", bool(os.getenv("OPENAI_API_KEY")))
-logger.info(
-    "ENV CHECK → NOTION_OPS_ASSISTANT_ID present: %s",
-    bool(os.getenv("NOTION_OPS_ASSISTANT_ID")),
-)
-
 missing = [v for v in REQUIRED_ENV_VARS if not os.getenv(v)]
 if missing:
-    logger.critical(
-        "❌ Missing required environment variables: %s",
-        ", ".join(missing),
-    )
+    logger.critical("❌ Missing ENV vars: %s", ", ".join(missing))
     sys.exit(1)
 
 logger.info("✅ Environment variables validated.")
 
 # ============================================================
-# SINGLE ENTRYPOINT — GATEWAY (LOAD FIRST)
+# LOAD GATEWAY APP
 # ============================================================
 
-try:
-    from gateway.gateway_server import app  # noqa: E402
-except Exception as e:
-    logger.critical("❌ Failed to load gateway application: %s", e)
-    sys.exit(1)
+from gateway.gateway_server import app  # noqa
 
 # ============================================================
-# SERVICE INITIALIZATION (CANONICAL)
+# SERVICE INITIALIZATION
 # ============================================================
 
 from services.ai_command_service import AICommandService
@@ -72,34 +62,34 @@ coo_translation_service = COOTranslationService()
 logger.info("🧠 Core AI services initialized.")
 
 # ============================================================
-# ROUTER INJECTION — CANONICAL AI ROUTER (/ai/run)
+# ROUTER INJECTION
 # ============================================================
 
 from routers.ai_router import set_ai_services
+from routers.adnan_ai_router import set_adnan_ai_services
 
 set_ai_services(
     command_service=ai_command_service,
     coo=coo_translation_service,
 )
 
-logger.info("🔌 AI services injected into /ai router.")
-
-# ============================================================
-# ROUTER INJECTION — ADNAN AI UX ROUTER (/adnan-ai/input)
-# ============================================================
-
-from routers.adnan_ai_router import set_adnan_ai_services
-
 set_adnan_ai_services(
     command_service=ai_command_service,
     coo=coo_translation_service,
 )
 
-logger.info("🔌 AI services injected into /adnan-ai router.")
+logger.info("🔌 AI services injected.")
 
 # ============================================================
-# BOOT CONFIRMATION
+# START UVICORN — THIS WAS MISSING
 # ============================================================
 
-logger.info("🟢 Adnan.AI / Evolia OS backend loaded successfully.")
-logger.info("🔒 Runtime guards active. Fail-fast enabled.")
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8000))
+    logger.info("🚀 Starting Uvicorn on port %s", port)
+    run(
+        app,
+        host="0.0.0.0",
+        port=port,
+        log_level="info",
+    )
