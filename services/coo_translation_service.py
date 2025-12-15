@@ -23,6 +23,9 @@ from services.action_dictionary import is_valid_command
 class COOTranslationService:
 
     READ_ONLY_COMMAND = "system_query"
+    IDENTITY_COMMAND = "system_identity"
+    INBOX_COMMAND = "system_notion_inbox"
+    INBOX_DELEGATION_PREVIEW_COMMAND = "system_inbox_delegation_preview"
 
     def __init__(self):
         self.intent_classifier = IntentClassifier()
@@ -37,11 +40,6 @@ class COOTranslationService:
         source: str,
         context: Dict[str, Any],
     ) -> Optional[AICommand]:
-        """
-        Returns:
-        - AICommand (validated=True)
-        - None (REJECT / HARD BLOCK)
-        """
 
         # -----------------------------------------------------
         # 1. INTENT CLASSIFICATION
@@ -58,31 +56,84 @@ class COOTranslationService:
             return None
 
         # -----------------------------------------------------
-        # 2. READ PATH (FAZA 2)
+        # 2. READ — IDENTITY
         # -----------------------------------------------------
-        if intent.type == IntentType.SYSTEM_QUERY:
-            command_name = self.READ_ONLY_COMMAND
-
-            if not is_valid_command(command_name):
+        if intent.type in {
+            IntentType.IDENTITY,
+            IntentType.GREETING,
+            IntentType.WHO_ARE_YOU,
+        }:
+            if not is_valid_command(self.IDENTITY_COMMAND):
                 return None
 
             return AICommand(
-                command=command_name,
+                command=self.IDENTITY_COMMAND,
                 intent=intent.type.value,
-                input=self._build_payload(intent, context),
+                input={"raw_text": intent.payload.get("raw_text")},
                 params={},
-                metadata={
-                    "context_type": context.get("context_type", "system"),
-                },
+                metadata={"context_type": "system"},
                 validated=True,
             )
 
         # -----------------------------------------------------
-        # 3. WRITE PATH (FAZA 3 — HARD GATE)
+        # 3. READ — NOTION INBOX / DELEGATION PREVIEW
+        # -----------------------------------------------------
+        if intent.type in {
+            IntentType.STATUS,
+            IntentType.FOCUS,
+            IntentType.SYSTEM_QUERY,
+        }:
+            text = (intent.payload.get("raw_text") or "").lower()
+
+            # --- DELEGATION PREVIEW (NOVO) ---
+            if any(k in text for k in ["delegir", "šta ćemo", "sta cemo", "šta sa inbox", "inbox deleg"]):
+                if not is_valid_command(self.INBOX_DELEGATION_PREVIEW_COMMAND):
+                    return None
+
+                return AICommand(
+                    command=self.INBOX_DELEGATION_PREVIEW_COMMAND,
+                    intent=intent.type.value,
+                    input={"raw_text": intent.payload.get("raw_text")},
+                    params={},
+                    metadata={"context_type": "system"},
+                    validated=True,
+                )
+
+            # --- STANDARD INBOX ---
+            if any(k in text for k in ["inbox", "notion", "zadac", "task", "za tebe"]):
+                if not is_valid_command(self.INBOX_COMMAND):
+                    return None
+
+                return AICommand(
+                    command=self.INBOX_COMMAND,
+                    intent=intent.type.value,
+                    input={"raw_text": intent.payload.get("raw_text")},
+                    params={},
+                    metadata={"context_type": "system"},
+                    validated=True,
+                )
+
+        # -----------------------------------------------------
+        # 4. READ — GENERIC SYSTEM QUERY
+        # -----------------------------------------------------
+        if intent.type == IntentType.SYSTEM_QUERY:
+            if not is_valid_command(self.READ_ONLY_COMMAND):
+                return None
+
+            return AICommand(
+                command=self.READ_ONLY_COMMAND,
+                intent=intent.type.value,
+                input=self._build_payload(intent, context),
+                params={},
+                metadata={"context_type": context.get("context_type", "system")},
+                validated=True,
+            )
+
+        # -----------------------------------------------------
+        # 5. WRITE PATH (FAZA 3 — HARD GATE)
         # -----------------------------------------------------
         approval_id = context.get("approval_id")
         if not approval_id:
-            # Bez approvala — Translation NE SMIJE raditi
             return None
 
         command_name = intent.type.value

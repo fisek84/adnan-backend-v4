@@ -31,6 +31,12 @@ class ExecutionGovernanceService:
             "retry_policy": {"enabled": False, "max_retries": 0},
         }
 
+        # META commands that REQUIRE approved approval,
+        # but MUST NOT trigger a NEW approval request
+        self.meta_commands = {
+            "delegate_execution",
+        }
+
     # ============================================================
     # PUBLIC API
     # ============================================================
@@ -90,26 +96,40 @@ class ExecutionGovernanceService:
             )
 
         # --------------------------------------------------------
-        # 5. APPROVAL (WRITE ONLY — HARD GATE)
+        # 5. APPROVAL (WRITE — HARD GATE)
         # --------------------------------------------------------
         if directive != "system_query":
-            if not approval_id:
-                return self._block(
-                    reason="Missing approval for write operation.",
-                    source="governance",
-                    ts=decision_ts,
-                    next_csi_state="DECISION_PENDING",
-                    read_only=False,
-                )
 
-            if not self.approvals.is_fully_approved(approval_id):
-                return self._block(
-                    reason="Approval not granted.",
-                    source="governance",
-                    ts=decision_ts,
-                    next_csi_state="DECISION_PENDING",
-                    read_only=False,
-                )
+            # META commands: approval MUST already be approved
+            if directive in self.meta_commands:
+                if not approval_id or not self.approvals.is_fully_approved(approval_id):
+                    return self._block(
+                        reason="Approved approval required for meta execution.",
+                        source="governance",
+                        ts=decision_ts,
+                        next_csi_state="DECISION_PENDING",
+                        read_only=False,
+                    )
+
+            # REAL write commands
+            else:
+                if not approval_id:
+                    return self._block(
+                        reason="Missing approval for write operation.",
+                        source="governance",
+                        ts=decision_ts,
+                        next_csi_state="DECISION_PENDING",
+                        read_only=False,
+                    )
+
+                if not self.approvals.is_fully_approved(approval_id):
+                    return self._block(
+                        reason="Approval not granted.",
+                        source="governance",
+                        ts=decision_ts,
+                        next_csi_state="DECISION_PENDING",
+                        read_only=False,
+                    )
 
         # --------------------------------------------------------
         # ALLOWED

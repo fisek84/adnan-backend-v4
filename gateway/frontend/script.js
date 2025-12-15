@@ -24,11 +24,11 @@ function renderActions(actions) {
 
   actions.forEach(action => {
     const btn = document.createElement("button");
-    btn.textContent = action.oznaka || "Akcija";
+    btn.textContent = action.label || "Akcija";
     btn.className = "action-btn";
 
     btn.addEventListener("click", () => {
-      input.value = action.primjer || "";
+      input.value = action.example || "";
       input.focus();
     });
 
@@ -63,25 +63,32 @@ sendBtn.addEventListener("click", async () => {
 
     const data = await res.json();
 
-    // -------------------------------
-    // UX HANDLING (CANONICAL)
-    // -------------------------------
+    // ---------------------------------
+    // CANONICAL OS RESPONSE HANDLING
+    // ---------------------------------
 
-    if (data.status !== "u redu" && data.status !== "ok") {
-      renderError(data.razlog || "Nepoznata greška");
+    // 1. Failure
+    if (data.failure) {
+      renderError(data.failure.error || "Greška u sistemu.");
       return;
     }
 
-    // Glavna poruka
-    if (data.tekst) {
-      renderMessage(data.tekst);
+    // 2. Primary message (CEO / System voice)
+    if (data.message) {
+      if (typeof data.message === "string") {
+        renderMessage(data.message);
+      } else if (data.message.text) {
+        renderMessage(data.message.text);
+      } else {
+        renderMessage("ℹ️ Sistem je aktivan.");
+      }
     } else {
-      renderMessage("ℹ️ Sistem nije vratio poruku.");
+      renderMessage("ℹ️ Sistem je aktivan.");
     }
 
-    // Sugestije / sljedeće radnje
-    if (data.sljedeće_radnje) {
-      renderActions(data.sljedeće_radnje);
+    // 3. Approval actions (ako postoje)
+    if (data.approval && data.approval.read_only === false) {
+      renderActions(data.approval.actions || []);
     }
 
   } catch (err) {

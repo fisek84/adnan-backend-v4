@@ -53,6 +53,8 @@ class CEOResponseAssembler:
             "read_only": True,
         }
 
+        ux_blocks = 0
+
         # -----------------------------------------------------
         # SYSTEM STATE (READ-ONLY SNAPSHOT)
         # -----------------------------------------------------
@@ -61,6 +63,7 @@ class CEOResponseAssembler:
                 "snapshot": system_state,
                 "read_only": True,
             }
+            ux_blocks += 1
 
         # -----------------------------------------------------
         # EXECUTION RESULT (SINGLE COMMAND)
@@ -82,6 +85,23 @@ class CEOResponseAssembler:
                 },
                 "read_only": True,
             }
+            ux_blocks += 1
+
+            # ---------------------------------------------
+            # UX PROMPT — INBOX → DELEGATION PREVIEW
+            # ---------------------------------------------
+            if execution_result.get("action") == "system_inbox_delegation_preview":
+                count = execution_result.get("response", {}).get("count", 0)
+
+                response["message"] = {
+                    "type": "delegation_prompt",
+                    "text": (
+                        f"Vidim {count} stavki u inboxu koje mogu biti delegirane. "
+                        "Želiš li da delegiram neku od njih?"
+                    ),
+                    "read_only": True,
+                }
+                ux_blocks += 1
 
         # -----------------------------------------------------
         # WORKFLOW VISUALIZATION
@@ -94,6 +114,7 @@ class CEOResponseAssembler:
                 "failure_reason": workflow_snapshot.get("failure_reason"),
                 "read_only": True,
             }
+            ux_blocks += 1
 
         # -----------------------------------------------------
         # APPROVAL UX (WRITE CONFIRMATION ONLY)
@@ -107,6 +128,7 @@ class CEOResponseAssembler:
                 "fully_approved": approval_snapshot.get("fully_approved"),
                 "read_only": False,
             }
+            ux_blocks += 1
 
         # -----------------------------------------------------
         # FAILURE SNAPSHOT
@@ -116,6 +138,20 @@ class CEOResponseAssembler:
                 "category": failure_snapshot.get("category"),
                 "error": failure_snapshot.get("error"),
                 "recovery_options": failure_snapshot.get("recovery_options"),
+                "read_only": True,
+            }
+            ux_blocks += 1
+
+        # -----------------------------------------------------
+        # DEFAULT READ-ONLY UX MESSAGE (MANDATORY)
+        # -----------------------------------------------------
+        if ux_blocks == 0:
+            response["message"] = {
+                "type": "system_info",
+                "text": (
+                    "Ja sam Adnan.AI. Sistem je aktivan i u read-only režimu. "
+                    "Ovaj zahtjev ne sadrži izvršivu naredbu."
+                ),
                 "read_only": True,
             }
 

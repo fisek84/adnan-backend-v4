@@ -9,6 +9,7 @@ from services.coo_conversation_service import (
     COOConversationResult,
 )
 from services.ai_command_service import AICommandService
+from services.workflow_event_bridge import WorkflowEventBridge  # ⬅️ DODANO
 from models.ai_command import AICommand
 
 
@@ -19,6 +20,9 @@ logger.setLevel(logging.INFO)
 ai_command_service: Optional[AICommandService] = None
 coo_translation_service: Optional[COOTranslationService] = None
 coo_conversation_service: Optional[COOConversationService] = None
+
+# ⬅️ READ-ONLY workflow bridge
+_workflow_bridge = WorkflowEventBridge()
 
 
 def set_adnan_ai_services(
@@ -80,7 +84,7 @@ async def adnan_ai_input(payload: AdnanAIInput):
     # --------------------------------------------------------
     ai_command: Optional[AICommand] = coo_translation_service.translate(
         raw_input=user_text,
-        source="system",   # ✅ KLJUČNA KOREKCIJA
+        source="system",
         context=context,
     )
 
@@ -95,11 +99,21 @@ async def adnan_ai_input(payload: AdnanAIInput):
     # --------------------------------------------------------
     try:
         result = await ai_command_service.execute(ai_command)
-        return {
+
+        response = {
             "status": "success",
             "command": ai_command.command,
             "result": result,
         }
+
+        # ----------------------------------------------------
+        # 4. WORKFLOW SNAPSHOT (UX — READ ONLY)
+        # ----------------------------------------------------
+        workflow_id = result.get("workflow_id")
+        if workflow_id:
+            response["workflow"] = _workflow_bridge.snapshot(workflow_id)
+
+        return response
 
     except Exception as e:
         logger.exception("Execution failed")

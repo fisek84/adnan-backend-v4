@@ -1,5 +1,5 @@
 """
-APPROVAL UX SERVICE — CANONICAL (FAZA 5)
+APPROVAL UX SERVICE — CANONICAL (FAZA 3)
 
 Uloga:
 - JEDINI UX ulaz za approval akcije
@@ -21,7 +21,7 @@ from services.approval_state_service import ApprovalStateService
 
 class ApprovalUXService:
     """
-    UX-facing approval handler.
+    UX-facing approval handler (FAZA 3).
     """
 
     def __init__(self):
@@ -38,16 +38,12 @@ class ApprovalUXService:
         note: str | None = None,
     ) -> Dict[str, Any]:
         """
-        CEO / Human eksplicitno potvrđuje sljedeći approval level.
+        CEO eksplicitno ODOBRAVA approval.
         """
 
-        state = self._approvals.approve_next_level(
-            approval_id=approval_id,
-            approved_by=approved_by,
-            note=note,
-        )
-
-        if not state:
+        try:
+            state = self._approvals.approve(approval_id)
+        except KeyError:
             return {
                 "success": False,
                 "error": "approval_not_found",
@@ -58,31 +54,29 @@ class ApprovalUXService:
         return {
             "success": True,
             "approval": state,
+            "approved_by": approved_by,
+            "note": note,
             "timestamp": datetime.utcnow().isoformat(),
             "read_only": False,
         }
 
     # =========================================================
-    # ESCALATION (EXPLICIT)
+    # CEO REJECTION
     # =========================================================
-    def escalate(
+    def reject(
         self,
         *,
         approval_id: str,
-        escalated_by: str,
-        reason: str,
+        rejected_by: str,
+        note: str | None = None,
     ) -> Dict[str, Any]:
         """
-        Eksplicitna eskalacija ka čovjeku / višem nivou.
+        CEO eksplicitno ODBIJA approval.
         """
 
-        state = self._approvals.escalate(
-            approval_id=approval_id,
-            escalated_by=escalated_by,
-            reason=reason,
-        )
-
-        if not state:
+        try:
+            state = self._approvals.reject(approval_id)
+        except KeyError:
             return {
                 "success": False,
                 "error": "approval_not_found",
@@ -93,6 +87,8 @@ class ApprovalUXService:
         return {
             "success": True,
             "approval": state,
+            "rejected_by": rejected_by,
+            "note": note,
             "timestamp": datetime.utcnow().isoformat(),
             "read_only": False,
         }
