@@ -1,5 +1,3 @@
-# C:\adnan-backend-v4\main.py
-
 import os
 import sys
 import logging
@@ -26,13 +24,20 @@ logging.basicConfig(
 )
 
 # ============================================================
-# RUNTIME GUARDS — FAIL FAST
+# RUNTIME GUARDS — FAIL FAST + HARD VERIFICATION
 # ============================================================
 
 REQUIRED_ENV_VARS = [
     "OPENAI_API_KEY",
     "NOTION_OPS_ASSISTANT_ID",
 ]
+
+# 🔎 HARD DEBUG — OVO NAM DAJE ISTINU
+logger.info("ENV CHECK → OPENAI_API_KEY present: %s", bool(os.getenv("OPENAI_API_KEY")))
+logger.info(
+    "ENV CHECK → NOTION_OPS_ASSISTANT_ID present: %s",
+    bool(os.getenv("NOTION_OPS_ASSISTANT_ID")),
+)
 
 missing = [v for v in REQUIRED_ENV_VARS if not os.getenv(v)]
 if missing:
