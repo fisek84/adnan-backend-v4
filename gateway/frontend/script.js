@@ -4,9 +4,8 @@ const sendBtn = document.getElementById("send");
 const input = document.getElementById("input");
 const output = document.getElementById("output");
 
-// sigurnosna provjera DOM-a
 if (!sendBtn || !input || !output) {
-  console.error("❌ Frontend elementi nisu pronađeni (send, input, output)");
+  console.error("❌ Frontend elementi nisu pronađeni");
 }
 
 sendBtn.addEventListener("click", async () => {
@@ -16,7 +15,7 @@ sendBtn.addEventListener("click", async () => {
   output.textContent = "🧠 Razmišljam...";
 
   try {
-    const res = await fetch("/adnan-ai/input", {
+    const res = await fetch("/api/adnan-ai/input", {
       method: "POST",
       headers: {
         "Content-Type": "application/json"
