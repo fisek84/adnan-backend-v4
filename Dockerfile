@@ -19,7 +19,6 @@ RUN pip install --upgrade pip wheel setuptools && \
 # ===========================
 FROM python:3.11-slim
 
-# FORCE DOCKER TO REBUILD (cache breaker)
 ARG CACHE_BREAK=1
 
 ENV TZ=Europe/Sarajevo
@@ -38,8 +37,10 @@ COPY --from=builder /install /usr/local
 # COPY APP CODE
 COPY ./ ./
 
-# expose Render port
+# EXPOSE RENDER PORT
 EXPOSE $PORT
 
-# START FASTAPI
-CMD ["sh", "-c", "uvicorn gateway.gateway_server:app --host 0.0.0.0 --port $PORT"]
+# ===========================
+# CANONICAL ENTRYPOINT
+# ===========================
+CMD ["python", "main.py"]
