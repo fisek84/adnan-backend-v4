@@ -1,3 +1,0 @@
-{"ts": "2025-12-14T19:44:16.277329", "from": null, "to": "IDLE", "reason": "init", "illegal": false, "request_id": null}
-{"ts": "2025-12-15T10:17:03.656891", "from": "TASK_CREATE", "to": "TASK_CREATE", "reason": "set_task_create", "illegal": false, "request_id": null}
-{"ts": "2025-12-15T10:17:03.658239", "from": "TASK_CREATE", "to": "TASK_CREATE", "reason": "task_create_set", "illegal": false, "request_id": null}

@@ -1,3 +1,5 @@
 ﻿.env
 __pycache__/
 *.pyc
+adnan_ai/memory/
+uvicorn
