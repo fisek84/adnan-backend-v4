@@ -32,6 +32,29 @@ class IntentClassifier:
                 return Intent(IntentType.RESET, 1.0, {"raw_text": text}, source)
 
             # ---------------------------------
+            # SYSTEM QUERY / ANALYZE (READ-ONLY)
+            # ---------------------------------
+            if re.search(
+                r"\b("
+                r"pregledaj.*stanje.*sistema|"
+                r"pregled sistema|"
+                r"stanje sistema|"
+                r"analiziraj.*sistem|"
+                r"analiza sistema|"
+                r"system status|"
+                r"system analyze|"
+                r"system analysis"
+                r")\b",
+                t
+            ):
+                return Intent(
+                    IntentType.SYSTEM_QUERY,
+                    0.95,
+                    {"raw_text": text},
+                    source,
+                )
+
+            # ---------------------------------
             # TASK EXECUTION — FAZA 5 (RANO)
             # ---------------------------------
             if re.search(r"\b(pokreni zadatak|start task|započni zadatak)\b", t):
