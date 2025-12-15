@@ -5,7 +5,8 @@ import os
 import time
 import logging
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
@@ -83,27 +84,38 @@ app = FastAPI(
 )
 
 # ================================================================
-# INCLUDE ROUTERS
+# FRONTEND (STATIC UI)
 # ================================================================
-app.include_router(audit_router)
-app.include_router(adnan_ai_router)
+FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "frontend")
+
+if not os.path.isdir(FRONTEND_DIR):
+    logger.warning("⚠️ Frontend directory not found: %s", FRONTEND_DIR)
+
+app.mount(
+    "/frontend",
+    StaticFiles(directory=FRONTEND_DIR),
+    name="frontend",
+)
 
 # ================================================================
-# ROOT + HEALTH
+# INCLUDE ROUTERS (API)
+# ================================================================
+app.include_router(audit_router, prefix="/api")
+app.include_router(adnan_ai_router, prefix="/api")
+
+# ================================================================
+# ROOT → FRONTEND
 # ================================================================
 @app.get("/")
-async def root():
-    return {
-        "status": "ok",
-        "system": SYSTEM_NAME,
-        "version": VERSION,
-        "release_channel": RELEASE_CHANNEL,
-        "arch_lock": ARCH_LOCK,
-        "safe_mode": OPS_SAFE_MODE,
-        "boot_ready": _BOOT_READY,
-        "read_only": False,
-    }
+async def serve_frontend():
+    index_path = os.path.join(FRONTEND_DIR, "index.html")
+    if not os.path.isfile(index_path):
+        raise HTTPException(status_code=404, detail="Frontend not found")
+    return FileResponse(index_path)
 
+# ================================================================
+# HEALTH
+# ================================================================
 @app.get("/health")
 async def health_check():
     if not _BOOT_READY:

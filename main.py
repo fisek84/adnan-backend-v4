@@ -6,6 +6,7 @@ import logging
 from dotenv import load_dotenv
 
 from uvicorn import run
+from fastapi.staticfiles import StaticFiles  # <<< DODANO
 
 # ============================================================
 # ENV + PATH
@@ -81,7 +82,19 @@ set_adnan_ai_services(
 logger.info("🔌 AI services injected.")
 
 # ============================================================
-# START UVICORN — THIS WAS MISSING
+# FRONTEND STATIC MOUNT  <<< KLJUČNI DIO
+# ============================================================
+
+app.mount(
+    "/",
+    StaticFiles(directory="gateway/frontend", html=True),
+    name="frontend",
+)
+
+logger.info("🖥️ Frontend mounted at /")
+
+# ============================================================
+# START UVICORN
 # ============================================================
 
 if __name__ == "__main__":
