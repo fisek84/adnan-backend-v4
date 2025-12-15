@@ -1,6 +1,13 @@
+// gateway/frontend/script.js
+
 const sendBtn = document.getElementById("send");
 const input = document.getElementById("input");
 const output = document.getElementById("output");
+
+// sigurnosna provjera DOM-a
+if (!sendBtn || !input || !output) {
+  console.error("❌ Frontend elementi nisu pronađeni (send, input, output)");
+}
 
 sendBtn.addEventListener("click", async () => {
   const text = input.value.trim();
