@@ -6,7 +6,7 @@ import logging
 from dotenv import load_dotenv
 
 from uvicorn import run
-from fastapi.staticfiles import StaticFiles  # <<< DODANO
+from fastapi.staticfiles import StaticFiles
 
 # ============================================================
 # ENV + PATH
@@ -56,9 +56,11 @@ from gateway.gateway_server import app  # noqa
 
 from services.ai_command_service import AICommandService
 from services.coo_translation_service import COOTranslationService
+from services.coo_conversation_service import COOConversationService
 
 ai_command_service = AICommandService()
 coo_translation_service = COOTranslationService()
+coo_conversation_service = COOConversationService()
 
 logger.info("🧠 Core AI services initialized.")
 
@@ -69,20 +71,23 @@ logger.info("🧠 Core AI services initialized.")
 from routers.ai_router import set_ai_services
 from routers.adnan_ai_router import set_adnan_ai_services
 
+# Legacy / other router (ostaje netaknut)
 set_ai_services(
     command_service=ai_command_service,
     coo=coo_translation_service,
 )
 
+# ✅ NOVI KANONIČKI POZIV
 set_adnan_ai_services(
     command_service=ai_command_service,
-    coo=coo_translation_service,
+    coo_translation=coo_translation_service,
+    coo_conversation=coo_conversation_service,
 )
 
 logger.info("🔌 AI services injected.")
 
 # ============================================================
-# FRONTEND STATIC MOUNT  <<< KLJUČNI DIO
+# FRONTEND STATIC MOUNT
 # ============================================================
 
 app.mount(
