@@ -15,6 +15,11 @@ class IntentType(Enum):
     CANCEL = "cancel"
 
     # =====================================================
+    # SYSTEM (READ-ONLY)
+    # =====================================================
+    SYSTEM_QUERY = "system_query"
+
+    # =====================================================
     # EXECUTION REQUEST (META)
     # =====================================================
     REQUEST_EXECUTION = "request_execution"
@@ -84,6 +89,15 @@ INTENT_DEFINITIONS: Dict[IntentType, Dict[str, Any]] = {
     },
 
     # -------------------------
+    # SYSTEM (READ-ONLY)
+    # -------------------------
+    IntentType.SYSTEM_QUERY: {
+        "executable": True,
+        "allowed_commands": ["system_query"],
+        "description": "Read-only system state query",
+    },
+
+    # -------------------------
     # GOALS
     # -------------------------
     IntentType.GOAL_CREATE: {
@@ -103,7 +117,7 @@ INTENT_DEFINITIONS: Dict[IntentType, Dict[str, Any]] = {
     },
     IntentType.GOALS_LIST: {
         "executable": True,
-        "allowed_commands": [],
+        "allowed_commands": ["list_goals"],
         "description": "List goals (read-only)",
     },
 
@@ -112,8 +126,8 @@ INTENT_DEFINITIONS: Dict[IntentType, Dict[str, Any]] = {
     # -------------------------
     IntentType.PLAN_CREATE: {
         "executable": True,
-        "allowed_commands": [],
-        "description": "Create a plan (non-executing)",
+        "allowed_commands": ["create_plan"],
+        "description": "Create a plan",
     },
     IntentType.PLAN_CONFIRM: {
         "executable": False,
@@ -127,7 +141,7 @@ INTENT_DEFINITIONS: Dict[IntentType, Dict[str, Any]] = {
     },
     IntentType.TASK_GENERATE_FROM_PLAN: {
         "executable": True,
-        "allowed_commands": [],
+        "allowed_commands": ["generate_tasks"],
         "description": "Generate tasks from plan",
     },
 
