@@ -36,15 +36,13 @@ def bootstrap_application() -> None:
     ai_command_service = AICommandService()
 
     # ---------------------------------------------------------
-    # READ-ONLY Scheduler (CAPABILITY ONLY)
+    # READ-ONLY Scheduler (CAPABILITY ONLY — NO JOBS)
     # ---------------------------------------------------------
     cron_service = CronService()
     knowledge_snapshot_service = KnowledgeSnapshotService()
 
-    cron_service.register(
-        name="notion_knowledge_snapshot_read",
-        fn=knowledge_snapshot_service.sync_knowledge_snapshot
-    )
+    # ❌ NAMJERNO NEMA cron job registracije
+    # READ-ONLY snapshot se poziva EKSKLUZIVNO na zahtjev
 
     # Inject cron into OPS router (NO EXECUTION HERE)
     set_cron_service(cron_service)
