@@ -11,6 +11,7 @@ from services.coo_conversation_service import (
     COOConversationResult,
 )
 from services.ai_command_service import AICommandService
+from services.intent_contract import IntentType
 from models.ai_command import AICommand
 
 
@@ -65,6 +66,10 @@ async def adnan_ai_input(payload: AdnanAIInput):
              → COO Translation (system language)
              → AICommandService
              → ExecutionOrchestrator
+
+    SPECIAL:
+      CONFIRM + pending approval
+        → REQUEST_EXECUTION
     """
 
     if not ai_command_service or not coo_translation_service or not coo_conversation_service:
@@ -74,23 +79,69 @@ async def adnan_ai_input(payload: AdnanAIInput):
     if not user_text:
         raise HTTPException(400, "Empty input")
 
+    context = payload.context or {}
+
+    # --------------------------------------------------------
+    # 0. CONFIRM → REQUEST_EXECUTION (APPROVAL FLOW)
+    # --------------------------------------------------------
+    if (
+        user_text.lower() in {"da", "može", "moze", "ok", "yes"}
+        and context.get("pending_approval")
+    ):
+        pending = context["pending_approval"]
+
+        ai_command = AICommand(
+            command=pending["command"],
+            intent=IntentType.REQUEST_EXECUTION.value,
+            source="system",
+            input={
+                "requested_by": "user",
+                "original_intent": pending.get("intent_type"),
+            },
+            params={},
+            metadata={
+                "executor": "autonomy",
+                "approval_granted": True,
+            },
+            validated=True,
+        )
+
+        result = await ai_command_service.execute(ai_command)
+
+        return {
+            "status": "success",
+            "command": ai_command.command,
+            "result": result,
+        }
+
     # --------------------------------------------------------
     # 1. COO CONVERSATION LAYER (JEZIK ZA LJUDE)
     # --------------------------------------------------------
     conversation_result: COOConversationResult = coo_conversation_service.handle_user_input(
         raw_input=user_text,
         source="user",
-        context=payload.context or {},
+        context=context,
     )
 
     # Ako NIJE spremno za execution → VRATI UX ODGOVOR
     if conversation_result.type != "ready_for_translation":
-        return {
+        response = {
             "status": "ok",
             "type": conversation_result.type,
             "text": conversation_result.text,
             "next_actions": conversation_result.next_actions,
         }
+
+        # Ako je approval potreban, pošalji hint u context
+        if conversation_result.readiness and conversation_result.readiness.get("requires_approval"):
+            response["context"] = {
+                "pending_approval": {
+                    "command": conversation_result.readiness.get("proposed_command"),
+                    "intent_type": conversation_result.readiness.get("intent_type"),
+                }
+            }
+
+        return response
 
     # --------------------------------------------------------
     # 2. COO TRANSLATION (UX → SYSTEM)
@@ -98,7 +149,7 @@ async def adnan_ai_input(payload: AdnanAIInput):
     ai_command: Optional[AICommand] = coo_translation_service.translate(
         raw_input=user_text,
         source="user",
-        context=payload.context or {},
+        context=context,
     )
 
     if not ai_command:

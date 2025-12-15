@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from services.intent_classifier import IntentClassifier
-from services.intent_contract import Intent
+from services.intent_contract import Intent, IntentType
 
 
 @dataclass(frozen=True)
@@ -49,6 +49,10 @@ class COOConversationService:
       * treba li potvrda
     """
 
+    SYSTEM_LEVEL_INTENTS = {
+        IntentType.SYSTEM_QUERY,
+    }
+
     def __init__(self):
         self.intent_classifier = IntentClassifier()
 
@@ -63,8 +67,9 @@ class COOConversationService:
         Entry point za JEZIK ZA LJUDE.
 
         Pravilo:
-        - ako je intent izvršiv i dovoljno pouzdan → READY_FOR_TRANSLATION
-        - ako nije → vrati QUESTION/MESSAGE (ne rejected)
+        - ako je intent izvršiv i dovoljno pouzdan
+          * ali system-level → TRAŽI POTVRDU
+          * inače → READY_FOR_TRANSLATION
         """
 
         user_text = (raw_input or "").strip()
@@ -82,7 +87,35 @@ class COOConversationService:
         # 1) Deterministička klasifikacija
         intent: Intent = self.intent_classifier.classify(user_text, source=source)
 
-        # 2) Ako je spremno za izvršenje → pusti dalje (translation)
+        # --------------------------------------------------
+        # 2) SYSTEM-LEVEL INTENT → TRAŽI ODOBRENJE
+        # --------------------------------------------------
+        if (
+            intent.type in self.SYSTEM_LEVEL_INTENTS
+            and intent.confidence >= self.intent_classifier.DEFAULT_CONFIDENCE_THRESHOLD
+            and intent.is_executable
+        ):
+            return COOConversationResult(
+                type="question",
+                text=(
+                    "Ovo je sistemska operacija i ne može se izvršiti direktno.\n"
+                    "Za nastavak je potrebna autonomna potvrda.\n\n"
+                    "Želiš li da zatražim odobrenje za izvršenje?"
+                ),
+                next_actions=[
+                    {"label": "Da, zatraži odobrenje", "example": "da"},
+                    {"label": "Ne, odustani", "example": "ne"},
+                ],
+                readiness={
+                    "intent_type": intent.type.value,
+                    "requires_approval": True,
+                    "proposed_command": intent.allowed_commands[0] if intent.allowed_commands else None,
+                },
+            )
+
+        # --------------------------------------------------
+        # 3) NORMALNI EXECUTABLE INTENT → READY
+        # --------------------------------------------------
         if self._is_ready_for_translation(intent):
             return COOConversationResult(
                 type="ready_for_translation",
@@ -94,8 +127,9 @@ class COOConversationService:
                 },
             )
 
-        # 3) Ako nije spremno → COO razgovor: objasni i vodi ka odluci
-        #    Specijalni UX za česta pitanja tipa "ko si ti"
+        # --------------------------------------------------
+        # 4) UX HANDLING / OBJAŠNJENJE
+        # --------------------------------------------------
         lowered = user_text.lower()
 
         if self._looks_like_identity_question(lowered):
@@ -104,7 +138,8 @@ class COOConversationService:
                 text=(
                     "Ja sam Adnan.AI u COO režimu: operativni interfejs između tebe (CEO) i sistemskog jezika.\n"
                     "Ne izvršavam ništa dok nije jasno šta želiš i dok ne postoji valjana sistemska naredba.\n"
-                    "Reci šta želiš postići (cilj), a ja ću to dovesti do odluke i pripremiti komandni zahtjev."
+                    "Ako je potrebna sistemska akcija, vodim proces odobrenja.\n\n"
+                    "Reci šta želiš postići."
                 ),
                 next_actions=[
                     {"label": "Pregled sistema", "example": "Šta nam trenutno gori?"},
@@ -113,11 +148,13 @@ class COOConversationService:
                 ],
             )
 
-        # 4) Generalni fallback: umjesto "rejected", traži jasnoću
+        # --------------------------------------------------
+        # 5) GENERALNI FALLBACK
+        # --------------------------------------------------
         return COOConversationResult(
             type="question",
             text=(
-                "Ovo još nije spremno za izvršenje kao sistemska naredba.\n"
+                "Ovo još nije spremno za izvršenje.\n"
                 "Reci mi cilj i opseg:\n"
                 "- Šta tačno želiš postići?\n"
                 "- Nad čim (Notion, agenti, sistem)?\n"
@@ -135,7 +172,6 @@ class COOConversationService:
     # =========================================================
 
     def _is_ready_for_translation(self, intent: Intent) -> bool:
-        # confidence threshold (isti princip kao translator, ali ovdje samo readiness)
         if intent.confidence < self.intent_classifier.DEFAULT_CONFIDENCE_THRESHOLD:
             return False
         if not intent.is_executable:
@@ -143,13 +179,11 @@ class COOConversationService:
         allowed = getattr(intent, "allowed_commands", None)
         if not allowed:
             return False
-        # Ako ima više mogućih komandi, conversation layer treba razjasniti (za sada: nije ready)
         if len(allowed) != 1:
             return False
         return True
 
     def _looks_like_identity_question(self, lowered_text: str) -> bool:
-        # Bosanski + kolokvijalno
         triggers = [
             "ko si",
             "ko si ti",
