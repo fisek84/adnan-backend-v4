@@ -1,5 +1,3 @@
-# C:\adnan-backend-v4\main.py
-
 import os
 import sys
 import logging
@@ -45,7 +43,7 @@ if missing:
 logger.info("✅ Environment variables validated.")
 
 # ============================================================
-# LOAD GATEWAY APP
+# LOAD FASTAPI APP
 # ============================================================
 
 from gateway.gateway_server import app  # noqa
@@ -57,27 +55,31 @@ from gateway.gateway_server import app  # noqa
 from services.ai_command_service import AICommandService
 from services.coo_translation_service import COOTranslationService
 from services.coo_conversation_service import COOConversationService
+from services.response_formatter import ResponseFormatter
 
 ai_command_service = AICommandService()
 coo_translation_service = COOTranslationService()
 coo_conversation_service = COOConversationService()
+response_formatter = ResponseFormatter()
 
 logger.info("🧠 Core AI services initialized.")
 
 # ============================================================
-# ROUTER INJECTION
+# ROUTER DEPENDENCY INJECTION
 # ============================================================
 
 from routers.ai_router import set_ai_services
 from routers.adnan_ai_router import set_adnan_ai_services
 
-# Legacy / other router (ostaje netaknut)
+# --- PRIMARY /ai ROUTER (KANONSKI UX FLOW) ---
 set_ai_services(
     command_service=ai_command_service,
-    coo=coo_translation_service,
+    conversation_service=coo_conversation_service,
+    translation_service=coo_translation_service,
+    formatter=response_formatter,
 )
 
-# ✅ NOVI KANONIČKI POZIV
+# --- SECONDARY /adnan-ai ROUTER (LEGACY / INTERNAL) ---
 set_adnan_ai_services(
     command_service=ai_command_service,
     coo_translation=coo_translation_service,
