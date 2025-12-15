@@ -63,17 +63,44 @@ sendBtn.addEventListener("click", async () => {
 
     const data = await res.json();
 
-    // ---------------------------------
-    // CANONICAL OS RESPONSE HANDLING
-    // ---------------------------------
+    // =========================================================
+    // CANONICAL OS RESPONSE HANDLING (FIXED)
+    // =========================================================
 
-    // 1. Failure
+    // 1️⃣ FAILURE
     if (data.failure) {
       renderError(data.failure.error || "Greška u sistemu.");
       return;
     }
 
-    // 2. Primary message (CEO / System voice)
+    // 2️⃣ SYSTEM IDENTITY
+    if (data.result?.response?.identity) {
+      const id = data.result.response.identity;
+      renderMessage(
+        `👤 <strong>${id.name}</strong><br>` +
+        `${id.role}<br>` +
+        `<em>Mode: ${id.mode}</em>`
+      );
+      return;
+    }
+
+    // 3️⃣ NOTION INBOX
+    if (data.result?.response?.type === "NOTION_INBOX") {
+      const inbox = data.result.response;
+      let text = `📥 ${inbox.summary}`;
+
+      if (Array.isArray(inbox.items) && inbox.items.length > 0) {
+        text += "<br><br><strong>Zadaci:</strong><br>";
+        inbox.items.forEach(item => {
+          text += `• ${item.name}<br>`;
+        });
+      }
+
+      renderMessage(text);
+      return;
+    }
+
+    // 4️⃣ GENERIC MESSAGE (CEO fallback)
     if (data.message) {
       if (typeof data.message === "string") {
         renderMessage(data.message);
@@ -82,14 +109,11 @@ sendBtn.addEventListener("click", async () => {
       } else {
         renderMessage("ℹ️ Sistem je aktivan.");
       }
-    } else {
-      renderMessage("ℹ️ Sistem je aktivan.");
+      return;
     }
 
-    // 3. Approval actions (ako postoje)
-    if (data.approval && data.approval.read_only === false) {
-      renderActions(data.approval.actions || []);
-    }
+    // 5️⃣ FINAL FALLBACK (ONLY if nothing matched)
+    renderMessage("ℹ️ Sistem je aktivan.");
 
   } catch (err) {
     renderError(err.message);
