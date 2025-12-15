@@ -65,6 +65,11 @@ from routers.audit_router import router as audit_router
 from routers.adnan_ai_router import router as adnan_ai_router
 
 # ================================================================
+# ✅ APPLICATION BOOTSTRAP (NEW – CANONICAL)
+# ================================================================
+from services.app_bootstrap import bootstrap_application
+
+# ================================================================
 # INITIAL LOAD (FAIL FAST)
 # ================================================================
 if not OS_ENABLED:
@@ -156,6 +161,12 @@ async def global_exception_handler(request: Request, exc: Exception):
 @app.on_event("startup")
 async def startup_event():
     global _BOOT_READY
+
+    # ------------------------------------------------------------
+    # ✅ BOOTSTRAP APPLICATION (WIRE AI SERVICES)
+    # ------------------------------------------------------------
+    bootstrap_application()
+
     logger.info(">> Startup: syncing Notion knowledge snapshot")
     await notion_service.sync_knowledge_snapshot()
     _BOOT_READY = True
