@@ -1,5 +1,3 @@
-# services/action_dictionary.py
-
 """
 ACTION DICTIONARY (CANONICAL)
 
@@ -22,23 +20,30 @@ from typing import Callable, Dict, Optional, Any
 def action_create_task(payload: Dict[str, Any]):
     return {"status": "ok", "action": "create_task", "payload": payload}
 
+
 def action_update_goal(payload: Dict[str, Any]):
     return {"status": "ok", "action": "update_goal", "payload": payload}
+
 
 def action_sync_notion(payload: Dict[str, Any]):
     return {"status": "ok", "action": "sync_notion", "payload": payload}
 
+
 def action_focus_mode(payload: Dict[str, Any]):
     return {"status": "ok", "action": "focus_mode", "payload": payload}
+
 
 def action_update_state(payload: Dict[str, Any]):
     return {"status": "ok", "action": "update_state", "payload": payload}
 
+
 def action_schedule(payload: Dict[str, Any]):
     return {"status": "ok", "action": "schedule", "payload": payload}
 
+
 def action_workflow(payload: Dict[str, Any]):
     return {"status": "ok", "action": "workflow", "payload": payload}
+
 
 def action_system_query(payload: Dict[str, Any]):
     """
@@ -53,65 +58,103 @@ def action_system_query(payload: Dict[str, Any]):
     }
 
 
+def action_request_execution(payload: Dict[str, Any]):
+    """
+    META GOVERNANCE ACTION
+    """
+    return {
+        "status": "approved",
+        "action": "request_execution",
+        "approved": True,
+        "requested_command": payload.get("requested_command"),
+        "original_intent": payload.get("original_intent"),
+    }
+
+
 # ------------------------------------------
 # ACTION DEFINITIONS (AUTHORITATIVE)
 # ------------------------------------------
 
 ACTION_DEFINITIONS: Dict[str, Dict[str, Any]] = {
+    # -------------------------
+    # META / GOVERNANCE
+    # -------------------------
+    "request_execution": {
+        "handler": action_request_execution,
+        "description": "Request approval for system execution (meta-command)",
+        "category": "governance",
+        "allowed_owners": ["autonomy"],
+        "allowed_sources": ["system"],
+    },
+
+    # -------------------------
+    # READ-ONLY SYSTEM
+    # -------------------------
     "system_query": {
         "handler": action_system_query,
         "description": "Read-only system state query",
         "category": "read",
-        "allowed_sources": ["user", "system"],
+        "allowed_owners": ["system"],
+        "allowed_sources": ["system"],   # ✅ KLJUČNO
     },
 
+    # -------------------------
+    # WRITE / OPS
+    # -------------------------
     "create_task": {
         "handler": action_create_task,
         "description": "Create a new task in the system",
         "category": "write",
-        "allowed_sources": ["user", "agent", "system"],
+        "allowed_owners": ["system", "agent"],
+        "allowed_sources": ["system"],
     },
     "update_goal": {
         "handler": action_update_goal,
         "description": "Update an existing goal",
         "category": "write",
-        "allowed_sources": ["user", "agent"],
+        "allowed_owners": ["system", "agent"],
+        "allowed_sources": ["system"],
     },
     "sync_notion": {
         "handler": action_sync_notion,
         "description": "Synchronize data with Notion",
         "category": "sync",
-        "allowed_sources": ["system", "agent"],
+        "allowed_owners": ["system", "agent"],
+        "allowed_sources": ["system"],
     },
     "focus_mode": {
         "handler": action_focus_mode,
         "description": "Enable or disable focus mode",
         "category": "state",
-        "allowed_sources": ["user"],
+        "allowed_owners": ["system"],
+        "allowed_sources": ["system"],
     },
     "update_state": {
         "handler": action_update_state,
         "description": "Update internal system state",
         "category": "state",
+        "allowed_owners": ["system"],
         "allowed_sources": ["system"],
     },
     "schedule": {
         "handler": action_schedule,
         "description": "Schedule an action or task",
         "category": "write",
-        "allowed_sources": ["user", "agent"],
+        "allowed_owners": ["system", "agent"],
+        "allowed_sources": ["system"],
     },
     "workflow": {
         "handler": action_workflow,
         "description": "Execute a predefined workflow",
         "category": "workflow",
-        "allowed_sources": ["agent", "system"],
+        "allowed_owners": ["system", "agent"],
+        "allowed_sources": ["system"],
     },
 }
 
 
 # ------------------------------------------
-# PUBLIC HELPERS (USED BY COO & EXECUTION)
+# PUBLIC HELPERS
 # ------------------------------------------
 
 def is_valid_command(command: str) -> bool:

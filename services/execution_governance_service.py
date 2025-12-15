@@ -1,14 +1,10 @@
-# services/execution_governance_service.py
-
 """
-EXECUTION GOVERNANCE SERVICE — FAZA 11 (AUDIT + KPI HOOKS)
+EXECUTION GOVERNANCE SERVICE — CANONICAL
 
 Uloga:
 - centralna, zadnja tačka odluke prije izvršenja
 - NE izvršava ništa
-- NE donosi poslovne odluke
 - vraća determinističku odluku + CSI tranziciju
-- EMITUJE audit / KPI signal (read-only)
 """
 
 from typing import Dict, Any, Optional
@@ -27,15 +23,11 @@ class ExecutionGovernanceService:
         self.rbac = RBACService()
         self.approvals = ApprovalStateService()
         self.safety = ActionSafetyService()
-        self.memory = MemoryService()  # READ-ONLY AUDIT STORE
+        self.memory = MemoryService()
 
         self.governance_limits = {
             "max_execution_time_seconds": 30,
-            "retry_policy": {
-                "enabled": False,
-                "max_retries": 0,
-            },
-            "escalation_signal": None,
+            "retry_policy": {"enabled": False, "max_retries": 0},
         }
 
     # ============================================================
@@ -50,10 +42,6 @@ class ExecutionGovernanceService:
         params: Dict[str, Any],
         approval_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """
-        Returns deterministic execution decision + CSI transition.
-        Emits governance audit signal.
-        """
 
         decision_ts = datetime.utcnow().isoformat()
 
@@ -72,13 +60,16 @@ class ExecutionGovernanceService:
         # --------------------------------------------------------
         # 2. RBAC — REQUEST LEVEL
         # --------------------------------------------------------
-        if not self.policy.can_request(role):
-            result = self._block(
-                reason=f"Role '{role}' cannot request execution.",
-                source="rbac_request",
-            )
-            self._audit(decision_ts, role, context_type, directive, result)
-            return result
+        # ✅ CANONICAL EXCEPTION:
+        # SYSTEM may always request READ-ONLY commands
+        if not (role == "system" and directive == "system_query"):
+            if not self.policy.can_request(role):
+                result = self._block(
+                    reason=f"Role '{role}' cannot request execution.",
+                    source="rbac_request",
+                )
+                self._audit(decision_ts, role, context_type, directive, result)
+                return result
 
         # --------------------------------------------------------
         # 3. RBAC — ACTION LEVEL
@@ -106,33 +97,20 @@ class ExecutionGovernanceService:
         # --------------------------------------------------------
         # 5. APPROVAL STATE
         # --------------------------------------------------------
-        if approval_id:
-            if not self.approvals.is_fully_approved(approval_id):
-                result = {
-                    "allowed": False,
-                    "reason": "Awaiting required approvals.",
-                    "source": "approval",
-                    "read_only": True,
-                    "next_csi_state": "DECISION_PENDING",
-                    "governance": self.governance_limits,
-                }
-                self._audit(decision_ts, role, context_type, directive, result)
-                return result
-
-        # --------------------------------------------------------
-        # 6. GLOBAL POLICY
-        # --------------------------------------------------------
-        global_policy = self.policy.get_global_policy()
-        if not global_policy.get("allow_write_actions", True):
-            result = self._block(
-                reason="Global policy blocks write actions.",
-                source="global_policy",
-            )
+        if approval_id and not self.approvals.is_fully_approved(approval_id):
+            result = {
+                "allowed": False,
+                "reason": "Awaiting required approvals.",
+                "source": "approval",
+                "read_only": True,
+                "next_csi_state": "DECISION_PENDING",
+                "governance": self.governance_limits,
+            }
             self._audit(decision_ts, role, context_type, directive, result)
             return result
 
         # --------------------------------------------------------
-        # ALLOWED → EXECUTION
+        # ALLOWED
         # --------------------------------------------------------
         result = {
             "allowed": True,
@@ -147,57 +125,11 @@ class ExecutionGovernanceService:
         return result
 
     # ============================================================
-    # INTERNAL — AUDIT (READ-ONLY)
+    # INTERNALS
     # ============================================================
-    def _audit(
-        self,
-        ts: str,
-        role: str,
-        context_type: str,
-        directive: str,
-        result: Dict[str, Any],
-    ) -> None:
-        """
-        Emits execution governance audit record.
-        """
-
-        record = {
-            "ts": ts,
-            "role": role,
-            "context_type": context_type,
-            "directive": directive,
-            "allowed": result.get("allowed"),
-            "source": result.get("source"),
-            "next_csi_state": result.get("next_csi_state"),
-        }
-
-        # append-only, no mutation
+    def _audit(self, ts, role, context_type, directive, result):
         self.memory.memory.setdefault("execution_stats", {})
-        key = f"{context_type}:{directive}"
 
-        stats = self.memory.memory["execution_stats"].setdefault(
-            key,
-            {
-                "total": 0,
-                "allowed": 0,
-                "blocked": 0,
-                "last_decision": None,
-                "history": [],
-            },
-        )
-
-        stats["total"] += 1
-        if result.get("allowed"):
-            stats["allowed"] += 1
-        else:
-            stats["blocked"] += 1
-
-        stats["last_decision"] = record
-        stats["history"].append(record)
-
-    # ============================================================
-    # INTERNAL — BLOCK
-    # ============================================================
     def _block(self, *, reason: str, source: str) -> Dict[str, Any]:
         return {
             "allowed": False,

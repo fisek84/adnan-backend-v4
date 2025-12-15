@@ -46,13 +46,13 @@ class AICommandService:
         definition = get_action_definition(command.command)
 
         # -------------------------------------------------
-        # SOURCE VALIDATION
+        # OWNER VALIDATION (CANONICAL)
         # -------------------------------------------------
 
-        allowed_sources = definition.get("allowed_sources", [])
-        if command.source not in allowed_sources:
+        allowed_owners = definition.get("allowed_owners", [])
+        if command.owner not in allowed_owners:
             raise PermissionError(
-                f"Source '{command.source}' is not allowed for command '{command.command}'"
+                f"Owner '{command.owner}' is not allowed for command '{command.command}'"
             )
 
         # -------------------------------------------------

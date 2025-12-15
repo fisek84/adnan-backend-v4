@@ -1,6 +1,4 @@
-﻿# routers/adnan_ai_router.py
-
-from fastapi import APIRouter, HTTPException
+﻿from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 import logging
 from typing import Optional, Dict, Any
@@ -11,19 +9,13 @@ from services.coo_conversation_service import (
     COOConversationResult,
 )
 from services.ai_command_service import AICommandService
-from services.intent_contract import IntentType
 from models.ai_command import AICommand
 
-
-# ============================================================
-# ROUTER SETUP
-# ============================================================
 
 router = APIRouter(prefix="/adnan-ai", tags=["AdnanAI"])
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-# Injected in bootstrap
 ai_command_service: Optional[AICommandService] = None
 coo_translation_service: Optional[COOTranslationService] = None
 coo_conversation_service: Optional[COOConversationService] = None
@@ -40,38 +32,13 @@ def set_adnan_ai_services(
     coo_conversation_service = coo_conversation
 
 
-# ============================================================
-# REQUEST MODEL
-# ============================================================
-
 class AdnanAIInput(BaseModel):
     text: str
     context: Optional[Dict[str, Any]] = None
 
 
-# ============================================================
-# CANONICAL UX ENTRYPOINT
-# ============================================================
-
 @router.post("/input")
 async def adnan_ai_input(payload: AdnanAIInput):
-    """
-    Canonical UX entrypoint.
-
-    FLOW:
-    UX text
-      → COO Conversation (UX language)
-        → message / question → return UX response
-        → ready_for_translation
-             → COO Translation (system language)
-             → AICommandService
-             → ExecutionOrchestrator
-
-    SPECIAL:
-      CONFIRM + pending approval
-        → REQUEST_EXECUTION
-    """
-
     if not ai_command_service or not coo_translation_service or not coo_conversation_service:
         raise HTTPException(500, "AI services not initialized")
 
@@ -82,40 +49,7 @@ async def adnan_ai_input(payload: AdnanAIInput):
     context = payload.context or {}
 
     # --------------------------------------------------------
-    # 0. CONFIRM → REQUEST_EXECUTION (APPROVAL FLOW)
-    # --------------------------------------------------------
-    if (
-        user_text.lower() in {"da", "može", "moze", "ok", "yes"}
-        and context.get("pending_approval")
-    ):
-        pending = context["pending_approval"]
-
-        ai_command = AICommand(
-            command=pending["command"],
-            intent=IntentType.REQUEST_EXECUTION.value,
-            source="system",
-            input={
-                "requested_by": "user",
-                "original_intent": pending.get("intent_type"),
-            },
-            params={},
-            metadata={
-                "executor": "autonomy",
-                "approval_granted": True,
-            },
-            validated=True,
-        )
-
-        result = await ai_command_service.execute(ai_command)
-
-        return {
-            "status": "success",
-            "command": ai_command.command,
-            "result": result,
-        }
-
-    # --------------------------------------------------------
-    # 1. COO CONVERSATION LAYER (JEZIK ZA LJUDE)
+    # 1. COO CONVERSATION (USER SOURCE)
     # --------------------------------------------------------
     conversation_result: COOConversationResult = coo_conversation_service.handle_user_input(
         raw_input=user_text,
@@ -123,7 +57,6 @@ async def adnan_ai_input(payload: AdnanAIInput):
         context=context,
     )
 
-    # Ako NIJE spremno za execution → VRATI UX ODGOVOR
     if conversation_result.type != "ready_for_translation":
         response = {
             "status": "ok",
@@ -132,7 +65,6 @@ async def adnan_ai_input(payload: AdnanAIInput):
             "next_actions": conversation_result.next_actions,
         }
 
-        # Ako je approval potreban, pošalji hint u context
         if conversation_result.readiness and conversation_result.readiness.get("requires_approval"):
             response["context"] = {
                 "pending_approval": {
@@ -144,11 +76,11 @@ async def adnan_ai_input(payload: AdnanAIInput):
         return response
 
     # --------------------------------------------------------
-    # 2. COO TRANSLATION (UX → SYSTEM)
+    # 2. COO TRANSLATION (SYSTEM SOURCE — CANONICAL)
     # --------------------------------------------------------
     ai_command: Optional[AICommand] = coo_translation_service.translate(
         raw_input=user_text,
-        source="user",
+        source="system",   # ✅ KLJUČNA KOREKCIJA
         context=context,
     )
 
@@ -159,7 +91,7 @@ async def adnan_ai_input(payload: AdnanAIInput):
         }
 
     # --------------------------------------------------------
-    # 3. EXECUTION (ASYNC)
+    # 3. EXECUTION
     # --------------------------------------------------------
     try:
         result = await ai_command_service.execute(ai_command)

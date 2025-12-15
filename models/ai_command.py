@@ -18,9 +18,12 @@ logger.setLevel(logging.INFO)
 
 class AICommand(BaseModel):
     """
-    Canonical AI Request Context.
-    This object travels through the entire pipeline:
-    API → UX → COO → Safety → Execution → Response
+    Canonical AI Command Context.
+
+    ROLE MODEL (NON-NEGOTIABLE):
+    - initiator: ko je IZAZVAO zahtjev (CEO / human)
+    - owner: ko POSJEDUJE komandu (system / agent / integration)
+    - executor: ko IZVRŠAVA komandu (agent / system worker)
     """
 
     # --------------------------------------------------------
@@ -37,14 +40,28 @@ class AICommand(BaseModel):
         description="High-level semantic intent extracted by COO (non-executable)"
     )
 
-    source: str = Field(
-        ...,
-        description="Command source (user, voice, agent, system)"
-    )
-
     validated: bool = Field(
         default=False,
         description="Set to True ONLY by COO Translator after full validation"
+    )
+
+    # --------------------------------------------------------
+    # ROLE SEPARATION (CRITICAL)
+    # --------------------------------------------------------
+
+    initiator: Optional[str] = Field(
+        None,
+        description="Who requested the action (ceo, human)"
+    )
+
+    owner: Optional[str] = Field(
+        None,
+        description="Who owns the command semantics (system, agent, integration)"
+    )
+
+    executor: Optional[str] = Field(
+        None,
+        description="Who executes the command (agent or system worker)"
     )
 
     # --------------------------------------------------------
@@ -67,12 +84,12 @@ class AICommand(BaseModel):
 
     agent: Optional[str] = Field(
         None,
-        description="Agent responsible for execution"
+        description="Agent responsible for execution (optional explicit routing)"
     )
 
     metadata: Dict[str, Any] = Field(
         default_factory=dict,
-        description="Routing, tracing, and technical metadata (NO request_id here)"
+        description="Routing, tracing, and technical metadata"
     )
 
     # --------------------------------------------------------
@@ -101,27 +118,38 @@ class AICommand(BaseModel):
 
     execution_state: Optional[str] = Field(
         None,
-        description="Execution lifecycle state (IDLE, WAITING_APPROVAL, EXECUTING, COMPLETED, FAILED)"
+        description="Execution lifecycle state"
     )
 
     awareness_flags: Dict[str, Any] = Field(
         default_factory=dict,
-        description="Awareness hints (waiting_for_confirmation, clarification_needed, etc.)"
+        description="Awareness hints"
     )
 
     # --------------------------------------------------------
-    # NORMALIZATION
+    # NORMALIZATION (CANONICAL ROLE FIX)
     # --------------------------------------------------------
 
     @root_validator(pre=True)
-    def normalize_request_id(cls, values):
-        """
-        If request_id is mistakenly passed via metadata,
-        normalize it into the canonical field.
-        """
+    def normalize_roles_and_request_id(cls, values):
         metadata = values.get("metadata") or {}
+
+        # request_id normalization
         if "request_id" in metadata and "request_id" not in values:
             values["request_id"] = metadata.pop("request_id")
+
+        # initiator defaults to CEO / human
+        if not values.get("initiator"):
+            values["initiator"] = "ceo"
+
+        # owner is ALWAYS system unless explicitly overridden
+        if not values.get("owner"):
+            values["owner"] = "system"
+
+        # executor resolved later by orchestrator
+        if not values.get("executor"):
+            values["executor"] = "agent"
+
         return values
 
     # --------------------------------------------------------
@@ -132,7 +160,6 @@ class AICommand(BaseModel):
         extra = "forbid"
         validate_assignment = True
 
-
     # ========================================================
     # LOGGING HELPERS
     # ========================================================
@@ -140,27 +167,6 @@ class AICommand(BaseModel):
     @classmethod
     def log_command(cls, command: "AICommand"):
         logger.info(
-            f"[AICommand] {command.command} | request_id={command.request_id} | source={command.source}"
+            f"[AICommand] {command.command} | request_id={command.request_id} "
+            f"| initiator={command.initiator} | owner={command.owner} | executor={command.executor}"
         )
-        logger.debug(f"[AICommand] intent={command.intent}")
-        logger.debug(f"[AICommand] validated={command.validated}")
-        logger.debug(f"[AICommand] input={command.input}")
-        logger.debug(f"[AICommand] agent={command.agent}")
-        logger.debug(f"[AICommand] params={command.params}")
-        logger.debug(f"[AICommand] metadata={command.metadata}")
-        logger.debug(f"[AICommand] execution_state={command.execution_state}")
-        logger.debug(f"[AICommand] awareness_flags={command.awareness_flags}")
-
-    @classmethod
-    def log_command_error(cls, command: "AICommand", error: str):
-        logger.error(
-            f"[AICommand ERROR] {command.command} | request_id={command.request_id}"
-        )
-        logger.error(f"[AICommand ERROR] details={error}")
-        logger.debug(f"[AICommand ERROR] intent={command.intent}")
-        logger.debug(f"[AICommand ERROR] source={command.source}")
-        logger.debug(f"[AICommand ERROR] validated={command.validated}")
-        logger.debug(f"[AICommand ERROR] input={command.input}")
-        logger.debug(f"[AICommand ERROR] agent={command.agent}")
-        logger.debug(f"[AICommand ERROR] params={command.params}")
-        logger.debug(f"[AICommand ERROR] metadata={command.metadata}")

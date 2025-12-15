@@ -1,16 +1,14 @@
 # services/rbac_service.py
 
 """
-RBAC SERVICE — FAZA 16 (CONSOLIDATION)
+RBAC SERVICE — CANONICAL
 
 Uloga:
 - jedini izvor istine za RBAC pravila
 - centralizuje dozvole po:
   - ulozi
-  - tipu akcije
+  - akciji
 - READ-ONLY
-- enforcement se radi u Gatewayu (FAZA 14)
-- execution slojevi mogu SAMO čitati
 """
 
 from typing import Dict, Any
@@ -19,17 +17,35 @@ from typing import Dict, Any
 class RBACService:
     def __init__(self):
         # --------------------------------------------------------
-        # ROLE DEFINITIONS
+        # ROLE DEFINITIONS (CANONICAL)
         # --------------------------------------------------------
         self.roles = {
+            # ----------------------------------
+            # SYSTEM (OS INTERNAL)
+            # ----------------------------------
+            "system": {
+                "can_request": True,
+                "can_execute": False,  # system NE izvršava direktno
+                "allowed_actions": {
+                    "system_query",   # ✅ READ-ONLY INTROSPECTION
+                },
+            },
+
+            # ----------------------------------
+            # USER / CEO
+            # ----------------------------------
             "user": {
                 "can_request": True,
                 "can_execute": False,
                 "allowed_actions": {
                     "query_database",
-                    "create_task",   # ⬅️ DODANO — KANONSKI
+                    "create_task",
                 },
             },
+
+            # ----------------------------------
+            # MANAGER
+            # ----------------------------------
             "manager": {
                 "can_request": True,
                 "can_execute": False,
@@ -39,6 +55,10 @@ class RBACService:
                     "update_database_entry",
                 },
             },
+
+            # ----------------------------------
+            # ADMIN
+            # ----------------------------------
             "admin": {
                 "can_request": True,
                 "can_execute": True,

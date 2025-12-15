@@ -1,5 +1,3 @@
-# services/intent_contract.py
-
 from enum import Enum
 from typing import Optional, Dict, Any, List
 

@@ -39,17 +39,9 @@ class COOConversationResult:
 class COOConversationService:
     """
     COO-style conversation layer.
-
-    Primarni cilj:
-    - ne da "chat odgovor"
-    - nego da dovede do jasne odluke:
-      * šta želiš postići
-      * koji scope
-      * ko izvršava
-      * treba li potvrda
     """
 
-    SYSTEM_LEVEL_INTENTS = {
+    READ_ONLY_SYSTEM_INTENTS = {
         IntentType.SYSTEM_QUERY,
     }
 
@@ -63,20 +55,15 @@ class COOConversationService:
         source: str,
         context: Dict[str, Any],
     ) -> COOConversationResult:
-        """
-        Entry point za JEZIK ZA LJUDE.
-
-        Pravilo:
-        - ako je intent izvršiv i dovoljno pouzdan
-          * ali system-level → TRAŽI POTVRDU
-          * inače → READY_FOR_TRANSLATION
-        """
 
         user_text = (raw_input or "").strip()
         if not user_text:
             return COOConversationResult(
                 type="question",
-                text="Nisam dobio poruku. Napiši šta želiš postići (npr. pregled sistema, audit Notiona, dodjela zadatka agentu).",
+                text=(
+                    "Nisam dobio poruku. Napiši šta želiš postići "
+                    "(npr. pregled sistema, audit Notiona, dodjela zadatka agentu)."
+                ),
                 next_actions=[
                     {"label": "Pregled sistema", "example": "Pregledaj stanje sistema"},
                     {"label": "Audit Notiona", "example": "Uradi audit Notiona"},
@@ -84,38 +71,30 @@ class COOConversationService:
                 ],
             )
 
-        # 1) Deterministička klasifikacija
-        intent: Intent = self.intent_classifier.classify(user_text, source=source)
+        # ✅ ISPRAVKA: source se PROSLJEĐUJE
+        intent: Intent = self.intent_classifier.classify(
+            user_text,
+            source=source,
+        )
 
-        # --------------------------------------------------
-        # 2) SYSTEM-LEVEL INTENT → TRAŽI ODOBRENJE
-        # --------------------------------------------------
+        # READ-ONLY SYSTEM INTENT
         if (
-            intent.type in self.SYSTEM_LEVEL_INTENTS
+            intent.type in self.READ_ONLY_SYSTEM_INTENTS
             and intent.confidence >= self.intent_classifier.DEFAULT_CONFIDENCE_THRESHOLD
             and intent.is_executable
+            and intent.allowed_commands
         ):
             return COOConversationResult(
-                type="question",
-                text=(
-                    "Ovo je sistemska operacija i ne može se izvršiti direktno.\n"
-                    "Za nastavak je potrebna autonomna potvrda.\n\n"
-                    "Želiš li da zatražim odobrenje za izvršenje?"
-                ),
-                next_actions=[
-                    {"label": "Da, zatraži odobrenje", "example": "da"},
-                    {"label": "Ne, odustani", "example": "ne"},
-                ],
+                type="ready_for_translation",
+                text="Izvršavam read-only sistemski upit.",
                 readiness={
                     "intent_type": intent.type.value,
-                    "requires_approval": True,
-                    "proposed_command": intent.allowed_commands[0] if intent.allowed_commands else None,
+                    "confidence": float(intent.confidence),
+                    "is_executable": True,
                 },
             )
 
-        # --------------------------------------------------
-        # 3) NORMALNI EXECUTABLE INTENT → READY
-        # --------------------------------------------------
+        # NORMAL EXECUTABLE INTENT
         if self._is_ready_for_translation(intent):
             return COOConversationResult(
                 type="ready_for_translation",
@@ -123,22 +102,19 @@ class COOConversationService:
                 readiness={
                     "intent_type": intent.type.value,
                     "confidence": float(intent.confidence),
-                    "is_executable": bool(intent.is_executable),
+                    "is_executable": True,
                 },
             )
 
-        # --------------------------------------------------
-        # 4) UX HANDLING / OBJAŠNJENJE
-        # --------------------------------------------------
         lowered = user_text.lower()
 
         if self._looks_like_identity_question(lowered):
             return COOConversationResult(
                 type="message",
                 text=(
-                    "Ja sam Adnan.AI u COO režimu: operativni interfejs između tebe (CEO) i sistemskog jezika.\n"
-                    "Ne izvršavam ništa dok nije jasno šta želiš i dok ne postoji valjana sistemska naredba.\n"
-                    "Ako je potrebna sistemska akcija, vodim proces odobrenja.\n\n"
+                    "Ja sam Adnan.AI u COO režimu: operativni interfejs između tebe (CEO) "
+                    "i sistemskog jezika.\n"
+                    "Ne izvršavam ništa dok ne postoji jasna i dozvoljena sistemska naredba.\n\n"
                     "Reci šta želiš postići."
                 ),
                 next_actions=[
@@ -148,9 +124,6 @@ class COOConversationService:
                 ],
             )
 
-        # --------------------------------------------------
-        # 5) GENERALNI FALLBACK
-        # --------------------------------------------------
         return COOConversationResult(
             type="question",
             text=(
@@ -166,10 +139,6 @@ class COOConversationService:
                 {"label": "Primjer (Agenti)", "example": "Dodijeli agentu notion_ops da uradi audit baze zadataka"},
             ],
         )
-
-    # =========================================================
-    # INTERNALS
-    # =========================================================
 
     def _is_ready_for_translation(self, intent: Intent) -> bool:
         if intent.confidence < self.intent_classifier.DEFAULT_CONFIDENCE_THRESHOLD:

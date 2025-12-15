@@ -7,11 +7,6 @@ Uloga:
 - JEDINA dozvoljena granica između UX jezika i sistemskog jezika
 - prevodi Intent + context → AICommand
 - vrši FINALNU validaciju prije executiona
-
-Ovdje se:
-- NE izvršava
-- NE priča sa agentima
-- NE piše memorija
 """
 
 from typing import Optional, Dict, Any
@@ -47,18 +42,16 @@ class COOTranslationService:
         """
 
         # -----------------------------------------------------
-        # 1. INTENT CLASSIFICATION (DETERMINISTIC)
+        # 1. INTENT CLASSIFICATION
         # -----------------------------------------------------
         intent: Intent = self.intent_classifier.classify(
             raw_input,
             source=source,
         )
 
-        # Low confidence → reject
         if intent.confidence < self.intent_classifier.DEFAULT_CONFIDENCE_THRESHOLD:
             return None
 
-        # Non-executable intents → handled by UX
         if not intent.is_executable:
             return None
 
@@ -74,27 +67,19 @@ class COOTranslationService:
 
         definition = get_action_definition(command_name)
 
-        # Source validation
         if source not in definition.get("allowed_sources", []):
             return None
 
-        # Executor is REQUIRED for execution
-        executor = context.get("executor")
-        if not executor:
-            return None
-
         # -----------------------------------------------------
-        # 3. BUILD AICommand (SYSTEM LANGUAGE)
+        # 3. BUILD AICommand (NO source FIELD)
         # -----------------------------------------------------
         ai_command = AICommand(
             command=command_name,
             intent=intent.type.value,
-            source=source,
             input=self._build_payload(intent, context),
             params={},
             metadata={
                 "context_type": context.get("context_type", "system"),
-                "executor": executor,
             },
             validated=True,
         )
@@ -102,23 +87,14 @@ class COOTranslationService:
         return ai_command
 
     # =========================================================
-    # INTERNAL HELPERS
+    # INTERNALS
     # =========================================================
     def _map_intent_to_command(self, intent: Intent) -> Optional[str]:
-        """
-        Deterministic mapping.
-        NO heuristics.
-        """
-
         allowed = intent.allowed_commands
         if not allowed:
             return None
-
-        # If only one allowed → choose it
         if len(allowed) == 1:
             return allowed[0]
-
-        # Multiple allowed commands not supported yet
         return None
 
     def _build_payload(
@@ -126,16 +102,11 @@ class COOTranslationService:
         intent: Intent,
         context: Dict[str, Any],
     ) -> Dict[str, Any]:
-        """
-        Build execution payload from intent + context.
-        """
 
-        payload: Dict[str, Any] = {}
+        payload: Dict[str, Any] = {
+            "raw_text": intent.payload.get("raw_text")
+        }
 
-        # Always keep raw text for traceability
-        payload["raw_text"] = intent.payload.get("raw_text")
-
-        # Pass-through contextual bindings
         if "current_goal_id" in context:
             payload["goal_id"] = context["current_goal_id"]
 

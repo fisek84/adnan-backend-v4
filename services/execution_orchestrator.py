@@ -15,6 +15,9 @@ from services.agent_load_balancer import AgentLoadBalancer
 from services.agent_isolation_service import AgentIsolationService
 from services.agent_lifecycle_service import AgentLifecycleService
 
+# ✅ AUTONOMY (FAKE / DEV)
+from services.autonomy.autonomy_decision_service import AutonomyDecisionService
+
 logger = logging.getLogger(__name__)
 
 
@@ -44,9 +47,8 @@ class ExecutionOrchestrator:
         self._governance = ExecutionGovernanceService()
         self._memory = MemoryService()
 
-        # -------------------------------
-        # AGENT OS (FAZA 7)
-        # -------------------------------
+        self._autonomy = AutonomyDecisionService()
+
         self._agents_identity = load_agents_identity()
         self._agent_health = AgentHealthRegistry()
         self._agent_lifecycle = AgentLifecycleService()
@@ -58,7 +60,6 @@ class ExecutionOrchestrator:
             agent_health_registry=self._agent_health,
         )
 
-        # Agenti su ALIVE na bootu ako su enabled
         for agent_id, agent in self._agents_identity.items():
             self._agent_health.register_agent(agent_id)
             if agent.get("enabled", False):
@@ -69,12 +70,19 @@ class ExecutionOrchestrator:
     # ============================================================
     async def execute(self, command: AICommand, *, dry_run: bool = False) -> Dict[str, Any]:
 
+        # --------------------------------------------------------
+        # META: AUTONOMY REQUEST EXECUTION
+        # --------------------------------------------------------
+        if command.command == "request_execution":
+            logger.info("🧠 Autonomy request_execution received")
+            approved_command = await self._autonomy.decide(command)
+            return await self.execute(approved_command, dry_run=dry_run)
+
+        # --------------------------------------------------------
+        # VALIDATION
+        # --------------------------------------------------------
         if not command.validated:
             raise RuntimeError("Execution attempted on non-validated AICommand.")
-
-        executor = command.metadata.get("executor")
-        if not executor:
-            raise RuntimeError("Missing executor in AICommand metadata.")
 
         execution_id = str(uuid4())
         started_at = datetime.utcnow().isoformat()
@@ -88,10 +96,10 @@ class ExecutionOrchestrator:
         }
 
         # --------------------------------------------------------
-        # GOVERNANCE
+        # GOVERNANCE (OWNER-BASED — CANONICAL)
         # --------------------------------------------------------
         governance = self._governance.evaluate(
-            role=command.source,
+            role=command.owner,  # SYSTEM
             context_type=command.metadata.get("context_type", "system"),
             directive=command.command,
             params=command.input or {},
@@ -105,9 +113,28 @@ class ExecutionOrchestrator:
                 started_at=started_at,
             )
 
+        # ========================================================
+        # SYSTEM-NATIVE EXECUTION (NO AGENT)
+        # ========================================================
+        if command.command == "system_query":
+            finished_at = datetime.utcnow()
+            return self._success(
+                execution_contract=execution_contract,
+                summary="System is operational",
+                started_at=started_at,
+                finished_at=finished_at,
+                details={
+                    "executor": "system",
+                    "execution_mode": "system_native",
+                    "read_only": True,
+                },
+                success=True,
+            )
+
         # --------------------------------------------------------
-        # AGENT SELECTION
+        # AGENT SELECTION (EXECUTOR-BASED)
         # --------------------------------------------------------
+        executor = command.executor
         agent_id = self._agent_assignment.assign_agent(executor)
 
         if not agent_id:
@@ -166,7 +193,7 @@ class ExecutionOrchestrator:
                     "agent": agent_id,
                     "executor": executor,
                     "command": command.command,
-                    "delegated": True,
+                    "execution_mode": "agent_delegated",
                 },
                 success=True,
             )
@@ -188,8 +215,16 @@ class ExecutionOrchestrator:
             "finished_at": finished_at.isoformat(),
         }
 
-    def _success(self, *, execution_contract, summary, started_at,
-                 finished_at, details, success=True):
+    def _success(
+        self,
+        *,
+        execution_contract,
+        summary,
+        started_at,
+        finished_at,
+        details,
+        success=True,
+    ):
         return {
             "execution_id": execution_contract["execution_id"],
             "success": success,
