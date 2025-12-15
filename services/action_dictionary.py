@@ -40,12 +40,31 @@ def action_schedule(payload: Dict[str, Any]):
 def action_workflow(payload: Dict[str, Any]):
     return {"status": "ok", "action": "workflow", "payload": payload}
 
+def action_system_query(payload: Dict[str, Any]):
+    """
+    Read-only system state query.
+    NO side effects.
+    """
+    return {
+        "status": "ok",
+        "action": "system_query",
+        "summary": "System is operational",
+        "payload": payload,
+    }
+
 
 # ------------------------------------------
 # ACTION DEFINITIONS (AUTHORITATIVE)
 # ------------------------------------------
 
 ACTION_DEFINITIONS: Dict[str, Dict[str, Any]] = {
+    "system_query": {
+        "handler": action_system_query,
+        "description": "Read-only system state query",
+        "category": "read",
+        "allowed_sources": ["user", "system"],
+    },
+
     "create_task": {
         "handler": action_create_task,
         "description": "Create a new task in the system",
