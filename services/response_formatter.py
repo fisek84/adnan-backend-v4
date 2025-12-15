@@ -4,7 +4,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 # ============================================================
-# RESPONSE CONTRACT (V1.1 LOCK)
+# RESPONSE CONTRACT (V2.0 — READ / WRITE SEPARATED)
 # ============================================================
 
 ALLOWED_STATUSES = {
@@ -15,6 +15,7 @@ ALLOWED_STATUSES = {
     "executing",
     "completed",
     "failed",
+    "blocked",
 }
 
 ALLOWED_AWARENESS_LEVELS = {
@@ -28,22 +29,21 @@ class ResponseFormatter:
     """
     ResponseFormatter — SINGLE RESPONSE AUTHORITY
 
-    FAZA 10.4 — API HARDENING
-
-    RULES:
-    - response contract NEVER breaks
-    - no raw exceptions to client
-    - frontend renders, never interprets
+    Kanonska uloga:
+    - formatira UX odgovor
+    - NE izvršava
+    - NE piše stanje
+    - STROGO razdvaja READ (FAZA 2) i WRITE (FAZA 3)
     """
 
-    CONTRACT_VERSION = "1.1"
+    CONTRACT_VERSION = "2.0"
 
     def format(
         self,
         intent: str,
         confidence: float,
         csi_state: Dict[str, Any],
-        decision: Optional[Dict[str, Any]] = None,
+        *,
         execution_result: Optional[Dict[str, Any]] = None,
         request_id: Optional[str] = None,
         awareness: Optional[Dict[str, Any]] = None,
@@ -73,46 +73,47 @@ class ResponseFormatter:
                 "read_only": True,
             }
 
-            # --------------------------------------------------
-            # CRITICAL AWARENESS OVERRIDE
-            # --------------------------------------------------
-            if awareness_level == "critical" and not execution_result:
-                response["status"] = "failed"
-                response["message"] = "Došlo je do interne greške u sistemu."
+            # ===================================================
+            # READ PATH — FAZA 2 (SYSTEM SNAPSHOT)
+            # ===================================================
+            if (
+                execution_result
+                and execution_result.get("execution_state") == "COMPLETED"
+                and "response" in execution_result
+            ):
+                response["status"] = "completed"
+                response["message"] = execution_result.get("summary", "Stanje sistema.")
+                response["snapshot"] = execution_result.get("response")
+                response["read_only"] = True
                 return self._finalize(response)
 
-            # --------------------------------------------------
-            # EXECUTION RESULT
-            # --------------------------------------------------
-            if execution_result and isinstance(execution_result, dict) and "success" in execution_result:
-                results = execution_result.get("results", [])
-                started_at = execution_result.get("started_at")
-                finished_at = execution_result.get("finished_at")
+            # ===================================================
+            # WRITE PATH — FAZA 3 (EXECUTION RESULT)
+            # ===================================================
+            if execution_result and "execution_state" in execution_result:
+                execution_state = execution_result.get("execution_state")
 
-                task_count = len(results)
-                task_success = len([r for r in results if r.get("status") == "DONE"])
-                task_failed = task_count - task_success
+                if execution_state == "BLOCKED":
+                    response["status"] = "blocked"
+                    response["message"] = execution_result.get("reason", "Izvršenje je blokirano.")
+                elif execution_state == "FAILED":
+                    response["status"] = "failed"
+                    response["message"] = execution_result.get("summary", "Izvršenje nije uspjelo.")
+                elif execution_state == "COMPLETED":
+                    response["status"] = "completed"
+                    response["message"] = execution_result.get("summary", "Izvršenje je završeno.")
 
-                response["execution_summary"] = {
-                    "execution_state": execution_result.get("execution_state"),
-                    "task_count": task_count,
-                    "task_success": task_success,
-                    "task_failed": task_failed,
-                    "summary": execution_result.get("summary"),
+                response["read_only"] = False
+                response["execution"] = {
+                    "execution_id": execution_result.get("execution_id"),
+                    "state": execution_state,
                 }
 
-                if execution_result.get("success") is True:
-                    response["status"] = "completed"
-                    response["message"] = "Izvršenje je uspješno završeno."
-                else:
-                    response["status"] = "failed"
-                    response["message"] = "Izvršenje nije uspješno završeno."
-
                 return self._finalize(response)
 
-            # --------------------------------------------------
-            # STATE-DRIVEN RESPONSES
-            # --------------------------------------------------
+            # ===================================================
+            # STATE-DRIVEN UX (NO EXECUTION)
+            # ===================================================
             if state == "DECISION_PENDING":
                 response["status"] = "waiting_confirmation"
                 response["message"] = "Čekam tvoju potvrdu."
@@ -133,15 +134,14 @@ class ResponseFormatter:
                 response["message"] = "Dostupni SOP-ovi."
                 return self._finalize(response)
 
-            # --------------------------------------------------
-            # DEFAULT
-            # --------------------------------------------------
+            # ===================================================
+            # DEFAULT (IDLE)
+            # ===================================================
             response["status"] = "idle"
             response["message"] = "Spreman sam."
             return self._finalize(response)
 
-        except Exception as e:
-            # HARD FAIL-SAFE RESPONSE
+        except Exception:
             logger.exception("Response formatting failed")
 
             return {
@@ -152,7 +152,7 @@ class ResponseFormatter:
             }
 
     # ============================================================
-    # FINAL CONTRACT GUARD (FAIL-SAFE)
+    # FINAL CONTRACT GUARD
     # ============================================================
     def _finalize(self, response: Dict[str, Any]) -> Dict[str, Any]:
         status = response.get("status")
@@ -162,5 +162,4 @@ class ResponseFormatter:
             response["status"] = "failed"
             response["message"] = "Nevažeći status odgovora."
 
-        response["read_only"] = True
         return response

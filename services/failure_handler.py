@@ -1,16 +1,13 @@
-# services/failure_handler.py
-
 """
-FAILURE HANDLER — FAZA 15 (READ-ONLY)
+FAILURE HANDLER — CANONICAL (FAZA 3.6)
 
 Uloga:
-- standardizuje failure modove sistema
-- klasificira greške (policy, safety, execution, agent, system)
-- definiše dozvoljene recovery opcije (DESCRIPTIVE, ne izvršne)
-- surfacuje jasan signal CEO / UI sloju
+- JEDINO mjesto za semantičku klasifikaciju failure-a
 - NEMA retry
-- NEMA automatskog oporavka
+- NEMA automatike
 - NEMA izvršenja
+- NEMA side-effecta
+- proizvodi deterministički FAILURE ENVELOPE
 """
 
 from typing import Dict, Any, Optional
@@ -18,19 +15,20 @@ from datetime import datetime
 
 
 class FailureHandler:
-    # ------------------------------------------------------------
-    # FAILURE CATEGORIES
-    # ------------------------------------------------------------
+    # =========================================================
+    # FAILURE CATEGORIES (CANONICAL)
+    # =========================================================
     CATEGORY_POLICY = "policy_block"
     CATEGORY_SAFETY = "safety_block"
+    CATEGORY_GOVERNANCE = "governance_block"
     CATEGORY_EXECUTION = "execution_failure"
     CATEGORY_AGENT = "agent_failure"
     CATEGORY_SYSTEM = "system_error"
     CATEGORY_UNKNOWN = "unknown"
 
-    # ------------------------------------------------------------
+    # =========================================================
     # RECOVERY OPTIONS (DESCRIPTIVE ONLY)
-    # ------------------------------------------------------------
+    # =========================================================
     RECOVERY_OPTIONS = {
         CATEGORY_POLICY: [
             "Promijeniti ulogu ili prava pristupa.",
@@ -39,8 +37,13 @@ class FailureHandler:
         ],
         CATEGORY_SAFETY: [
             "Izmijeniti parametre akcije.",
-            "Razbiti workflow u manje korake.",
+            "Razbiti operaciju u manje korake.",
             "Kontaktirati administratora.",
+        ],
+        CATEGORY_GOVERNANCE: [
+            "Pregledati approval status.",
+            "Zatražiti potrebno odobrenje.",
+            "Provjeriti policy ograničenja.",
         ],
         CATEGORY_EXECUTION: [
             "Ponovo pokrenuti akciju ručno.",
@@ -63,91 +66,94 @@ class FailureHandler:
         ],
     }
 
-    # ------------------------------------------------------------
+    # =========================================================
     # PUBLIC API
-    # ------------------------------------------------------------
-    def classify_failure(
+    # =========================================================
+    def classify(
         self,
         *,
-        source: Optional[str] = None,
-        error: Optional[str] = None,
+        source: Optional[str],
+        reason: Optional[str],
+        execution_id: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Ulaz:
-        - source: gdje je greška nastala (policy | safety | workflow | agent | system)
-        - error: tekstualni opis greške
+        - source: sloj u kojem je failure nastao
+        - reason: ljudski čitljiv razlog
+        - execution_id: korelacijski ID
         - metadata: dodatni kontekst
 
         Izlaz:
-        - standardizovan failure payload
+        - standardizovan FAILURE ENVELOPE
         """
 
-        category = self._resolve_category(source, error)
+        category = self._resolve_category(source, reason)
 
         return {
-            "failed": True,
-            "category": category,
-            "error": error or "Unknown error",
-            "source": source or "unknown",
-            "recovery_options": self.RECOVERY_OPTIONS.get(category, []),
+            "execution_id": execution_id,
+            "success": False,
+            "execution_state": "FAILED",
+            "failure": {
+                "category": category,
+                "reason": reason or "Unknown failure",
+                "source": source or "unknown",
+                "recovery_options": self.RECOVERY_OPTIONS.get(category, []),
+            },
             "timestamp": datetime.utcnow().isoformat(),
             "read_only": True,
             "metadata": metadata or {},
         }
 
-    # ------------------------------------------------------------
+    # =========================================================
     # INTERNALS
-    # ------------------------------------------------------------
+    # =========================================================
     def _resolve_category(
         self,
         source: Optional[str],
-        error: Optional[str],
+        reason: Optional[str],
     ) -> str:
 
-        if source in {"policy"}:
+        if source == "policy":
             return self.CATEGORY_POLICY
 
-        if source in {"safety"}:
+        if source == "safety":
             return self.CATEGORY_SAFETY
+
+        if source == "governance":
+            return self.CATEGORY_GOVERNANCE
 
         if source in {"execution", "workflow"}:
             return self.CATEGORY_EXECUTION
 
-        if source in {"agent"}:
+        if source == "agent":
             return self.CATEGORY_AGENT
 
-        if source in {"system"}:
+        if source == "system":
             return self.CATEGORY_SYSTEM
 
-        if error:
-            err = error.lower()
-            if "policy" in err:
+        if reason:
+            lowered = reason.lower()
+            if "approval" in lowered:
+                return self.CATEGORY_GOVERNANCE
+            if "policy" in lowered:
                 return self.CATEGORY_POLICY
-            if "safety" in err or "blocked" in err:
+            if "safety" in lowered or "blocked" in lowered:
                 return self.CATEGORY_SAFETY
-            if "agent" in err:
+            if "agent" in lowered:
                 return self.CATEGORY_AGENT
-            if "execute" in err or "execution" in err:
+            if "execute" in lowered or "execution" in lowered:
                 return self.CATEGORY_EXECUTION
 
         return self.CATEGORY_UNKNOWN
 
-    # ------------------------------------------------------------
-    # SNAPSHOT (UI FRIENDLY)
-    # ------------------------------------------------------------
-    def get_failure_overview(self) -> Dict[str, Any]:
-        """
-        Statički pregled failure kategorija i recovery opcija.
-        """
+    # =========================================================
+    # SNAPSHOT (UI SAFE)
+    # =========================================================
+    def overview(self) -> Dict[str, Any]:
         return {
             "categories": {
-                self.CATEGORY_POLICY: self.RECOVERY_OPTIONS[self.CATEGORY_POLICY],
-                self.CATEGORY_SAFETY: self.RECOVERY_OPTIONS[self.CATEGORY_SAFETY],
-                self.CATEGORY_EXECUTION: self.RECOVERY_OPTIONS[self.CATEGORY_EXECUTION],
-                self.CATEGORY_AGENT: self.RECOVERY_OPTIONS[self.CATEGORY_AGENT],
-                self.CATEGORY_SYSTEM: self.RECOVERY_OPTIONS[self.CATEGORY_SYSTEM],
-                self.CATEGORY_UNKNOWN: self.RECOVERY_OPTIONS[self.CATEGORY_UNKNOWN],
+                key: value for key, value in self.RECOVERY_OPTIONS.items()
             },
             "read_only": True,
         }

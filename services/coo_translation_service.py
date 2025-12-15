@@ -1,26 +1,28 @@
-# services/coo_translation_service.py
-
 """
 COO TRANSLATION SERVICE (CANONICAL)
 
 Uloga:
 - JEDINA dozvoljena granica između UX jezika i sistemskog jezika
 - prevodi Intent + context → AICommand
-- vrši FINALNU validaciju prije executiona
+- FINALNI hard-gate prije executiona
+- NIKAD ne izvršava
+- NIKAD ne preskače approval
+
+FAZA 2: READ-ONLY
+FAZA 3: WRITE dozvoljen ISKLJUČIVO uz approval_id
 """
 
 from typing import Optional, Dict, Any
 
 from models.ai_command import AICommand
 from services.intent_classifier import IntentClassifier
-from services.intent_contract import Intent
-from services.action_dictionary import (
-    is_valid_command,
-    get_action_definition,
-)
+from services.intent_contract import Intent, IntentType
+from services.action_dictionary import is_valid_command
 
 
 class COOTranslationService:
+
+    READ_ONLY_COMMAND = "system_query"
 
     def __init__(self):
         self.intent_classifier = IntentClassifier()
@@ -38,7 +40,7 @@ class COOTranslationService:
         """
         Returns:
         - AICommand (validated=True)
-        - None (REJECT)
+        - None (REJECT / HARD BLOCK)
         """
 
         # -----------------------------------------------------
@@ -56,47 +58,53 @@ class COOTranslationService:
             return None
 
         # -----------------------------------------------------
-        # 2. MAP INTENT → SYSTEM COMMAND
+        # 2. READ PATH (FAZA 2)
         # -----------------------------------------------------
-        command_name = self._map_intent_to_command(intent)
-        if not command_name:
+        if intent.type == IntentType.SYSTEM_QUERY:
+            command_name = self.READ_ONLY_COMMAND
+
+            if not is_valid_command(command_name):
+                return None
+
+            return AICommand(
+                command=command_name,
+                intent=intent.type.value,
+                input=self._build_payload(intent, context),
+                params={},
+                metadata={
+                    "context_type": context.get("context_type", "system"),
+                },
+                validated=True,
+            )
+
+        # -----------------------------------------------------
+        # 3. WRITE PATH (FAZA 3 — HARD GATE)
+        # -----------------------------------------------------
+        approval_id = context.get("approval_id")
+        if not approval_id:
+            # Bez approvala — Translation NE SMIJE raditi
             return None
+
+        command_name = intent.type.value
 
         if not is_valid_command(command_name):
             return None
 
-        definition = get_action_definition(command_name)
-
-        if source not in definition.get("allowed_sources", []):
-            return None
-
-        # -----------------------------------------------------
-        # 3. BUILD AICommand (NO source FIELD)
-        # -----------------------------------------------------
-        ai_command = AICommand(
+        return AICommand(
             command=command_name,
             intent=intent.type.value,
             input=self._build_payload(intent, context),
             params={},
             metadata={
                 "context_type": context.get("context_type", "system"),
+                "approval_id": approval_id,
             },
             validated=True,
         )
 
-        return ai_command
-
     # =========================================================
     # INTERNALS
     # =========================================================
-    def _map_intent_to_command(self, intent: Intent) -> Optional[str]:
-        allowed = intent.allowed_commands
-        if not allowed:
-            return None
-        if len(allowed) == 1:
-            return allowed[0]
-        return None
-
     def _build_payload(
         self,
         intent: Intent,

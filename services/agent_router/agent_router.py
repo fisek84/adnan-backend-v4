@@ -1,163 +1,113 @@
-from typing import Dict, Optional, List
+"""
+AGENT ROUTER — CANONICAL (FAZA 6 FINAL)
+
+Uloga:
+- JEDINO mjesto gdje se vrši agent DELEGATION + EXECUTION
+- izbor agenta:
+    capability  → AgentRegistryService
+    load        → AgentLoadBalancerService
+    health      → AgentHealthService
+- NEMA governance
+- NEMA approval
+- NEMA policy
+- NEMA UX semantike
+"""
+
+from typing import Dict, Any, Optional, List
 import os
 import asyncio
-import time
 import uuid
 
 from openai import OpenAI
 
+from services.agent_registry_service import AgentRegistryService
+from services.agent_load_balancer_service import AgentLoadBalancerService
+from services.agent_health_service import AgentHealthService
+
 
 class AgentRouter:
-    """
-    AgentRouter — KANONSKI AGENT OS ENTRYPOINT
-
-    FAZA 7:
-    #14 agent identity & capability model
-    #15 agent health monitoring
-    #16 dynamic agent assignment
-    #17 load balancing
-    #18 agent isolation
-    #19 agent deactivation / recovery (THIS FILE)
-
-    NAPOMENA:
-    - Router bira agenta
-    - Router NE izvršava posao
-    - Agent lifecycle je ovdje zaključen
-    """
-
-    def __init__(self):
+    def __init__(
+        self,
+        registry: Optional[AgentRegistryService] = None,
+        load_balancer: Optional[AgentLoadBalancerService] = None,
+        health_service: Optional[AgentHealthService] = None,
+    ):
         self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-        # =========================================================
-        # AGENT REGISTRY
-        # =========================================================
-        self.agent_registry: Dict[str, Dict] = {
-            "notion_ops": {
-                # ---- identity ----
-                "agent_id": "agent.notion_ops",
-                "type": "executor",
-                "status": "active",   # active | degraded | disabled
-                "version": "1.0.0",
+        # SOURCES OF TRUTH
+        self._registry = registry or AgentRegistryService()
+        self._load = load_balancer or AgentLoadBalancerService()
+        self._health = health_service or AgentHealthService()
 
-                # ---- capability model ----
-                "capabilities": {
-                    "create_database_entry",
-                    "update_database_entry",
-                    "query_database",
-                    "create_page",
-                    "retrieve_page_content",
-                    "delete_page",
-                },
+    # =====================================================
+    # AGENT SELECTION (CAPABILITY + HEALTH + LOAD)
+    # =====================================================
+    def _select_agent(self, command: str) -> Optional[Dict[str, Any]]:
+        candidates: List[Dict[str, Any]] = []
 
-                # ---- execution binding ----
-                "assistant_id": os.getenv("NOTION_OPS_ASSISTANT_ID"),
-                "response_format": "json_object",
-                "temperature": 0,
+        agents = self._registry.get_agents_with_capability(command)
 
-                # ---- runtime control ----
-                "max_concurrency": 1,
-                "current_load": 0,
-                "last_heartbeat": None,
+        for agent in agents:
+            name = agent["agent_name"]
 
-                # ---- lifecycle control ----
-                "failure_count": 0,
-                "failure_threshold": 3,
-                "cooldown_seconds": 60,
-                "disabled_until": None,
-            }
-        }
-
-    # =========================================================
-    # AGENT LOOKUP (WITH RECOVERY)
-    # =========================================================
-    def get_agent(self, agent_name: str) -> Optional[Dict]:
-        agent = self.agent_registry.get(agent_name)
-        if not agent:
-            return None
-
-        # auto-recovery
-        if agent["status"] == "disabled":
-            until = agent.get("disabled_until")
-            if until and time.time() >= until:
-                agent["status"] = "active"
-                agent["failure_count"] = 0
-                agent["disabled_until"] = None
-
-        if agent.get("status") != "active":
-            return None
-
-        return agent
-
-    # =========================================================
-    # DYNAMIC SELECTION
-    # =========================================================
-    def select_agent(self, capability: str) -> Optional[str]:
-        candidates: List[tuple[str, Dict]] = []
-
-        for name, agent in self.agent_registry.items():
-            if agent["status"] != "active":
+            if not self._health.is_healthy(name):
                 continue
-            if capability not in agent.get("capabilities", set()):
+
+            if not self._load.can_accept(name):
                 continue
-            if agent["current_load"] >= agent["max_concurrency"]:
-                continue
-            candidates.append((name, agent))
+
+            candidates.append(agent)
 
         if not candidates:
             return None
 
-        candidates.sort(key=lambda x: x[1]["current_load"])
-        return candidates[0][0]
+        # deterministički: prvi po registry redoslijedu
+        return candidates[0]
 
-    # =========================================================
-    # ROUTING
-    # =========================================================
-    def route(self, command: dict) -> Dict[str, Optional[str]]:
-        cmd_name = command.get("command")
-        if not cmd_name:
-            return {"agent": None, "assistant_id": None}
+    # =====================================================
+    # ROUTE (NO EXECUTION)
+    # =====================================================
+    def route(self, command: Dict[str, str]) -> Dict[str, Optional[str]]:
+        cmd = command.get("command")
+        if not cmd:
+            return {"agent": None}
 
-        agent_name = self.select_agent(cmd_name)
-        if not agent_name:
-            return {"agent": None, "assistant_id": None}
-
-        agent = self.agent_registry[agent_name]
-        return {
-            "agent": agent_name,
-            "assistant_id": agent["assistant_id"],
-        }
-
-    # =========================================================
-    # EXECUTION (ISOLATED + LIFECYCLE CONTROLLED)
-    # =========================================================
-    async def execute(self, command: dict) -> dict:
-        route = self.route(command)
-
-        if not route.get("assistant_id"):
-            return {
-                "success": False,
-                "reason": "no_available_agent",
-                "command": command,
-            }
-
-        agent_name = route["agent"]
-        agent = self.get_agent(agent_name)
-
+        agent = self._select_agent(cmd)
         if not agent:
+            return {"agent": None}
+
+        return {"agent": agent["agent_name"]}
+
+    # =====================================================
+    # EXECUTE (AGENT ONLY)
+    # =====================================================
+    async def execute(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        payload MUST contain:
+        - command
+        - payload (business data)
+        """
+
+        command = payload.get("command")
+        if not command:
+            return {"success": False, "reason": "missing_command"}
+
+        agent = self._select_agent(command)
+        if not agent:
+            return {"success": False, "reason": "no_available_healthy_agent"}
+
+        agent_name = agent["agent_name"]
+        assistant_id = agent.get("metadata", {}).get("assistant_id")
+
+        if not assistant_id:
             return {
                 "success": False,
-                "reason": "agent_not_available",
+                "reason": "agent_missing_assistant_binding",
                 "agent": agent_name,
             }
 
         execution_id = f"exec_{uuid.uuid4().hex}"
-        isolated_command = {
-            "execution_id": execution_id,
-            "agent_id": agent["agent_id"],
-            "payload": command,
-        }
-
-        agent["current_load"] += 1
+        self._load.reserve(agent_name)
 
         try:
             thread = self.client.beta.threads.create()
@@ -165,29 +115,29 @@ class AgentRouter:
             self.client.beta.threads.messages.create(
                 thread_id=thread.id,
                 role="user",
-                content=isolated_command,
+                content={
+                    "execution_id": execution_id,
+                    "command": command,
+                    "payload": payload.get("payload", {}),
+                },
             )
 
             run = self.client.beta.threads.runs.create(
                 thread_id=thread.id,
-                assistant_id=agent["assistant_id"],
-                temperature=agent["temperature"],
-                response_format={"type": agent["response_format"]},
+                assistant_id=assistant_id,
+                temperature=0,
+                response_format={"type": "json_object"},
             )
 
-            while True:
+            while run.status not in {"completed", "failed", "cancelled"}:
+                await asyncio.sleep(0.3)
                 run = self.client.beta.threads.runs.retrieve(
                     thread_id=thread.id,
                     run_id=run.id,
                 )
 
-                if run.status in {"completed", "failed", "cancelled"}:
-                    break
-
-                await asyncio.sleep(0.3)
-
             if run.status != "completed":
-                raise RuntimeError(f"run_status={run.status}")
+                raise RuntimeError(f"agent_run_status={run.status}")
 
             messages = self.client.beta.threads.messages.list(
                 thread_id=thread.id,
@@ -196,35 +146,31 @@ class AgentRouter:
 
             content = messages.data[0].content[0]
             if content["type"] != "output_json":
-                raise RuntimeError("invalid_response_format")
+                raise RuntimeError("invalid_agent_response")
 
-            # SUCCESS → reset failure counter
-            agent["failure_count"] = 0
+            # SUCCESS SIGNALS
+            self._load.record_success(agent_name)
+            self._health.mark_heartbeat(agent_name)
 
             return {
                 "success": True,
+                "execution_id": execution_id,
                 "agent": agent_name,
                 "agent_id": agent["agent_id"],
-                "execution_id": execution_id,
-                "agent_response": content["json"],
+                "result": content["json"],
             }
 
         except Exception as e:
-            # FAILURE ACCOUNTING
-            agent["failure_count"] += 1
-
-            if agent["failure_count"] >= agent["failure_threshold"]:
-                agent["status"] = "disabled"
-                agent["disabled_until"] = time.time() + agent["cooldown_seconds"]
+            self._load.record_failure(agent_name)
+            self._health.mark_unhealthy(agent_name, reason=str(e))
 
             return {
                 "success": False,
-                "reason": "agent_execution_failed",
-                "agent": agent_name,
                 "execution_id": execution_id,
+                "agent": agent_name,
+                "reason": "agent_execution_failed",
                 "error": str(e),
-                "status": agent["status"],
             }
 
         finally:
-            agent["current_load"] = max(agent["current_load"] - 1, 0)
+            self._load.release(agent_name)

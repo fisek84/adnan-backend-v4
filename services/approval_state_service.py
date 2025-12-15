@@ -1,176 +1,101 @@
 """
-APPROVAL STATE SERVICE — FAZA 8 (ESCALATION READY)
+APPROVAL STATE SERVICE — CANONICAL (FAZA 3.4)
 
 Uloga:
-- modelira stanje višeslojnih odobrenja
-- eksplicitna eskalacija ka čovjeku
-- deterministički approval lifecycle
+- SINGLE SOURCE OF TRUTH za approval
+- approval je vezan za TAČNO JEDAN AICommand
+- approval lifecycle je deterministički
 - NEMA izvršenja
 - NEMA automatike
+- NEMA eskalacione logike u FAZI 3
 """
 
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any
 from datetime import datetime
+from uuid import uuid4
 
 
 class ApprovalStateService:
+    """
+    Minimalni, kanonski approval servis.
+    FAZA 3 podržava ISKLJUČIVO:
+    pending -> approved | rejected
+    """
+
     def __init__(self):
-        # In-memory state (kanonski)
         self._approvals: Dict[str, Dict[str, Any]] = {}
 
     # ============================================================
-    # CREATE / REGISTER
+    # CREATE
     # ============================================================
-    def register_approval(
+    def create(
         self,
         *,
-        approval_id: str,
-        required_levels: List[str],
-        initiated_by: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        escalation_reason: Optional[str] = None,
+        command: str,
+        payload_summary: Dict[str, Any],
+        scope: str,
+        risk_level: str,
     ) -> Dict[str, Any]:
 
-        if approval_id not in self._approvals:
-            self._approvals[approval_id] = {
-                "approval_id": approval_id,
-                "required_levels": list(required_levels),
-                "approved_levels": [],
-                "approval_log": [],
-                "initiated_by": initiated_by,
-                "escalation_reason": escalation_reason,
-                "created_at": datetime.utcnow().isoformat(),
-                "metadata": metadata or {},
-            }
+        approval_id = str(uuid4())
 
-        return self.get_state(approval_id)
+        approval = {
+            "approval_id": approval_id,
+            "command": command,
+            "payload_summary": payload_summary,
+            "scope": scope,
+            "risk_level": risk_level,
+            "requested_by": "system",
+            "status": "pending",
+            "created_at": datetime.utcnow().isoformat(),
+        }
 
-    # ============================================================
-    # ESCALATE TO HUMAN (EXPLICIT)
-    # ============================================================
-    def escalate(
-        self,
-        *,
-        approval_id: str,
-        escalated_by: str,
-        reason: str,
-    ) -> Optional[Dict[str, Any]]:
-
-        state = self._approvals.get(approval_id)
-        if not state:
-            return None
-
-        state["approval_log"].append({
-            "level": "ESCALATION",
-            "approved_by": escalated_by,
-            "note": reason,
-            "ts": datetime.utcnow().isoformat(),
-        })
-
-        state["metadata"]["escalated"] = True
-        state["metadata"]["escalated_at"] = datetime.utcnow().isoformat()
-        state["metadata"]["escalation_reason"] = reason
-
-        return self.get_state(approval_id)
+        self._approvals[approval_id] = approval
+        return approval.copy()
 
     # ============================================================
-    # APPROVE (ONE LEVEL AT A TIME)
+    # DECISIONS
     # ============================================================
-    def approve_next_level(
-        self,
-        *,
-        approval_id: str,
-        approved_by: str,
-        note: Optional[str] = None,
-    ) -> Optional[Dict[str, Any]]:
+    def approve(self, approval_id: str) -> Dict[str, Any]:
+        approval = self._require(approval_id)
 
-        state = self._approvals.get(approval_id)
-        if not state:
-            return None
+        approved = {
+            **approval,
+            "status": "approved",
+            "decided_at": datetime.utcnow().isoformat(),
+        }
 
-        approved = state.get("approved_levels", [])
-        required = state.get("required_levels", [])
+        self._approvals[approval_id] = approved
+        return approved.copy()
 
-        if len(approved) >= len(required):
-            return self.get_state(approval_id)
+    def reject(self, approval_id: str) -> Dict[str, Any]:
+        approval = self._require(approval_id)
 
-        next_level = required[len(approved)]
+        rejected = {
+            **approval,
+            "status": "rejected",
+            "decided_at": datetime.utcnow().isoformat(),
+        }
 
-        approved.append(next_level)
-        state["approved_levels"] = approved
-
-        state["approval_log"].append({
-            "level": next_level,
-            "approved_by": approved_by,
-            "note": note,
-            "ts": datetime.utcnow().isoformat(),
-        })
-
-        return self.get_state(approval_id)
+        self._approvals[approval_id] = rejected
+        return rejected.copy()
 
     # ============================================================
-    # READ STATE
+    # READ
     # ============================================================
-    def get_state(self, approval_id: str) -> Optional[Dict[str, Any]]:
-        state = self._approvals.get(approval_id)
-        if not state:
-            return None
-
-        return self._build_view(state)
-
-    # ============================================================
-    # READ HELPERS
-    # ============================================================
-    def get_next_required_level(self, approval_id: str) -> Optional[str]:
-        state = self._approvals.get(approval_id)
-        if not state:
-            return None
-
-        approved = state.get("approved_levels", [])
-        required = state.get("required_levels", [])
-
-        if len(approved) >= len(required):
-            return None
-
-        return required[len(approved)]
+    def get(self, approval_id: str) -> Dict[str, Any]:
+        return self._require(approval_id).copy()
 
     def is_fully_approved(self, approval_id: str) -> bool:
-        state = self._approvals.get(approval_id)
-        if not state:
+        approval = self._approvals.get(approval_id)
+        if not approval:
             return False
-
-        return state.get("approved_levels") == state.get("required_levels")
-
-    # ============================================================
-    # SNAPSHOT (UI / CEO SAFE)
-    # ============================================================
-    def get_overview(self) -> Dict[str, Any]:
-        return {
-            "active_approvals": [
-                self._build_view(s) for s in self._approvals.values()
-            ],
-            "read_only": True,
-        }
+        return approval.get("status") == "approved"
 
     # ============================================================
-    # INTERNAL VIEW BUILDER
+    # INTERNAL
     # ============================================================
-    def _build_view(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        approved = state.get("approved_levels", [])
-        required = state.get("required_levels", [])
-
-        return {
-            "approval_id": state.get("approval_id"),
-            "approved_levels": approved,
-            "required_levels": required,
-            "next_required_level": (
-                required[len(approved)] if len(approved) < len(required) else None
-            ),
-            "fully_approved": approved == required,
-            "approval_log": list(state.get("approval_log", [])),
-            "initiated_by": state.get("initiated_by"),
-            "escalation_reason": state.get("escalation_reason"),
-            "created_at": state.get("created_at"),
-            "metadata": state.get("metadata", {}),
-            "read_only": True,
-        }
+    def _require(self, approval_id: str) -> Dict[str, Any]:
+        if approval_id not in self._approvals:
+            raise KeyError("Approval not found")
+        return self._approvals[approval_id]

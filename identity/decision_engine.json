@@ -6,9 +6,7 @@
       "Validation",
       "Normalization",
       "Alignment Check",
-      "Command Mapping",
-      "Payload Build",
-      "Final Output"
+      "Semantic Intent Output"
     ],
 
     "parsing_rules": [
@@ -100,24 +98,14 @@
       },
       "urgency_rules": {
         "To Do": 0.5,
-        "In Progress": 0.8,
-        "Urgent": 1.0
+        "In Progress": 0.8
       }
     },
 
-    "command_mapping": {
-      "default": "create_database_entry"
-    },
-
-    "payload_structure": {
-      "create_database_entry": {
-        "database_id": "auto",
-        "entry": {
-          "Name": "$Name",
-          "Status": "$Status",
-          "Priority": "$Priority"
-        }
-      }
+    "semantic_output": {
+      "intent": "TASK_DEFINITION",
+      "confidence_source": "alignment_score",
+      "fields": ["Name", "Status", "Priority"]
     }
   }
 }

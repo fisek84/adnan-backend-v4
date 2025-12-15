@@ -4,168 +4,137 @@ import logging
 import uuid
 
 
-# ============================================================
-# LOGGER SETUP
-# ============================================================
-
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 
-# ============================================================
-# AI COMMAND / REQUEST CONTEXT (CANONICAL)
-# ============================================================
-
 class AICommand(BaseModel):
     """
-    Canonical AI Command Context.
+    Canonical AI Command.
 
     ROLE MODEL (NON-NEGOTIABLE):
     - initiator: ko je IZAZVAO zahtjev (CEO / human)
-    - owner: ko POSJEDUJE komandu (system / agent / integration)
-    - executor: ko IZVRŠAVA komandu (agent / system worker)
+    - owner: ko POSJEDUJE semantiku (SYSTEM)
+    - executor: ko IZVRŠAVA (system_worker | agent)
     """
 
-    # --------------------------------------------------------
-    # CORE COMMAND (SYSTEM LANGUAGE)
-    # --------------------------------------------------------
-
+    # ========================================================
+    # CORE COMMAND
+    # ========================================================
     command: str = Field(
         ...,
-        description="Canonical system command name (must exist in action_dictionary)"
+        description="Canonical system command name"
     )
 
     intent: Optional[str] = Field(
         None,
-        description="High-level semantic intent extracted by COO (non-executable)"
+        description="High-level semantic intent (UX only, non-executable)"
     )
 
     validated: bool = Field(
         default=False,
-        description="Set to True ONLY by COO Translator after full validation"
+        description="Set ONLY by COO Translation after hard validation"
     )
 
-    # --------------------------------------------------------
+    # ========================================================
     # ROLE SEPARATION (CRITICAL)
-    # --------------------------------------------------------
-
-    initiator: Optional[str] = Field(
-        None,
-        description="Who requested the action (ceo, human)"
+    # ========================================================
+    initiator: str = Field(
+        default="ceo",
+        description="Who initiated the request (human)"
     )
 
-    owner: Optional[str] = Field(
-        None,
-        description="Who owns the command semantics (system, agent, integration)"
+    owner: str = Field(
+        default="system",
+        description="Who owns the command semantics (SYSTEM)"
     )
 
     executor: Optional[str] = Field(
         None,
-        description="Who executes the command (agent or system worker)"
+        description="Who executes the command (resolved later)"
     )
 
-    # --------------------------------------------------------
-    # BUSINESS PAYLOAD
-    # --------------------------------------------------------
-
+    # ========================================================
+    # PAYLOAD
+    # ========================================================
     input: Optional[Any] = Field(
         None,
-        description="Business payload for the command (domain-specific data)"
+        description="Business payload"
     )
 
     params: Dict[str, Any] = Field(
         default_factory=dict,
-        description="Command modifiers and options (non-business logic)"
+        description="Execution modifiers"
     )
 
-    # --------------------------------------------------------
-    # EXECUTION / ROUTING METADATA
-    # --------------------------------------------------------
-
-    agent: Optional[str] = Field(
-        None,
-        description="Agent responsible for execution (optional explicit routing)"
-    )
-
+    # ========================================================
+    # EXECUTION METADATA
+    # ========================================================
     metadata: Dict[str, Any] = Field(
         default_factory=dict,
-        description="Routing, tracing, and technical metadata"
+        description="Routing / tracing metadata"
     )
 
-    # --------------------------------------------------------
-    # REQUEST CONTEXT (FOUNDATION)
-    # --------------------------------------------------------
+    approval_id: Optional[str] = Field(
+        default=None,
+        description="Approval ID required for WRITE commands"
+    )
 
+    # ========================================================
+    # REQUEST CONTEXT
+    # ========================================================
     request_id: str = Field(
         default_factory=lambda: str(uuid.uuid4()),
-        description="Unique request identifier (traceable across entire system)"
+        description="Global request identifier"
     )
 
-    identity_snapshot: Optional[Dict[str, Any]] = Field(
-        None,
-        description="Loaded identity snapshot at request time"
-    )
+    identity_snapshot: Optional[Dict[str, Any]] = None
+    state_snapshot: Optional[Dict[str, Any]] = None
+    mode_snapshot: Optional[Dict[str, Any]] = None
 
-    state_snapshot: Optional[Dict[str, Any]] = Field(
-        None,
-        description="Loaded system state snapshot at request time"
-    )
-
-    mode_snapshot: Optional[Dict[str, Any]] = Field(
-        None,
-        description="Active operating mode snapshot"
-    )
-
-    execution_state: Optional[str] = Field(
-        None,
-        description="Execution lifecycle state"
-    )
+    execution_state: Optional[str] = None
 
     awareness_flags: Dict[str, Any] = Field(
         default_factory=dict,
         description="Awareness hints"
     )
 
-    # --------------------------------------------------------
-    # NORMALIZATION (CANONICAL ROLE FIX)
-    # --------------------------------------------------------
-
+    # ========================================================
+    # NORMALIZATION
+    # ========================================================
     @root_validator(pre=True)
-    def normalize_roles_and_request_id(cls, values):
+    def normalize(cls, values):
         metadata = values.get("metadata") or {}
 
-        # request_id normalization
+        # request_id propagation
         if "request_id" in metadata and "request_id" not in values:
-            values["request_id"] = metadata.pop("request_id")
+            values["request_id"] = metadata["request_id"]
 
-        # initiator defaults to CEO / human
-        if not values.get("initiator"):
-            values["initiator"] = "ceo"
+        # owner is ALWAYS system
+        values["owner"] = "system"
 
-        # owner is ALWAYS system unless explicitly overridden
-        if not values.get("owner"):
-            values["owner"] = "system"
+        # executor is resolved later (do not default to agent)
+        if "executor" not in values:
+            values["executor"] = None
 
-        # executor resolved later by orchestrator
-        if not values.get("executor"):
-            values["executor"] = "agent"
+        # approval_id may come via metadata
+        if not values.get("approval_id"):
+            values["approval_id"] = metadata.get("approval_id")
 
         return values
 
-    # --------------------------------------------------------
-    # Pydantic config
-    # --------------------------------------------------------
-
+    # ========================================================
+    # CONFIG
+    # ========================================================
     class Config:
         extra = "forbid"
         validate_assignment = True
 
     # ========================================================
-    # LOGGING HELPERS
+    # LOGGING
     # ========================================================
-
     @classmethod
-    def log_command(cls, command: "AICommand"):
+    def log(cls, command: "AICommand"):
         logger.info(
             f"[AICommand] {command.command} | request_id={command.request_id} "
             f"| initiator={command.initiator} | owner={command.owner} | executor={command.executor}"

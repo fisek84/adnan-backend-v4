@@ -49,12 +49,26 @@ def action_system_query(payload: Dict[str, Any]):
     """
     Read-only system state query.
     NO side effects.
+    MUST return deterministic system snapshot.
     """
     return {
-        "status": "ok",
+        "status": "COMPLETED",
         "action": "system_query",
-        "summary": "System is operational",
-        "payload": payload,
+        "response": {
+            "type": "SYSTEM_READ_SNAPSHOT",
+            "summary": "System is operational",
+            "snapshot": {
+                "mode": "read-only",
+                "capabilities": {
+                    "read": True,
+                    "write": False,
+                    "agents_enabled": False,
+                    "approval_required": True,
+                },
+                "requested_view": payload.get("view"),
+                "timestamp": payload.get("timestamp"),
+            },
+        },
     }
 
 
@@ -95,7 +109,7 @@ ACTION_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "description": "Read-only system state query",
         "category": "read",
         "allowed_owners": ["system"],
-        "allowed_sources": ["system"],   # ✅ KLJUČNO
+        "allowed_sources": ["system"],
     },
 
     # -------------------------

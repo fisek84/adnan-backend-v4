@@ -2,10 +2,10 @@
   "default_mode": "operational",
   "modes": {
     "operational": {
-      "description": "Standard AI operating mode"
+      "description": "Standard system operating mode"
     },
-    "ceo": {
-      "description": "CEO command mode"
+    "restricted": {
+      "description": "Restricted execution mode with limited write and agent capabilities"
     }
   }
 }

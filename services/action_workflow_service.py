@@ -1,13 +1,13 @@
-# services/action_workflow_service.py
-
 """
-Workflow Execution Engine — FAZA 4 (KANONSKI)
+ACTION WORKFLOW SERVICE — CANONICAL (FAZA 4)
 
-Uloge:
-- Prepoznaje klasični workflow
-- Prepoznaje SOP execution plan
-- Delegira SOP na SOPExecutionManager
-- Ne donosi odluke
+Uloga:
+- izvršava DEFINISANI workflow plan
+- NE donosi odluke
+- NE radi governance
+- NE bira agente
+- NE shape-a UX response
+- koristi postojeće execution servise
 """
 
 from typing import Dict, Any, List
@@ -17,125 +17,114 @@ from services.sop_execution_manager import SOPExecutionManager
 
 
 class ActionWorkflowService:
+    """
+    Workflow execution adapter.
+    """
+
     def __init__(self):
-        self.executor = ActionExecutionService()
-        self.sop_executor = SOPExecutionManager()
+        self._action_executor = ActionExecutionService()
+        self._sop_executor = SOPExecutionManager()
 
     # ============================================================
     # PUBLIC ENTRYPOINT
     # ============================================================
     async def execute_workflow(self, workflow: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Podržani formati:
+        Podržani workflow formati:
 
-        1) Legacy workflow:
+        1) SOP execution plan (KANONSKI):
+        {
+            "type": "sop_execution",
+            "execution_plan": [...]
+        }
+
+        2) Legacy workflow (DEPRECATED, READ-COMPAT):
         {
             "type": "workflow",
             "steps": [
                 {"directive": "...", "params": {...}}
             ]
         }
-
-        2) SOP execution plan:
-        {
-            "type": "sop_execution",
-            "execution_plan": [
-                {
-                    "step": 1,
-                    "agent": "notion_ops",
-                    "command": "...",
-                    "payload": {...}
-                }
-            ]
-        }
         """
 
         if not workflow or "type" not in workflow:
-            return {
-                "success": False,
-                "confirmed": False,
-                "error": "invalid_workflow_structure",
-            }
+            return self._fail("invalid_workflow_structure")
 
         workflow_type = workflow.get("type")
 
         # --------------------------------------------------------
-        # SOP WORKFLOW (FAZA 4)
+        # SOP EXECUTION (PRIMARY PATH)
         # --------------------------------------------------------
         if workflow_type == "sop_execution":
             execution_plan = workflow.get("execution_plan")
-
             if not execution_plan:
-                return {
-                    "success": False,
-                    "confirmed": False,
-                    "error": "missing_execution_plan",
-                }
+                return self._fail("missing_execution_plan")
 
-            result = await self.sop_executor.execute_plan(execution_plan)
+            result = await self._sop_executor.execute_plan(execution_plan)
 
-            # SOP executor već zna outcome → samo propagacija
             return {
-                **result,
+                "success": bool(result.get("success")),
+                "workflow_type": "sop_execution",
                 "confirmed": bool(result.get("success")),
+                "result": result,
             }
 
         # --------------------------------------------------------
-        # LEGACY WORKFLOW (ZADRŽANO)
+        # LEGACY WORKFLOW (STEP-BY-STEP)
         # --------------------------------------------------------
         if workflow_type == "workflow":
             steps = workflow.get("steps", [])
-            results: List[Dict[str, Any]] = []
-            confirmed = False
+            step_results: List[Dict[str, Any]] = []
 
             for index, step in enumerate(steps):
                 directive = step.get("directive")
                 params = step.get("params", {})
 
                 if not directive:
-                    results.append({
-                        "step": index,
-                        "executed": False,
-                        "confirmed": False,
-                        "error": "missing_directive",
-                    })
-                    continue
+                    step_results.append(
+                        self._step_fail(index, "missing_directive")
+                    )
+                    break
 
-                try:
-                    result = self.executor.execute(directive, params)
-                except Exception as e:
-                    results.append({
-                        "step": index,
-                        "executed": False,
-                        "confirmed": False,
-                        "error": "execution_error",
-                        "message": str(e),
-                    })
-                    continue
+                result = self._action_executor.execute(directive, params)
 
-                step_confirmed = bool(result.get("confirmed"))
-                confirmed = confirmed or step_confirmed
-
-                results.append({
+                step_results.append({
                     "step": index,
-                    "executed": result.get("executed", False),
-                    "confirmed": step_confirmed,
                     "directive": directive,
+                    "executed": bool(result.get("executed")),
+                    "confirmed": bool(result.get("confirmed")),
                     "result": result,
                 })
 
+                if not result.get("confirmed"):
+                    break
+
             return {
                 "success": True,
-                "workflow_executed": True,
-                "confirmed": confirmed,
-                "steps_results": results,
+                "workflow_type": "workflow",
+                "confirmed": any(r.get("confirmed") for r in step_results),
+                "steps": step_results,
             }
 
         # --------------------------------------------------------
         # UNKNOWN
         # --------------------------------------------------------
+        return self._fail(f"unsupported_workflow_type:{workflow_type}")
+
+    # ============================================================
+    # INTERNAL HELPERS
+    # ============================================================
+    def _fail(self, error: str) -> Dict[str, Any]:
         return {
             "success": False,
             "confirmed": False,
-            "error": f"unsupported_workflow_type: {workflow_type}",
+            "error": error,
+        }
+
+    def _step_fail(self, step: int, error: str) -> Dict[str, Any]:
+        return {
+            "step": step,
+            "executed": False,
+            "confirmed": False,
+            "error": error,
         }

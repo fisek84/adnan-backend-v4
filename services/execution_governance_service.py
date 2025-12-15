@@ -1,10 +1,13 @@
 """
-EXECUTION GOVERNANCE SERVICE — CANONICAL
+EXECUTION GOVERNANCE SERVICE — CANONICAL (FAZA 3.6)
 
 Uloga:
-- centralna, zadnja tačka odluke prije izvršenja
-- NE izvršava ništa
-- vraća determinističku odluku + CSI tranziciju
+- CENTRALNA i ZADNJA tačka odluke prije izvršenja
+- NE izvršava
+- NE shape-a response
+- NE piše stanje
+- deterministički odlučuje: ALLOWED | BLOCKED
+- eksplicitno označava FAILURE SOURCE za FailureHandler
 """
 
 from typing import Dict, Any, Optional
@@ -14,7 +17,6 @@ from services.policy_service import PolicyService
 from services.rbac_service import RBACService
 from services.approval_state_service import ApprovalStateService
 from services.action_safety_service import ActionSafetyService
-from services.memory_service import MemoryService
 
 
 class ExecutionGovernanceService:
@@ -23,7 +25,6 @@ class ExecutionGovernanceService:
         self.rbac = RBACService()
         self.approvals = ApprovalStateService()
         self.safety = ActionSafetyService()
-        self.memory = MemoryService()
 
         self.governance_limits = {
             "max_execution_time_seconds": 30,
@@ -50,92 +51,97 @@ class ExecutionGovernanceService:
         # --------------------------------------------------------
         context_policy = self.policy.get_context_policy(context_type)
         if context_policy and not context_policy.get("execution_allowed", False):
-            result = self._block(
+            return self._block(
                 reason="Execution not allowed in this context.",
-                source="context_policy",
+                source="policy",
+                ts=decision_ts,
             )
-            self._audit(decision_ts, role, context_type, directive, result)
-            return result
 
         # --------------------------------------------------------
         # 2. RBAC — REQUEST LEVEL
         # --------------------------------------------------------
-        # ✅ CANONICAL EXCEPTION:
-        # SYSTEM may always request READ-ONLY commands
         if not (role == "system" and directive == "system_query"):
             if not self.policy.can_request(role):
-                result = self._block(
+                return self._block(
                     reason=f"Role '{role}' cannot request execution.",
-                    source="rbac_request",
+                    source="policy",
+                    ts=decision_ts,
                 )
-                self._audit(decision_ts, role, context_type, directive, result)
-                return result
 
         # --------------------------------------------------------
         # 3. RBAC — ACTION LEVEL
         # --------------------------------------------------------
         if not self.policy.is_action_allowed_for_role(role, directive):
-            result = self._block(
+            return self._block(
                 reason=f"Role '{role}' is not allowed to perform '{directive}'.",
-                source="rbac_action",
+                source="policy",
+                ts=decision_ts,
             )
-            self._audit(decision_ts, role, context_type, directive, result)
-            return result
 
         # --------------------------------------------------------
         # 4. SAFETY LAYER
         # --------------------------------------------------------
         safety = self.safety.validate_action(directive, params)
         if not safety.get("allowed"):
-            result = self._block(
+            return self._block(
                 reason=safety.get("reason", "Safety validation failed."),
                 source="safety",
+                ts=decision_ts,
             )
-            self._audit(decision_ts, role, context_type, directive, result)
-            return result
 
         # --------------------------------------------------------
-        # 5. APPROVAL STATE
+        # 5. APPROVAL (WRITE ONLY — HARD GATE)
         # --------------------------------------------------------
-        if approval_id and not self.approvals.is_fully_approved(approval_id):
-            result = {
-                "allowed": False,
-                "reason": "Awaiting required approvals.",
-                "source": "approval",
-                "read_only": True,
-                "next_csi_state": "DECISION_PENDING",
-                "governance": self.governance_limits,
-            }
-            self._audit(decision_ts, role, context_type, directive, result)
-            return result
+        if directive != "system_query":
+            if not approval_id:
+                return self._block(
+                    reason="Missing approval for write operation.",
+                    source="governance",
+                    ts=decision_ts,
+                    next_csi_state="DECISION_PENDING",
+                    read_only=False,
+                )
+
+            if not self.approvals.is_fully_approved(approval_id):
+                return self._block(
+                    reason="Approval not granted.",
+                    source="governance",
+                    ts=decision_ts,
+                    next_csi_state="DECISION_PENDING",
+                    read_only=False,
+                )
 
         # --------------------------------------------------------
         # ALLOWED
         # --------------------------------------------------------
-        result = {
+        return {
             "allowed": True,
             "reason": "Execution allowed by governance.",
             "source": "governance",
-            "read_only": True,
+            "read_only": directive == "system_query",
             "next_csi_state": "EXECUTING",
             "governance": self.governance_limits,
+            "timestamp": decision_ts,
         }
-
-        self._audit(decision_ts, role, context_type, directive, result)
-        return result
 
     # ============================================================
     # INTERNALS
     # ============================================================
-    def _audit(self, ts, role, context_type, directive, result):
-        self.memory.memory.setdefault("execution_stats", {})
-
-    def _block(self, *, reason: str, source: str) -> Dict[str, Any]:
+    def _block(
+        self,
+        *,
+        reason: str,
+        source: str,
+        ts: str,
+        next_csi_state: str = "IDLE",
+        read_only: bool = True,
+    ) -> Dict[str, Any]:
         return {
             "allowed": False,
             "reason": reason,
             "source": source,
-            "read_only": True,
-            "next_csi_state": "IDLE",
+            "read_only": read_only,
+            "next_csi_state": next_csi_state,
             "governance": self.governance_limits,
+            "timestamp": ts,
         }

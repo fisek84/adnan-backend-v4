@@ -1,5 +1,3 @@
-# services/ai_command_service.py
-
 from typing import Dict, Any
 
 from models.ai_command import AICommand
@@ -13,32 +11,33 @@ from services.execution_orchestrator import ExecutionOrchestrator
 
 class AICommandService:
     """
-    EXECUTION DISPATCHER (CANONICAL)
+    AI COMMAND SERVICE — CANONICAL DISPATCHER
 
-    - prima ISKLJUČIVO AICommand
-    - NE izvršava akcije direktno
-    - ASYNC dispatcher prema ExecutionOrchestrator-u
+    Uloga:
+    - prima ISKLJUČIVO validiran AICommand
+    - vrši HARD VALIDACIJE (command + owner + safety)
+    - delegira ExecutionOrchestrator-u
+    - NE izvršava akcije
+    - NE shape-a response
     """
 
     def __init__(self):
         self.safety = ActionSafetyService()
         self.orchestrator = ExecutionOrchestrator()
 
-    # ---------------------------------------------------------
+    # =========================================================
     # MAIN ENTRYPOINT
-    # ---------------------------------------------------------
-
+    # =========================================================
     async def execute(self, command: AICommand) -> Dict[str, Any]:
         """
-        Dispatch a validated AICommand to ExecutionOrchestrator.
+        Dispatch validated AICommand to ExecutionOrchestrator.
         """
 
         # -------------------------------------------------
-        # HARD VALIDATION
+        # HARD VALIDATION (NON-NEGOTIABLE)
         # -------------------------------------------------
-
         if not command.validated:
-            raise RuntimeError("AICommand is not validated by COO Translator.")
+            raise RuntimeError("AICommand is not validated by COOTranslationService.")
 
         if not is_valid_command(command.command):
             raise ValueError(f"Invalid system command: {command.command}")
@@ -48,7 +47,6 @@ class AICommandService:
         # -------------------------------------------------
         # OWNER VALIDATION (CANONICAL)
         # -------------------------------------------------
-
         allowed_owners = definition.get("allowed_owners", [])
         if command.owner not in allowed_owners:
             raise PermissionError(
@@ -56,22 +54,19 @@ class AICommandService:
             )
 
         # -------------------------------------------------
-        # SAFETY CHECK (FINAL GUARD)
+        # SAFETY CHECK (FINAL PRE-GOVERNANCE GUARD)
         # -------------------------------------------------
-
         self.safety.check(command)
 
         # -------------------------------------------------
-        # DISPATCH TO ORCHESTRATOR (CANONICAL)
+        # DISPATCH (NO SIDE EFFECTS HERE)
         # -------------------------------------------------
-
         result = await self.orchestrator.execute(command)
 
         # -------------------------------------------------
-        # STATE UPDATE
+        # STATE UPDATE (TRACE ONLY)
         # -------------------------------------------------
-
         command.execution_state = "DISPATCHED"
-        AICommand.log_command(command)
+        AICommand.log(command)
 
         return result
