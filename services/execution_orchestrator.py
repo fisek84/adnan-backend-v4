@@ -1,3 +1,5 @@
+# services/execution_orchestrator.py
+
 from typing import Dict, Any
 from datetime import datetime
 from uuid import uuid4
@@ -43,10 +45,17 @@ class ExecutionOrchestrator:
     # =========================================================
     async def execute(self, command: AICommand) -> Dict[str, Any]:
         # -----------------------------------------------------
-        # AUTONOMY META COMMAND
+        # AUTONOMY META COMMAND (EXPLICIT, ONE-SHOT)
         # -----------------------------------------------------
         if command.command == "request_execution":
             approved_command = await self._autonomy.decide(command)
+            if not approved_command:
+                return self._failure_handler.classify(
+                    source="autonomy",
+                    reason="Autonomy decision rejected.",
+                    execution_id="N/A",
+                    metadata={"command": command.command},
+                )
             return await self.execute(approved_command)
 
         if not command.validated:
@@ -85,7 +94,7 @@ class ExecutionOrchestrator:
             )
 
         # =====================================================
-        # READ PATH
+        # READ PATH (SYSTEM QUERY)
         # =====================================================
         if command.command == "system_query":
             try:
@@ -102,7 +111,7 @@ class ExecutionOrchestrator:
                 )
 
         # =====================================================
-        # WRITE PATH
+        # WRITE PATH (AGENT / SYSTEM EXECUTION)
         # =====================================================
         try:
             return await self._write_executor.execute(

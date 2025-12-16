@@ -1,3 +1,5 @@
+# services/execution_governance_service.py
+
 """
 EXECUTION GOVERNANCE SERVICE — CANONICAL (FAZA 3.6)
 
@@ -28,11 +30,15 @@ class ExecutionGovernanceService:
 
         self.governance_limits = {
             "max_execution_time_seconds": 30,
-            "retry_policy": {"enabled": False, "max_retries": 0},
+            "retry_policy": {
+                "enabled": False,
+                "max_retries": 0,
+            },
         }
 
-        # META commands that REQUIRE approved approval,
-        # but MUST NOT trigger a NEW approval request
+        # META commands:
+        # - zahtijevaju već ODOBRENU approval
+        # - NE smiju triggerovati novi approval flow
         self.meta_commands = {
             "delegate_execution",
         }
@@ -51,6 +57,16 @@ class ExecutionGovernanceService:
     ) -> Dict[str, Any]:
 
         decision_ts = datetime.utcnow().isoformat()
+
+        # --------------------------------------------------------
+        # 0. HARD INPUT VALIDATION (DETERMINISTIC)
+        # --------------------------------------------------------
+        if not role or not context_type or not directive:
+            return self._block(
+                reason="Invalid execution request.",
+                source="governance",
+                ts=decision_ts,
+            )
 
         # --------------------------------------------------------
         # 1. CONTEXT POLICY
@@ -87,8 +103,8 @@ class ExecutionGovernanceService:
         # --------------------------------------------------------
         # 4. SAFETY LAYER
         # --------------------------------------------------------
-        safety = self.safety.validate_action(directive, params)
-        if not safety.get("allowed"):
+        safety = self.safety.validate_action(directive, params or {})
+        if not safety.get("allowed", False):
             return self._block(
                 reason=safety.get("reason", "Safety validation failed."),
                 source="safety",
@@ -100,7 +116,7 @@ class ExecutionGovernanceService:
         # --------------------------------------------------------
         if directive != "system_query":
 
-            # META commands: approval MUST already be approved
+            # META commands — approval mora POSTOJATI i biti approved
             if directive in self.meta_commands:
                 if not approval_id or not self.approvals.is_fully_approved(approval_id):
                     return self._block(
@@ -111,7 +127,7 @@ class ExecutionGovernanceService:
                         read_only=False,
                     )
 
-            # REAL write commands
+            # REAL WRITE commands
             else:
                 if not approval_id:
                     return self._block(

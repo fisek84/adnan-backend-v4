@@ -1,3 +1,5 @@
+# services/ai_command_service.py
+
 from typing import Dict, Any
 
 from models.ai_command import AICommand
@@ -36,19 +38,26 @@ class AICommandService:
         # -------------------------------------------------
         # HARD VALIDATION (NON-NEGOTIABLE)
         # -------------------------------------------------
+        if not command or not isinstance(command, AICommand):
+            raise RuntimeError("Invalid AICommand object.")
+
         if not command.validated:
-            raise RuntimeError("AICommand is not validated by COOTranslationService.")
+            raise RuntimeError(
+                "AICommand is not validated by COOTranslationService."
+            )
 
         if not is_valid_command(command.command):
             raise ValueError(f"Invalid system command: {command.command}")
 
         definition = get_action_definition(command.command)
+        if not definition:
+            raise ValueError(f"Missing action definition for '{command.command}'")
 
         # -------------------------------------------------
         # OWNER VALIDATION (CANONICAL)
         # -------------------------------------------------
         allowed_owners = definition.get("allowed_owners", [])
-        if command.owner not in allowed_owners:
+        if allowed_owners and command.owner not in allowed_owners:
             raise PermissionError(
                 f"Owner '{command.owner}' is not allowed for command '{command.command}'"
             )
@@ -64,7 +73,7 @@ class AICommandService:
         result = await self.orchestrator.execute(command)
 
         # -------------------------------------------------
-        # STATE UPDATE (TRACE ONLY)
+        # STATE TRACE (NON-BINDING)
         # -------------------------------------------------
         command.execution_state = "DISPATCHED"
         AICommand.log(command)

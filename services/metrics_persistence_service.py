@@ -1,3 +1,5 @@
+# services/metrics_persistence_service.py
+
 from typing import Dict, Any
 from datetime import datetime
 import os
@@ -21,8 +23,13 @@ class MetricsPersistenceService:
     """
 
     def __init__(self):
-        self.notion = Client(auth=os.getenv("NOTION_API_KEY"))
+        self.api_key = os.getenv("NOTION_API_KEY")
         self.db_id = os.getenv("NOTION_AGENT_EXCHANGE_DB_ID")
+
+        self.notion = Client(auth=self.api_key) if self.api_key else None
+
+        if not self.api_key:
+            logger.warning("NOTION_API_KEY not set")
 
         if not self.db_id:
             logger.warning("NOTION_AGENT_EXCHANGE_DB_ID not set")
@@ -35,20 +42,17 @@ class MetricsPersistenceService:
         Persist current metrics snapshot to Notion.
         """
 
-        snapshot = MetricsService.snapshot()
-
-        if not self.db_id:
+        if not self.notion or not self.db_id:
             return {
                 "ok": False,
-                "error": "Notion DB not configured",
+                "error": "Notion not configured",
             }
 
-        counters = snapshot.get("counters", {})
-        events = snapshot.get("events", {})
+        snapshot = MetricsService.snapshot()
+        counters = snapshot.get("counters", {}) or {}
+        events = snapshot.get("events", {}) or {}
 
-        summary_lines = [
-            f"{k}: {v}" for k, v in counters.items()
-        ]
+        summary_lines = [f"{k}: {v}" for k, v in counters.items()]
 
         try:
             page = self.notion.pages.create(

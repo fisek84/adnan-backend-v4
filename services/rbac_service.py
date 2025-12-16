@@ -19,7 +19,7 @@ class RBACService:
         # --------------------------------------------------------
         # ROLE DEFINITIONS (CANONICAL)
         # --------------------------------------------------------
-        self.roles = {
+        self.roles: Dict[str, Dict[str, Any]] = {
             # ----------------------------------
             # SYSTEM (OS INTERNAL)
             # ----------------------------------
@@ -27,7 +27,10 @@ class RBACService:
                 "can_request": True,
                 "can_execute": False,  # system NE izvršava direktno
                 "allowed_actions": {
-                    "system_query",   # ✅ READ-ONLY INTROSPECTION
+                    "system_query",
+                    "system_identity",
+                    "system_notion_inbox",
+                    "system_inbox_delegation_preview",
                 },
             },
 
@@ -67,26 +70,33 @@ class RBACService:
         }
 
     # ============================================================
-    # ROLE LOOKUP
+    # ROLE LOOKUP (READ-ONLY)
     # ============================================================
     def get_role(self, role: str) -> Dict[str, Any]:
-        return self.roles.get(role, {})
+        if not role:
+            return {}
+        return self.roles.get(role, {}).copy()
 
     # ============================================================
     # CHECKS (READ-ONLY)
     # ============================================================
     def can_request(self, role: str) -> bool:
-        role_def = self.get_role(role)
-        return bool(role_def.get("can_request"))
+        role_def = self.roles.get(role)
+        return bool(role_def and role_def.get("can_request"))
 
     def can_execute(self, role: str) -> bool:
-        role_def = self.get_role(role)
-        return bool(role_def.get("can_execute"))
+        role_def = self.roles.get(role)
+        return bool(role_def and role_def.get("can_execute"))
 
     def is_action_allowed(self, role: str, action: str) -> bool:
-        role_def = self.get_role(role)
-        allowed = role_def.get("allowed_actions")
+        if not role or not action:
+            return False
 
+        role_def = self.roles.get(role)
+        if not role_def:
+            return False
+
+        allowed = role_def.get("allowed_actions")
         if not allowed:
             return False
 

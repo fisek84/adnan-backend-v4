@@ -96,10 +96,16 @@ class AuditService:
     # SOP AUDIT
     # ============================================================
     def get_sop_audit(self, sop_key: str) -> Dict[str, Any]:
+        relations = self.memory.memory.get("cross_sop_relations", {})
+        related = {
+            k: v for k, v in relations.items()
+            if k.endswith(f"->{sop_key}") or k.startswith(f"{sop_key}->")
+        }
+
         return {
             "sop": sop_key,
             "success_rate": self.memory.sop_success_rate(sop_key),
-            "cross_sop_relations": self.memory.get_cross_sop_bias(sop_key),
+            "cross_sop_relations": related,
             "read_only": True,
         }
 
@@ -117,14 +123,13 @@ class AuditService:
         limit: int = 20,
     ) -> List[Dict[str, Any]]:
         """
-        Incident = failed / blocked / escalated outcome
+        Incident = unsuccessful decision outcome
         """
 
-        incidents = []
-
-        for r in self.memory.memory.get("decision_outcomes", []):
-            if r.get("status") in {"failed", "blocked", "escalated"}:
-                incidents.append(r)
+        incidents = [
+            r for r in self.memory.memory.get("decision_outcomes", [])
+            if r.get("success") is False
+        ]
 
         return incidents[-limit:]
 

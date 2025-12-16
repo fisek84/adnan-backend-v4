@@ -1,9 +1,10 @@
-# C:\adnan-backend-v4\services\metrics_service.py
+# services/metrics_service.py
 
 from typing import Dict, Any
 from collections import defaultdict
 from datetime import datetime
 import threading
+import copy
 
 
 class MetricsService:
@@ -18,7 +19,7 @@ class MetricsService:
     """
 
     _lock = threading.Lock()
-    _metrics: Dict[str, Any] = defaultdict(int)
+    _metrics: Dict[str, int] = defaultdict(int)
     _events: Dict[str, list] = defaultdict(list)
 
     # --------------------------------------------------
@@ -26,6 +27,9 @@ class MetricsService:
     # --------------------------------------------------
     @classmethod
     def incr(cls, key: str, value: int = 1):
+        if not key or value == 0:
+            return
+
         with cls._lock:
             cls._metrics[key] += value
 
@@ -34,11 +38,18 @@ class MetricsService:
     # --------------------------------------------------
     @classmethod
     def emit(cls, event_type: str, payload: Dict[str, Any]):
+        if not event_type or not payload:
+            return
+
         with cls._lock:
             cls._events[event_type].append({
                 "ts": datetime.utcnow().isoformat(),
                 **payload,
             })
+
+            # hard cap per event type (memory safety)
+            if len(cls._events[event_type]) > 500:
+                cls._events[event_type] = cls._events[event_type][-500:]
 
     # --------------------------------------------------
     # SNAPSHOT (READ-ONLY)
@@ -47,10 +58,13 @@ class MetricsService:
     def snapshot(cls) -> Dict[str, Any]:
         with cls._lock:
             return {
-                "counters": dict(cls._metrics),
-                "events": dict(cls._events),
+                "counters": copy.deepcopy(dict(cls._metrics)),
+                "events": copy.deepcopy(dict(cls._events)),
             }
 
+    # --------------------------------------------------
+    # RESET (CONTROLLED)
+    # --------------------------------------------------
     @classmethod
     def reset(cls):
         with cls._lock:

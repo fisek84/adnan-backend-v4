@@ -44,6 +44,12 @@ class ActionSafetyService:
         Raises exception if blocked.
         """
 
+        if not command or not isinstance(command, AICommand):
+            raise ValueError("Invalid AICommand.")
+
+        if not command.command:
+            raise ValueError("Missing command directive.")
+
         if command.command in self.BLOCKED_ACTIONS:
             raise PermissionError(
                 f"Command '{command.command}' is blocked for safety reasons."
@@ -52,7 +58,7 @@ class ActionSafetyService:
         if command.command == "workflow":
             self._validate_workflow(command.input or {})
 
-        self._validate_params(command.input)
+        self._validate_params(command.input or {})
 
     # ============================================================
     # BACKWARD-COMPATIBILITY ADAPTER (NE DIRATI)
@@ -63,6 +69,12 @@ class ActionSafetyService:
         READ-ONLY. No execution.
         """
 
+        if not directive:
+            return {
+                "allowed": False,
+                "reason": "Missing directive.",
+            }
+
         if directive in self.BLOCKED_ACTIONS:
             return {
                 "allowed": False,
@@ -70,7 +82,7 @@ class ActionSafetyService:
             }
 
         try:
-            self._validate_params(params)
+            self._validate_params(params or {})
         except Exception as e:
             return {
                 "allowed": False,
@@ -79,7 +91,7 @@ class ActionSafetyService:
 
         if directive == "workflow":
             try:
-                self._validate_workflow(params)
+                self._validate_workflow(params or {})
             except Exception as e:
                 return {
                     "allowed": False,
@@ -101,10 +113,13 @@ class ActionSafetyService:
             raise ValueError("Invalid parameter format. Expected a dict.")
 
         for key in params.keys():
-            if not key:
-                raise ValueError("Parameter keys cannot be empty.")
+            if not isinstance(key, str) or not key.strip():
+                raise ValueError("Parameter keys must be non-empty strings.")
 
     def _validate_workflow(self, workflow: Dict[str, Any]) -> None:
+        if not isinstance(workflow, dict):
+            raise ValueError("Workflow payload must be a dict.")
+
         steps: List[Dict[str, Any]] = workflow.get("steps", [])
 
         if not isinstance(steps, list):
@@ -116,15 +131,18 @@ class ActionSafetyService:
             )
 
         for index, step in enumerate(steps):
+            if not isinstance(step, dict):
+                raise ValueError(f"Workflow step {index} must be a dict.")
+
             directive = step.get("directive")
             params = step.get("params", {})
 
-            if not directive:
-                raise ValueError(f"Missing directive at step {index}.")
+            if not directive or not isinstance(directive, str):
+                raise ValueError(f"Missing or invalid directive at step {index}.")
 
             if directive in self.BLOCKED_ACTIONS:
                 raise PermissionError(
                     f"Workflow blocked at step {index}: directive '{directive}' is blocked."
                 )
 
-            self._validate_params(params)
+            self._validate_params(params or {})

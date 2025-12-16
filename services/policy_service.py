@@ -8,7 +8,7 @@ Uloga:
 - kontekstualna pravila (context, global)
 - RBAC pitanja DELEGIRA na RBACService
 - READ-ONLY
-- enforcement ostaje u Gatewayu
+- enforcement ostaje izvan ovog servisa
 """
 
 from typing import Dict, Any, Optional
@@ -18,18 +18,18 @@ from services.rbac_service import RBACService
 class PolicyService:
     def __init__(self):
         # --------------------------------------------------------
-        # GLOBAL POLICIES
+        # GLOBAL POLICIES (STATIC, READ-ONLY)
         # --------------------------------------------------------
-        self.global_policies = {
+        self.global_policies: Dict[str, Any] = {
             "allow_write_actions": True,
             "require_confirmation_for_write": True,
             "max_parallel_steps": 5,
         }
 
         # --------------------------------------------------------
-        # CONTEXT POLICIES
+        # CONTEXT POLICIES (STATIC, READ-ONLY)
         # --------------------------------------------------------
-        self.context_policies = {
+        self.context_policies: Dict[str, Dict[str, Any]] = {
             "chat": {
                 "execution_allowed": False,
             },
@@ -42,6 +42,9 @@ class PolicyService:
             "meta": {
                 "execution_allowed": False,
             },
+            "system": {
+                "execution_allowed": True,
+            },
         }
 
         # --------------------------------------------------------
@@ -50,33 +53,39 @@ class PolicyService:
         self.rbac = RBACService()
 
     # ============================================================
-    # GLOBAL POLICY
+    # GLOBAL POLICY (READ-ONLY)
     # ============================================================
     def get_global_policy(self) -> Dict[str, Any]:
-        return self.global_policies
+        return dict(self.global_policies)
 
     # ============================================================
     # CONTEXT POLICY (READ-ONLY)
     # ============================================================
     def get_context_policy(self, context_type: str) -> Optional[Dict[str, Any]]:
-        return self.context_policies.get(context_type)
+        if not context_type:
+            return None
+        policy = self.context_policies.get(context_type)
+        return dict(policy) if policy else None
 
     # ============================================================
     # RBAC PROXIES (READ-ONLY)
     # ============================================================
     def get_role_policy(self, role: str) -> Dict[str, Any]:
-        """
-        Backward-compatible proxy.
-        """
         return self.rbac.get_role(role)
 
     def is_action_allowed_for_role(self, role: str, action: str) -> bool:
+        if not role or not action:
+            return False
         return self.rbac.is_action_allowed(role, action)
 
     def can_request(self, role: str) -> bool:
+        if not role:
+            return False
         return self.rbac.can_request(role)
 
     def can_execute(self, role: str) -> bool:
+        if not role:
+            return False
         return self.rbac.can_execute(role)
 
     # ============================================================
@@ -84,8 +93,8 @@ class PolicyService:
     # ============================================================
     def get_policy_snapshot(self) -> Dict[str, Any]:
         return {
-            "global": self.global_policies,
-            "contexts": self.context_policies,
+            "global": dict(self.global_policies),
+            "contexts": dict(self.context_policies),
             "rbac": self.rbac.get_rbac_snapshot(),
             "read_only": True,
         }

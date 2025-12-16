@@ -2,6 +2,7 @@
 
 import json
 import time
+import os
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
@@ -21,35 +22,25 @@ class MemoryService:
     - Execution piše, audit čita
     """
 
-    # ============================================================
-    # SCHEMA LOCK
-    # ============================================================
-    SCHEMA_VERSION = "1.0.0"  # 🔒 FAZA 12 LOCK — ne mijenja se bez migracije
-
-    DECAY_HALF_LIFE_SECONDS = 60 * 60 * 24 * 30  # ~30 dana
+    SCHEMA_VERSION = "1.0.0"  # 🔒 LOCKED
+    DECAY_HALF_LIFE_SECONDS = 60 * 60 * 24 * 30
     MIN_WEIGHT = 0.2
 
     def __init__(self):
         BASE_PATH.mkdir(parents=True, exist_ok=True)
 
         self.memory_file = BASE_PATH / "memory.json"
+        self.tmp_file = BASE_PATH / "memory.json.tmp"
+
         self.memory = self._load()
 
-        # --------------------------------------------------------
-        # SCHEMA ENFORCEMENT (BACKWARD SAFE)
-        # --------------------------------------------------------
         self.memory.setdefault("schema_version", self.SCHEMA_VERSION)
-
         self.memory.setdefault("entries", [])
         self.memory.setdefault("decision_outcomes", [])
         self.memory.setdefault("execution_stats", {})
         self.memory.setdefault("cross_sop_relations", {})
-
-        # FAZA 3 / 4
         self.memory.setdefault("goals", [])
         self.memory.setdefault("plans", [])
-
-        # FAZA 8
         self.memory.setdefault("active_decision", None)
 
         self._save()
@@ -64,7 +55,6 @@ class MemoryService:
         try:
             with open(self.memory_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                # backward compatibility
                 if "schema_version" not in data:
                     data["schema_version"] = self.SCHEMA_VERSION
                 return data
@@ -72,8 +62,12 @@ class MemoryService:
             return {}
 
     def _save(self):
-        with open(self.memory_file, "w", encoding="utf-8") as f:
-            json.dump(self.memory, f, indent=2, ensure_ascii=False)
+        data = json.dumps(self.memory, indent=2, ensure_ascii=False)
+        with open(self.tmp_file, "w", encoding="utf-8") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(self.tmp_file, self.memory_file)
 
     def _now(self) -> float:
         return time.time()
@@ -93,7 +87,7 @@ class MemoryService:
         })
 
         if len(self.memory["entries"]) > 100:
-            self.memory["entries"].pop(0)
+            self.memory["entries"] = self.memory["entries"][-100:]
 
         self._save()
         return {"stored": True, "count": len(self.memory["entries"])}
@@ -112,7 +106,6 @@ class MemoryService:
             **goal,
             "confirmed_at": self._now(),
         })
-
         self._save()
 
     # ============================================================
@@ -126,7 +119,6 @@ class MemoryService:
             **plan,
             "confirmed_at": self._now(),
         })
-
         self._save()
 
     # ============================================================
@@ -168,11 +160,9 @@ class MemoryService:
         }
 
         self.memory["decision_outcomes"].append(record)
-
         if len(self.memory["decision_outcomes"]) > 100:
-            self.memory["decision_outcomes"].pop(0)
+            self.memory["decision_outcomes"] = self.memory["decision_outcomes"][-100:]
 
-        # SOP cross-relations
         if decision_type == "sop":
             prev_sop = (metadata or {}).get("previous_sop")
             current_sop = target
@@ -180,8 +170,7 @@ class MemoryService:
             if prev_sop and current_sop:
                 key = f"{prev_sop}->{current_sop}"
                 rel = self.memory["cross_sop_relations"].setdefault(
-                    key,
-                    {"total": 0, "success": 0, "history": []},
+                    key, {"total": 0, "success": 0, "history": []}
                 )
 
                 rel["total"] += 1

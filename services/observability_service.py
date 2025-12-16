@@ -27,9 +27,6 @@ class ObservabilityService:
     # ACTIVE DECISION
     # ============================================================
     def get_active_decision(self) -> Optional[Dict[str, Any]]:
-        """
-        Trenutno aktivna (potvrđena) odluka, ako postoji.
-        """
         return self.memory.get_active_decision()
 
     # ============================================================
@@ -40,16 +37,17 @@ class ObservabilityService:
         decision_type: Optional[str] = None,
         key: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """
-        Vraća execution statistiku.
-        Ako nije specificiran key → vraća sve.
-        """
 
         stats = self.memory.memory.get("execution_stats", {})
 
         if decision_type and key:
-            entry = stats.get(f"{decision_type}:{key}")
-            return entry or {}
+            return stats.get(f"{decision_type}:{key}", {})
+
+        if decision_type:
+            return {
+                k: v for k, v in stats.items()
+                if k.startswith(f"{decision_type}:")
+            }
 
         return stats
 
@@ -61,9 +59,7 @@ class ObservabilityService:
         limit: int = 50,
         decision_type: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """
-        Audit trail odluka i izvršenja.
-        """
+
         outcomes = self.memory.memory.get("decision_outcomes", [])
 
         if decision_type:
@@ -78,22 +74,23 @@ class ObservabilityService:
     # SOP PERFORMANCE
     # ============================================================
     def get_sop_performance(self, sop_key: str) -> Dict[str, Any]:
-        """
-        READ-ONLY SOP success rate + chaining bias.
-        """
+        relations = self.memory.memory.get("cross_sop_relations", {})
+        related = {
+            k: v for k, v in relations.items()
+            if k.endswith(f"->{sop_key}") or k.startswith(f"{sop_key}->")
+        }
+
         return {
             "sop": sop_key,
             "success_rate": self.memory.sop_success_rate(sop_key),
-            "next_sop_bias": self.memory.get_cross_sop_bias(sop_key),
+            "cross_sop_relations": related,
+            "read_only": True,
         }
 
     # ============================================================
     # SYSTEM SNAPSHOT (UI FRIENDLY)
     # ============================================================
     def get_system_snapshot(self) -> Dict[str, Any]:
-        """
-        Jedan poziv za CEO / UI dashboard.
-        """
         return {
             "active_decision": self.get_active_decision(),
             "recent_decisions": self.get_decision_outcomes(limit=10),

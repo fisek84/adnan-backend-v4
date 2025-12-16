@@ -1,3 +1,5 @@
+# services/failure_handler.py
+
 """
 FAILURE HANDLER — CANONICAL (FAZA 3.6)
 
@@ -77,16 +79,6 @@ class FailureHandler:
         execution_id: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """
-        Ulaz:
-        - source: sloj u kojem je failure nastao
-        - reason: ljudski čitljiv razlog
-        - execution_id: korelacijski ID
-        - metadata: dodatni kontekst
-
-        Izlaz:
-        - standardizovan FAILURE ENVELOPE
-        """
 
         category = self._resolve_category(source, reason)
 
@@ -134,6 +126,7 @@ class FailureHandler:
 
         if reason:
             lowered = reason.lower()
+
             if "approval" in lowered:
                 return self.CATEGORY_GOVERNANCE
             if "policy" in lowered:
@@ -152,8 +145,6 @@ class FailureHandler:
     # =========================================================
     def overview(self) -> Dict[str, Any]:
         return {
-            "categories": {
-                key: value for key, value in self.RECOVERY_OPTIONS.items()
-            },
+            "categories": dict(self.RECOVERY_OPTIONS),
             "read_only": True,
         }
