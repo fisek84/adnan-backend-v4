@@ -10,20 +10,12 @@ from services.decision_engine.sop_mapper import SOPMapper
 from services.decision_engine.static_memory_engine import StaticMemoryEngine
 from services.decision_engine.dynamic_memory import DynamicMemoryEngine
 from services.decision_engine.personality_engine import PersonalityEngine
-
-# SOP KNOWLEDGE
 from services.sop_knowledge_registry import SOPKnowledgeRegistry
 
 
-# ================================================================
-# PATHS — CANONICAL
-# ================================================================
 BASE_PATH = Path(__file__).resolve().parent.parent / "identity"
 
 
-# ================================================================
-# DATABASE MAP
-# ================================================================
 DATABASE_MAP = {
     "task": "tasks",
     "tasks": "tasks",
@@ -37,9 +29,6 @@ DATABASE_MAP = {
 }
 
 
-# ================================================================
-# ACTION VERBS
-# ================================================================
 ACTION_PATTERNS = {
     "create": ["kreiraj", "napravi", "create", "add", "dodaj", "novi", "new"],
     "update": ["update", "izmijeni", "uredi", "promijeni"],
@@ -48,9 +37,6 @@ ACTION_PATTERNS = {
 }
 
 
-# ================================================================
-# HELPERS
-# ================================================================
 def fuzzy_match(value, choices, threshold=75):
     if not value:
         return None
@@ -78,9 +64,6 @@ def natural_response(command: str) -> str:
     }.get(command, "Izvršavam zahtjev.")
 
 
-# ================================================================
-# CEO DECISION SERVICE — KANONSKI
-# ================================================================
 class AdnanAIDecisionService:
     """
     CEO Brain — prirodni jezik → DELEGATION CONTRACT
@@ -109,9 +92,6 @@ class AdnanAIDecisionService:
 
         self.sop_registry = SOPKnowledgeRegistry()
 
-    # ============================================================
-    # LOADERS
-    # ============================================================
     def _load(self, filename: str) -> Dict[str, Any]:
         path = BASE_PATH / filename
         if not path.exists():
@@ -119,18 +99,11 @@ class AdnanAIDecisionService:
         with open(path, "r", encoding="utf-8-sig") as f:
             return json.load(f)
 
-    # ============================================================
-    # ENTRYPOINT — LEGACY (RAW TEXT)
-    # ============================================================
     def process_ceo_instruction(self, text: str) -> Dict[str, Any]:
         lower = text.lower().strip()
 
-        # ========================================================
-        # 🟢 SOP EXECUTION — LEGACY PATH
-        # ========================================================
         if lower.startswith("execute sop:"):
             sop_id = lower.replace("execute sop:", "").strip()
-
             sop = self.sop_registry.get_sop(sop_id, mode="summary")
             if not sop:
                 return {
@@ -154,9 +127,6 @@ class AdnanAIDecisionService:
                 "system_response": f"SOP '{sop['name']}' je potvrđen za izvršenje.",
             }
 
-        # ========================================================
-        # MEMORY
-        # ========================================================
         if "zapamti" in lower:
             self.personality_engine.learn_from_text(text)
             return {
@@ -167,9 +137,6 @@ class AdnanAIDecisionService:
                 "system_response": "Zabilježeno.",
             }
 
-        # ========================================================
-        # NOTION INTENTS — LEGACY
-        # ========================================================
         intent = self._detect_intent(text)
         command_block = self._build_command(intent)
 
@@ -184,7 +151,7 @@ class AdnanAIDecisionService:
 
         decision = {
             "decision_candidate": True,
-            "executor": "notion_ops",
+            "executor": "agent",
             "command": command_block["command"],
             "payload": command_block["payload"],
             "origin": "adnan.ai",
@@ -192,17 +159,11 @@ class AdnanAIDecisionService:
             "system_response": natural_response(command_block["command"]),
         }
 
-        # ========================================================
-        # FAZA F3 — WRITE INTENT PROPAGATION
-        # ========================================================
         if command_block["command"] in self.WRITE_COMMANDS:
             decision["write_intent"] = True
 
         return decision
 
-    # ============================================================
-    # INTENT DETECTION — LEGACY
-    # ============================================================
     def _detect_intent(self, text: str) -> Dict[str, Any]:
         t = text.lower()
         action = None
@@ -220,9 +181,6 @@ class AdnanAIDecisionService:
             "raw_text": text,
         }
 
-    # ============================================================
-    # COMMAND BUILDER — LEGACY
-    # ============================================================
     def _build_command(self, intent: Dict[str, Any]) -> Dict[str, Any]:
         action = intent.get("action")
         db_key = intent.get("database_key")
@@ -265,9 +223,6 @@ class AdnanAIDecisionService:
 
         return {"command": None, "payload": {}}
 
-    # ============================================================
-    # CSI / INTENT ADAPTER — KANONSKI
-    # ============================================================
     def build_decision(
         self,
         action: str,

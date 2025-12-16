@@ -18,7 +18,7 @@ class ExecutionOrchestrator:
     EXECUTION ORCHESTRATOR — KANONSKI (FAZA 3.7)
 
     Pravila:
-    - READ: command-based
+    - READ: read_only=True, NO intent
     - WRITE: intent-based
     - nikad ne miješati
     """
@@ -63,7 +63,7 @@ class ExecutionOrchestrator:
         started_at = datetime.utcnow().isoformat()
 
         # -----------------------------------------------------
-        # GOVERNANCE (COMMAND IS JUST A DIRECTIVE LABEL)
+        # GOVERNANCE
         # -----------------------------------------------------
         governance = self._governance.evaluate(
             role=command.owner,
@@ -102,10 +102,13 @@ class ExecutionOrchestrator:
             )
 
         # =====================================================
-        # READ PATH
+        # READ PATH — SANITIZED (NO INTENT)
         # =====================================================
         if command.read_only:
             try:
+                # 🔒 KLJUČNO: READ nikad ne nosi intent
+                command.intent = None
+
                 return await self._read_executor.execute(
                     command=command,
                     execution_contract={
@@ -124,7 +127,7 @@ class ExecutionOrchestrator:
                 )
 
         # =====================================================
-        # WRITE PATH — INTENT BASED (KANONSKI)
+        # WRITE PATH — INTENT BASED
         # =====================================================
         if not command.intent:
             raise RuntimeError("WRITE execution requires intent.")

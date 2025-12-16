@@ -1,5 +1,3 @@
-# services/governance_service.py
-
 from typing import Dict, Any
 from datetime import datetime
 
@@ -72,9 +70,9 @@ class GovernanceService:
         # TIME-BASED SAFETY RULE (DETERMINISTIC)
         # --------------------------------------------------
         hour = datetime.utcnow().hour
-        if executor == "notion_ops" and hour < 5:
+        if executor == "agent" and hour < 5:
             return self._deny(
-                "Notion operacije su privremeno blokirane (noćni režim)."
+                "Agent WRITE operacije su privremeno blokirane (noćni režim)."
             )
 
         # --------------------------------------------------

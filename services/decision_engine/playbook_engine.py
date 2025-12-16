@@ -12,13 +12,7 @@ class PlaybookEngine:
     - prepoznaje SOP intent
     - mapira SOP (LOGIČKI, ne DB)
     - vraća EXECUTION PLAN + VARIJANTE
-    - FAZA 9.1: READ-ONLY SOP bias (learning signal)
-    - FAZA 9.2: READ-ONLY SOP chaining recommendation (CEO suggestion)
-    - FAZA 9.3: READ-ONLY SOP historical success rate (CEO signal)
-    - FAZA SOP-KI: READ-ONLY execution plan preview
-    - NEMA izvršenja
-    - NEMA odlučivanja
-    - NEMA pisanja u memoriju
+    - READ-ONLY (NEMA izvršenja)
     """
 
     def __init__(self):
@@ -50,19 +44,9 @@ class PlaybookEngine:
 
             base_plan = self._build_sop_execution_plan(sop_name)
 
-            # ====================================================
-            # FAZA 9.1 — SOP BIAS (READ-ONLY)
-            # ====================================================
             sop_bias = self.memory.get_cross_sop_bias(sop_name)
-
-            # ====================================================
-            # FAZA 9.3 — SOP HISTORICAL SUCCESS RATE (READ-ONLY)
-            # ====================================================
             sop_success_rate = self.memory.sop_success_rate(sop_name)
 
-            # ====================================================
-            # FAZA 9.2 — SOP CHAINING RECOMMENDATION (READ-ONLY)
-            # ====================================================
             recommendation = self._build_sop_recommendation(
                 current_sop=sop_name,
                 bias=sop_bias,
@@ -94,7 +78,7 @@ class PlaybookEngine:
             return [
                 {
                     "step": "create_project",
-                    "agent": "notion_ops",
+                    "agent": "agent",
                     "command": "create_database_entry",
                     "critical": True,
                     "payload": {
@@ -110,7 +94,7 @@ class PlaybookEngine:
                 },
                 {
                     "step": "create_kickoff_task",
-                    "agent": "notion_ops",
+                    "agent": "agent",
                     "command": "create_database_entry",
                     "critical": False,
                     "payload": {
@@ -129,7 +113,7 @@ class PlaybookEngine:
         return [
             {
                 "step": "list_tasks",
-                "agent": "notion_ops",
+                "agent": "agent",
                 "command": "query_database",
                 "critical": False,
                 "payload": {
@@ -139,14 +123,9 @@ class PlaybookEngine:
         ]
 
     # ============================================================
-    # FAZA SOP-KI — EXECUTION PLAN PREVIEW (READ-ONLY)
+    # SOP EXECUTION PLAN PREVIEW (READ-ONLY)
     # ============================================================
     def preview_execution_plan(self, sop_content: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        READ-ONLY preview plana izvršenja SOP-a.
-        NEMA izvršenja.
-        """
-
         steps = sop_content.get("steps", [])
         preview: List[Dict[str, Any]] = []
 
@@ -167,7 +146,7 @@ class PlaybookEngine:
         }
 
     # ============================================================
-    # FAZA 7.2 — VARIANTS (DESCRIPTIVE ONLY)
+    # VARIANTS (DESCRIPTIVE ONLY)
     # ============================================================
     def _build_variants(
         self,
@@ -189,7 +168,7 @@ class PlaybookEngine:
         return variants
 
     # ============================================================
-    # FAZA 9.2 — SOP CHAINING RECOMMENDATION (CEO-LEVEL)
+    # SOP CHAINING RECOMMENDATION (READ-ONLY)
     # ============================================================
     def _build_sop_recommendation(
         self,

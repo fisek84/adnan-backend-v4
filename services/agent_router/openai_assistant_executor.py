@@ -14,9 +14,9 @@ class OpenAIAssistantExecutor:
 
     Uloga:
     - JEDINA veza backend → OpenAI agent
-    - ne sadrži biznis logiku
-    - ne donosi odluke
-    - samo izvršava task nad asst_id
+    - nema biznis logike
+    - nema odlučivanja
+    - izvršava task nad asst_id
     """
 
     def __init__(self):
@@ -40,7 +40,7 @@ class OpenAIAssistantExecutor:
         thread = self.client.beta.threads.create()
 
         # -------------------------------------------------
-        # 2. SEND TASK TO AGENT (TEXT ONLY — CANONICAL)
+        # 2. SEND TASK TO AGENT (TEXT-ONLY, CANONICAL)
         # -------------------------------------------------
         message_text = json.dumps(
             {
@@ -89,7 +89,7 @@ class OpenAIAssistantExecutor:
             }
 
         # -------------------------------------------------
-        # 6. READ FINAL ASSISTANT MESSAGE (SAFE)
+        # 6. READ FINAL ASSISTANT MESSAGE
         # -------------------------------------------------
         messages = self.client.beta.threads.messages.list(
             thread_id=thread.id

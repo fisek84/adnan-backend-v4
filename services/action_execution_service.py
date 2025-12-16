@@ -85,7 +85,9 @@ class ActionExecutionService:
                         "Description": payload.get("description"),
                     },
                     relations={
-                        "Goal": [payload["goal_id"]] if payload.get("goal_id") else []
+                        "Goal": [payload["goal_id"]]
+                        if payload.get("goal_id")
+                        else []
                     },
                 ),
             }
