@@ -22,6 +22,8 @@ class MetricsPersistenceService:
     - NO influence on runtime flow
     """
 
+    MAX_SUMMARY_LINES = 20
+
     def __init__(self):
         self.api_key = os.getenv("NOTION_API_KEY")
         self.db_id = os.getenv("NOTION_AGENT_EXCHANGE_DB_ID")
@@ -38,10 +40,6 @@ class MetricsPersistenceService:
     # MAIN ENTRYPOINT
     # --------------------------------------------------
     def persist_snapshot(self) -> Dict[str, Any]:
-        """
-        Persist current metrics snapshot to Notion.
-        """
-
         if not self.notion or not self.db_id:
             return {
                 "ok": False,
@@ -49,10 +47,17 @@ class MetricsPersistenceService:
             }
 
         snapshot = MetricsService.snapshot()
-        counters = snapshot.get("counters", {}) or {}
-        events = snapshot.get("events", {}) or {}
+        counters = snapshot.get("counters") or {}
+        events = snapshot.get("events") or {}
 
-        summary_lines = [f"{k}: {v}" for k, v in counters.items()]
+        if not isinstance(counters, dict):
+            counters = {}
+        if not isinstance(events, dict):
+            events = {}
+
+        summary_lines = [
+            f"{k}: {v}" for k, v in counters.items()
+        ][:self.MAX_SUMMARY_LINES]
 
         try:
             page = self.notion.pages.create(
@@ -79,7 +84,7 @@ class MetricsPersistenceService:
                         "rich_text": [
                             {
                                 "text": {
-                                    "content": "\n".join(summary_lines[:20])
+                                    "content": "\n".join(summary_lines)
                                 }
                             }
                         ]

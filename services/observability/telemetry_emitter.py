@@ -1,5 +1,7 @@
-from datetime import datetime
+# services/observability/telemetry_emitter.py
+
 import logging
+from typing import Optional, Dict, Any
 
 from services.observability.telemetry_event import TelemetryEvent
 from services.observability.telemetry_sink import TelemetrySink, StdoutTelemetrySink
@@ -11,7 +13,7 @@ class TelemetryEmitter:
     """
     Passive telemetry emitter.
 
-    FAZA 10.3 — OBSERVABILITY HARDENING
+    FAZA 8 — TELEMETRY / AUDIT
 
     RULES:
     - telemetry errors NEVER break execution
@@ -19,7 +21,7 @@ class TelemetryEmitter:
     - no silent failures
     """
 
-    def __init__(self, sink: TelemetrySink | None = None):
+    def __init__(self, sink: Optional[TelemetrySink] = None):
         self.sink = sink or StdoutTelemetrySink()
 
     # -------------------------------------------------
@@ -43,19 +45,20 @@ class TelemetryEmitter:
         *,
         agent_id: str,
         status: str,
-        details: dict | None = None,
+        csi_state: str,
+        details: Optional[Dict[str, Any]] = None,
     ) -> None:
         """
         status: healthy | busy | degraded | failed
         """
 
-        event = TelemetryEvent(
+        event = TelemetryEvent.now(
             event_type="agent_heartbeat",
+            csi_state=csi_state,
             payload={
                 "agent_id": agent_id,
                 "status": status,
                 "details": details or {},
-                "timestamp": datetime.utcnow().isoformat(),
             },
         )
 
@@ -70,18 +73,19 @@ class TelemetryEmitter:
         agent_id: str,
         task_id: str,
         phase: str,
+        csi_state: str,
     ) -> None:
         """
         phase: started | completed | failed
         """
 
-        event = TelemetryEvent(
+        event = TelemetryEvent.now(
             event_type="agent_execution",
+            csi_state=csi_state,
             payload={
                 "agent_id": agent_id,
                 "task_id": task_id,
                 "phase": phase,
-                "timestamp": datetime.utcnow().isoformat(),
             },
         )
 

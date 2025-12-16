@@ -3,6 +3,7 @@
 import json
 import time
 import os
+import threading
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
@@ -11,26 +12,19 @@ BASE_PATH = Path(__file__).resolve().parent.parent / "adnan_ai" / "memory"
 
 
 class MemoryService:
-    """
-    MemoryService — FAZA 12 (COMPLIANCE FREEZE)
-
-    Pravila:
-    - Jedan memory.json (kanonski)
-    - Schema versioning (LOCKED)
-    - Backward compatible load
-    - Append-only za audit podatke
-    - Execution piše, audit čita
-    """
-
     SCHEMA_VERSION = "1.0.0"  # 🔒 LOCKED
     DECAY_HALF_LIFE_SECONDS = 60 * 60 * 24 * 30
     MIN_WEIGHT = 0.2
+    MAX_ENTRIES = 100
+    MAX_DECISION_OUTCOMES = 100
+    MAX_REL_HISTORY = 200
 
     def __init__(self):
         BASE_PATH.mkdir(parents=True, exist_ok=True)
 
         self.memory_file = BASE_PATH / "memory.json"
         self.tmp_file = BASE_PATH / "memory.json.tmp"
+        self._lock = threading.Lock()
 
         self.memory = self._load()
 
@@ -55,6 +49,8 @@ class MemoryService:
         try:
             with open(self.memory_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
+                if not isinstance(data, dict):
+                    return {}
                 if "schema_version" not in data:
                     data["schema_version"] = self.SCHEMA_VERSION
                 return data
@@ -62,12 +58,13 @@ class MemoryService:
             return {}
 
     def _save(self):
-        data = json.dumps(self.memory, indent=2, ensure_ascii=False)
-        with open(self.tmp_file, "w", encoding="utf-8") as f:
-            f.write(data)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(self.tmp_file, self.memory_file)
+        with self._lock:
+            data = json.dumps(self.memory, indent=2, ensure_ascii=False)
+            with open(self.tmp_file, "w", encoding="utf-8") as f:
+                f.write(data)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(self.tmp_file, self.memory_file)
 
     def _now(self) -> float:
         return time.time()
@@ -81,25 +78,30 @@ class MemoryService:
     # STM
     # ============================================================
     def process(self, user_input: str) -> Dict[str, Any]:
+        if not isinstance(user_input, str) or not user_input.strip():
+            return {"stored": False, "count": len(self.memory["entries"])}
+
         self.memory["entries"].append({
             "text": user_input,
             "ts": self._now(),
         })
 
-        if len(self.memory["entries"]) > 100:
-            self.memory["entries"] = self.memory["entries"][-100:]
+        if len(self.memory["entries"]) > self.MAX_ENTRIES:
+            self.memory["entries"] = self.memory["entries"][-self.MAX_ENTRIES:]
 
         self._save()
         return {"stored": True, "count": len(self.memory["entries"])}
 
     def get_recent(self, limit: int = 10) -> List[Dict[str, Any]]:
+        if limit <= 0:
+            return []
         return self.memory["entries"][-limit:]
 
     # ============================================================
     # FAZA 3 — GOALS
     # ============================================================
     def store_goal(self, goal: Dict[str, Any]):
-        if not goal:
+        if not isinstance(goal, dict):
             return
 
         self.memory["goals"].append({
@@ -112,7 +114,7 @@ class MemoryService:
     # FAZA 4 — PLANS
     # ============================================================
     def store_plan(self, plan: Dict[str, Any]):
-        if not plan:
+        if not isinstance(plan, dict):
             return
 
         self.memory["plans"].append({
@@ -125,6 +127,9 @@ class MemoryService:
     # FAZA 8 — ACTIVE DECISION
     # ============================================================
     def set_active_decision(self, decision: Dict[str, Any]):
+        if not isinstance(decision, dict):
+            return
+
         self.memory["active_decision"] = {
             "decision": decision,
             "ts": self._now(),
@@ -154,20 +159,20 @@ class MemoryService:
             "decision_type": decision_type,
             "context_type": context_type,
             "target": target,
-            "success": success,
+            "success": bool(success),
             "metadata": metadata or {},
             "ts": self._now(),
         }
 
         self.memory["decision_outcomes"].append(record)
-        if len(self.memory["decision_outcomes"]) > 100:
-            self.memory["decision_outcomes"] = self.memory["decision_outcomes"][-100:]
+        if len(self.memory["decision_outcomes"]) > self.MAX_DECISION_OUTCOMES:
+            self.memory["decision_outcomes"] = self.memory["decision_outcomes"][-self.MAX_DECISION_OUTCOMES:]
 
-        if decision_type == "sop":
-            prev_sop = (metadata or {}).get("previous_sop")
+        if decision_type == "sop" and target:
+            prev_sop = record["metadata"].get("previous_sop")
             current_sop = target
 
-            if prev_sop and current_sop:
+            if prev_sop:
                 key = f"{prev_sop}->{current_sop}"
                 rel = self.memory["cross_sop_relations"].setdefault(
                     key, {"total": 0, "success": 0, "history": []}
@@ -182,8 +187,8 @@ class MemoryService:
                     "ts": record["ts"],
                 })
 
-                if len(rel["history"]) > 200:
-                    rel["history"] = rel["history"][-200:]
+                if len(rel["history"]) > self.MAX_REL_HISTORY:
+                    rel["history"] = rel["history"][-self.MAX_REL_HISTORY:]
 
         self._save()
 
@@ -204,7 +209,10 @@ class MemoryService:
         total_weight = 0.0
 
         for o in outcomes:
-            w = self._decay_weight(o.get("ts", self._now()))
+            ts = o.get("ts")
+            if not isinstance(ts, (int, float)):
+                continue
+            w = self._decay_weight(ts)
             total_weight += w
             if o.get("success"):
                 weighted_success += w

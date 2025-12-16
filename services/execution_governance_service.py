@@ -1,7 +1,7 @@
 # services/execution_governance_service.py
 
 """
-EXECUTION GOVERNANCE SERVICE — CANONICAL (FAZA 3.6)
+EXECUTION GOVERNANCE SERVICE — CANONICAL (FAZA 9)
 
 Uloga:
 - CENTRALNA i ZADNJA tačka odluke prije izvršenja
@@ -9,7 +9,7 @@ Uloga:
 - NE shape-a response
 - NE piše stanje
 - deterministički odlučuje: ALLOWED | BLOCKED
-- eksplicitno označava FAILURE SOURCE za FailureHandler
+- eksplicitno označava FAILURE SOURCE
 """
 
 from typing import Dict, Any, Optional
@@ -28,7 +28,7 @@ class ExecutionGovernanceService:
         self.approvals = ApprovalStateService()
         self.safety = ActionSafetyService()
 
-        self.governance_limits = {
+        self._governance_limits = {
             "max_execution_time_seconds": 30,
             "retry_policy": {
                 "enabled": False,
@@ -39,7 +39,7 @@ class ExecutionGovernanceService:
         # META commands:
         # - zahtijevaju već ODOBRENU approval
         # - NE smiju triggerovati novi approval flow
-        self.meta_commands = {
+        self._meta_commands = {
             "delegate_execution",
         }
 
@@ -61,7 +61,7 @@ class ExecutionGovernanceService:
         # --------------------------------------------------------
         # 0. HARD INPUT VALIDATION (DETERMINISTIC)
         # --------------------------------------------------------
-        if not role or not context_type or not directive:
+        if not isinstance(role, str) or not isinstance(context_type, str) or not isinstance(directive, str):
             return self._block(
                 reason="Invalid execution request.",
                 source="governance",
@@ -72,7 +72,7 @@ class ExecutionGovernanceService:
         # 1. CONTEXT POLICY
         # --------------------------------------------------------
         context_policy = self.policy.get_context_policy(context_type)
-        if context_policy and not context_policy.get("execution_allowed", False):
+        if context_policy and context_policy.get("execution_allowed") is False:
             return self._block(
                 reason="Execution not allowed in this context.",
                 source="policy",
@@ -104,7 +104,7 @@ class ExecutionGovernanceService:
         # 4. SAFETY LAYER
         # --------------------------------------------------------
         safety = self.safety.validate_action(directive, params or {})
-        if not safety.get("allowed", False):
+        if safety.get("allowed") is not True:
             return self._block(
                 reason=safety.get("reason", "Safety validation failed."),
                 source="safety",
@@ -116,8 +116,8 @@ class ExecutionGovernanceService:
         # --------------------------------------------------------
         if directive != "system_query":
 
-            # META commands — approval mora POSTOJATI i biti approved
-            if directive in self.meta_commands:
+            # META commands
+            if directive in self._meta_commands:
                 if not approval_id or not self.approvals.is_fully_approved(approval_id):
                     return self._block(
                         reason="Approved approval required for meta execution.",
@@ -156,7 +156,7 @@ class ExecutionGovernanceService:
             "source": "governance",
             "read_only": directive == "system_query",
             "next_csi_state": "EXECUTING",
-            "governance": self.governance_limits,
+            "governance": self._governance_limits,
             "timestamp": decision_ts,
         }
 
@@ -178,6 +178,6 @@ class ExecutionGovernanceService:
             "source": source,
             "read_only": read_only,
             "next_csi_state": next_csi_state,
-            "governance": self.governance_limits,
+            "governance": self._governance_limits,
             "timestamp": ts,
         }

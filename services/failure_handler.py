@@ -1,15 +1,16 @@
 # services/failure_handler.py
 
 """
-FAILURE HANDLER — CANONICAL (FAZA 3.6)
+FAILURE HANDLER — CANONICAL (FAZA 13 / SCALING)
 
 Uloga:
 - JEDINO mjesto za semantičku klasifikaciju failure-a
+- deterministički FAILURE ENVELOPE
+- UI / UX friendly
 - NEMA retry
 - NEMA automatike
-- NEMA izvršenja
+- NEMA execution-a
 - NEMA side-effecta
-- proizvodi deterministički FAILURE ENVELOPE
 """
 
 from typing import Dict, Any, Optional
@@ -29,7 +30,7 @@ class FailureHandler:
     CATEGORY_UNKNOWN = "unknown"
 
     # =========================================================
-    # RECOVERY OPTIONS (DESCRIPTIVE ONLY)
+    # RECOVERY OPTIONS (DESCRIPTIVE ONLY — NO ACTION)
     # =========================================================
     RECOVERY_OPTIONS = {
         CATEGORY_POLICY: [
@@ -79,6 +80,9 @@ class FailureHandler:
         execution_id: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
+        """
+        Kreira deterministički FAILURE ENVELOPE.
+        """
 
         category = self._resolve_category(source, reason)
 
@@ -90,7 +94,9 @@ class FailureHandler:
                 "category": category,
                 "reason": reason or "Unknown failure",
                 "source": source or "unknown",
-                "recovery_options": self.RECOVERY_OPTIONS.get(category, []),
+                "recovery_options": list(
+                    self.RECOVERY_OPTIONS.get(category, [])
+                ),
             },
             "timestamp": datetime.utcnow().isoformat(),
             "read_only": True,
@@ -98,7 +104,7 @@ class FailureHandler:
         }
 
     # =========================================================
-    # INTERNALS
+    # INTERNALS (DETERMINISTIC MAPPING)
     # =========================================================
     def _resolve_category(
         self,
@@ -108,25 +114,19 @@ class FailureHandler:
 
         if source == "policy":
             return self.CATEGORY_POLICY
-
         if source == "safety":
             return self.CATEGORY_SAFETY
-
         if source == "governance":
             return self.CATEGORY_GOVERNANCE
-
         if source in {"execution", "workflow"}:
             return self.CATEGORY_EXECUTION
-
         if source == "agent":
             return self.CATEGORY_AGENT
-
         if source == "system":
             return self.CATEGORY_SYSTEM
 
         if reason:
             lowered = reason.lower()
-
             if "approval" in lowered:
                 return self.CATEGORY_GOVERNANCE
             if "policy" in lowered:

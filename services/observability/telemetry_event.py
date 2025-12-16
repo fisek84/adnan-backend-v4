@@ -5,15 +5,15 @@ from typing import Optional, Dict, Any
 import time
 
 
-@dataclass
+@dataclass(frozen=True)
 class TelemetryEvent:
     """
     Canonical telemetry event.
 
-    FAZA 7:
-    - agent health
-    - agent load
+    FAZA 8:
     - execution visibility
+    - agent health / load
+    - audit-grade event structure
     """
 
     ts: float
@@ -45,7 +45,7 @@ class TelemetryEvent:
             csi_state=csi_state,
             intent=intent,
             action=action,
-            payload=payload,
+            payload=payload or {},
         )
 
     # -------------------------------------------------
@@ -59,13 +59,12 @@ class TelemetryEvent:
         max_concurrency: int,
         csi_state: str,
     ) -> "TelemetryEvent":
-        return TelemetryEvent(
-            ts=time.time(),
+        return TelemetryEvent.now(
             event_type="agent_load",
             csi_state=csi_state,
             payload={
                 "agent_id": agent_id,
-                "current_load": current_load,
-                "max_concurrency": max_concurrency,
+                "current_load": int(current_load),
+                "max_concurrency": int(max_concurrency),
             },
         )

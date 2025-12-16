@@ -22,12 +22,16 @@ class MetricsService:
     _metrics: Dict[str, int] = defaultdict(int)
     _events: Dict[str, list] = defaultdict(list)
 
+    MAX_EVENTS_PER_TYPE = 500
+
     # --------------------------------------------------
     # COUNTERS
     # --------------------------------------------------
     @classmethod
     def incr(cls, key: str, value: int = 1):
-        if not key or value == 0:
+        if not isinstance(key, str) or not key:
+            return
+        if not isinstance(value, int) or value == 0:
             return
 
         with cls._lock:
@@ -38,18 +42,21 @@ class MetricsService:
     # --------------------------------------------------
     @classmethod
     def emit(cls, event_type: str, payload: Dict[str, Any]):
-        if not event_type or not payload:
+        if not isinstance(event_type, str) or not event_type:
+            return
+        if not isinstance(payload, dict) or not payload:
             return
 
-        with cls._lock:
-            cls._events[event_type].append({
-                "ts": datetime.utcnow().isoformat(),
-                **payload,
-            })
+        event = {
+            "ts": datetime.utcnow().isoformat(),
+            **payload,
+        }
 
-            # hard cap per event type (memory safety)
-            if len(cls._events[event_type]) > 500:
-                cls._events[event_type] = cls._events[event_type][-500:]
+        with cls._lock:
+            cls._events[event_type].append(event)
+
+            if len(cls._events[event_type]) > cls.MAX_EVENTS_PER_TYPE:
+                cls._events[event_type] = cls._events[event_type][-cls.MAX_EVENTS_PER_TYPE:]
 
     # --------------------------------------------------
     # SNAPSHOT (READ-ONLY)

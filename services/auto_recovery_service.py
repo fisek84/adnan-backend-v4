@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 class AutoRecoveryService:
     """
-    Auto-Recovery Service
+    AutoRecoveryService — FAZA 10 / Agent Specialization
 
     RULES:
     - READ alerting status
@@ -33,11 +33,11 @@ class AutoRecoveryService:
     def evaluate_and_recover(self) -> Dict[str, Any]:
         alert_status = self.alerting.evaluate()
 
-        if not alert_status.get("ok"):
+        if alert_status.get("ok") is not True:
             return {
                 "recovered": False,
                 "reason": "System still unhealthy",
-                "violations": alert_status.get("violations", []),
+                "violations": alert_status.get("violations") or [],
             }
 
         current_mode = load_mode()
@@ -51,7 +51,7 @@ class AutoRecoveryService:
             }
 
         # --------------------------------------------------
-        # APPLY RECOVERY
+        # APPLY RECOVERY (EXPLICIT, GOVERNED)
         # --------------------------------------------------
         new_mode = {
             "current_mode": self.TARGET_MODE,

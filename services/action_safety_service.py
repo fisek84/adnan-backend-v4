@@ -1,12 +1,12 @@
 # services/action_safety_service.py
 
 """
-Safety & Validation Layer (CANONICAL)
+Safety & Validation Layer (CANONICAL) — FAZA 9
 
 Uloga:
 - sigurnosne provjere prije izvršenja
-- validacija sistemskih komandi
-- zaštita od opasnih workflow-a
+- deterministička validacija komandi
+- zaštita od opasnih i nekontrolisanih workflow-a
 
 NIŠTA se ne izvršava.
 Ovo je READ-ONLY guard sloj.
@@ -19,7 +19,7 @@ from models.ai_command import AICommand
 class ActionSafetyService:
 
     # ------------------------------------------
-    # Blokirane radnje — AI ih nikada ne smije izvršiti
+    # Blokirane radnje — sistem ih nikada ne smije izvršiti
     # ------------------------------------------
     BLOCKED_ACTIONS = {
         "delete_all",
@@ -41,24 +41,27 @@ class ActionSafetyService:
     def check(self, command: AICommand) -> None:
         """
         Validate AICommand before execution.
-        Raises exception if blocked.
+        Raises exception if blocked or invalid.
         """
 
-        if not command or not isinstance(command, AICommand):
+        if not isinstance(command, AICommand):
             raise ValueError("Invalid AICommand.")
 
-        if not command.command:
+        directive = command.command
+        params = command.input or {}
+
+        if not isinstance(directive, str) or not directive.strip():
             raise ValueError("Missing command directive.")
 
-        if command.command in self.BLOCKED_ACTIONS:
+        if directive in self.BLOCKED_ACTIONS:
             raise PermissionError(
-                f"Command '{command.command}' is blocked for safety reasons."
+                f"Command '{directive}' is blocked for safety reasons."
             )
 
-        if command.command == "workflow":
-            self._validate_workflow(command.input or {})
+        self._validate_params(params)
 
-        self._validate_params(command.input or {})
+        if directive == "workflow":
+            self._validate_workflow(params)
 
     # ============================================================
     # BACKWARD-COMPATIBILITY ADAPTER (NE DIRATI)
@@ -69,7 +72,7 @@ class ActionSafetyService:
         READ-ONLY. No execution.
         """
 
-        if not directive:
+        if not isinstance(directive, str) or not directive:
             return {
                 "allowed": False,
                 "reason": "Missing directive.",
@@ -83,20 +86,13 @@ class ActionSafetyService:
 
         try:
             self._validate_params(params or {})
+            if directive == "workflow":
+                self._validate_workflow(params or {})
         except Exception as e:
             return {
                 "allowed": False,
                 "reason": str(e),
             }
-
-        if directive == "workflow":
-            try:
-                self._validate_workflow(params or {})
-            except Exception as e:
-                return {
-                    "allowed": False,
-                    "reason": str(e),
-                }
 
         return {
             "allowed": True,
@@ -110,7 +106,7 @@ class ActionSafetyService:
             return
 
         if not isinstance(params, dict):
-            raise ValueError("Invalid parameter format. Expected a dict.")
+            raise ValueError("Invalid parameter format. Expected dict.")
 
         for key in params.keys():
             if not isinstance(key, str) or not key.strip():
@@ -137,7 +133,7 @@ class ActionSafetyService:
             directive = step.get("directive")
             params = step.get("params", {})
 
-            if not directive or not isinstance(directive, str):
+            if not isinstance(directive, str) or not directive.strip():
                 raise ValueError(f"Missing or invalid directive at step {index}.")
 
             if directive in self.BLOCKED_ACTIONS:
@@ -145,4 +141,4 @@ class ActionSafetyService:
                     f"Workflow blocked at step {index}: directive '{directive}' is blocked."
                 )
 
-            self._validate_params(params or {})
+            self._validate_params(params)

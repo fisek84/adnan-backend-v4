@@ -1,7 +1,7 @@
 # services/approval_state_service.py
 
 """
-APPROVAL STATE SERVICE — CANONICAL (FAZA 3.4)
+APPROVAL STATE SERVICE — CANONICAL (FAZA 9)
 
 Uloga:
 - SINGLE SOURCE OF TRUTH za approval
@@ -9,23 +9,26 @@ Uloga:
 - approval lifecycle je deterministički
 - NEMA izvršenja
 - NEMA automatike
-- NEMA eskalacione logike u FAZI 3
+- READ-ONLY iz perspektive executiona
 """
 
 from typing import Dict, Any
 from datetime import datetime
 from uuid import uuid4
+from threading import Lock
 
 
 class ApprovalStateService:
     """
     Minimalni, kanonski approval servis.
-    FAZA 3 podržava ISKLJUČIVO:
+
+    Podržani lifecycle:
     pending -> approved | rejected
     """
 
     def __init__(self):
         self._approvals: Dict[str, Dict[str, Any]] = {}
+        self._lock = Lock()
 
     # ============================================================
     # CREATE
@@ -39,10 +42,11 @@ class ApprovalStateService:
         risk_level: str,
     ) -> Dict[str, Any]:
 
-        if not command:
+        if not isinstance(command, str) or not command:
             raise ValueError("Approval requires command.")
 
         approval_id = str(uuid4())
+        now = datetime.utcnow().isoformat()
 
         approval = {
             "approval_id": approval_id,
@@ -52,54 +56,60 @@ class ApprovalStateService:
             "risk_level": risk_level,
             "requested_by": "system",
             "status": "pending",
-            "created_at": datetime.utcnow().isoformat(),
+            "created_at": now,
         }
 
-        self._approvals[approval_id] = approval
+        with self._lock:
+            self._approvals[approval_id] = approval
+
         return approval.copy()
 
     # ============================================================
     # DECISIONS
     # ============================================================
     def approve(self, approval_id: str) -> Dict[str, Any]:
-        approval = self._require(approval_id)
+        with self._lock:
+            approval = self._require(approval_id)
 
-        if approval.get("status") != "pending":
-            return approval.copy()
+            if approval["status"] != "pending":
+                return approval.copy()
 
-        approved = {
-            **approval,
-            "status": "approved",
-            "decided_at": datetime.utcnow().isoformat(),
-        }
+            approved = {
+                **approval,
+                "status": "approved",
+                "decided_at": datetime.utcnow().isoformat(),
+            }
 
-        self._approvals[approval_id] = approved
-        return approved.copy()
+            self._approvals[approval_id] = approved
+            return approved.copy()
 
     def reject(self, approval_id: str) -> Dict[str, Any]:
-        approval = self._require(approval_id)
+        with self._lock:
+            approval = self._require(approval_id)
 
-        if approval.get("status") != "pending":
-            return approval.copy()
+            if approval["status"] != "pending":
+                return approval.copy()
 
-        rejected = {
-            **approval,
-            "status": "rejected",
-            "decided_at": datetime.utcnow().isoformat(),
-        }
+            rejected = {
+                **approval,
+                "status": "rejected",
+                "decided_at": datetime.utcnow().isoformat(),
+            }
 
-        self._approvals[approval_id] = rejected
-        return rejected.copy()
+            self._approvals[approval_id] = rejected
+            return rejected.copy()
 
     # ============================================================
     # READ
     # ============================================================
     def get(self, approval_id: str) -> Dict[str, Any]:
-        return self._require(approval_id).copy()
+        with self._lock:
+            return self._require(approval_id).copy()
 
     def is_fully_approved(self, approval_id: str) -> bool:
-        approval = self._approvals.get(approval_id)
-        return bool(approval and approval.get("status") == "approved")
+        with self._lock:
+            approval = self._approvals.get(approval_id)
+            return bool(approval and approval.get("status") == "approved")
 
     # ============================================================
     # INTERNAL

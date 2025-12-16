@@ -1,17 +1,15 @@
+# services/ceo_response_assembler.py
+
 """
-CEO RESPONSE ASSEMBLER — CANONICAL (FAZA 5)
+CEO RESPONSE ASSEMBLER — CANONICAL (FAZA 12 / UX POLISH)
 
 Uloga:
-- JEDINO mjesto gdje se formira UX / CEO odgovor
-- prevodi interno stanje sistema u CEO-friendly snapshot
+- JEDINO mjesto gdje se formira CEO / UX odgovor
+- istinito mapira sistemsku realnost u UX
+- jasno razdvaja: SAVJET ≠ AKCIJA ≠ BLOKADA
 - NE donosi odluke
 - NE izvršava
-- NE tumači (UI samo renderuje)
-- strogo poštuje response contract
-
-CEOResponseAssembler ≠ Execution
-CEOResponseAssembler ≠ Governance
-CEOResponseAssembler ≠ Workflow
+- NE skriva governance
 """
 
 from typing import Dict, Any, Optional
@@ -20,10 +18,10 @@ from datetime import datetime
 
 class CEOResponseAssembler:
     """
-    Final UX response builder.
+    Final UX response builder (Truthful UX).
     """
 
-    CONTRACT_VERSION = "1.0"
+    CONTRACT_VERSION = "1.1"
 
     # =========================================================
     # MAIN ENTRYPOINT
@@ -35,13 +33,14 @@ class CEOResponseAssembler:
         intent: Optional[str],
         confidence: Optional[float],
         system_state: Optional[Dict[str, Any]] = None,
+        advisory: Optional[Dict[str, Any]] = None,
         execution_result: Optional[Dict[str, Any]] = None,
         workflow_snapshot: Optional[Dict[str, Any]] = None,
         approval_snapshot: Optional[Dict[str, Any]] = None,
         failure_snapshot: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
-        Sastavlja JEDINSTVEN CEO UX odgovor.
+        Sastavlja JEDINSTVEN, KANONSKI CEO UX odgovor.
         """
 
         response: Dict[str, Any] = {
@@ -66,58 +65,44 @@ class CEOResponseAssembler:
             ux_blocks += 1
 
         # -----------------------------------------------------
-        # EXECUTION RESULT (SINGLE COMMAND)
+        # ADVISORY (REASONING OUTPUT — READ ONLY)
+        # -----------------------------------------------------
+        if advisory:
+            response["advisory"] = {
+                "summary": advisory.get("summary"),
+                "options": advisory.get("options"),
+                "risks": advisory.get("risks"),
+                "read_only": True,
+            }
+            ux_blocks += 1
+
+        # -----------------------------------------------------
+        # EXECUTION RESULT (RESULT ONLY — NO INTERPRETATION)
         # -----------------------------------------------------
         if execution_result:
             response["execution"] = {
                 "state": execution_result.get("execution_state"),
                 "summary": execution_result.get("reason")
                 or execution_result.get("summary"),
-                "details": {
-                    k: v
-                    for k, v in execution_result.items()
-                    if k
-                    not in {
-                        "execution_state",
-                        "reason",
-                        "summary",
-                    }
-                },
-                "read_only": True,
+                "execution_id": execution_result.get("execution_id"),
+                "read_only": False,
             }
             ux_blocks += 1
 
-            # ---------------------------------------------
-            # UX PROMPT — INBOX → DELEGATION PREVIEW
-            # ---------------------------------------------
-            if execution_result.get("action") == "system_inbox_delegation_preview":
-                count = execution_result.get("response", {}).get("count", 0)
-
-                response["message"] = {
-                    "type": "delegation_prompt",
-                    "text": (
-                        f"Vidim {count} stavki u inboxu koje mogu biti delegirane. "
-                        "Želiš li da delegiram neku od njih?"
-                    ),
-                    "read_only": True,
-                }
-                ux_blocks += 1
-
         # -----------------------------------------------------
-        # WORKFLOW VISUALIZATION
+        # WORKFLOW VISUALIZATION (READ ONLY)
         # -----------------------------------------------------
         if workflow_snapshot:
             response["workflow"] = {
                 "workflow_id": workflow_snapshot.get("workflow_id"),
                 "state": workflow_snapshot.get("state"),
                 "current_step": workflow_snapshot.get("current_step"),
-                "failure_reason": workflow_snapshot.get("failure_reason"),
                 "read_only": True,
             }
             ux_blocks += 1
 
         # -----------------------------------------------------
-        # APPROVAL UX (WRITE CONFIRMATION ONLY)
+        # APPROVAL UX (EXPLICIT HUMAN ACTION REQUIRED)
         # -----------------------------------------------------
         if approval_snapshot:
             response["approval"] = {
@@ -126,12 +111,13 @@ class CEOResponseAssembler:
                 "approved_levels": approval_snapshot.get("approved_levels"),
                 "next_required_level": approval_snapshot.get("next_required_level"),
                 "fully_approved": approval_snapshot.get("fully_approved"),
+                "action_required": not approval_snapshot.get("fully_approved"),
                 "read_only": False,
             }
             ux_blocks += 1
 
         # -----------------------------------------------------
-        # FAILURE SNAPSHOT
+        # FAILURE SNAPSHOT (READ ONLY)
         # -----------------------------------------------------
         if failure_snapshot:
             response["failure"] = {
@@ -143,14 +129,14 @@ class CEOResponseAssembler:
             ux_blocks += 1
 
         # -----------------------------------------------------
-        # DEFAULT READ-ONLY UX MESSAGE (MANDATORY)
+        # DEFAULT UX MESSAGE (TRUTHFUL IDLE)
         # -----------------------------------------------------
         if ux_blocks == 0:
             response["message"] = {
                 "type": "system_info",
                 "text": (
-                    "Ja sam Adnan.AI. Sistem je aktivan i u read-only režimu. "
-                    "Ovaj zahtjev ne sadrži izvršivu naredbu."
+                    "Sistem je aktivan. "
+                    "Nema savjeta, nema izvršenja i nema blokada za ovaj zahtjev."
                 ),
                 "read_only": True,
             }

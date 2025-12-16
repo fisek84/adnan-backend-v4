@@ -9,14 +9,15 @@ from services.action_dictionary import get_action_handler
 
 class SystemReadExecutor:
     """
-    SystemReadExecutor — SINGLE READ EXECUTION POINT
+    SystemReadExecutor — CANONICAL (FAZA 13 / HORIZONTAL READ SCALING)
 
     Kanonska uloga:
-    - jedino mjesto gdje se izvršava system_query
-    - nema write-a
-    - nema agenata
-    - nema governance-a
-    - nema side-effecta
+    - JEDINO mjesto za izvršavanje READ system_query komandi
+    - READ-ONLY (nema write-a)
+    - NEMA agenata
+    - NEMA governance-a
+    - NEMA side-effecta
+    - siguran za horizontalno skaliranje
     """
 
     STATE_COMPLETED = "COMPLETED"
@@ -42,6 +43,7 @@ class SystemReadExecutor:
                 "started_at": started_at,
                 "finished_at": finished_at,
                 "response": None,
+                "read_only": True,
             }
 
         try:
@@ -54,9 +56,14 @@ class SystemReadExecutor:
                 "started_at": started_at,
                 "finished_at": finished_at,
                 "response": None,
+                "read_only": True,
             }
 
-        response = result.get("response") if isinstance(result, dict) else None
+        response = (
+            result.get("response")
+            if isinstance(result, dict)
+            else None
+        )
 
         return {
             "execution_id": execution_id,
@@ -65,4 +72,5 @@ class SystemReadExecutor:
             "started_at": started_at,
             "finished_at": finished_at,
             "response": response,
+            "read_only": True,
         }

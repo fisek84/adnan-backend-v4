@@ -1,4 +1,4 @@
-# C:\adnan-backend-v4\services\governance_service.py
+# services/governance_service.py
 
 from typing import Dict, Any
 from datetime import datetime
@@ -6,19 +6,20 @@ from datetime import datetime
 
 class GovernanceService:
     """
-    Governance / Policy Layer — FAZA F2 (EXPLICIT WRITE INTENT)
+    Governance / Policy Layer — FAZA 9 (POLICY EVOLUTION)
 
     PURPOSE:
     - Final permission check before execution
     - HARD global write gate
     - Explicit write intent required
     - Deterministic rules only
+    - NO side effects
     """
 
     # ============================================================
-    # GLOBAL WRITE SWITCH (FAZA F1)
+    # GLOBAL WRITE SWITCH (STATIC, CANONICAL)
     # ============================================================
-    GLOBAL_WRITE_ENABLED = True  # 🔓 ENABLED — FAZA F4
+    GLOBAL_WRITE_ENABLED = True  # 🔓 ENABLED
 
     WRITE_COMMANDS = {
         "create_database_entry",
@@ -44,7 +45,7 @@ class GovernanceService:
         }
         """
 
-        if not decision:
+        if not isinstance(decision, dict):
             return self._deny("Nema odluke za evaluaciju.")
 
         executor = decision.get("executor")
@@ -54,7 +55,7 @@ class GovernanceService:
             return self._deny("Nepotpuna odluka.")
 
         # --------------------------------------------------
-        # WRITE INTENT + GLOBAL WRITE LOCK (FAZA F2)
+        # WRITE INTENT + GLOBAL WRITE LOCK
         # --------------------------------------------------
         if command in self.WRITE_COMMANDS:
             if not self.GLOBAL_WRITE_ENABLED:
@@ -68,7 +69,7 @@ class GovernanceService:
                 )
 
         # --------------------------------------------------
-        # TIME-BASED RULE (SECONDARY)
+        # TIME-BASED SAFETY RULE (DETERMINISTIC)
         # --------------------------------------------------
         hour = datetime.utcnow().hour
         if executor == "notion_ops" and hour < 5:
@@ -80,7 +81,7 @@ class GovernanceService:
         # SOP CONFIRMATION GUARANTEE
         # --------------------------------------------------
         if executor == "sop_execution_manager":
-            if not decision.get("confirmed"):
+            if decision.get("confirmed") is not True:
                 return self._deny(
                     "SOP nije eksplicitno potvrđen."
                 )

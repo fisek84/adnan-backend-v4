@@ -1,7 +1,7 @@
 # services/rbac_service.py
 
 """
-RBAC SERVICE — CANONICAL
+RBAC SERVICE — CANONICAL (FAZA 9)
 
 Uloga:
 - jedini izvor istine za RBAC pravila
@@ -9,17 +9,19 @@ Uloga:
   - ulozi
   - akciji
 - READ-ONLY
+- bez side-effecta
 """
 
 from typing import Dict, Any
+from copy import deepcopy
 
 
 class RBACService:
     def __init__(self):
         # --------------------------------------------------------
-        # ROLE DEFINITIONS (CANONICAL)
+        # ROLE DEFINITIONS (CANONICAL, STATIC)
         # --------------------------------------------------------
-        self.roles: Dict[str, Dict[str, Any]] = {
+        self._roles: Dict[str, Dict[str, Any]] = {
             # ----------------------------------
             # SYSTEM (OS INTERNAL)
             # ----------------------------------
@@ -73,26 +75,27 @@ class RBACService:
     # ROLE LOOKUP (READ-ONLY)
     # ============================================================
     def get_role(self, role: str) -> Dict[str, Any]:
-        if not role:
+        if not isinstance(role, str) or not role:
             return {}
-        return self.roles.get(role, {}).copy()
+        role_def = self._roles.get(role)
+        return deepcopy(role_def) if role_def else {}
 
     # ============================================================
     # CHECKS (READ-ONLY)
     # ============================================================
     def can_request(self, role: str) -> bool:
-        role_def = self.roles.get(role)
-        return bool(role_def and role_def.get("can_request"))
+        role_def = self._roles.get(role)
+        return bool(role_def and role_def.get("can_request") is True)
 
     def can_execute(self, role: str) -> bool:
-        role_def = self.roles.get(role)
-        return bool(role_def and role_def.get("can_execute"))
+        role_def = self._roles.get(role)
+        return bool(role_def and role_def.get("can_execute") is True)
 
     def is_action_allowed(self, role: str, action: str) -> bool:
-        if not role or not action:
+        if not isinstance(role, str) or not isinstance(action, str):
             return False
 
-        role_def = self.roles.get(role)
+        role_def = self._roles.get(role)
         if not role_def:
             return False
 
@@ -110,6 +113,6 @@ class RBACService:
     # ============================================================
     def get_rbac_snapshot(self) -> Dict[str, Any]:
         return {
-            "roles": self.roles,
+            "roles": deepcopy(self._roles),
             "read_only": True,
         }

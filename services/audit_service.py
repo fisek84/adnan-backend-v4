@@ -28,13 +28,16 @@ class AuditService:
         decision_type: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
 
-        records = self.memory.memory.get("decision_outcomes", [])
+        records = list(self.memory.memory.get("decision_outcomes", []))
 
         if decision_type:
             records = [
                 r for r in records
                 if r.get("decision_type") == decision_type
             ]
+
+        if limit <= 0:
+            return []
 
         return records[-limit:]
 
@@ -50,15 +53,16 @@ class AuditService:
         Raw execution governance statistics.
         """
 
-        stats = self.memory.memory.get("execution_stats", {})
+        stats = self.memory.memory.get("execution_stats", {}) or {}
 
         if context_type and directive:
             return stats.get(f"{context_type}:{directive}", {})
 
         if context_type:
+            prefix = f"{context_type}:"
             return {
                 k: v for k, v in stats.items()
-                if k.startswith(f"{context_type}:")
+                if k.startswith(prefix)
             }
 
         return stats
@@ -71,16 +75,18 @@ class AuditService:
         Aggregated execution KPIs across all directives.
         """
 
-        stats = self.memory.memory.get("execution_stats", {})
+        stats = self.memory.memory.get("execution_stats", {}) or {}
 
         total = 0
         allowed = 0
         blocked = 0
 
         for entry in stats.values():
-            total += entry.get("total", 0)
-            allowed += entry.get("allowed", 0)
-            blocked += entry.get("blocked", 0)
+            if not isinstance(entry, dict):
+                continue
+            total += int(entry.get("total", 0))
+            allowed += int(entry.get("allowed", 0))
+            blocked += int(entry.get("blocked", 0))
 
         success_rate = (allowed / total) if total > 0 else None
 
@@ -96,7 +102,8 @@ class AuditService:
     # SOP AUDIT
     # ============================================================
     def get_sop_audit(self, sop_key: str) -> Dict[str, Any]:
-        relations = self.memory.memory.get("cross_sop_relations", {})
+        relations = self.memory.memory.get("cross_sop_relations", {}) or {}
+
         related = {
             k: v for k, v in relations.items()
             if k.endswith(f"->{sop_key}") or k.startswith(f"{sop_key}->")
@@ -130,6 +137,9 @@ class AuditService:
             r for r in self.memory.memory.get("decision_outcomes", [])
             if r.get("success") is False
         ]
+
+        if limit <= 0:
+            return []
 
         return incidents[-limit:]
 

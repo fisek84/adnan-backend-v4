@@ -1,15 +1,16 @@
 """
-APPLICATION BOOTSTRAP (CANONICAL)
+APPLICATION BOOTSTRAP — CANONICAL (FAZA 14)
 
 Uloga:
 - Centralno mjesto za runtime wiring servisa
+- JEDINI entrypoint za inicijalizaciju sistema
 - NE sadrži biznis logiku
 - NE sadrži UX logiku
 - NE izvršava komande
 
-Odgovornost:
-- instancira servise
-- povezuje router ↔ servisi
+Garantuje:
+- jednokratnu inicijalizaciju
+- ARCH_LOCK enforcement
 """
 
 from services.coo_translation_service import COOTranslationService
@@ -21,12 +22,32 @@ from services.knowledge_snapshot_service import KnowledgeSnapshotService
 from routers.adnan_ai_router import set_adnan_ai_services
 from routers.ai_ops_router import set_cron_service
 
+from system_version import ARCH_LOCK
+
+# ---------------------------------------------------------
+# INTERNAL BOOTSTRAP GUARD
+# ---------------------------------------------------------
+_BOOTSTRAPPED = False
+
 
 def bootstrap_application() -> None:
     """
     Wire core AI services into routers.
     Must be called ONCE during application startup.
     """
+
+    global _BOOTSTRAPPED
+
+    if _BOOTSTRAPPED:
+        raise RuntimeError("Application already bootstrapped")
+
+    # ---------------------------------------------------------
+    # ARCHITECTURE LOCK ENFORCEMENT
+    # ---------------------------------------------------------
+    if ARCH_LOCK is not True:
+        raise RuntimeError(
+            "ARCH_LOCK must be True in production bootstrap"
+        )
 
     # ---------------------------------------------------------
     # Instantiate canonical services
@@ -42,16 +63,17 @@ def bootstrap_application() -> None:
     knowledge_snapshot_service = KnowledgeSnapshotService()
 
     # ❌ NAMJERNO NEMA cron job registracije
-    # READ-ONLY snapshot se poziva EKSKLUZIVNO na zahtjev
+    # READ-ONLY snapshot se poziva ISKLJUČIVO na zahtjev
 
-    # Inject cron into OPS router (NO EXECUTION HERE)
     set_cron_service(cron_service)
 
     # ---------------------------------------------------------
-    # Inject into router (CANONICAL)
+    # Inject into AI router (CANONICAL)
     # ---------------------------------------------------------
     set_adnan_ai_services(
         command_service=ai_command_service,
         coo_translation=coo_translation_service,
         coo_conversation=coo_conversation_service,
     )
+
+    _BOOTSTRAPPED = True

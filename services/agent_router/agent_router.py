@@ -1,15 +1,15 @@
+# services/agent_router/agent_router.py
+
 """
-AGENT ROUTER — CANONICAL (FAZA 6 FINAL)
+AGENT ROUTER — CANONICAL (FAZA 13 / SCALING)
 
 Uloga:
 - JEDINO mjesto gdje se vrši agent DELEGATION + EXECUTION
-- izbor agenta:
-    capability  → AgentRegistryService
-    load        → AgentLoadBalancerService
-    health      → AgentHealthService
+- deterministički routing
+- eksplicitni backpressure
+- failure containment
 - NEMA governance
 - NEMA approval
-- NEMA policy
 - NEMA UX semantike
 """
 
@@ -23,6 +23,7 @@ from openai import OpenAI
 from services.agent_registry_service import AgentRegistryService
 from services.agent_load_balancer_service import AgentLoadBalancerService
 from services.agent_health_service import AgentHealthService
+from services.agent_isolation_service import AgentIsolationService
 
 
 class AgentRouter:
@@ -31,6 +32,7 @@ class AgentRouter:
         registry: Optional[AgentRegistryService] = None,
         load_balancer: Optional[AgentLoadBalancerService] = None,
         health_service: Optional[AgentHealthService] = None,
+        isolation_service: Optional[AgentIsolationService] = None,
     ):
         self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
@@ -38,17 +40,19 @@ class AgentRouter:
         self._registry = registry or AgentRegistryService()
         self._load = load_balancer or AgentLoadBalancerService()
         self._health = health_service or AgentHealthService()
+        self._isolation = isolation_service or AgentIsolationService()
 
     # =====================================================
-    # AGENT SELECTION (CAPABILITY + HEALTH + LOAD)
+    # AGENT SELECTION (DETERMINISTIC, SCALABLE)
     # =====================================================
     def _select_agent(self, command: str) -> Optional[Dict[str, Any]]:
-        candidates: List[Dict[str, Any]] = []
-
         agents = self._registry.get_agents_with_capability(command)
 
         for agent in agents:
             name = agent["agent_name"]
+
+            if self._isolation.is_isolated(name):
+                continue
 
             if not self._health.is_healthy(name):
                 continue
@@ -56,16 +60,13 @@ class AgentRouter:
             if not self._load.can_accept(name):
                 continue
 
-            candidates.append(agent)
+            # deterministički: prvi validan po registry redoslijedu
+            return agent
 
-        if not candidates:
-            return None
-
-        # deterministički: prvi po registry redoslijedu
-        return candidates[0]
+        return None
 
     # =====================================================
-    # ROUTE (NO EXECUTION)
+    # ROUTE (NO EXECUTION, NO SIDE EFFECTS)
     # =====================================================
     def route(self, command: Dict[str, str]) -> Dict[str, Optional[str]]:
         cmd = command.get("command")
@@ -79,7 +80,7 @@ class AgentRouter:
         return {"agent": agent["agent_name"]}
 
     # =====================================================
-    # EXECUTE (AGENT ONLY)
+    # EXECUTE (CONTROLLED, BACKPRESSURE AWARE)
     # =====================================================
     async def execute(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -94,7 +95,10 @@ class AgentRouter:
 
         agent = self._select_agent(command)
         if not agent:
-            return {"success": False, "reason": "no_available_healthy_agent"}
+            return {
+                "success": False,
+                "reason": "no_available_agent_or_backpressure",
+            }
 
         agent_name = agent["agent_name"]
         assistant_id = agent.get("metadata", {}).get("assistant_id")
@@ -107,7 +111,18 @@ class AgentRouter:
             }
 
         execution_id = f"exec_{uuid.uuid4().hex}"
-        self._load.reserve(agent_name)
+
+        # -------------------------------------------------
+        # BACKPRESSURE RESERVATION
+        # -------------------------------------------------
+        try:
+            self._load.reserve(agent_name)
+        except Exception:
+            return {
+                "success": False,
+                "reason": "backpressure_rejected",
+                "agent": agent_name,
+            }
 
         try:
             thread = self.client.beta.threads.create()
@@ -148,7 +163,9 @@ class AgentRouter:
             if content["type"] != "output_json":
                 raise RuntimeError("invalid_agent_response")
 
+            # ---------------------------------------------
             # SUCCESS SIGNALS
+            # ---------------------------------------------
             self._load.record_success(agent_name)
             self._health.mark_heartbeat(agent_name)
 
@@ -161,8 +178,12 @@ class AgentRouter:
             }
 
         except Exception as e:
+            # ---------------------------------------------
+            # FAILURE CONTAINMENT
+            # ---------------------------------------------
             self._load.record_failure(agent_name)
             self._health.mark_unhealthy(agent_name, reason=str(e))
+            self._isolation.isolate(agent_name)
 
             return {
                 "success": False,

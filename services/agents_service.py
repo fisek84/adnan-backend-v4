@@ -2,30 +2,29 @@ import logging
 from typing import Dict, Any
 
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO)
 
 
 class AgentsService:
     """
-    AgentsService — DEPRECATED (KANONSKI)
+    AgentsService — DEPRECATED (KANONSKI) — FAZA 10
 
     STATUS:
-    - ZADRŽAN zbog kompatibilnosti
-    - VIŠE NE IZVRŠAVA NIKAKVE AKCIJE
-    - SVI execution path-ovi moraju ići preko OpenAI agenata
+    - ZADRŽAN isključivo zbog kompatibilnosti
+    - NE IZVRŠAVA nikakve akcije
+    - SVI execution path-ovi moraju ići preko AgentRouter / OpenAI agenata
 
-    Ako se ovaj servis pozove:
-    - to je GREŠKA u arhitekturi
-    - i mora biti VIDJIVA odmah
+    KANON:
+    - Pozivanje ovog servisa = ARHITEKTURNI BUG
+    - Greška mora biti glasna i vidljiva
     """
 
     def __init__(self):
         logger.warning(
-            "[AgentsService] INITIALIZED — DEPRECATED SERVICE (NO-OP)"
+            "[AgentsService] INITIALIZED — DEPRECATED / NO-OP"
         )
 
     # ============================================================
-    # PUBLIC ASYNC ENTRYPOINT (BLOCKED)
+    # PUBLIC ASYNC ENTRYPOINT (EXPLICITLY BLOCKED)
     # ============================================================
     async def execute(
         self,
@@ -34,7 +33,7 @@ class AgentsService:
         payload: Dict[str, Any],
         execution_context: Dict[str, Any],
     ) -> Dict[str, Any]:
-        logger.error(
+        logger.critical(
             "[AgentsService] BLOCKED execution attempt | command=%s payload=%s context=%s",
             command,
             payload,
@@ -43,7 +42,7 @@ class AgentsService:
 
         return {
             "success": False,
-            "summary": "AgentsService is deprecated. Execution is blocked.",
+            "summary": "AgentsService is deprecated and blocked by canon.",
             "error": "deprecated_executor",
             "command": command,
         }

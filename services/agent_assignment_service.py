@@ -1,9 +1,11 @@
+# services/agent_assignment_service.py
+
 from typing import Dict, Any, Optional, List
 
 
 class AgentAssignmentService:
     """
-    AgentAssignmentService — FAZA 7 / KORAK 3 (FIXED)
+    AgentAssignmentService — FAZA 10 (AGENT SPECIALIZATION)
 
     PURPOSE:
     - Determinističko mapiranje EXECUTORA na agenta
@@ -21,7 +23,7 @@ class AgentAssignmentService:
         agents_identity: Dict[str, Dict[str, Any]],
         agent_health_registry,
     ):
-        self._agents_identity = agents_identity
+        self._agents_identity = agents_identity or {}
         self._health = agent_health_registry
 
     # -------------------------------------------------
@@ -33,23 +35,26 @@ class AgentAssignmentService:
         Deterministic order: sorted agent_id.
         """
 
+        if not executor:
+            return None
+
         eligible_agents: List[str] = []
 
         for agent_id, agent in self._agents_identity.items():
-            # enabled check
-            if not agent.get("enabled", False):
+            # executor match (STRICT)
+            if agent_id != executor:
                 continue
 
-            # executor match (KEY FIX)
-            if agent_id != executor:
+            # enabled check
+            if agent.get("enabled") is not True:
                 continue
 
             try:
                 health = self._health.get_health(agent_id)
-            except KeyError:
+            except Exception:
                 continue
 
-            if not health.get("alive", False):
+            if health.get("alive") is not True:
                 continue
 
             eligible_agents.append(agent_id)

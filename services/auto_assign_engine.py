@@ -5,11 +5,20 @@ from typing import Any, Dict, Optional, List
 
 class AutoAssignEngine:
     """
-    Full auto-assign intelligence:
+    AutoAssignEngine — FAZA 10 / Agent Specialization
+
+    PURPOSE:
+    - Deterministička relacijska rezolucija (READ-ONLY)
+    - Task → Goal (direktno)
     - Task → Project
-    - Task → Goal (direct)
-    - Task → Goal via Project (fallback)
-    - Project → Tasks
+    - Project → Primary Goal (fallback)
+    - Project → Tasks (reverse lookup)
+
+    CONSTRAINTS:
+    - READ ONLY
+    - NEMA execution-a
+    - NEMA side-effecta
+    - NEMA autonomne logike
     """
 
     # -----------------------------------------------------------
@@ -44,7 +53,10 @@ class AutoAssignEngine:
     # TASK → GOAL preko PROJECTA (fallback)
     # -----------------------------------------------------------
     @staticmethod
-    def get_goal_from_project_fallback(task_page, project_page):
+    def get_goal_from_project_fallback(
+        task_page: Dict[str, Any],
+        project_page: Dict[str, Any],
+    ) -> Optional[str]:
         return AutoAssignEngine.get_primary_goal_from_project(project_page)
 
     # -----------------------------------------------------------
@@ -78,7 +90,10 @@ class AutoAssignEngine:
     # EFFECTIVE GOAL LOGIC
     # -----------------------------------------------------------
     @staticmethod
-    def resolve_effective_goal(task_page, project_page=None) -> Optional[str]:
+    def resolve_effective_goal(
+        task_page: Dict[str, Any],
+        project_page: Optional[Dict[str, Any]] = None,
+    ) -> Optional[str]:
         """
         Priority:
         1. Direct Goal on Task
@@ -89,7 +104,6 @@ class AutoAssignEngine:
             return direct
 
         if project_page:
-            fallback = AutoAssignEngine.get_primary_goal_from_project(project_page)
-            return fallback
+            return AutoAssignEngine.get_primary_goal_from_project(project_page)
 
         return None

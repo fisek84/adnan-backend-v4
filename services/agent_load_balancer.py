@@ -1,9 +1,10 @@
 from typing import Dict, Any
+import threading
 
 
 class AgentLoadBalancer:
     """
-    AgentLoadBalancer — FAZA 7 / KORAK 4
+    AgentLoadBalancer — FAZA 10 / Agent Specialization
 
     PURPOSE:
     - Deterministička kontrola opterećenja po agentu
@@ -24,6 +25,7 @@ class AgentLoadBalancer:
         self._max_in_flight = max_in_flight_per_agent
         # agent_id -> in_flight_count
         self._in_flight: Dict[str, int] = {}
+        self._lock = threading.Lock()
 
     # -------------------------------------------------
     # LOAD CHECK
@@ -32,7 +34,8 @@ class AgentLoadBalancer:
         """
         Returns True if agent can accept a new task.
         """
-        return self._in_flight.get(agent_id, 0) < self._max_in_flight
+        with self._lock:
+            return self._in_flight.get(agent_id, 0) < self._max_in_flight
 
     # -------------------------------------------------
     # RESERVATION
@@ -42,13 +45,14 @@ class AgentLoadBalancer:
         Reserves one execution slot for agent.
         Must be called BEFORE execution.
         """
-        current = self._in_flight.get(agent_id, 0)
-        if current >= self._max_in_flight:
-            raise RuntimeError(
-                f"[LOAD_BALANCER] Agent '{agent_id}' exceeded max_in_flight limit"
-            )
+        with self._lock:
+            current = self._in_flight.get(agent_id, 0)
+            if current >= self._max_in_flight:
+                raise RuntimeError(
+                    f"[LOAD_BALANCER] Agent '{agent_id}' exceeded max_in_flight limit"
+                )
 
-        self._in_flight[agent_id] = current + 1
+            self._in_flight[agent_id] = current + 1
 
     # -------------------------------------------------
     # RELEASE
@@ -58,13 +62,14 @@ class AgentLoadBalancer:
         Releases one execution slot for agent.
         Must be called AFTER execution.
         """
-        current = self._in_flight.get(agent_id, 0)
-        if current <= 0:
-            # defensive: never go negative
-            self._in_flight[agent_id] = 0
-            return
+        with self._lock:
+            current = self._in_flight.get(agent_id, 0)
+            if current <= 0:
+                # defensive: never go negative
+                self._in_flight[agent_id] = 0
+                return
 
-        self._in_flight[agent_id] = current - 1
+            self._in_flight[agent_id] = current - 1
 
     # -------------------------------------------------
     # READ-ONLY SNAPSHOT
@@ -73,4 +78,5 @@ class AgentLoadBalancer:
         """
         Returns current in-flight snapshot.
         """
-        return dict(self._in_flight)
+        with self._lock:
+            return dict(self._in_flight)

@@ -1,17 +1,18 @@
 # services/policy_service.py
 
 """
-ENTERPRISE POLICY SERVICE — FAZA 13 + FAZA 16.1 (ALIGNED)
+ENTERPRISE POLICY SERVICE — FAZA 9 (POLICY EVOLUTION)
 
 Uloga:
-- statički enterprise policy sloj
-- kontekstualna pravila (context, global)
-- RBAC pitanja DELEGIRA na RBACService
-- READ-ONLY
-- enforcement ostaje izvan ovog servisa
+- statički policy sloj (kanonski)
+- policy se NE izvršava
+- policy se NE evaluira ovdje
+- policy se SAMO izlaže (READ-ONLY)
+- enforcement je izvan ovog servisa
 """
 
 from typing import Dict, Any, Optional
+from copy import deepcopy
 from services.rbac_service import RBACService
 
 
@@ -20,7 +21,7 @@ class PolicyService:
         # --------------------------------------------------------
         # GLOBAL POLICIES (STATIC, READ-ONLY)
         # --------------------------------------------------------
-        self.global_policies: Dict[str, Any] = {
+        self._global_policies: Dict[str, Any] = {
             "allow_write_actions": True,
             "require_confirmation_for_write": True,
             "max_parallel_steps": 5,
@@ -29,7 +30,7 @@ class PolicyService:
         # --------------------------------------------------------
         # CONTEXT POLICIES (STATIC, READ-ONLY)
         # --------------------------------------------------------
-        self.context_policies: Dict[str, Dict[str, Any]] = {
+        self._context_policies: Dict[str, Dict[str, Any]] = {
             "chat": {
                 "execution_allowed": False,
             },
@@ -50,51 +51,54 @@ class PolicyService:
         # --------------------------------------------------------
         # RBAC (SINGLE SOURCE OF TRUTH)
         # --------------------------------------------------------
-        self.rbac = RBACService()
+        self._rbac = RBACService()
 
     # ============================================================
     # GLOBAL POLICY (READ-ONLY)
     # ============================================================
     def get_global_policy(self) -> Dict[str, Any]:
-        return dict(self.global_policies)
+        return deepcopy(self._global_policies)
 
     # ============================================================
     # CONTEXT POLICY (READ-ONLY)
     # ============================================================
     def get_context_policy(self, context_type: str) -> Optional[Dict[str, Any]]:
-        if not context_type:
+        if not isinstance(context_type, str) or not context_type:
             return None
-        policy = self.context_policies.get(context_type)
-        return dict(policy) if policy else None
+
+        policy = self._context_policies.get(context_type)
+        return deepcopy(policy) if policy else None
 
     # ============================================================
     # RBAC PROXIES (READ-ONLY)
     # ============================================================
     def get_role_policy(self, role: str) -> Dict[str, Any]:
-        return self.rbac.get_role(role)
+        if not role:
+            return {}
+        return self._rbac.get_role(role)
 
     def is_action_allowed_for_role(self, role: str, action: str) -> bool:
         if not role or not action:
             return False
-        return self.rbac.is_action_allowed(role, action)
+        return self._rbac.is_action_allowed(role, action)
 
     def can_request(self, role: str) -> bool:
         if not role:
             return False
-        return self.rbac.can_request(role)
+        return self._rbac.can_request(role)
 
     def can_execute(self, role: str) -> bool:
         if not role:
             return False
-        return self.rbac.can_execute(role)
+        return self._rbac.can_execute(role)
 
     # ============================================================
     # POLICY SNAPSHOT (UI / AUDIT)
     # ============================================================
     def get_policy_snapshot(self) -> Dict[str, Any]:
         return {
-            "global": dict(self.global_policies),
-            "contexts": dict(self.context_policies),
-            "rbac": self.rbac.get_rbac_snapshot(),
+            "global": deepcopy(self._global_policies),
+            "contexts": deepcopy(self._context_policies),
+            "rbac": self._rbac.get_rbac_snapshot(),
             "read_only": True,
         }

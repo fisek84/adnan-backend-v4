@@ -4,7 +4,7 @@ import threading
 
 class AgentLifecycleService:
     """
-    AgentLifecycleService — FAZA 7 / KORAK 6 (FINAL)
+    AgentLifecycleService — FAZA 10 / Agent Specialization
 
     PURPOSE:
     - Eksplicitna deaktivacija i reaktivacija agenata
@@ -24,6 +24,13 @@ class AgentLifecycleService:
         self._agent_active: Dict[str, bool] = {}
 
     # -------------------------------------------------
+    # INTERNAL
+    # -------------------------------------------------
+    def _set_active(self, agent_id: str, active: bool):
+        with self._lock:
+            self._agent_active[agent_id] = bool(active)
+
+    # -------------------------------------------------
     # LIFECYCLE CONTROL
     # -------------------------------------------------
     def deactivate(self, agent_id: str):
@@ -31,16 +38,14 @@ class AgentLifecycleService:
         Deactivates agent explicitly.
         Deactivated agent MUST NOT receive new assignments.
         """
-        with self._lock:
-            self._agent_active[agent_id] = False
+        self._set_active(agent_id, False)
 
     def reactivate(self, agent_id: str):
         """
         Reactivates agent explicitly.
         Reactivation is manual or policy-driven only.
         """
-        with self._lock:
-            self._agent_active[agent_id] = True
+        self._set_active(agent_id, True)
 
     # -------------------------------------------------
     # STATUS

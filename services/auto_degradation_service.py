@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 class AutoDegradationService:
     """
-    Auto-degradation Service
+    AutoDegradationService — FAZA 10 / Agent Specialization
 
     RULES:
     - READ alerting status
@@ -29,13 +29,13 @@ class AutoDegradationService:
     def evaluate_and_apply(self) -> Dict[str, Any]:
         alert_status = self.alerting.evaluate()
 
-        if alert_status["ok"]:
+        if alert_status.get("ok") is True:
             return {
                 "changed": False,
                 "reason": "System healthy",
             }
 
-        violations = alert_status.get("violations", [])
+        violations = alert_status.get("violations") or []
         if not violations:
             return {
                 "changed": False,
@@ -55,7 +55,7 @@ class AutoDegradationService:
             }
 
         # --------------------------------------------------
-        # APPLY MODE CHANGE
+        # APPLY MODE CHANGE (EXPLICIT, GOVERNED)
         # --------------------------------------------------
         new_mode = {
             "current_mode": target_mode,
@@ -79,14 +79,16 @@ class AutoDegradationService:
         }
 
     # --------------------------------------------------
-    # MODE RESOLUTION
+    # MODE RESOLUTION (DETERMINISTIC)
     # --------------------------------------------------
     def _resolve_target_mode(self, violations) -> str:
         for v in violations:
-            if v["type"] == "governance_block_rate":
+            v_type = v.get("type")
+
+            if v_type == "governance_block_rate":
                 return "restricted"
 
-            if v["type"] in {
+            if v_type in {
                 "decision_success_rate",
                 "execution_failure_rate",
             }:
