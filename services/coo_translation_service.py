@@ -25,7 +25,6 @@ class COOTranslationService:
 
     def __init__(self):
         self.intent_classifier = IntentClassifier()
-        # 🔒 SHARED approval state (CANONICAL)
         self.approvals = get_approval_state()
 
     def translate(
@@ -49,7 +48,7 @@ class COOTranslationService:
 
             return AICommand(
                 command=self.READ_ONLY_COMMAND,
-                intent=IntentType.SYSTEM_QUERY.value,
+                intent=None,
                 input={
                     "raw_text": raw_input,
                     "snapshot_type": self.CEO_READ_ONLY_MATCHES[text],
@@ -60,9 +59,11 @@ class COOTranslationService:
             )
 
         # -----------------------------------------------------
-        # 1) INTENT CLASSIFICATION (CANONICAL)
+        # 1) INTENT CLASSIFICATION
         # -----------------------------------------------------
-        intent: Intent = self.intent_classifier.classify(raw_input, source=source)
+        intent: Intent = self.intent_classifier.classify(
+            raw_input, source=source
+        )
 
         if intent.confidence < self.intent_classifier.DEFAULT_CONFIDENCE_THRESHOLD:
             return None
@@ -79,7 +80,7 @@ class COOTranslationService:
 
             return AICommand(
                 command=self.READ_ONLY_COMMAND,
-                intent=intent.type.value,
+                intent=None,
                 input={"raw_text": raw_input},
                 params={},
                 metadata={"context_type": "system", "read_only": True},
@@ -95,7 +96,7 @@ class COOTranslationService:
 
             return AICommand(
                 command="list_goals",
-                intent=intent.type.value,
+                intent=None,
                 input={"raw_text": raw_input},
                 params={},
                 metadata={"context_type": "system", "read_only": True},
@@ -109,7 +110,6 @@ class COOTranslationService:
 
             approval_id = context.get("approval_id")
 
-            # ✅ REUSE APPROVAL IF PROVIDED
             if approval_id:
                 try:
                     approval = self.approvals.get(approval_id)
@@ -118,17 +118,15 @@ class COOTranslationService:
             else:
                 approval = None
 
-            # 🆕 CREATE APPROVAL ONLY IF NOT PROVIDED
             if not approval:
                 approval = self.approvals.create(
-                    command="update_goal",
+                    command="goal_write",
                     payload_summary={"raw_text": raw_input},
                     scope="goals",
                     risk_level="medium",
                 )
                 approval_id = approval["approval_id"]
 
-            # minimal extraction (non-binding)
             m_q = re.search(r"\bq([1-4])\b", lowered)
             quarter = f"Q{m_q.group(1)}" if m_q else None
             m_year = re.search(r"\b(20\d{2})\b", lowered)
@@ -137,8 +135,8 @@ class COOTranslationService:
             target_pct = int(m_pct.group(1)) if m_pct else None
 
             return AICommand(
-                command="update_goal",
-                intent=intent.type.value,
+                command="goal_write",
+                intent=IntentType.GOAL_CREATE.value,
                 input={
                     "raw_text": raw_input,
                     "quarter": quarter,

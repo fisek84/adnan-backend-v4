@@ -35,8 +35,14 @@ class ActionExecutionService:
         Prima DOMAIN INTENT i izvršava ga preko agenta.
         """
 
+        if not intent:
+            raise ValueError("Execution intent is required.")
+
+        if not isinstance(payload, dict):
+            raise ValueError("Execution payload must be a dict.")
+
         # --------------------------------------------------------
-        # MAP INTENT → NOTION PAYLOAD (MOZAK)
+        # MAP INTENT → NOTION ACTION (MOZAK)
         # --------------------------------------------------------
         notion_action = self._map_intent_to_notion(intent, payload)
 
@@ -71,36 +77,48 @@ class ActionExecutionService:
         payload: Dict[str, Any],
     ) -> Dict[str, Any]:
 
-        # ---------- TASKS ----------
+        # =====================================================
+        # TASKS
+        # =====================================================
         if intent == "create_task":
+            title = payload.get("title")
+            if not title:
+                raise ValueError("create_task requires 'title'")
+
+            relations = {}
+            if payload.get("goal_id"):
+                relations["Goal"] = [payload["goal_id"]]
+
             return {
                 "operation": "create_page",
-                "db": "tasks",
+                "database": "tasks",
                 "payload": NotionSchemaRegistry.build_create_page_payload(
                     db_key="tasks",
                     properties={
-                        "Name": payload["title"],
+                        "Name": title,
                         "Status": payload.get("status", "pending"),
                         "Priority": payload.get("priority"),
                         "Description": payload.get("description"),
                     },
-                    relations={
-                        "Goal": [payload["goal_id"]]
-                        if payload.get("goal_id")
-                        else []
-                    },
+                    relations=relations or None,
                 ),
             }
 
-        # ---------- GOALS ----------
+        # =====================================================
+        # GOALS
+        # =====================================================
         if intent == "create_goal":
+            name = payload.get("name")
+            if not name:
+                raise ValueError("create_goal requires 'name'")
+
             return {
                 "operation": "create_page",
-                "db": "goals",
+                "database": "goals",
                 "payload": NotionSchemaRegistry.build_create_page_payload(
                     db_key="goals",
                     properties={
-                        "Name": payload["name"],
+                        "Name": name,
                         "Status": payload.get("status", "active"),
                         "Priority": payload.get("priority"),
                         "Description": payload.get("description"),
@@ -108,4 +126,7 @@ class ActionExecutionService:
                 ),
             }
 
+        # =====================================================
+        # UNKNOWN INTENT
+        # =====================================================
         raise ValueError(f"Unknown execution intent: {intent}")

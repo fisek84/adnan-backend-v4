@@ -10,22 +10,30 @@ logger = logging.getLogger(__name__)
 
 class OpenAIAssistantExecutor:
     """
-    OPENAI ASSISTANT EXECUTION ADAPTER — CANONICAL
+    OPENAI ASSISTANT EXECUTION ADAPTER — KANONSKI
 
-    Uloga:
-    - JEDINA veza backend → OpenAI agent
-    - nema biznis logike
-    - nema odlučivanja
-    - izvršava task nad asst_id
+    Pravila:
+    - jedina veza backend → OpenAI agent
+    - NEMA biznis logike
+    - agent je GLUP izvršilac
+    - backend šalje JEDNOZNAČAN execution kontrakt
     """
 
     def __init__(self):
-        self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        api_key = os.getenv("OPENAI_API_KEY")
         self.assistant_id = os.getenv("NOTION_OPS_ASSISTANT_ID")
+
+        if not api_key:
+            raise RuntimeError("OPENAI_API_KEY is missing")
 
         if not self.assistant_id:
             raise RuntimeError("NOTION_OPS_ASSISTANT_ID is missing")
 
+        self.client = OpenAI(api_key=api_key)
+
+    # ============================================================
+    # EXECUTE AGENT TASK
+    # ============================================================
     async def execute(self, task: Dict[str, Any]) -> Dict[str, Any]:
         """
         task = {
@@ -34,26 +42,33 @@ class OpenAIAssistantExecutor:
         }
         """
 
+        if not isinstance(task, dict):
+            raise ValueError("Agent task must be a dict")
+
+        command = task.get("command")
+        payload = task.get("payload")
+
+        if not command or not isinstance(payload, dict):
+            raise ValueError("Agent task requires 'command' and 'payload'")
+
         # -------------------------------------------------
         # 1. CREATE THREAD
         # -------------------------------------------------
         thread = self.client.beta.threads.create()
 
         # -------------------------------------------------
-        # 2. SEND TASK TO AGENT (TEXT-ONLY, CANONICAL)
+        # 2. SEND EXECUTION CONTRACT (STRICT JSON)
         # -------------------------------------------------
-        message_text = json.dumps(
-            {
-                "command": task.get("command"),
-                "payload": task.get("payload", {}),
-            },
-            ensure_ascii=False,
-        )
+        execution_contract = {
+            "type": "agent_execution",
+            "command": command,
+            "payload": payload,
+        }
 
         self.client.beta.threads.messages.create(
             thread_id=thread.id,
             role="user",
-            content=message_text,
+            content=json.dumps(execution_contract, ensure_ascii=False),
         )
 
         # -------------------------------------------------
@@ -65,7 +80,7 @@ class OpenAIAssistantExecutor:
         )
 
         # -------------------------------------------------
-        # 4. WAIT FOR COMPLETION (ASYNC SAFE)
+        # 4. WAIT FOR COMPLETION
         # -------------------------------------------------
         while True:
             run_status = self.client.beta.threads.runs.retrieve(
@@ -79,7 +94,7 @@ class OpenAIAssistantExecutor:
             await asyncio.sleep(0.5)
 
         # -------------------------------------------------
-        # 5. HANDLE FAILURE
+        # 5. FAILURE HANDLING
         # -------------------------------------------------
         if run_status.status != "completed":
             return {
@@ -89,7 +104,7 @@ class OpenAIAssistantExecutor:
             }
 
         # -------------------------------------------------
-        # 6. READ FINAL ASSISTANT MESSAGE
+        # 6. READ FINAL ASSISTANT MESSAGE (LAST ONE)
         # -------------------------------------------------
         messages = self.client.beta.threads.messages.list(
             thread_id=thread.id
@@ -106,10 +121,20 @@ class OpenAIAssistantExecutor:
                 "status": "no_assistant_response",
             }
 
-        final_message = assistant_messages[0].content[0].text.value
+        final_text = assistant_messages[-1].content[0].text.value
+
+        # -------------------------------------------------
+        # 7. PARSE AGENT RESPONSE (JSON SAFE)
+        # -------------------------------------------------
+        try:
+            parsed = json.loads(final_text)
+        except Exception:
+            parsed = {
+                "raw": final_text,
+            }
 
         return {
             "success": True,
             "agent": self.assistant_id,
-            "result": final_message,
+            "result": parsed,
         }
