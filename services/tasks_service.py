@@ -7,26 +7,30 @@ import logging
 from models.task_create import TaskCreate
 from models.task_update import TaskUpdate
 from models.task_model import TaskModel
-from services.notion_service import NotionService
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 
 class TasksService:
-    goals_service = None
+    """
+    DOMAIN TASK SERVICE — KANONSKI
+
+    Pravila:
+    - ne zna Notion
+    - ne zna agente
+    - ne izvršava WRITE
+    - proizvodi samo čistu NAMJERU
+    """
+
     sync_service = None
 
-    def __init__(self, notion_service: NotionService):
+    def __init__(self):
         self.tasks: Dict[str, TaskModel] = {}
-        self.notion = notion_service
 
     # ------------------------------------------------------------
     # BINDINGS
     # ------------------------------------------------------------
-    def bind_goals_service(self, goals_service):
-        self.goals_service = goals_service
-
     def bind_sync_service(self, sync_service):
         self.sync_service = sync_service
 
@@ -39,7 +43,7 @@ class TasksService:
     def _trigger_sync(self):
         if not self.sync_service:
             return
-        
+
         try:
             loop = asyncio.get_running_loop()
             loop.create_task(self.sync_service.debounce_tasks_sync())
@@ -49,43 +53,19 @@ class TasksService:
             )
 
     # ------------------------------------------------------------
-    # CREATE TASK
+    # CREATE TASK (DOMAIN)
     # ------------------------------------------------------------
-    async def create_task(self, data: TaskCreate) -> TaskModel:
-        logger.info("Starting task creation...")
-        now = self._now()
-        task_id = uuid4().hex
-
-        if not self.goals_service:
-            logger.error("Goals service is not initialized.")
-            raise ValueError("Goals service is not initialized.")
+    def create_task(self, data: TaskCreate) -> Dict[str, any]:
+        """
+        Kreira Task domeni objekat i vraća NAMJERU za execution.
+        """
+        logger.info("Creating task (domain only)...")
 
         if not data.title:
-            logger.error("Title is required to create a task.")
-            raise ValueError("Title is required to create a task.")
+            raise ValueError("Task title is required.")
 
-        # --------------------------------------------------------
-        # FIX: Resolve LOCAL goal_id -> NOTION goal_id
-        # --------------------------------------------------------
-        notion_goal_id = None
-
-        if data.goal_id:
-            try:
-                local_goal_id = str(data.goal_id)
-                goal = self.goals_service.goals.get(local_goal_id)
-
-                if goal and goal.notion_id:
-                    notion_goal_id = goal.notion_id
-                    logger.info(f"Resolved Notion goal_id: {notion_goal_id}")
-                else:
-                    logger.warning("Goal exists locally but has no notion_id. Task will be created without relation.")
-
-                data.goal_id = local_goal_id
-
-            except Exception:
-                raise ValueError("Invalid goal_id format.")
-        else:
-            logger.info("Task has no goal relation.")
+        task_id = uuid4().hex
+        now = self._now()
 
         task = TaskModel(
             id=task_id,
@@ -102,56 +82,26 @@ class TasksService:
         )
 
         self.tasks[task_id] = task
-
-        # --------------------------------------------------------
-        # SEND NOTION PAYLOAD WITH PROPER notion_goal_id
-        # --------------------------------------------------------
-        try:
-            res = await self.notion.create_task(task, notion_goal_id=notion_goal_id)
-        except Exception:
-            raise ValueError("Failed to create task in Notion.")
-
-        if isinstance(res, dict) and res.get("ok") and "id" in res.get("data", {}):
-            task.notion_id = res["data"]["id"]
-
         self._trigger_sync()
-        return task
+
+        # 👉 KLJUČNO: vraćamo NAMJERU, ne izvršenje
+        return {
+            "intent": "create_task",
+            "entity": "task",
+            "task_id": task_id,
+            "payload": task.to_dict(),
+        }
 
     # ------------------------------------------------------------
-    # GET ALL TASKS
-    # ------------------------------------------------------------
-    def get_all_tasks(self) -> List[TaskModel]:
-        logger.info(f"[TASKS] Total tasks in service: {len(self.tasks)}")
-        return list(self.tasks.values())
-
-    # ------------------------------------------------------------
-    # REQUIRED BY ROUTERS + BULK SYSTEM (NEW)
+    # READ
     # ------------------------------------------------------------
     def get_all(self) -> List[TaskModel]:
         return list(self.tasks.values())
 
     # ------------------------------------------------------------
-    # UPDATE TASK
+    # UPDATE (DOMAIN)
     # ------------------------------------------------------------
-    def update_task(self, task_id: str, data: dict) -> TaskModel:
-        if task_id not in self.tasks:
-            raise ValueError(f"Task with id {task_id} not found")
-
-        task = self.tasks[task_id]
-
-        task.title = data.get('title', task.title)
-        task.description = data.get('description', task.description)
-        task.deadline = data.get('deadline', task.deadline)
-        task.priority = data.get('priority', task.priority)
-        task.status = data.get('status', task.status)
-
-        task.updated_at = self._now()
-        return task
-
-    # ------------------------------------------------------------
-    # UPDATE MODEL VERSION
-    # ------------------------------------------------------------
-    async def update_task_model(self, task_id: str, data: TaskUpdate) -> TaskModel:
+    def update_task(self, task_id: str, data: TaskUpdate) -> Dict[str, any]:
         if task_id not in self.tasks:
             raise ValueError(f"Task {task_id} not found")
 
@@ -169,21 +119,28 @@ class TasksService:
             task.status = data.status
 
         task.updated_at = self._now()
-
         self._trigger_sync()
-        return task
+
+        return {
+            "intent": "update_task",
+            "entity": "task",
+            "task_id": task_id,
+            "payload": task.to_dict(),
+        }
 
     # ------------------------------------------------------------
-    # DELETE TASK — FIXED
+    # DELETE (DOMAIN)
     # ------------------------------------------------------------
-    async def delete_task(self, task_id: str) -> dict:
+    def delete_task(self, task_id: str) -> Dict[str, any]:
         if task_id not in self.tasks:
-            logger.warning(f"[TASKS] Delete failed — {task_id} not found")
-            return {"ok": False, "notion_id": None}
+            raise ValueError(f"Task {task_id} not found")
 
         task = self.tasks.pop(task_id)
-        notion_id = task.notion_id
+        self._trigger_sync()
 
-        logger.info(f"[TASKS] Deleted task {task_id} (notion_id={notion_id})")
-
-        return {"ok": True, "notion_id": notion_id}
+        return {
+            "intent": "delete_task",
+            "entity": "task",
+            "task_id": task_id,
+            "payload": {"id": task_id},
+        }

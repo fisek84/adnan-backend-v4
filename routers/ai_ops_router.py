@@ -2,9 +2,6 @@ from fastapi import APIRouter, HTTPException
 from typing import Dict, Any
 import logging
 
-from services.notion_ops.ops_commands import NotionOpsCommands
-from services.notion_ops.ops_engine import NotionOpsEngine
-from services.notion_ops.ops_validator import NotionOpsValidator
 from services.cron_service import CronService
 from services.approval_ux_service import ApprovalUXService
 from services.approval_delegation_service import ApprovalDelegationService
@@ -14,12 +11,8 @@ from services.agent_health_service import AgentHealthService
 
 router = APIRouter(prefix="/ai-ops", tags=["AI Ops"])
 
-# ------------------------------------------------------------
-# Core singletons (Notion OPS)
-# ------------------------------------------------------------
-_engine = NotionOpsEngine()
-_commands = NotionOpsCommands(_engine)
-_validator = NotionOpsValidator(_engine)
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 # ------------------------------------------------------------
 # Approval UX (stateless wrapper)
@@ -45,35 +38,6 @@ _cron_service: CronService | None = None
 def set_cron_service(cron_service: CronService) -> None:
     global _cron_service
     _cron_service = cron_service
-
-
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-
-# ============================================================
-# MAIN AI-OPS EXECUTION ENDPOINT
-# ============================================================
-@router.post("/run")
-async def ai_ops_run(body: Dict[str, Any]):
-    try:
-        command = body.get("command")
-        payload = body.get("payload", {})
-
-        if not command:
-            raise ValueError("Missing 'command' field.")
-
-        _validator.validate(command, payload)
-        result = await _engine.run(command, payload)
-
-        return {
-            "ok": True,
-            "command": command,
-            "payload": payload,
-            "result": result,
-        }
-
-    except Exception as e:
-        raise HTTPException(400, detail=str(e))
 
 
 # ============================================================
@@ -160,5 +124,5 @@ def agents_health():
     }
 
 
-# exported router for main.py
+# exported router
 ai_ops_router = router

@@ -15,14 +15,19 @@ logger = logging.getLogger(__name__)
 
 class ExecutionOrchestrator:
     """
-    EXECUTION ORCHESTRATOR — CANONICAL (FAZA 3.7)
+    EXECUTION ORCHESTRATOR — KANONSKI (FAZA 3.7)
+
+    Pravila:
+    - READ: command-based
+    - WRITE: intent-based
+    - nikad ne miješati
     """
 
     STATE_COMPLETED = "COMPLETED"
     STATE_FAILED = "FAILED"
     STATE_BLOCKED = "BLOCKED"
 
-    CONTRACT_VERSION = "3.2"
+    CONTRACT_VERSION = "3.3"
 
     def __init__(self):
         self._governance = ExecutionGovernanceService()
@@ -58,7 +63,7 @@ class ExecutionOrchestrator:
         started_at = datetime.utcnow().isoformat()
 
         # -----------------------------------------------------
-        # GOVERNANCE
+        # GOVERNANCE (COMMAND IS JUST A DIRECTIVE LABEL)
         # -----------------------------------------------------
         governance = self._governance.evaluate(
             role=command.owner,
@@ -69,7 +74,7 @@ class ExecutionOrchestrator:
         )
 
         # -----------------------------------------------------
-        # 🚨 APPROVAL BLOCK — SIGNAL, NOT FAILURE
+        # APPROVAL BLOCK
         # -----------------------------------------------------
         if not governance.get("allowed"):
             if (
@@ -97,9 +102,9 @@ class ExecutionOrchestrator:
             )
 
         # =====================================================
-        # READ PATH (DETERMINISTIC)
+        # READ PATH
         # =====================================================
-        if command.command == "system_query":
+        if command.read_only:
             try:
                 return await self._read_executor.execute(
                     command=command,
@@ -119,19 +124,21 @@ class ExecutionOrchestrator:
                 )
 
         # =====================================================
-        # WRITE PATH — GOVERNED EXECUTION
+        # WRITE PATH — INTENT BASED (KANONSKI)
         # =====================================================
+        if not command.intent:
+            raise RuntimeError("WRITE execution requires intent.")
+
         try:
             result = await self._write_executor.execute(
-                command=command.command,
+                intent=command.intent,
                 payload=command.input or {},
-                agent_hint=command.executor,
             )
 
             return {
                 "execution_id": execution_id,
                 "execution_state": self.STATE_COMPLETED,
-                "command": command.command,
+                "intent": command.intent,
                 "result": result,
                 "contract_version": self.CONTRACT_VERSION,
                 "timestamp": datetime.utcnow().isoformat(),
@@ -143,5 +150,5 @@ class ExecutionOrchestrator:
                 source="execution",
                 reason=str(e),
                 execution_id=execution_id,
-                metadata={"command": command.command},
+                metadata={"intent": command.intent},
             )

@@ -23,7 +23,7 @@ class RBACService:
         # --------------------------------------------------------
         self._roles: Dict[str, Dict[str, Any]] = {
             # ----------------------------------
-            # SYSTEM (OS INTERNAL)
+            # SYSTEM (OS INTERNAL — OWNER, NOT EXECUTOR)
             # ----------------------------------
             "system": {
                 "can_request": True,
@@ -33,6 +33,7 @@ class RBACService:
                     "system_identity",
                     "system_notion_inbox",
                     "system_inbox_delegation_preview",
+                    "update_goal",  # ✅ DOZVOLJENO KAO OWNER WRITE (AGENT IZVRŠAVA)
                 },
             },
 

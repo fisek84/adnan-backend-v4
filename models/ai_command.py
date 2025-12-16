@@ -19,21 +19,26 @@ class AICommand(BaseModel):
     """
 
     # ========================================================
-    # CORE COMMAND
+    # CORE SIGNALS
     # ========================================================
     command: str = Field(
         ...,
-        description="Canonical system command name"
+        description="Canonical system directive label (READ or WRITE category)"
     )
 
     intent: Optional[str] = Field(
         None,
-        description="High-level semantic intent (UX only, non-executable)"
+        description="Semantic intent for WRITE execution (domain-level)"
+    )
+
+    read_only: bool = Field(
+        default=False,
+        description="Explicit READ / WRITE flag. True = READ, False = WRITE"
     )
 
     validated: bool = Field(
         default=False,
-        description="Set ONLY by COO Translation after hard validation"
+        description="Set ONLY by COOTranslationService after hard validation"
     )
 
     # ========================================================
@@ -59,7 +64,7 @@ class AICommand(BaseModel):
     # ========================================================
     input: Optional[Any] = Field(
         None,
-        description="Business payload"
+        description="Business payload (domain data)"
     )
 
     params: Dict[str, Any] = Field(
@@ -100,7 +105,7 @@ class AICommand(BaseModel):
     )
 
     # ========================================================
-    # NORMALIZATION
+    # NORMALIZATION (KANONSKI)
     # ========================================================
     @root_validator(pre=True)
     def normalize(cls, values):
@@ -113,13 +118,17 @@ class AICommand(BaseModel):
         # owner is ALWAYS system
         values["owner"] = "system"
 
-        # executor is resolved later (do not default to agent)
+        # executor resolved later
         if "executor" not in values:
             values["executor"] = None
 
         # approval_id may come via metadata
         if not values.get("approval_id"):
             values["approval_id"] = metadata.get("approval_id")
+
+        # READ / WRITE MUST BE EXPLICIT (NO INFERENCE)
+        if "read_only" not in values:
+            values["read_only"] = False
 
         return values
 
@@ -136,6 +145,7 @@ class AICommand(BaseModel):
     @classmethod
     def log(cls, command: "AICommand"):
         logger.info(
-            f"[AICommand] {command.command} | request_id={command.request_id} "
+            f"[AICommand] command={command.command} | intent={command.intent} "
+            f"| read_only={command.read_only} | request_id={command.request_id} "
             f"| initiator={command.initiator} | owner={command.owner} | executor={command.executor}"
         )

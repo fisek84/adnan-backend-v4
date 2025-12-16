@@ -1,3 +1,4 @@
+# services/app_bootstrap.py
 """
 APPLICATION BOOTSTRAP — CANONICAL (FAZA 14)
 

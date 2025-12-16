@@ -1,37 +1,26 @@
 # services/approval_ux_service.py
 
 """
-APPROVAL UX SERVICE — CANONICAL (FAZA 12 / UX POLISH)
+APPROVAL UX SERVICE — CANONICAL
 
 Uloga:
-- JEDINI UX ulaz za approval akcije
-- mapira CEO potvrdu / odbijanje u EKSPLICITAN SIGNAL sistemu
-- NE izvršava
-- NE donosi odluke
-- NE radi governance
-- NE dira execution
-
-CEO potvrda ≠ execution
-CEO potvrda = signal SYSTEMU
+- UX layer za approval
+- NE drži state
+- NE kreira state
+- koristi ISKLJUČIVO canonical ApprovalStateService singleton
 """
 
-from typing import Dict, Any, Optional
+from typing import Optional, Dict, Any
 from datetime import datetime
 
-from services.approval_state_service import ApprovalStateService
+from services.approval_state_service import get_approval_state
 
 
 class ApprovalUXService:
-    """
-    UX-facing approval handler.
-    """
-
     def __init__(self):
-        self._approvals = ApprovalStateService()
+        # ✅ CANONICAL SHARED STATE
+        self.approvals = get_approval_state()
 
-    # =========================================================
-    # CEO APPROVAL INPUT
-    # =========================================================
     def approve(
         self,
         *,
@@ -39,37 +28,19 @@ class ApprovalUXService:
         approved_by: str,
         note: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """
-        CEO eksplicitno ODOBRAVA approval.
-        Ovo je SIGNAL, ne izvršenje.
-        """
 
-        try:
-            state = self._approvals.approve(approval_id)
-        except KeyError:
-            return {
-                "success": False,
-                "status": "blocked",
-                "reason": "approval_not_found",
-                "message": "Traženi approval ne postoji.",
-                "timestamp": datetime.utcnow().isoformat(),
-                "read_only": True,
-            }
+        approval = self.approvals.approve(approval_id)
 
         return {
             "success": True,
             "status": "approved",
-            "approval": state,
+            "approval": approval,
             "approved_by": approved_by,
             "note": note,
-            "message": "Approval je uspješno potvrđen. Nema izvršenja bez governance-a.",
             "timestamp": datetime.utcnow().isoformat(),
-            "read_only": False,
+            "read_only": True,
         }
 
-    # =========================================================
-    # CEO REJECTION
-    # =========================================================
     def reject(
         self,
         *,
@@ -77,30 +48,15 @@ class ApprovalUXService:
         rejected_by: str,
         note: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """
-        CEO eksplicitno ODBIJA approval.
-        Ovo je SIGNAL, ne akcija.
-        """
 
-        try:
-            state = self._approvals.reject(approval_id)
-        except KeyError:
-            return {
-                "success": False,
-                "status": "blocked",
-                "reason": "approval_not_found",
-                "message": "Traženi approval ne postoji.",
-                "timestamp": datetime.utcnow().isoformat(),
-                "read_only": True,
-            }
+        approval = self.approvals.reject(approval_id)
 
         return {
             "success": True,
             "status": "rejected",
-            "approval": state,
+            "approval": approval,
             "rejected_by": rejected_by,
             "note": note,
-            "message": "Approval je odbijen. Izvršenje je zaustavljeno.",
             "timestamp": datetime.utcnow().isoformat(),
-            "read_only": False,
+            "read_only": True,
         }

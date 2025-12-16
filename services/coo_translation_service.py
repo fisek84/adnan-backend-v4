@@ -1,4 +1,3 @@
-# services/coo_translation_service.py
 """
 COO TRANSLATION SERVICE (CANONICAL)
 """
@@ -39,6 +38,7 @@ class COOTranslationService:
 
         text = (raw_input or "").strip()
         lowered = text.lower().strip()
+        context = context or {}
 
         # -----------------------------------------------------
         # 0) CEO READ-ONLY HARD MATCH
@@ -106,12 +106,27 @@ class COOTranslationService:
         # 4) GOAL CREATE (WRITE → APPROVAL)
         # -----------------------------------------------------
         if intent.type == IntentType.GOAL_CREATE:
-            approval = self.approvals.create(
-                command="update_goal",
-                payload_summary={"raw_text": raw_input},
-                scope="goals",
-                risk_level="medium",
-            )
+
+            approval_id = context.get("approval_id")
+
+            # ✅ REUSE APPROVAL IF PROVIDED
+            if approval_id:
+                try:
+                    approval = self.approvals.get(approval_id)
+                except KeyError:
+                    approval = None
+            else:
+                approval = None
+
+            # 🆕 CREATE APPROVAL ONLY IF NOT PROVIDED
+            if not approval:
+                approval = self.approvals.create(
+                    command="update_goal",
+                    payload_summary={"raw_text": raw_input},
+                    scope="goals",
+                    risk_level="medium",
+                )
+                approval_id = approval["approval_id"]
 
             # minimal extraction (non-binding)
             m_q = re.search(r"\bq([1-4])\b", lowered)
@@ -133,7 +148,7 @@ class COOTranslationService:
                 params={},
                 metadata={
                     "context_type": "system",
-                    "approval_id": approval["approval_id"],
+                    "approval_id": approval_id,
                     "read_only": False,
                 },
                 validated=True,

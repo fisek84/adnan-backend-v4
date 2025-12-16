@@ -2,7 +2,6 @@
 # SYSTEM VERSION (V1.1 — VERZIJA C)
 # ================================================================
 import os
-import time
 import logging
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse, FileResponse
@@ -26,8 +25,6 @@ OS_ENABLED = os.getenv("OS_ENABLED", "true").lower() == "true"
 OPS_SAFE_MODE = os.getenv("OPS_SAFE_MODE", "false").lower() == "true"
 
 _BOOT_READY = False
-_LAST_CALL_TS = 0.0
-MIN_INTERVAL_SECONDS = 0.5
 
 # ================================================================
 # LOGGING
@@ -62,10 +59,10 @@ from services.notion_service import NotionService
 # ================================================================
 from routers.audit_router import router as audit_router
 from routers.adnan_ai_router import router as adnan_ai_router
-from routers.ai_ops_router import ai_ops_router  # ✅ DODANO
+from routers.ai_ops_router import ai_ops_router  # ✅ ISPRAVAN, BEZ notion_ops
 
 # ================================================================
-# ✅ APPLICATION BOOTSTRAP (NEW – CANONICAL)
+# APPLICATION BOOTSTRAP
 # ================================================================
 from services.app_bootstrap import bootstrap_application
 
@@ -107,7 +104,7 @@ app.mount(
 # ================================================================
 app.include_router(audit_router, prefix="/api")
 app.include_router(adnan_ai_router, prefix="/api")
-app.include_router(ai_ops_router, prefix="/api")  # ✅ KLJUČNO
+app.include_router(ai_ops_router, prefix="/api")
 
 # ================================================================
 # ROOT → FRONTEND
@@ -136,7 +133,7 @@ awareness_service = AwarenessService()
 response_formatter = ResponseFormatter()
 
 # ================================================================
-# NOTION SERVICE
+# NOTION SERVICE (READ SNAPSHOT ONLY)
 # ================================================================
 notion_service = NotionService(
     api_key=os.getenv("NOTION_API_KEY"),
@@ -163,13 +160,12 @@ async def global_exception_handler(request: Request, exc: Exception):
 async def startup_event():
     global _BOOT_READY
 
-    # ------------------------------------------------------------
-    # ✅ BOOTSTRAP APPLICATION (WIRE AI SERVICES)
-    # ------------------------------------------------------------
+    # BOOTSTRAP APPLICATION (WIRE SERVICES)
     bootstrap_application()
 
     logger.info(">> Startup: syncing Notion knowledge snapshot")
     await notion_service.sync_knowledge_snapshot()
+
     _BOOT_READY = True
     logger.info("🟢 System boot completed. READY.")
 

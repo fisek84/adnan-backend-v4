@@ -9,12 +9,12 @@ from services.execution_orchestrator import ExecutionOrchestrator
 
 class AICommandService:
     """
-    AI COMMAND SERVICE — CANONICAL DISPATCHER
+    AI COMMAND SERVICE — KANONSKI
 
-    Uloga:
-    - validira AICommand
-    - delegira execution orchestratoru
-    - NE određuje execution ishod
+    Pravila:
+    - READ: command-based
+    - WRITE: intent-based
+    - nikad ne miješati
     """
 
     def __init__(self):
@@ -30,36 +30,47 @@ class AICommandService:
                 "AICommand is not validated by COOTranslationService."
             )
 
-        if not is_valid_command(command.command):
-            raise ValueError(f"Invalid system command: {command.command}")
+        # ==================================================
+        # READ PATH — COMMAND BASED
+        # ==================================================
+        if command.read_only:
+            if not is_valid_command(command.command):
+                raise ValueError(f"Invalid system command: {command.command}")
 
-        definition = get_action_definition(command.command)
-        if not definition:
-            raise ValueError(
-                f"Missing action definition for '{command.command}'"
-            )
+            definition = get_action_definition(command.command)
+            if not definition:
+                raise ValueError(
+                    f"Missing action definition for '{command.command}'"
+                )
 
-        allowed_owners = definition.get("allowed_owners", [])
-        if allowed_owners and command.owner not in allowed_owners:
-            raise PermissionError(
-                f"Owner '{command.owner}' is not allowed for command '{command.command}'"
-            )
+            allowed_owners = definition.get("allowed_owners", [])
+            if allowed_owners and command.owner not in allowed_owners:
+                raise PermissionError(
+                    f"Owner '{command.owner}' is not allowed for command '{command.command}'"
+                )
 
-        # SAFETY PRE-CHECK (NON-EXECUTING)
-        self.safety.check(command)
+            self.safety.check(command)
+            result = await self.orchestrator.execute(command)
 
-        # --------------------------------------------------
-        # DELEGATE EXECUTION (SOURCE OF TRUTH)
-        # --------------------------------------------------
-        result = await self.orchestrator.execute(command)
+        # ==================================================
+        # WRITE PATH — INTENT BASED (KANONSKI)
+        # ==================================================
+        else:
+            if not command.intent:
+                raise RuntimeError("WRITE command must define intent.")
 
-        # --------------------------------------------------
-        # SYNC EXECUTION STATE FROM RESULT (IF PRESENT)
-        # --------------------------------------------------
+            # SAFETY still applies (no execution here)
+            self.safety.check(command)
+
+            # Orchestrator MUST forward intent + payload
+            result = await self.orchestrator.execute(command)
+
+        # ==================================================
+        # POST-EXECUTION SYNC
+        # ==================================================
         execution_state = result.get("execution_state")
         if execution_state:
             command.execution_state = execution_state
 
         AICommand.log(command)
-
         return result

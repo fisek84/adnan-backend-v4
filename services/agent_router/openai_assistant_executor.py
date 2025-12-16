@@ -1,6 +1,7 @@
 from typing import Dict, Any
 import asyncio
 import os
+import json
 import logging
 from openai import OpenAI
 
@@ -39,20 +40,20 @@ class OpenAIAssistantExecutor:
         thread = self.client.beta.threads.create()
 
         # -------------------------------------------------
-        # 2. SEND TASK TO AGENT
+        # 2. SEND TASK TO AGENT (TEXT ONLY — CANONICAL)
         # -------------------------------------------------
+        message_text = json.dumps(
+            {
+                "command": task.get("command"),
+                "payload": task.get("payload", {}),
+            },
+            ensure_ascii=False,
+        )
+
         self.client.beta.threads.messages.create(
             thread_id=thread.id,
             role="user",
-            content=[
-                {
-                    "type": "text",
-                    "text": {
-                        "command": task.get("command"),
-                        "payload": task.get("payload", {}),
-                    },
-                }
-            ],
+            content=message_text,
         )
 
         # -------------------------------------------------
