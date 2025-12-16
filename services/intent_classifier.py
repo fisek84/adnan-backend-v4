@@ -1,6 +1,4 @@
 import re
-from typing import Optional
-
 from services.intent_contract import Intent, IntentType
 
 
@@ -24,6 +22,29 @@ class IntentClassifier:
         r"\b(system status|system state)\b",
     ]
 
+    GOALS_LIST_PATTERNS = [
+        r"\b(listaj|prikaži|daj)\b.*\b(ciljeve|goals)\b",
+        r"\b(goals list|list goals)\b",
+    ]
+
+    GOAL_CREATE_PATTERNS = [
+        r"\b(create|add|new)\b.*\b(goal)\b",
+        r"\bkreiraj\b.*\b(cilj)\b",
+        r"\bnapravi\b.*\b(cilj)\b",
+        r"\bnovi\b.*\b(cilj)\b",
+        r"\b(business goal)\b",
+    ]
+
+    SOP_LIST_PATTERNS = [
+        r"\b(listaj|prikaži|daj)\b.*\b(sop|sopove|procedure|procedures)\b",
+        r"\b(list sops|list sop)\b",
+    ]
+
+    SOP_VIEW_PATTERNS = [
+        r"\b(prikaži|otvori|pogledaj)\b.*\b(sop)\b",
+        r"\b(view sop)\b",
+    ]
+
     IDENTITY_PATTERNS = [
         r"\bko si\b",
         r"\bko si ti\b",
@@ -39,6 +60,8 @@ class IntentClassifier:
         r"^moze$",
         r"^ok$",
         r"^yes$",
+        r"^confirm$",
+        r"^approve$",
     ]
 
     CANCEL_PATTERNS = [
@@ -46,6 +69,8 @@ class IntentClassifier:
         r"^odustani$",
         r"^cancel$",
         r"^no$",
+        r"^reject$",
+        r"^stop$",
     ]
 
     # ==================================================
@@ -87,6 +112,54 @@ class IntentClassifier:
                 return Intent(
                     type=IntentType.SYSTEM_QUERY,
                     confidence=0.95,
+                    payload={},
+                    source=source,
+                )
+
+        # --------------------------------------------------
+        # GOALS LIST (READ)
+        # --------------------------------------------------
+        for pattern in self.GOALS_LIST_PATTERNS:
+            if re.search(pattern, lowered):
+                return Intent(
+                    type=IntentType.GOALS_LIST,
+                    confidence=0.92,
+                    payload={},
+                    source=source,
+                )
+
+        # --------------------------------------------------
+        # SOP LIST (READ)
+        # --------------------------------------------------
+        for pattern in self.SOP_LIST_PATTERNS:
+            if re.search(pattern, lowered):
+                return Intent(
+                    type=IntentType.LIST_SOPS,
+                    confidence=0.92,
+                    payload={},
+                    source=source,
+                )
+
+        # --------------------------------------------------
+        # SOP VIEW (READ)
+        # --------------------------------------------------
+        for pattern in self.SOP_VIEW_PATTERNS:
+            if re.search(pattern, lowered):
+                return Intent(
+                    type=IntentType.VIEW_SOP,
+                    confidence=0.93,
+                    payload={},
+                    source=source,
+                )
+
+        # --------------------------------------------------
+        # GOAL CREATE (WRITE / APPROVAL REQUIRED)
+        # --------------------------------------------------
+        for pattern in self.GOAL_CREATE_PATTERNS:
+            if re.search(pattern, lowered):
+                return Intent(
+                    type=IntentType.GOAL_CREATE,
+                    confidence=0.90,
                     payload={},
                     source=source,
                 )

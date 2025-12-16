@@ -85,8 +85,9 @@ class FailureHandler:
         """
 
         category = self._resolve_category(source, reason)
+        metadata = metadata or {}
 
-        return {
+        response = {
             "execution_id": execution_id,
             "success": False,
             "execution_state": "FAILED",
@@ -100,8 +101,19 @@ class FailureHandler:
             },
             "timestamp": datetime.utcnow().isoformat(),
             "read_only": True,
-            "metadata": metadata or {},
+            "metadata": metadata,
         }
+
+        # -----------------------------------------------------
+        # 🔑 PROPAGATE APPROVAL_ID (IF PRESENT)
+        # -----------------------------------------------------
+        governance = metadata.get("governance")
+        if isinstance(governance, dict):
+            approval_id = governance.get("approval_id")
+            if approval_id:
+                response["approval_id"] = approval_id
+
+        return response
 
     # =========================================================
     # INTERNALS (DETERMINISTIC MAPPING)

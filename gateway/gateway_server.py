@@ -7,7 +7,6 @@ import logging
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
 from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -63,6 +62,7 @@ from services.notion_service import NotionService
 # ================================================================
 from routers.audit_router import router as audit_router
 from routers.adnan_ai_router import router as adnan_ai_router
+from routers.ai_ops_router import ai_ops_router  # ✅ DODANO
 
 # ================================================================
 # ✅ APPLICATION BOOTSTRAP (NEW – CANONICAL)
@@ -107,6 +107,7 @@ app.mount(
 # ================================================================
 app.include_router(audit_router, prefix="/api")
 app.include_router(adnan_ai_router, prefix="/api")
+app.include_router(ai_ops_router, prefix="/api")  # ✅ KLJUČNO
 
 # ================================================================
 # ROOT → FRONTEND

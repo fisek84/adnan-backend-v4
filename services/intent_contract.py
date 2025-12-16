@@ -3,67 +3,38 @@ from typing import Optional, Dict, Any, List
 
 
 class IntentType(Enum):
-    # =====================================================
-    # CORE (NON-EXECUTABLE)
-    # =====================================================
     CHAT = "chat"
     RESET = "reset"
-
     CONFIRM = "confirm"
     CANCEL = "cancel"
 
-    # =====================================================
-    # SYSTEM (READ-ONLY)
-    # =====================================================
     SYSTEM_QUERY = "system_query"
-
-    # =====================================================
-    # EXECUTION REQUEST (META)
-    # =====================================================
     REQUEST_EXECUTION = "request_execution"
 
-    # =====================================================
-    # FAZA 3 — GOALS
-    # =====================================================
     GOAL_CREATE = "goal_create"
     GOAL_CONFIRM = "goal_confirm"
     GOAL_CANCEL = "goal_cancel"
     GOALS_LIST = "goals_list"
 
-    # =====================================================
-    # FAZA 4 — PLANS
-    # =====================================================
     PLAN_CREATE = "plan_create"
     PLAN_CONFIRM = "plan_confirm"
     PLAN_CANCEL = "plan_cancel"
 
     TASK_GENERATE_FROM_PLAN = "task_generate_from_plan"
-
-    # =====================================================
-    # FAZA 5 — TASK LIFECYCLE
-    # =====================================================
     TASK_CREATE = "task_create"
     TASK_CONFIRM = "task_confirm"
     TASK_CANCEL = "task_cancel"
-
     TASK_START = "task_start"
     TASK_COMPLETE = "task_complete"
     TASK_FAIL = "task_fail"
 
-    # =====================================================
-    # SOP
-    # =====================================================
     LIST_SOPS = "list_sops"
     VIEW_SOP = "view_sop"
 
 
-# ---------------------------------------------------------
-# INTENT DEFINITIONS (CANONICAL, SEMANTIC ONLY)
-# ---------------------------------------------------------
-
 INTENT_DEFINITIONS: Dict[IntentType, Dict[str, Any]] = {
     # -------------------------
-    # CORE
+    # NON-EXECUTABLE / UX ONLY
     # -------------------------
     IntentType.CHAT: {
         "executable": False,
@@ -85,81 +56,58 @@ INTENT_DEFINITIONS: Dict[IntentType, Dict[str, Any]] = {
         "allowed_commands": [],
         "description": "User cancellation",
     },
+    IntentType.REQUEST_EXECUTION: {
+        "executable": False,
+        "allowed_commands": [],
+        "description": "Execution request wrapper (internal)",
+    },
 
     # -------------------------
-    # SYSTEM (READ-ONLY)
+    # READ-ONLY (SAFE)
     # -------------------------
     IntentType.SYSTEM_QUERY: {
         "executable": True,
         "allowed_commands": ["system_query"],
         "description": "Read-only system state query",
     },
+    IntentType.GOALS_LIST: {
+        "executable": True,
+        "allowed_commands": ["list_goals"],
+        "description": "List goals (read-only)",
+    },
+    IntentType.LIST_SOPS: {
+        "executable": True,
+        "allowed_commands": ["list_sops"],
+        "description": "List available SOPs (read-only)",
+    },
+    IntentType.VIEW_SOP: {
+        "executable": True,
+        "allowed_commands": ["view_sop"],
+        "description": "View SOP content (read-only)",
+    },
 
     # -------------------------
-    # GOALS
+    # WRITE (GOVERNED)
     # -------------------------
     IntentType.GOAL_CREATE: {
         "executable": True,
         "allowed_commands": ["update_goal"],
         "description": "Create or update a goal",
     },
-    IntentType.GOAL_CONFIRM: {
-        "executable": False,
-        "allowed_commands": [],
-        "description": "Confirm goal creation (UX flow)",
-    },
-    IntentType.GOAL_CANCEL: {
-        "executable": False,
-        "allowed_commands": [],
-        "description": "Cancel goal creation (UX flow)",
-    },
-    IntentType.GOALS_LIST: {
-        "executable": True,
-        "allowed_commands": ["list_goals"],
-        "description": "List goals (read-only)",
-    },
-
-    # -------------------------
-    # PLANS
-    # -------------------------
     IntentType.PLAN_CREATE: {
         "executable": True,
         "allowed_commands": ["create_plan"],
         "description": "Create a plan",
-    },
-    IntentType.PLAN_CONFIRM: {
-        "executable": False,
-        "allowed_commands": [],
-        "description": "Confirm plan (UX flow)",
-    },
-    IntentType.PLAN_CANCEL: {
-        "executable": False,
-        "allowed_commands": [],
-        "description": "Cancel plan (UX flow)",
     },
     IntentType.TASK_GENERATE_FROM_PLAN: {
         "executable": True,
         "allowed_commands": ["generate_tasks"],
         "description": "Generate tasks from plan",
     },
-
-    # -------------------------
-    # TASKS
-    # -------------------------
     IntentType.TASK_CREATE: {
         "executable": True,
         "allowed_commands": ["create_task"],
         "description": "Create a task",
-    },
-    IntentType.TASK_CONFIRM: {
-        "executable": False,
-        "allowed_commands": [],
-        "description": "Confirm task creation",
-    },
-    IntentType.TASK_CANCEL: {
-        "executable": False,
-        "allowed_commands": [],
-        "description": "Cancel task creation",
     },
     IntentType.TASK_START: {
         "executable": True,
@@ -178,26 +126,42 @@ INTENT_DEFINITIONS: Dict[IntentType, Dict[str, Any]] = {
     },
 
     # -------------------------
-    # META
+    # UX FLOW CONFIRMATIONS
     # -------------------------
-    IntentType.REQUEST_EXECUTION: {
+    IntentType.GOAL_CONFIRM: {
         "executable": False,
         "allowed_commands": [],
-        "description": "Execution request wrapper (internal)",
+        "description": "Confirm goal creation (UX flow)",
+    },
+    IntentType.GOAL_CANCEL: {
+        "executable": False,
+        "allowed_commands": [],
+        "description": "Cancel goal creation (UX flow)",
+    },
+    IntentType.PLAN_CONFIRM: {
+        "executable": False,
+        "allowed_commands": [],
+        "description": "Confirm plan (UX flow)",
+    },
+    IntentType.PLAN_CANCEL: {
+        "executable": False,
+        "allowed_commands": [],
+        "description": "Cancel plan (UX flow)",
+    },
+    IntentType.TASK_CONFIRM: {
+        "executable": False,
+        "allowed_commands": [],
+        "description": "Confirm task creation",
+    },
+    IntentType.TASK_CANCEL: {
+        "executable": False,
+        "allowed_commands": [],
+        "description": "Cancel task creation",
     },
 }
 
 
-# ---------------------------------------------------------
-# INTENT CONTRACT (USED BY COO)
-# ---------------------------------------------------------
-
 class Intent:
-    """
-    Semantic intent extracted from human or agent input.
-    NEVER executable directly.
-    """
-
     def __init__(
         self,
         type: IntentType,

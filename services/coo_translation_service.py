@@ -1,38 +1,34 @@
+# services/coo_translation_service.py
 """
 COO TRANSLATION SERVICE (CANONICAL)
-
-Uloga:
-- JEDINA dozvoljena granica između UX jezika i sistemskog jezika
-- prevodi Intent + context → AICommand
-- FINALNI hard-gate prije executiona
-- NIKAD ne izvršava
-- NIKAD ne preskače approval
-
-FAZA 2: READ-ONLY
-FAZA 3: WRITE dozvoljen ISKLJUČIVO uz approval_id
 """
 
 from typing import Optional, Dict, Any
+import re
 
 from models.ai_command import AICommand
 from services.intent_classifier import IntentClassifier
 from services.intent_contract import Intent, IntentType
 from services.action_dictionary import is_valid_command
+from services.approval_state_service import get_approval_state
 
 
 class COOTranslationService:
-
     READ_ONLY_COMMAND = "system_query"
-    IDENTITY_COMMAND = "system_identity"
-    INBOX_COMMAND = "system_notion_inbox"
-    INBOX_DELEGATION_PREVIEW_COMMAND = "system_inbox_delegation_preview"
+
+    CEO_READ_ONLY_MATCHES = {
+        "SYSTEM SNAPSHOT: goals": "goals",
+        "SYSTEM SNAPSHOT: tasks": "tasks",
+        "SYSTEM SNAPSHOT: agents": "agents",
+        "SYSTEM STATUS": "status",
+        "SYSTEM MODE": "mode",
+    }
 
     def __init__(self):
         self.intent_classifier = IntentClassifier()
+        # 🔒 SHARED approval state (CANONICAL)
+        self.approvals = get_approval_state()
 
-    # =========================================================
-    # MAIN ENTRYPOINT
-    # =========================================================
     def translate(
         self,
         raw_input: str,
@@ -41,13 +37,32 @@ class COOTranslationService:
         context: Dict[str, Any],
     ) -> Optional[AICommand]:
 
+        text = (raw_input or "").strip()
+        lowered = text.lower().strip()
+
         # -----------------------------------------------------
-        # 1. INTENT CLASSIFICATION
+        # 0) CEO READ-ONLY HARD MATCH
         # -----------------------------------------------------
-        intent: Intent = self.intent_classifier.classify(
-            raw_input,
-            source=source,
-        )
+        if text in self.CEO_READ_ONLY_MATCHES:
+            if not is_valid_command(self.READ_ONLY_COMMAND):
+                return None
+
+            return AICommand(
+                command=self.READ_ONLY_COMMAND,
+                intent=IntentType.SYSTEM_QUERY.value,
+                input={
+                    "raw_text": raw_input,
+                    "snapshot_type": self.CEO_READ_ONLY_MATCHES[text],
+                },
+                params={},
+                metadata={"context_type": "system", "read_only": True},
+                validated=True,
+            )
+
+        # -----------------------------------------------------
+        # 1) INTENT CLASSIFICATION (CANONICAL)
+        # -----------------------------------------------------
+        intent: Intent = self.intent_classifier.classify(raw_input, source=source)
 
         if intent.confidence < self.intent_classifier.DEFAULT_CONFIDENCE_THRESHOLD:
             return None
@@ -56,65 +71,7 @@ class COOTranslationService:
             return None
 
         # -----------------------------------------------------
-        # 2. READ — IDENTITY
-        # -----------------------------------------------------
-        if intent.type in {
-            IntentType.IDENTITY,
-            IntentType.GREETING,
-            IntentType.WHO_ARE_YOU,
-        }:
-            if not is_valid_command(self.IDENTITY_COMMAND):
-                return None
-
-            return AICommand(
-                command=self.IDENTITY_COMMAND,
-                intent=intent.type.value,
-                input={"raw_text": intent.payload.get("raw_text")},
-                params={},
-                metadata={"context_type": "system"},
-                validated=True,
-            )
-
-        # -----------------------------------------------------
-        # 3. READ — NOTION INBOX / DELEGATION PREVIEW
-        # -----------------------------------------------------
-        if intent.type in {
-            IntentType.STATUS,
-            IntentType.FOCUS,
-            IntentType.SYSTEM_QUERY,
-        }:
-            text = (intent.payload.get("raw_text") or "").lower()
-
-            # --- DELEGATION PREVIEW (NOVO) ---
-            if any(k in text for k in ["delegir", "šta ćemo", "sta cemo", "šta sa inbox", "inbox deleg"]):
-                if not is_valid_command(self.INBOX_DELEGATION_PREVIEW_COMMAND):
-                    return None
-
-                return AICommand(
-                    command=self.INBOX_DELEGATION_PREVIEW_COMMAND,
-                    intent=intent.type.value,
-                    input={"raw_text": intent.payload.get("raw_text")},
-                    params={},
-                    metadata={"context_type": "system"},
-                    validated=True,
-                )
-
-            # --- STANDARD INBOX ---
-            if any(k in text for k in ["inbox", "notion", "zadac", "task", "za tebe"]):
-                if not is_valid_command(self.INBOX_COMMAND):
-                    return None
-
-                return AICommand(
-                    command=self.INBOX_COMMAND,
-                    intent=intent.type.value,
-                    input={"raw_text": intent.payload.get("raw_text")},
-                    params={},
-                    metadata={"context_type": "system"},
-                    validated=True,
-                )
-
-        # -----------------------------------------------------
-        # 4. READ — GENERIC SYSTEM QUERY
+        # 2) SYSTEM QUERY (READ-ONLY)
         # -----------------------------------------------------
         if intent.type == IntentType.SYSTEM_QUERY:
             if not is_valid_command(self.READ_ONLY_COMMAND):
@@ -123,53 +80,63 @@ class COOTranslationService:
             return AICommand(
                 command=self.READ_ONLY_COMMAND,
                 intent=intent.type.value,
-                input=self._build_payload(intent, context),
+                input={"raw_text": raw_input},
                 params={},
-                metadata={"context_type": context.get("context_type", "system")},
+                metadata={"context_type": "system", "read_only": True},
                 validated=True,
             )
 
         # -----------------------------------------------------
-        # 5. WRITE PATH (FAZA 3 — HARD GATE)
+        # 3) GOALS LIST (READ)
         # -----------------------------------------------------
-        approval_id = context.get("approval_id")
-        if not approval_id:
-            return None
+        if intent.type == IntentType.GOALS_LIST:
+            if not is_valid_command("list_goals"):
+                return None
 
-        command_name = intent.type.value
+            return AICommand(
+                command="list_goals",
+                intent=intent.type.value,
+                input={"raw_text": raw_input},
+                params={},
+                metadata={"context_type": "system", "read_only": True},
+                validated=True,
+            )
 
-        if not is_valid_command(command_name):
-            return None
+        # -----------------------------------------------------
+        # 4) GOAL CREATE (WRITE → APPROVAL)
+        # -----------------------------------------------------
+        if intent.type == IntentType.GOAL_CREATE:
+            approval = self.approvals.create(
+                command="update_goal",
+                payload_summary={"raw_text": raw_input},
+                scope="goals",
+                risk_level="medium",
+            )
 
-        return AICommand(
-            command=command_name,
-            intent=intent.type.value,
-            input=self._build_payload(intent, context),
-            params={},
-            metadata={
-                "context_type": context.get("context_type", "system"),
-                "approval_id": approval_id,
-            },
-            validated=True,
-        )
+            # minimal extraction (non-binding)
+            m_q = re.search(r"\bq([1-4])\b", lowered)
+            quarter = f"Q{m_q.group(1)}" if m_q else None
+            m_year = re.search(r"\b(20\d{2})\b", lowered)
+            year = int(m_year.group(1)) if m_year else None
+            m_pct = re.search(r"(\d{1,3})\s*%+", lowered)
+            target_pct = int(m_pct.group(1)) if m_pct else None
 
-    # =========================================================
-    # INTERNALS
-    # =========================================================
-    def _build_payload(
-        self,
-        intent: Intent,
-        context: Dict[str, Any],
-    ) -> Dict[str, Any]:
+            return AICommand(
+                command="update_goal",
+                intent=intent.type.value,
+                input={
+                    "raw_text": raw_input,
+                    "quarter": quarter,
+                    "year": year,
+                    "target_pct": target_pct,
+                },
+                params={},
+                metadata={
+                    "context_type": "system",
+                    "approval_id": approval["approval_id"],
+                    "read_only": False,
+                },
+                validated=True,
+            )
 
-        payload: Dict[str, Any] = {
-            "raw_text": intent.payload.get("raw_text")
-        }
-
-        if "current_goal_id" in context:
-            payload["goal_id"] = context["current_goal_id"]
-
-        if "current_task_id" in context:
-            payload["task_id"] = context["current_task_id"]
-
-        return payload
+        return None

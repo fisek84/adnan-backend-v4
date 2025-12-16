@@ -1,3 +1,4 @@
+# services/coo_conversation_service.py
 """
 COO CONVERSATION SERVICE (CANONICAL)
 
@@ -93,15 +94,12 @@ class COOConversationService:
             )
 
         # ======================================================
-        # WRITE / EXECUTABLE — POTREBNA POTVRDA (FAZA 3)
+        # WRITE / EXECUTABLE — SPREMNO ZA TRANSLATION (UZ APPROVAL)
         # ======================================================
         if intent.is_executable:
             return COOConversationResult(
-                type="message",
-                text=(
-                    "Ova akcija zahtijeva odobrenje prije izvršenja.\n"
-                    "Ako želiš nastaviti, sistem će zatražiti potvrdu."
-                ),
+                type="ready_for_translation",
+                text="Akcija je prepoznata i spremna za approval i dalju obradu.",
                 readiness={
                     "intent_type": intent.type.value,
                     "confidence": float(intent.confidence),

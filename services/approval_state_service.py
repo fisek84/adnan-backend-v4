@@ -118,3 +118,18 @@ class ApprovalStateService:
         if not approval_id or approval_id not in self._approvals:
             raise KeyError("Approval not found")
         return self._approvals[approval_id]
+
+
+# ============================================================
+# CANONICAL SHARED INSTANCE (MODULE SINGLETON)
+# ============================================================
+
+_APPROVAL_STATE_SINGLETON = ApprovalStateService()
+
+
+def get_approval_state() -> ApprovalStateService:
+    """
+    Returns canonical shared ApprovalStateService.
+    Safe for runtime use. No circular imports.
+    """
+    return _APPROVAL_STATE_SINGLETON

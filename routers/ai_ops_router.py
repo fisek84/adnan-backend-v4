@@ -1,5 +1,3 @@
-# routers/ai_ops_router.py
-
 from fastapi import APIRouter, HTTPException
 from typing import Dict, Any
 import logging
@@ -10,6 +8,7 @@ from services.notion_ops.ops_validator import NotionOpsValidator
 from services.cron_service import CronService
 from services.approval_ux_service import ApprovalUXService
 from services.approval_delegation_service import ApprovalDelegationService
+from services.approval_state_service import get_approval_state
 from services.agent_health_service import AgentHealthService
 
 
@@ -23,7 +22,7 @@ _commands = NotionOpsCommands(_engine)
 _validator = NotionOpsValidator(_engine)
 
 # ------------------------------------------------------------
-# Approval UX (FAZA 3)
+# Approval UX (stateless wrapper)
 # ------------------------------------------------------------
 _approval_ux = ApprovalUXService()
 
@@ -42,6 +41,7 @@ _agent_health = AgentHealthService()
 # ------------------------------------------------------------
 _cron_service: CronService | None = None
 
+
 def set_cron_service(cron_service: CronService) -> None:
     global _cron_service
     _cron_service = cron_service
@@ -50,19 +50,14 @@ def set_cron_service(cron_service: CronService) -> None:
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-
 # ============================================================
 # MAIN AI-OPS EXECUTION ENDPOINT
 # ============================================================
 @router.post("/run")
 async def ai_ops_run(body: Dict[str, Any]):
     try:
-        natural_text = body.get("natural")
         command = body.get("command")
         payload = body.get("payload", {})
-
-        if natural_text:
-            command, payload = smart_interpret(natural_text)
 
         if not command:
             raise ValueError("Missing 'command' field.")
@@ -74,7 +69,7 @@ async def ai_ops_run(body: Dict[str, Any]):
             "ok": True,
             "command": command,
             "payload": payload,
-            "result": result
+            "result": result,
         }
 
     except Exception as e:
@@ -88,7 +83,6 @@ async def ai_ops_run(body: Dict[str, Any]):
 def cron_run():
     if _cron_service is None:
         raise HTTPException(500, detail="CronService not initialized")
-
     return _cron_service.run()
 
 
@@ -96,13 +90,24 @@ def cron_run():
 def cron_status():
     if _cron_service is None:
         raise HTTPException(500, detail="CronService not initialized")
-
     return _cron_service.status()
 
 
 # ============================================================
 # APPROVAL OPS (FAZA 3 — UX ONLY)
 # ============================================================
+@router.get("/approval/pending")
+def list_pending():
+    approval_state = get_approval_state()
+    return {
+        "approvals": [
+            a for a in approval_state._approvals.values()
+            if a.get("status") == "pending"
+        ],
+        "read_only": True,
+    }
+
+
 @router.post("/approval/approve")
 def approve(body: Dict[str, Any]):
     try:

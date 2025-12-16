@@ -1,5 +1,3 @@
-# services/action_dictionary.py
-
 from typing import Callable, Dict, Optional, Any
 from services.notion_service import NotionService
 
@@ -10,7 +8,6 @@ from services.notion_service import NotionService
 
 def action_system_identity(payload: Dict[str, Any]):
     return {
-        "execution_state": "COMPLETED",
         "action": "system_identity",
         "response": {
             "type": "SYSTEM_IDENTITY",
@@ -27,7 +24,6 @@ def action_system_identity(payload: Dict[str, Any]):
 
 def action_system_query(payload: Dict[str, Any]):
     return {
-        "execution_state": "COMPLETED",
         "action": "system_query",
         "response": {
             "type": "SYSTEM_READ_SNAPSHOT",
@@ -37,13 +33,9 @@ def action_system_query(payload: Dict[str, Any]):
 
 
 def action_system_notion_inbox(payload: Dict[str, Any]):
-    """
-    READ-ONLY Notion inbox scan.
-    """
     notion: NotionService = payload.get("notion_service")
     if not notion:
         return {
-            "execution_state": "FAILED",
             "action": "system_notion_inbox",
             "response": {
                 "type": "ERROR",
@@ -69,7 +61,6 @@ def action_system_notion_inbox(payload: Dict[str, Any]):
     ]
 
     return {
-        "execution_state": "COMPLETED",
         "action": "system_notion_inbox",
         "response": {
             "type": "NOTION_INBOX",
@@ -82,14 +73,9 @@ def action_system_notion_inbox(payload: Dict[str, Any]):
 
 
 def action_system_inbox_delegation_preview(payload: Dict[str, Any]):
-    """
-    READ-ONLY delegation preview from Notion inbox.
-    NO execution, NO decision.
-    """
     notion: NotionService = payload.get("notion_service")
     if not notion:
         return {
-            "execution_state": "FAILED",
             "action": "system_inbox_delegation_preview",
             "response": {
                 "type": "ERROR",
@@ -116,7 +102,6 @@ def action_system_inbox_delegation_preview(payload: Dict[str, Any]):
     ]
 
     return {
-        "execution_state": "COMPLETED",
         "action": "system_inbox_delegation_preview",
         "response": {
             "type": "INBOX_DELEGATION_PREVIEW",
@@ -131,8 +116,12 @@ def action_system_inbox_delegation_preview(payload: Dict[str, Any]):
 # ------------------------------------------
 # ACTION DEFINITIONS (CANONICAL)
 # ------------------------------------------
+# PRAVILO:
+# - READ → ima handler
+# - WRITE → NEMA handler (nikad se lokalno ne izvršava)
 
 ACTION_DEFINITIONS: Dict[str, Dict[str, Any]] = {
+    # READ
     "system_identity": {
         "handler": action_system_identity,
         "category": "read",
@@ -153,6 +142,13 @@ ACTION_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "category": "read",
         "allowed_owners": ["system"],
     },
+
+    # WRITE (NO LOCAL EXECUTION)
+    "update_goal": {
+        "handler": None,              # ❗️NAMJERNO
+        "category": "write",
+        "allowed_owners": ["system"],
+    },
 }
 
 
@@ -168,4 +164,6 @@ def get_action_definition(command: str) -> Optional[Dict[str, Any]]:
 
 def get_action_handler(command: str) -> Optional[Callable]:
     definition = get_action_definition(command)
-    return definition.get("handler") if definition else None
+    if not definition:
+        return None
+    return definition.get("handler")

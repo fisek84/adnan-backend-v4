@@ -1,4 +1,7 @@
-﻿from fastapi import APIRouter, HTTPException
+﻿# routers/adnan_ai_router.py
+# KANONSKA VERZIJA — BEZ MIJENJANJA STRUKTURE, SAMO ISPRAVAN FLOW
+
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 import logging
 from typing import Optional, Dict, Any
@@ -9,7 +12,7 @@ from services.coo_conversation_service import (
     COOConversationResult,
 )
 from services.ai_command_service import AICommandService
-from services.workflow_event_bridge import WorkflowEventBridge  # ⬅️ DODANO
+from services.workflow_event_bridge import WorkflowEventBridge
 from models.ai_command import AICommand
 
 
@@ -21,7 +24,6 @@ ai_command_service: Optional[AICommandService] = None
 coo_translation_service: Optional[COOTranslationService] = None
 coo_conversation_service: Optional[COOConversationService] = None
 
-# ⬅️ READ-ONLY workflow bridge
 _workflow_bridge = WorkflowEventBridge()
 
 
@@ -52,36 +54,29 @@ async def adnan_ai_input(payload: AdnanAIInput):
 
     context = payload.context or {}
 
-    # --------------------------------------------------------
-    # 1. COO CONVERSATION (USER SOURCE)
-    # --------------------------------------------------------
+    # ========================================================
+    # 1. COO CONVERSATION — CANONICAL ENTRYPOINT (ALWAYS)
+    # ========================================================
     conversation_result: COOConversationResult = coo_conversation_service.handle_user_input(
         raw_input=user_text,
         source="user",
         context=context,
     )
 
+    # --------------------------------------------------------
+    # NOT READY → UX RESPONSE
+    # --------------------------------------------------------
     if conversation_result.type != "ready_for_translation":
-        response = {
+        return {
             "status": "ok",
             "type": conversation_result.type,
             "text": conversation_result.text,
             "next_actions": conversation_result.next_actions,
         }
 
-        if conversation_result.readiness and conversation_result.readiness.get("requires_approval"):
-            response["context"] = {
-                "pending_approval": {
-                    "command": conversation_result.readiness.get("proposed_command"),
-                    "intent_type": conversation_result.readiness.get("intent_type"),
-                }
-            }
-
-        return response
-
-    # --------------------------------------------------------
-    # 2. COO TRANSLATION (SYSTEM SOURCE — CANONICAL)
-    # --------------------------------------------------------
+    # ========================================================
+    # 2. COO TRANSLATION — SINGLE AUTHORIZED HANDOFF
+    # ========================================================
     ai_command: Optional[AICommand] = coo_translation_service.translate(
         raw_input=user_text,
         source="system",
@@ -94,9 +89,9 @@ async def adnan_ai_input(payload: AdnanAIInput):
             "reason": "Input could not be translated into a valid system command.",
         }
 
-    # --------------------------------------------------------
+    # ========================================================
     # 3. EXECUTION
-    # --------------------------------------------------------
+    # ========================================================
     try:
         result = await ai_command_service.execute(ai_command)
 
@@ -106,9 +101,6 @@ async def adnan_ai_input(payload: AdnanAIInput):
             "result": result,
         }
 
-        # ----------------------------------------------------
-        # 4. WORKFLOW SNAPSHOT (UX — READ ONLY)
-        # ----------------------------------------------------
         workflow_id = result.get("workflow_id")
         if workflow_id:
             response["workflow"] = _workflow_bridge.snapshot(workflow_id)

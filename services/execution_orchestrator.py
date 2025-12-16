@@ -1,5 +1,3 @@
-# services/execution_orchestrator.py
-
 from typing import Dict, Any
 from datetime import datetime
 from uuid import uuid4
@@ -18,12 +16,6 @@ logger = logging.getLogger(__name__)
 class ExecutionOrchestrator:
     """
     EXECUTION ORCHESTRATOR — CANONICAL (FAZA 3.7)
-
-    Uloga:
-    - governance + routing
-    - centralna tačka FAILURE WIRING-a
-    - NE izvršava
-    - NE shape-a UX response
     """
 
     STATE_COMPLETED = "COMPLETED"
@@ -44,8 +36,9 @@ class ExecutionOrchestrator:
     # MAIN ENTRYPOINT
     # =========================================================
     async def execute(self, command: AICommand) -> Dict[str, Any]:
+
         # -----------------------------------------------------
-        # AUTONOMY META COMMAND (EXPLICIT, ONE-SHOT)
+        # AUTONOMY WRAPPER (NO EXECUTION)
         # -----------------------------------------------------
         if command.command == "request_execution":
             approved_command = await self._autonomy.decide(command)
@@ -64,13 +57,6 @@ class ExecutionOrchestrator:
         execution_id = str(uuid4())
         started_at = datetime.utcnow().isoformat()
 
-        execution_contract = {
-            "execution_id": execution_id,
-            "command": command.command,
-            "contract_version": self.CONTRACT_VERSION,
-            "started_at": started_at,
-        }
-
         # -----------------------------------------------------
         # GOVERNANCE
         # -----------------------------------------------------
@@ -82,7 +68,24 @@ class ExecutionOrchestrator:
             approval_id=command.approval_id,
         )
 
+        # -----------------------------------------------------
+        # 🚨 APPROVAL BLOCK — SIGNAL, NOT FAILURE
+        # -----------------------------------------------------
         if not governance.get("allowed"):
+            if (
+                governance.get("source") == "governance"
+                and governance.get("next_csi_state") == "DECISION_PENDING"
+            ):
+                return {
+                    "execution_id": execution_id,
+                    "execution_state": self.STATE_BLOCKED,
+                    "reason": governance.get("reason"),
+                    "command": command.command,
+                    "approval_required": True,
+                    "read_only": False,
+                    "timestamp": started_at,
+                }
+
             return self._failure_handler.classify(
                 source=governance.get("source"),
                 reason=governance.get("reason"),
@@ -94,13 +97,18 @@ class ExecutionOrchestrator:
             )
 
         # =====================================================
-        # READ PATH (SYSTEM QUERY)
+        # READ PATH (DETERMINISTIC)
         # =====================================================
         if command.command == "system_query":
             try:
                 return await self._read_executor.execute(
                     command=command,
-                    execution_contract=execution_contract,
+                    execution_contract={
+                        "execution_id": execution_id,
+                        "command": command.command,
+                        "contract_version": self.CONTRACT_VERSION,
+                        "started_at": started_at,
+                    },
                 )
             except Exception as e:
                 return self._failure_handler.classify(
@@ -111,14 +119,25 @@ class ExecutionOrchestrator:
                 )
 
         # =====================================================
-        # WRITE PATH (AGENT / SYSTEM EXECUTION)
+        # WRITE PATH — GOVERNED EXECUTION
         # =====================================================
         try:
-            return await self._write_executor.execute(
+            result = await self._write_executor.execute(
                 command=command.command,
                 payload=command.input or {},
                 agent_hint=command.executor,
             )
+
+            return {
+                "execution_id": execution_id,
+                "execution_state": self.STATE_COMPLETED,
+                "command": command.command,
+                "result": result,
+                "contract_version": self.CONTRACT_VERSION,
+                "timestamp": datetime.utcnow().isoformat(),
+                "read_only": False,
+            }
+
         except Exception as e:
             return self._failure_handler.classify(
                 source="execution",

@@ -1,32 +1,22 @@
-# services/execution_governance_service.py
-
 """
 EXECUTION GOVERNANCE SERVICE — CANONICAL (FAZA 9)
-
-Uloga:
-- CENTRALNA i ZADNJA tačka odluke prije izvršenja
-- NE izvršava
-- NE shape-a response
-- NE piše stanje
-- deterministički odlučuje: ALLOWED | BLOCKED
-- eksplicitno označava FAILURE SOURCE
 """
 
 from typing import Dict, Any, Optional
 from datetime import datetime
 
 from services.policy_service import PolicyService
-from services.rbac_service import RBACService
-from services.approval_state_service import ApprovalStateService
 from services.action_safety_service import ActionSafetyService
+from services.approval_state_service import get_approval_state
 
 
 class ExecutionGovernanceService:
     def __init__(self):
         self.policy = PolicyService()
-        self.rbac = RBACService()
-        self.approvals = ApprovalStateService()
         self.safety = ActionSafetyService()
+
+        # 🔒 SHARED approval state (CANONICAL)
+        self.approvals = get_approval_state()
 
         self._governance_limits = {
             "max_execution_time_seconds": 30,
@@ -36,12 +26,7 @@ class ExecutionGovernanceService:
             },
         }
 
-        # META commands:
-        # - zahtijevaju već ODOBRENU approval
-        # - NE smiju triggerovati novi approval flow
-        self._meta_commands = {
-            "delegate_execution",
-        }
+        self._meta_commands = {"delegate_execution"}
 
     # ============================================================
     # PUBLIC API
@@ -59,92 +44,88 @@ class ExecutionGovernanceService:
         decision_ts = datetime.utcnow().isoformat()
 
         # --------------------------------------------------------
-        # 0. HARD INPUT VALIDATION (DETERMINISTIC)
+        # HARD VALIDATION
         # --------------------------------------------------------
         if not isinstance(role, str) or not isinstance(context_type, str) or not isinstance(directive, str):
-            return self._block(
-                reason="Invalid execution request.",
-                source="governance",
-                ts=decision_ts,
-            )
+            return self._block("Invalid execution request.", "governance", decision_ts)
 
         # --------------------------------------------------------
-        # 1. CONTEXT POLICY
+        # CONTEXT POLICY
         # --------------------------------------------------------
         context_policy = self.policy.get_context_policy(context_type)
         if context_policy and context_policy.get("execution_allowed") is False:
-            return self._block(
-                reason="Execution not allowed in this context.",
-                source="policy",
-                ts=decision_ts,
-            )
+            return self._block("Execution not allowed in this context.", "policy", decision_ts)
 
         # --------------------------------------------------------
-        # 2. RBAC — REQUEST LEVEL
+        # RBAC (POLICY-DRIVEN)
         # --------------------------------------------------------
         if not (role == "system" and directive == "system_query"):
             if not self.policy.can_request(role):
                 return self._block(
-                    reason=f"Role '{role}' cannot request execution.",
-                    source="policy",
-                    ts=decision_ts,
+                    f"Role '{role}' cannot request execution.",
+                    "policy",
+                    decision_ts,
                 )
 
-        # --------------------------------------------------------
-        # 3. RBAC — ACTION LEVEL
-        # --------------------------------------------------------
         if not self.policy.is_action_allowed_for_role(role, directive):
             return self._block(
-                reason=f"Role '{role}' is not allowed to perform '{directive}'.",
-                source="policy",
-                ts=decision_ts,
+                f"Role '{role}' is not allowed to perform '{directive}'.",
+                "policy",
+                decision_ts,
             )
 
         # --------------------------------------------------------
-        # 4. SAFETY LAYER
+        # SAFETY
         # --------------------------------------------------------
         safety = self.safety.validate_action(directive, params or {})
         if safety.get("allowed") is not True:
             return self._block(
-                reason=safety.get("reason", "Safety validation failed."),
-                source="safety",
-                ts=decision_ts,
+                safety.get("reason", "Safety validation failed."),
+                "safety",
+                decision_ts,
             )
 
         # --------------------------------------------------------
-        # 5. APPROVAL (WRITE — HARD GATE)
+        # APPROVAL HARD-GATE
         # --------------------------------------------------------
         if directive != "system_query":
 
-            # META commands
             if directive in self._meta_commands:
                 if not approval_id or not self.approvals.is_fully_approved(approval_id):
                     return self._block(
-                        reason="Approved approval required for meta execution.",
-                        source="governance",
-                        ts=decision_ts,
+                        "Approved approval required for meta execution.",
+                        "governance",
+                        decision_ts,
                         next_csi_state="DECISION_PENDING",
                         read_only=False,
+                        approval_id=approval_id,
                     )
 
-            # REAL WRITE commands
             else:
                 if not approval_id:
+                    approval = self.approvals.create(
+                        command=directive,
+                        payload_summary=params or {},
+                        scope=context_type,
+                        risk_level="standard",
+                    )
                     return self._block(
-                        reason="Missing approval for write operation.",
-                        source="governance",
-                        ts=decision_ts,
+                        "Approval required for write operation.",
+                        "governance",
+                        decision_ts,
                         next_csi_state="DECISION_PENDING",
                         read_only=False,
+                        approval_id=approval["approval_id"],
                     )
 
                 if not self.approvals.is_fully_approved(approval_id):
                     return self._block(
-                        reason="Approval not granted.",
-                        source="governance",
-                        ts=decision_ts,
+                        "Approval not granted.",
+                        "governance",
+                        decision_ts,
                         next_csi_state="DECISION_PENDING",
                         read_only=False,
+                        approval_id=approval_id,
                     )
 
         # --------------------------------------------------------
@@ -161,18 +142,20 @@ class ExecutionGovernanceService:
         }
 
     # ============================================================
-    # INTERNALS
+    # INTERNAL
     # ============================================================
     def _block(
         self,
-        *,
         reason: str,
         source: str,
         ts: str,
+        *,
         next_csi_state: str = "IDLE",
         read_only: bool = True,
+        approval_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        return {
+
+        response = {
             "allowed": False,
             "reason": reason,
             "source": source,
@@ -181,3 +164,8 @@ class ExecutionGovernanceService:
             "governance": self._governance_limits,
             "timestamp": ts,
         }
+
+        if approval_id:
+            response["approval_id"] = approval_id
+
+        return response
