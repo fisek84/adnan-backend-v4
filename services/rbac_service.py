@@ -1,5 +1,3 @@
-# services/rbac_service.py
-
 """
 RBAC SERVICE — CANONICAL (FAZA 9)
 
@@ -23,29 +21,31 @@ class RBACService:
         # --------------------------------------------------------
         self._roles: Dict[str, Dict[str, Any]] = {
             # ----------------------------------
-            # SYSTEM (OS INTERNAL — OWNER, NOT EXECUTOR)
+            # SYSTEM (OS INTERNAL — BRAIN / OWNER)
             # ----------------------------------
             "system": {
                 "can_request": True,
-                "can_execute": False,  # system NE izvršava direktno
+                "can_execute": False,
                 "allowed_actions": {
                     "system_query",
                     "system_identity",
                     "system_notion_inbox",
                     "system_inbox_delegation_preview",
-                    "update_goal",  # ✅ DOZVOLJENO KAO OWNER WRITE (AGENT IZVRŠAVA)
                 },
             },
 
             # ----------------------------------
-            # USER / CEO
+            # CEO (HUMAN DECISION MAKER)
             # ----------------------------------
-            "user": {
+            "ceo": {
                 "can_request": True,
                 "can_execute": False,
                 "allowed_actions": {
-                    "query_database",
+                    "goal_write",
+                    "update_goal",
                     "create_task",
+                    "create_project",
+                    "query_database",
                 },
             },
 

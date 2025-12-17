@@ -5,7 +5,7 @@ import json
 import logging
 from openai import OpenAI
 
-from ext.notion.client import perform_notion_action
+from ext.notion.client import perform_notion_action  # ← ISPRAVAN IMPORT
 
 logger = logging.getLogger(__name__)
 
@@ -14,8 +14,10 @@ class OpenAIAssistantExecutor:
     """
     OPENAI ASSISTANT EXECUTION ADAPTER — KANONSKI
 
-    - agent NIKAD ne vraća failure dict
-    - agent ili izvrši ili baci exception
+    - backend šalje execution kontrakt
+    - agent traži tool execution
+    - backend IZRIČITO izvršava tool
+    - NEMA implicitnog ponašanja
     """
 
     def __init__(self):
@@ -40,8 +42,10 @@ class OpenAIAssistantExecutor:
         if not command or not isinstance(payload, dict):
             raise ValueError("Agent task requires 'command' and 'payload'")
 
+        # 1. CREATE THREAD
         thread = self.client.beta.threads.create()
 
+        # 2. SEND EXECUTION CONTRACT
         execution_contract = {
             "type": "agent_execution",
             "command": command,
@@ -54,11 +58,13 @@ class OpenAIAssistantExecutor:
             content=json.dumps(execution_contract, ensure_ascii=False),
         )
 
+        # 3. RUN ASSISTANT
         run = self.client.beta.threads.runs.create(
             thread_id=thread.id,
             assistant_id=self.assistant_id,
         )
 
+        # 4. LOOP (HANDLE requires_action)
         while True:
             run_status = self.client.beta.threads.runs.retrieve(
                 thread_id=thread.id,
@@ -81,6 +87,10 @@ class OpenAIAssistantExecutor:
                         )
 
                     args = json.loads(call.function.arguments)
+
+                    # 🔎 DEBUG — KLJUČNA ISTINA SISTEMA
+                    print("DEBUG TOOL CALL ARGS =", json.dumps(args, indent=2, ensure_ascii=False))
+
                     result = perform_notion_action(**args)
 
                     tool_outputs.append(
@@ -96,15 +106,17 @@ class OpenAIAssistantExecutor:
                     tool_outputs=tool_outputs,
                 )
 
-            elif run_status.status in {"completed"}:
+            elif run_status.status in {"completed", "failed", "cancelled"}:
                 break
 
-            elif run_status.status in {"failed", "cancelled"}:
-                raise RuntimeError(
-                    f"Assistant run failed with status: {run_status.status}"
-                )
-
             await asyncio.sleep(0.5)
+
+        if run_status.status != "completed":
+            return {
+                "success": False,
+                "agent": self.assistant_id,
+                "status": run_status.status,
+            }
 
         messages = self.client.beta.threads.messages.list(
             thread_id=thread.id
@@ -115,7 +127,11 @@ class OpenAIAssistantExecutor:
         ]
 
         if not assistant_messages:
-            raise RuntimeError("Assistant produced no response")
+            return {
+                "success": False,
+                "agent": self.assistant_id,
+                "status": "no_assistant_response",
+            }
 
         final_text = assistant_messages[-1].content[0].text.value
 
@@ -125,6 +141,7 @@ class OpenAIAssistantExecutor:
             parsed = {"raw": final_text}
 
         return {
+            "success": True,
             "agent": self.assistant_id,
             "result": parsed,
         }

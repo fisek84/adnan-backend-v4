@@ -1,27 +1,36 @@
+# services/ai_command_service.py
+
 from typing import Dict, Any
+import logging
 
 from models.ai_command import AICommand
 from services.action_dictionary import is_valid_command
 from services.action_safety_service import ActionSafetyService
 from services.execution_orchestrator import ExecutionOrchestrator
+from services.failure_handler import FailureHandler
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 
 class AICommandService:
     """
-    AI COMMAND SERVICE — KANONSKI
+    AI COMMAND SERVICE — CANONICAL
 
     Pravila:
-    - READ: command-based
-    - WRITE: intent-based
-    - nema execution logike
+    - Validira i provjerava sigurnost
+    - NE upravlja execution lifecycle
+    - NE registruje execution
+    - SAMO delegira Orchestratoru
     """
 
     def __init__(self):
         self.safety = ActionSafetyService()
         self.orchestrator = ExecutionOrchestrator()
+        self.failure_handler = FailureHandler()
 
     async def execute(self, command: AICommand) -> Dict[str, Any]:
-        if not command or not isinstance(command, AICommand):
+        if not isinstance(command, AICommand):
             raise RuntimeError("Invalid AICommand object.")
 
         if not command.validated:
@@ -29,38 +38,35 @@ class AICommandService:
                 "AICommand is not validated by COOTranslationService."
             )
 
-        # ==================================================
-        # READ PATH — COMMAND BASED
-        # ==================================================
-        if command.read_only:
-            if not is_valid_command(command.command):
-                raise ValueError(
-                    f"Invalid system command: {command.command}"
-                )
+        try:
+            # ==================================================
+            # READ PATH
+            # ==================================================
+            if command.read_only:
+                if not is_valid_command(command.command):
+                    raise ValueError(
+                        f"Invalid system command: {command.command}"
+                    )
 
-            # SAFETY PRE-CHECK (NO EXECUTION)
-            self.safety.check(command)
+                self.safety.check(command)
+                return await self.orchestrator.execute(command)
 
-            result = await self.orchestrator.execute(command)
-
-        # ==================================================
-        # WRITE PATH — INTENT BASED (KANONSKI)
-        # ==================================================
-        else:
+            # ==================================================
+            # WRITE PATH
+            # ==================================================
             if not command.intent:
                 raise RuntimeError("WRITE command must define intent.")
 
-            # SAFETY PRE-CHECK (NO EXECUTION)
+            # 🔑 KANONSKA GARANCIJA: input MORA postojati
+            if command.input is None:
+                command.input = {}
+
             self.safety.check(command)
+            return await self.orchestrator.execute(command)
 
-            result = await self.orchestrator.execute(command)
-
-        # ==================================================
-        # POST-EXECUTION SYNC
-        # ==================================================
-        execution_state = result.get("execution_state")
-        if execution_state:
-            command.execution_state = execution_state
-
-        AICommand.log(command)
-        return result
+        except Exception as e:
+            return self.failure_handler.classify(
+                source="execution",
+                reason=str(e),
+                execution_id=command.execution_id,
+            )

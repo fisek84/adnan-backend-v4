@@ -55,12 +55,10 @@ from gateway.gateway_server import app  # noqa
 from services.ai_command_service import AICommandService
 from services.coo_translation_service import COOTranslationService
 from services.coo_conversation_service import COOConversationService
-from services.response_formatter import ResponseFormatter
 
 ai_command_service = AICommandService()
 coo_translation_service = COOTranslationService()
 coo_conversation_service = COOConversationService()
-response_formatter = ResponseFormatter()
 
 logger.info("🧠 Core AI services initialized.")
 
@@ -71,12 +69,11 @@ logger.info("🧠 Core AI services initialized.")
 from routers.ai_router import set_ai_services
 from routers.adnan_ai_router import set_adnan_ai_services
 
-# --- PRIMARY /ai ROUTER (KANONSKI UX FLOW) ---
+# --- PRIMARY /ai ROUTER (UX → SYSTEM → EXECUTION) ---
 set_ai_services(
     command_service=ai_command_service,
     conversation_service=coo_conversation_service,
     translation_service=coo_translation_service,
-    formatter=response_formatter,
 )
 
 # --- SECONDARY /adnan-ai ROUTER (LEGACY / INTERNAL) ---

@@ -1,13 +1,15 @@
+# routers/ai_ops_router.py
+
 from fastapi import APIRouter, HTTPException
 from typing import Dict, Any
 import logging
 
 from services.cron_service import CronService
 from services.approval_ux_service import ApprovalUXService
-from services.approval_delegation_service import ApprovalDelegationService
 from services.approval_state_service import get_approval_state
+from services.execution_registry import ExecutionRegistry
+from services.execution_orchestrator import ExecutionOrchestrator
 from services.agent_health_service import AgentHealthService
-
 
 router = APIRouter(prefix="/ai-ops", tags=["AI Ops"])
 
@@ -15,23 +17,13 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 # ------------------------------------------------------------
-# Approval UX (stateless wrapper)
+# SERVICES (CANONICAL)
 # ------------------------------------------------------------
 _approval_ux = ApprovalUXService()
-
-# ------------------------------------------------------------
-# Delegation execution (FAZA 4)
-# ------------------------------------------------------------
-_delegation_service = ApprovalDelegationService()
-
-# ------------------------------------------------------------
-# Agent health (FAZA 6 — READ-ONLY)
-# ------------------------------------------------------------
+_registry = ExecutionRegistry()
+_orchestrator = ExecutionOrchestrator()
 _agent_health = AgentHealthService()
 
-# ------------------------------------------------------------
-# Cron service (injected, READ-ONLY)
-# ------------------------------------------------------------
 _cron_service: CronService | None = None
 
 
@@ -58,7 +50,7 @@ def cron_status():
 
 
 # ============================================================
-# APPROVAL OPS (FAZA 3 — UX ONLY)
+# APPROVAL OPS (UX ONLY)
 # ============================================================
 @router.get("/approval/pending")
 def list_pending():
@@ -73,48 +65,40 @@ def list_pending():
 
 
 @router.post("/approval/approve")
-def approve(body: Dict[str, Any]):
-    try:
-        return _approval_ux.approve(
-            approval_id=body["approval_id"],
-            approved_by=body.get("actor", "unknown"),
-            note=body.get("note"),
-        )
-    except KeyError:
+async def approve(body: Dict[str, Any]):
+    if "approval_id" not in body:
         raise HTTPException(400, detail="approval_id is required")
+
+    result = _approval_ux.approve(
+        approval_id=body["approval_id"],
+        approved_by=body.get("approved_by", "unknown"),
+        note=body.get("note"),
+    )
+
+    execution_id = result.get("execution_id")
+    if not execution_id:
+        raise HTTPException(
+            500, detail="Approved approval has no execution_id"
+        )
+
+    # 🔑 RESUME REGISTERED EXECUTION
+    return await _orchestrator.resume(execution_id)
 
 
 @router.post("/approval/reject")
 def reject(body: Dict[str, Any]):
-    try:
-        return _approval_ux.reject(
-            approval_id=body["approval_id"],
-            rejected_by=body.get("actor", "unknown"),
-            note=body.get("note"),
-        )
-    except KeyError:
+    if "approval_id" not in body:
         raise HTTPException(400, detail="approval_id is required")
 
-
-# ============================================================
-# DELEGATION EXECUTION (FAZA 4)
-# ============================================================
-@router.post("/delegate")
-async def delegate(body: Dict[str, Any]):
-    try:
-        approval_id = body["approval_id"]
-        agent = body["agent"]
-    except KeyError:
-        raise HTTPException(400, detail="approval_id and agent are required")
-
-    return await _delegation_service.delegate(
-        approval_id=approval_id,
-        executor=agent,
+    return _approval_ux.reject(
+        approval_id=body["approval_id"],
+        rejected_by=body.get("rejected_by", "unknown"),
+        note=body.get("note"),
     )
 
 
 # ============================================================
-# AGENT HEALTH (FAZA 6 — OBSERVABILITY)
+# AGENT HEALTH (READ-ONLY)
 # ============================================================
 @router.get("/agents/health")
 def agents_health():
@@ -124,5 +108,7 @@ def agents_health():
     }
 
 
-# exported router
+# ============================================================
+# EXPORT
+# ============================================================
 ai_ops_router = router

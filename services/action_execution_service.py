@@ -4,12 +4,14 @@ ACTION EXECUTION SERVICE — KANONSKI (FAZA 3.5)
 - jedino mjesto gdje se WRITE izvršava
 - agent je GLUP izvršilac
 - Backend Mozak je vlasnik znanja
+- NEMA raw failure return-a
 """
 
 from typing import Dict, Any
 
 from services.agent_router.openai_assistant_executor import OpenAIAssistantExecutor
 from services.notion_schema_registry import NotionSchemaRegistry
+from services.failure_handler import FailureHandler
 
 
 class ActionExecutionService:
@@ -21,6 +23,7 @@ class ActionExecutionService:
 
     def __init__(self):
         self.openai_executor = OpenAIAssistantExecutor()
+        self.failure_handler = FailureHandler()
 
     # ============================================================
     # EXECUTE WRITE (KANONSKI)
@@ -36,15 +39,28 @@ class ActionExecutionService:
         """
 
         if not intent:
-            raise ValueError("Execution intent is required.")
+            return self.failure_handler.classify(
+                source="execution",
+                reason="Execution intent is required",
+            )
 
         if not isinstance(payload, dict):
-            raise ValueError("Execution payload must be a dict.")
+            return self.failure_handler.classify(
+                source="execution",
+                reason="Execution payload must be a dict",
+            )
 
         # --------------------------------------------------------
         # MAP INTENT → NOTION ACTION (MOZAK)
         # --------------------------------------------------------
-        notion_action = self._map_intent_to_notion(intent, payload)
+        try:
+            notion_action = self._map_intent_to_notion(intent, payload)
+        except Exception as e:
+            return self.failure_handler.classify(
+                source="execution",
+                reason=str(e),
+                metadata={"intent": intent, "payload": payload},
+            )
 
         # --------------------------------------------------------
         # SEND TO AGENT (NO INTELLIGENCE)
@@ -57,14 +73,25 @@ class ActionExecutionService:
                 }
             )
         except Exception as e:
-            return {
-                "success": False,
-                "reason": "Agent execution failed",
-                "error": str(e),
-            }
+            return self.failure_handler.classify(
+                source="agent",
+                reason="Agent execution failed",
+                metadata={"error": str(e)},
+            )
+
+        # --------------------------------------------------------
+        # AGENT RESULT VALIDATION (KANONSKI)
+        # --------------------------------------------------------
+        if not agent_result:
+            return self.failure_handler.classify(
+                source="agent",
+                reason="Agent returned empty result",
+                metadata={"intent": intent},
+            )
 
         return {
             "success": True,
+            "execution_state": "SUCCESS",
             "agent_result": agent_result,
         }
 
@@ -105,12 +132,12 @@ class ActionExecutionService:
             }
 
         # =====================================================
-        # GOALS
+        # GOALS (KANONSKI ALIAS)
         # =====================================================
-        if intent == "create_goal":
-            name = payload.get("name")
+        if intent in {"create_goal", "goal_write"}:
+            name = payload.get("name") or payload.get("title")
             if not name:
-                raise ValueError("create_goal requires 'name'")
+                raise ValueError("create_goal requires 'name' or 'title'")
 
             return {
                 "operation": "create_page",
