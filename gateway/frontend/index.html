@@ -57,7 +57,7 @@
       padding: 16px 24px 24px 24px;
       display: grid;
       grid-template-columns: 2fr 3fr;
-      grid-template-rows: auto auto auto;
+      grid-auto-rows: auto;
       gap: 16px;
       align-items: flex-start;
     }
@@ -96,6 +96,9 @@
     }
 
     .badge-danger {
+      font-size: 11px;
+      padding: 3px 8px;
+      border-radius: 999px;
       background: rgba(127, 29, 29, 0.2);
       border-color: rgba(248, 113, 113, 0.6);
       color: #fecaca;
@@ -142,7 +145,7 @@
 
     .approvals-grid {
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
+      grid-template-columns: repeat(4, minmax(0, 1fr));
       gap: 8px;
       margin-top: 8px;
     }
@@ -175,6 +178,7 @@
       border-radius: 10px;
       background: rgba(15, 23, 42, 0.95);
       border: 1px solid rgba(30, 64, 175, 0.6);
+      margin-top: 8px;
     }
 
     .toolbar {
@@ -259,6 +263,63 @@
       max-height: 160px;
       overflow: auto;
       white-space: pre-wrap;
+      display: none; /* debug detalji skriveni po defaultu */
+    }
+
+    .cmd-log.visible {
+      display: block;
+    }
+
+    .goals-tasks-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 6px;
+    }
+
+    .summary-block-title {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      opacity: 0.7;
+      margin-bottom: 4px;
+    }
+
+    .summary-pill-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .summary-pill {
+      font-size: 11px;
+      padding: 4px 8px;
+      border-radius: 999px;
+      background: rgba(15, 23, 42, 0.9);
+      border: 1px solid rgba(148, 163, 184, 0.4);
+    }
+
+    details.debug-toggle summary {
+      font-size: 11px;
+      opacity: 0.75;
+      cursor: pointer;
+      list-style: none;
+    }
+
+    details.debug-toggle summary::-webkit-details-marker {
+      display: none;
+    }
+
+    details.debug-toggle summary::before {
+      content: "▶";
+      display: inline-block;
+      margin-right: 6px;
+      font-size: 9px;
+      transform: translateY(-1px);
+    }
+
+    details.debug-toggle[open] summary::before {
+      content: "▼";
     }
   </style>
 </head>
@@ -267,7 +328,7 @@
     <header>
       <div class="brand">
         <span class="brand-title">Adnan.AI / Evolia OS</span>
-        <span class="brand-subtitle">CEO konzola izvršnog direktora · Snimak sustava samo za čitanje</span>
+        <span class="brand-subtitle">CEO konzola izvršnog direktora · Pregled sustava i ciljeva</span>
       </div>
       <div style="display:flex;align-items:center;gap:8px;">
         <span class="pill" id="version-pill">v–</span>
@@ -286,7 +347,38 @@
           </span>
         </div>
         <div id="system-kv"></div>
-        <div class="hint">Ovdje izvršni direktor vidi stvarni status operativnog sustava (verzija, zaključaj, stanje).</div>
+        <div class="hint">Status operativnog sustava (verzija, zaključavanje arhitekture, mod rada).</div>
+      </section>
+
+      <!-- CJEVO VOD ODOBRENJA -->
+      <section class="card">
+        <div class="card-header">
+          <span class="card-title">CJEVO VOD ODOBRENJA</span>
+          <span class="badge">BLOKIRANO → ODOBRENO → IZVRŠENO</span>
+        </div>
+        <div id="approvals-stats"></div>
+        <div class="hint">Pregled koliko zahtjeva je na čekanju, odobreno i neuspješno.</div>
+      </section>
+
+      <!-- GOALS & TASKS PREGLED (READ-ONLY BIZNIS PANEL) -->
+      <section class="card" style="grid-column: span 2;">
+        <div class="card-header">
+          <span class="card-title">GOALS & TASKS — PREGLED</span>
+          <span class="badge">READ-ONLY SNAPSHOT</span>
+        </div>
+        <div class="goals-tasks-grid">
+          <div>
+            <div class="summary-block-title">CILJEVI (GOALS)</div>
+            <div id="goals-summary" class="summary-pill-row"></div>
+          </div>
+          <div>
+            <div class="summary-block-title">TASKOVI (TASKS)</div>
+            <div id="tasks-summary" class="summary-pill-row"></div>
+          </div>
+        </div>
+        <div class="hint">
+          Agregiran pregled ciljeva i taskova po statusu/prioritetu. Ako nema podataka, backend još ne puni ovu sekciju.
+        </div>
       </section>
 
       <!-- IDENTITET I MODA -->
@@ -298,47 +390,42 @@
         <div id="mode-block" style="margin-top:10px;"></div>
       </section>
 
-      <!-- CJEVO VOD ODOBRENJA -->
-      <section class="card">
-        <div class="card-header">
-          <span class="card-title">CJEVO VOD ODOBRENJA</span>
-          <span class="badge">BLOKIRANO → ODOBRENO → IZVRŠENO</span>
-        </div>
-        <div id="approvals-stats"></div>
-      </section>
-
       <!-- CEO KOMANDA (NL → /api/execute) -->
       <section class="card">
         <div class="card-header">
-          <span class="card-title">CEO NL KOMANDA</span>
+          <span class="card-title">CEO KOMANDA (NL)</span>
           <span class="badge-danger">GOVERNANCE ACTIVE</span>
         </div>
         <textarea
           id="ceo-input"
           class="textarea"
-          placeholder="Upiši CEO komandu, npr: &#10;kreiraj task EVO-CEO-TASK-UI-001 priority High status Not Started due date 2026-01-15">
+          placeholder="Upiši CEO komandu, npr:&#10;kreiraj task EVO-CEO-TASK-UI-001 priority High status Not Started due date 2026-01-15">
         </textarea>
         <div class="toolbar" style="justify-content:flex-start;margin-top:8px;">
-          <button id="send-btn">Pošalji komandu (BLOCKED)</button>
+          <button id="send-btn">Pošalji komandu (kreiraj zahtjev)</button>
           <button id="approve-btn">Odobri zadnji zahtjev</button>
-          <button id="snapshot-btn">Osvježi snimku</button>
+          <button id="snapshot-btn">Osvježi pregled</button>
+          <button id="toggle-log-btn">Prikaži tehničke detalje</button>
         </div>
         <div id="cmd-status" class="cmd-status"></div>
         <div id="cmd-log" class="cmd-log"></div>
         <div class="hint">
-          UX ne preskače governance: svaka komanda ide CEO → BLOCKED → ODOBRENJE → EXECUTED.
+          Svaka komanda prolazi putanju CEO → BLOKIRANO → ODOBRENJE → IZVRŠEN0. Ovdje vidiš samo sažetak, detaljan JSON je u debug sekciji.
         </div>
       </section>
 
-      <!-- NEOBRAĐENI SNIMAK -->
+      <!-- TEHNIČKI SNIMAK (DEBUG) -->
       <section class="card" style="grid-column: span 2;">
         <div class="card-header">
-          <span class="card-title">NEOBRAĐENI SNIMAK (OTKLANJANJE GREŠAKA)</span>
+          <span class="card-title">TEHNIČKI POGLED (DEBUG)</span>
           <div class="toolbar" style="margin-bottom:0;">
             <button id="refresh-btn">Osvježi snimku</button>
           </div>
         </div>
-        <div id="json-view" class="json-view">{}</div>
+        <details class="debug-toggle">
+          <summary>Prikaži tehnički JSON snimak sustava</summary>
+          <div id="json-view" class="json-view">{}</div>
+        </details>
       </section>
     </main>
   </div>
@@ -352,6 +439,25 @@
       return String(v);
     }
 
+    function renderSummaryPills(container, label, obj) {
+      container.innerHTML = "";
+      if (!obj || typeof obj !== "object" || Object.keys(obj).length === 0) {
+        const pill = document.createElement("div");
+        pill.className = "summary-pill";
+        pill.textContent = "Nema agregiranih podataka";
+        container.appendChild(pill);
+        return;
+    }
+
+    const entries = Object.entries(obj);
+    entries.forEach(([key, value]) => {
+      const pill = document.createElement("div");
+      pill.className = "summary-pill";
+      pill.textContent = `${key}: ${value}`;
+      container.appendChild(pill);
+    });
+  }
+
     async function loadSnapshot() {
       const jsonView = document.getElementById("json-view");
       const systemKv = document.getElementById("system-kv");
@@ -361,6 +467,8 @@
       const versionPill = document.getElementById("version-pill");
       const channelPill = document.getElementById("channel-pill");
       const bootBadge = document.getElementById("boot-badge");
+      const goalsSummaryEl = document.getElementById("goals-summary");
+      const tasksSummaryEl = document.getElementById("tasks-summary");
 
       jsonView.textContent = "Učitavam snimku…";
 
@@ -375,6 +483,8 @@
         const identity = data.identity || {};
         const mode = data.mode || {};
         const approvals = data.approvals || {};
+        const goalsSummaryData = data.goals_summary || null;
+        const tasksSummaryData = data.tasks_summary || null;
 
         versionPill.textContent = `v${safeString(system.version)}`;
         channelPill.textContent = safeString(system.release_channel);
@@ -389,8 +499,8 @@
           ["Ime", system.name],
           ["Verzija", system.version],
           ["Kanal izdanja", system.release_channel],
-          ["Luk brava", String(system.arch_lock)],
-          ["Omogućen OS", String(system.os_enabled)],
+          ["Zaključana arhitektura", String(system.arch_lock)],
+          ["OS omogućen", String(system.os_enabled)],
           ["OPS siguran način rada", String(system.ops_safe_mode)],
         ];
         kvPairs.forEach(([k, v]) => {
@@ -413,7 +523,7 @@
         if (role) {
           const roleRow = document.createElement("div");
           roleRow.className = "kv-row";
-          roleRow.innerHTML = `<span class="kv-key">Uloge</span><span class="kv-value">${role}</span>`;
+          roleRow.innerHTML = `<span class="kv-key">Uloga sustava</span><span class="kv-value">${role}</span>`;
           identityBlock.appendChild(roleRow);
         }
 
@@ -440,7 +550,7 @@
         }
 
         modeBlock.innerHTML = "";
-        const currentMode = (data.state && data.state.current_mode) || mode.default_mode || "operativni";
+        const currentMode = (data.state && data.state.current_mode) || mode.default_mode || "operational";
         const modeRow = document.createElement("div");
         modeRow.className = "kv-row";
         modeRow.innerHTML = `<span class="kv-key">Trenutni način rada</span><span class="kv-value">${currentMode}</span>`;
@@ -482,6 +592,21 @@
         });
 
         approvalsStats.appendChild(grid);
+
+        // GOALS & TASKS SUMMARY (placeholder – čita iz data.goals_summary / data.tasks_summary ako postoje)
+        let goalsStatus = null;
+        let tasksStatus = null;
+
+        if (goalsSummaryData && typeof goalsSummaryData === "object") {
+          goalsStatus = goalsSummaryData.by_status || goalsSummaryData;
+        }
+
+        if (tasksSummaryData && typeof tasksSummaryData === "object") {
+          tasksStatus = tasksSummaryData.by_status || tasksSummaryData;
+        }
+
+        renderSummaryPills(goalsSummaryEl, "Ciljevi", goalsStatus);
+        renderSummaryPills(tasksSummaryEl, "Taskovi", tasksStatus);
       } catch (err) {
         jsonView.textContent = "Greška pri učitavanju snimke: " + err;
       }
@@ -497,7 +622,7 @@
         return;
       }
 
-      statusEl.textContent = "Šaljem /api/execute…";
+      statusEl.textContent = "Šaljem zahtjev kroz /api/execute…";
       logEl.textContent = "";
 
       try {
@@ -517,8 +642,19 @@
         lastApprovalId = data.approval_id || null;
         lastExecutionId = data.execution_id || null;
 
+        const state = data.execution_state || "";
+        let human = "";
+
+        if (state === "BLOCKED") {
+          human = "Zadnja komanda je zabilježena i čeka tvoje odobrenje.";
+        } else if (state === "COMPLETED") {
+          human = "Zadnja komanda je izvršena.";
+        } else {
+          human = "Stanje zadnje komande: " + safeString(state);
+        }
+
         statusEl.textContent =
-          "STATUS: " + data.execution_state +
+          human +
           "\napproval_id: " + safeString(lastApprovalId) +
           "\nexecution_id: " + safeString(lastExecutionId);
 
@@ -535,11 +671,11 @@
       const logEl = document.getElementById("cmd-log");
 
       if (!lastApprovalId) {
-        statusEl.textContent = "Nema aktivnog approval_id za odobriti (prvo pošalji komandu).";
+        statusEl.textContent = "Nema aktivnog zahtjeva za odobriti (prvo pošalji komandu).";
         return;
       }
 
-      statusEl.textContent = "Šaljem /api/ai-ops/approval/approve…";
+      statusEl.textContent = "Odobravam kroz /api/ai-ops/approval/approve…";
 
       try {
         const res = await fetch("/api/ai-ops/approval/approve", {
@@ -555,14 +691,34 @@
         }
 
         const data = await res.json();
-        statusEl.textContent =
-          "ODOBRENO.\nexecution_state: " + safeString(data.execution_state);
+        const state = data.execution_state || "";
+        let human = "";
+
+        if (state === "COMPLETED") {
+          human = "Zahtjev je odobren i izvršen.";
+        } else {
+          human = "Stanje nakon odobravanja: " + safeString(state);
+        }
+
+        statusEl.textContent = human;
         logEl.textContent = JSON.stringify(data, null, 2);
 
-        lastApprovalId = null; // ovaj je završen
+        lastApprovalId = null;
         await loadSnapshot();
       } catch (err) {
         statusEl.textContent = "Greška pri odobravanju: " + err;
+      }
+    }
+
+    function toggleLog() {
+      const logEl = document.getElementById("cmd-log");
+      const btn = document.getElementById("toggle-log-btn");
+      if (logEl.classList.contains("visible")) {
+        logEl.classList.remove("visible");
+        btn.textContent = "Prikaži tehničke detalje";
+      } else {
+        logEl.classList.add("visible");
+        btn.textContent = "Sakrij tehničke detalje";
       }
     }
 
@@ -570,6 +726,7 @@
     document.getElementById("approve-btn").addEventListener("click", approveLast);
     document.getElementById("refresh-btn").addEventListener("click", loadSnapshot);
     document.getElementById("snapshot-btn").addEventListener("click", loadSnapshot);
+    document.getElementById("toggle-log-btn").addEventListener("click", toggleLog);
 
     loadSnapshot();
   </script>
