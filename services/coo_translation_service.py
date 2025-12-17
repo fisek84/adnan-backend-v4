@@ -6,7 +6,6 @@ COO TRANSLATION SERVICE (CANONICAL)
 from typing import Optional, Dict, Any
 import re
 import logging
-from datetime import datetime, timedelta
 
 from models.ai_command import AICommand
 from services.intent_classifier import IntentClassifier
@@ -60,7 +59,7 @@ class COOTranslationService:
     @staticmethod
     def _extract_segment(regex: str, raw_input: str) -> Optional[str]:
         """
-        Helper za izvlačenje statusa/prioriteta/due date iz slobodnog teksta.
+        Helper za izvlačenje statusa/prioriteta/due date/start datuma iz slobodnog teksta.
         """
         m = re.search(regex, raw_input, flags=re.IGNORECASE)
         if not m:
@@ -219,88 +218,7 @@ class COOTranslationService:
             )
 
         # -----------------------------------------------------
-        # 0.A) CEO NL → 7-DAY GOAL + TASK WORKFLOW (BOSANSKI)
-        # "kreiraj 7 day plan za cilj X status Y priority Z start YYYY-MM-DD"
-        # -----------------------------------------------------
-        m_7day = re.search(
-            r"(?i)^kreiraj\s+7\s*day\s+plan\s+za\s+cilj\s+(.+?)\s+status\s+(.+?)\s+priority\s+(\w+)\s+start\s+(\d{4}-\d{2}-\d{2})",
-            text,
-        )
-        if m_7day:
-            logger.info("COO TRANSLATE: matched BOSNIAN 7DAY GOAL+TASK WORKFLOW")
-
-            if not is_valid_command("goal_task_workflow"):
-                return None
-
-            goal_name = m_7day.group(1).strip()
-            goal_status = m_7day.group(2).strip()
-            goal_priority = m_7day.group(3).strip()
-            start_str = m_7day.group(4).strip()
-
-            try:
-                start_date = datetime.strptime(start_str, "%Y-%m-%d").date()
-            except ValueError:
-                # ako datum nije validan, bolje vratiti None nego slati neispravan workflow
-                return None
-
-            # Goal deadline = start + 6 dana (7-day window)
-            goal_deadline = start_date + timedelta(days=6)
-
-            goal_specs: Dict[str, Any] = {
-                "Name": {"type": "title", "text": goal_name},
-                "Status": {"type": "select", "name": goal_status},
-                "Priority": {"type": "select", "name": goal_priority},
-                "Deadline": {
-                    "type": "date",
-                    "start": goal_deadline.isoformat(),
-                },
-            }
-
-            tasks_specs = []
-            for i in range(7):
-                day_date = start_date + timedelta(days=i)
-                tasks_specs.append(
-                    {
-                        "db_key": "tasks",
-                        "property_specs": {
-                            "Name": {
-                                "type": "title",
-                                "text": f"{goal_name} - Day {i + 1}",
-                            },
-                            "Status": {
-                                "type": "select",
-                                "name": "Not Started",
-                            },
-                            "Priority": {
-                                "type": "select",
-                                "name": goal_priority,
-                            },
-                            "Due Date": {
-                                "type": "date",
-                                "start": day_date.isoformat(),
-                            },
-                        },
-                    }
-                )
-
-            return AICommand(
-                command="goal_task_workflow",
-                intent="run_workflow",
-                read_only=False,
-                params={
-                    "mode": "7day",
-                    "goal": {
-                        "db_key": "goals",
-                        "property_specs": goal_specs,
-                    },
-                    "tasks": tasks_specs,
-                },
-                metadata={"context_type": "system", "source": source},
-                validated=True,
-            )
-
-        # -----------------------------------------------------
-        # 0.B) CEO NL → GOAL + TASK WORKFLOW (BOSANSKI, generički)
+        # 0.A) CEO NL → GOAL + TASK WORKFLOW (BOSANSKI)
         # "kreiraj cilj X ... i task Y ..."
         # koristi postojeće _build_goal/_build_task helpere
         # -----------------------------------------------------
@@ -336,6 +254,51 @@ class COOTranslationService:
                         }
                     ],
                 },
+                metadata={"context_type": "system", "source": source},
+                validated=True,
+            )
+
+        # -----------------------------------------------------
+        # 0.B) CEO NL → 7-DAY PLAN (GOAL + 7 TASKS)
+        # "kreiraj 7 day plan za cilj EVO-GOAL-7DAY-002 status Not Started priority High start 2026-02-01"
+        # -----------------------------------------------------
+        if lowered.startswith("kreiraj 7 day plan za cilj "):
+            logger.info("COO TRANSLATE: matched BOSNIAN 7-DAY PLAN WORKFLOW")
+
+            if not is_valid_command("goal_task_workflow"):
+                return None
+
+            prefix = "kreiraj 7 day plan za cilj "
+            goal_tail = text[len(prefix):].strip()
+
+            synthetic_goal_sentence = "kreiraj cilj " + goal_tail
+            goal_specs = self._build_goal_property_specs_from_text(
+                synthetic_goal_sentence
+            )
+
+            start_date = self._extract_segment(
+                r"start\s+(\d{4}-\d{2}-\d{2})",
+                text,
+            )
+
+            params: Dict[str, Any] = {
+                "mode": "7day",
+                "goal": {
+                    "db_key": "goals",
+                    "property_specs": goal_specs,
+                },
+                # tasks može biti popunjen iz NL ili generisan u agentu na osnovu mode/start_date
+                "tasks": [],
+            }
+
+            if start_date:
+                params["start_date"] = start_date
+
+            return AICommand(
+                command="goal_task_workflow",
+                intent="run_workflow",
+                read_only=False,
+                params=params,
                 metadata={"context_type": "system", "source": source},
                 validated=True,
             )
@@ -377,7 +340,6 @@ class COOTranslationService:
                 r"statusom\s+(.+)$", text
             )
 
-            # Za query koristimo property_specs → NotionOpsAgent ih prevodi u filters
             property_specs: Dict[str, Any] = {}
             if status_value:
                 property_specs["Status"] = {
@@ -448,6 +410,150 @@ class COOTranslationService:
                 read_only=True,
                 params={
                     "db_key": "goals",
+                    "property_specs": property_specs,
+                },
+                metadata={"context_type": "system", "source": source},
+                validated=True,
+            )
+
+        # -----------------------------------------------------
+        # 0.5) CEO NL → TASK STATUS UPDATE (BY PAGE ID)
+        # 'oznaci task <page_id> kao Completed'
+        # -----------------------------------------------------
+        m_task_status = re.search(
+            r"(?i)^(oznaci|označi)\s+task\s+([0-9a-f\-]{36})\s+kao\s+(.+)$",
+            text.strip(),
+        )
+        if m_task_status:
+            logger.info("COO TRANSLATE: matched BOSNIAN TASK STATUS UPDATE")
+
+            if not is_valid_command("notion_write"):
+                return None
+
+            page_id = m_task_status.group(2).strip()
+            status_value = m_task_status.group(3).strip()
+
+            property_specs: Dict[str, Any] = {
+                "Status": {
+                    "type": "select",
+                    "name": status_value,
+                }
+            }
+
+            return AICommand(
+                command="notion_write",
+                intent="update_page",
+                read_only=False,
+                params={
+                    "page_id": page_id,
+                    "property_specs": property_specs,
+                },
+                metadata={"context_type": "system", "source": source},
+                validated=True,
+            )
+
+        # -----------------------------------------------------
+        # 0.6) CEO NL → GOAL STATUS UPDATE (BY PAGE ID)
+        # 'oznaci cilj <page_id> kao In Progress'
+        # -----------------------------------------------------
+        m_goal_status = re.search(
+            r"(?i)^(oznaci|označi)\s+cilj\s+([0-9a-f\-]{36})\s+kao\s+(.+)$",
+            text.strip(),
+        )
+        if m_goal_status:
+            logger.info("COO TRANSLATE: matched BOSNIAN GOAL STATUS UPDATE")
+
+            if not is_valid_command("notion_write"):
+                return None
+
+            page_id = m_goal_status.group(2).strip()
+            status_value = m_goal_status.group(3).strip()
+
+            property_specs: Dict[str, Any] = {
+                "Status": {
+                    "type": "select",
+                    "name": status_value,
+                }
+            }
+
+            return AICommand(
+                command="notion_write",
+                intent="update_page",
+                read_only=False,
+                params={
+                    "page_id": page_id,
+                    "property_specs": property_specs,
+                },
+                metadata={"context_type": "system", "source": source},
+                validated=True,
+            )
+
+        # -----------------------------------------------------
+        # 0.7) CEO NL → TASK PRIORITY UPDATE (BY PAGE ID)
+        # 'promijeni prioritet taska <page_id> u High'
+        # -----------------------------------------------------
+        m_task_prio = re.search(
+            r"(?i)^promijeni prioritet taska\s+([0-9a-f\-]{36})\s+u\s+(.+)$",
+            text.strip(),
+        )
+        if m_task_prio:
+            logger.info("COO TRANSLATE: matched BOSNIAN TASK PRIORITY UPDATE")
+
+            if not is_valid_command("notion_write"):
+                return None
+
+            page_id = m_task_prio.group(1).strip()
+            prio_value = m_task_prio.group(2).strip()
+
+            property_specs: Dict[str, Any] = {
+                "Priority": {
+                    "type": "select",
+                    "name": prio_value,
+                }
+            }
+
+            return AICommand(
+                command="notion_write",
+                intent="update_page",
+                read_only=False,
+                params={
+                    "page_id": page_id,
+                    "property_specs": property_specs,
+                },
+                metadata={"context_type": "system", "source": source},
+                validated=True,
+            )
+
+        # -----------------------------------------------------
+        # 0.8) CEO NL → GOAL PRIORITY UPDATE (BY PAGE ID)
+        # 'promijeni prioritet cilja <page_id> u High'
+        # -----------------------------------------------------
+        m_goal_prio = re.search(
+            r"(?i)^promijeni prioritet cilja\s+([0-9a-f\-]{36})\s+u\s+(.+)$",
+            text.strip(),
+        )
+        if m_goal_prio:
+            logger.info("COO TRANSLATE: matched BOSNIAN GOAL PRIORITY UPDATE")
+
+            if not is_valid_command("notion_write"):
+                return None
+
+            page_id = m_goal_prio.group(1).strip()
+            prio_value = m_goal_prio.group(2).strip()
+
+            property_specs: Dict[str, Any] = {
+                "Priority": {
+                    "type": "select",
+                    "name": prio_value,
+                }
+            }
+
+            return AICommand(
+                command="notion_write",
+                intent="update_page",
+                read_only=False,
+                params={
+                    "page_id": page_id,
                     "property_specs": property_specs,
                 },
                 metadata={"context_type": "system", "source": source},
