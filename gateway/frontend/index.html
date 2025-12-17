@@ -2,24 +2,434 @@
 <html lang="bs">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Adnan.ai</title>
-  <link rel="stylesheet" href="style.css" />
+  <title>Adnan.AI / Evolia OS — CEO Console</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      margin: 0;
+      padding: 0;
+      background: #050816;
+      color: #f5f5f5;
+    }
+
+    .app-shell {
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+    }
+
+    header {
+      padding: 16px 24px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: radial-gradient(circle at top left, #1e293b 0, #020617 60%);
+    }
+
+    .brand {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .brand-title {
+      font-size: 18px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+    }
+
+    .brand-subtitle {
+      font-size: 12px;
+      opacity: 0.7;
+    }
+
+    .pill {
+      font-size: 11px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      border: 1px solid rgba(148, 163, 184, 0.4);
+      opacity: 0.9;
+    }
+
+    main {
+      flex: 1;
+      padding: 16px 24px 24px 24px;
+      display: grid;
+      grid-template-columns: 2fr 3fr;
+      grid-template-rows: auto auto 1fr;
+      gap: 16px;
+      align-items: flex-start;
+    }
+
+    .card {
+      background: rgba(15, 23, 42, 0.9);
+      border-radius: 16px;
+      padding: 14px 16px;
+      border: 1px solid rgba(148, 163, 184, 0.15);
+      box-shadow: 0 18px 45px rgba(0, 0, 0, 0.55);
+      backdrop-filter: blur(14px);
+    }
+
+    .card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+
+    .card-title {
+      font-size: 13px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      opacity: 0.85;
+    }
+
+    .badge {
+      font-size: 11px;
+      padding: 3px 8px;
+      border-radius: 999px;
+      background: rgba(15, 118, 110, 0.1);
+      border: 1px solid rgba(45, 212, 191, 0.3);
+      color: #5eead4;
+    }
+
+    .badge-danger {
+      background: rgba(127, 29, 29, 0.2);
+      border-color: rgba(248, 113, 113, 0.6);
+      color: #fecaca;
+    }
+
+    .kv-row {
+      display: flex;
+      justify-content: space-between;
+      font-size: 12px;
+      margin-bottom: 4px;
+      gap: 8px;
+    }
+
+    .kv-key {
+      opacity: 0.6;
+    }
+
+    .kv-value {
+      text-align: right;
+      font-weight: 500;
+    }
+
+    .list-chip-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 6px;
+    }
+
+    .chip {
+      font-size: 11px;
+      padding: 3px 8px;
+      border-radius: 999px;
+      background: rgba(30, 64, 175, 0.25);
+      border: 1px solid rgba(129, 140, 248, 0.6);
+      color: #c7d2fe;
+    }
+
+    .chip-soft {
+      background: rgba(15, 23, 42, 0.9);
+      border-color: rgba(148, 163, 184, 0.5);
+      color: #e5e7eb;
+    }
+
+    .approvals-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+      margin-top: 8px;
+    }
+
+    .stat-pill {
+      padding: 8px 10px;
+      border-radius: 12px;
+      border: 1px solid rgba(148, 163, 184, 0.2);
+      background: rgba(15, 23, 42, 0.85);
+      font-size: 11px;
+    }
+
+    .stat-label {
+      opacity: 0.65;
+      margin-bottom: 2px;
+    }
+
+    .stat-value {
+      font-weight: 600;
+    }
+
+    .json-view {
+      font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      font-size: 11px;
+      line-height: 1.5;
+      white-space: pre;
+      overflow: auto;
+      max-height: 360px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      background: rgba(15, 23, 42, 0.95);
+      border: 1px solid rgba(30, 64, 175, 0.6);
+    }
+
+    .toolbar {
+      display: flex;
+      justify-content: flex-end;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+
+    button.refresh {
+      font-size: 11px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      border: 1px solid rgba(148, 163, 184, 0.5);
+      background: rgba(15, 23, 42, 0.9);
+      color: #e5e7eb;
+      cursor: pointer;
+    }
+
+    button.refresh:hover {
+      border-color: rgba(129, 140, 248, 0.85);
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      margin-left: 6px;
+    }
+
+    .status-dot.ok {
+      background: #22c55e;
+      box-shadow: 0 0 8px rgba(34, 197, 94, 0.7);
+    }
+
+    .status-dot.bad {
+      background: #dc2626;
+      box-shadow: 0 0 8px rgba(220, 38, 38, 0.7);
+    }
+
+    .hint {
+      font-size: 11px;
+      opacity: 0.6;
+      margin-top: 4px;
+    }
+  </style>
 </head>
 <body>
+  <div class="app-shell">
+    <header>
+      <div class="brand">
+        <span class="brand-title">Adnan.AI / Evolia OS</span>
+        <span class="brand-subtitle">CEO Console · Read-only system snapshot</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;">
+        <span class="pill" id="version-pill">v–</span>
+        <span class="pill" id="channel-pill">–</span>
+      </div>
+    </header>
 
-  <h1>Adnan.ai</h1>
+    <main>
+      <!-- SYSTEM CARD -->
+      <section class="card">
+        <div class="card-header">
+          <span class="card-title">System</span>
+          <span class="badge" id="boot-badge">
+            BOOTING
+            <span class="status-dot bad"></span>
+          </span>
+        </div>
+        <div id="system-kv"></div>
+        <div class="hint">Ovdje CEO vidi realni OS status (bez executa, samo state).</div>
+      </section>
 
-  <textarea
-    id="input"
-    placeholder="Napiši kako razmišljaš..."
-    rows="6"
-  ></textarea>
+      <!-- IDENTITY / MODE CARD -->
+      <section class="card">
+        <div class="card-header">
+          <span class="card-title">Identity & Mode</span>
+        </div>
+        <div id="identity-block"></div>
+        <div id="mode-block" style="margin-top:10px;"></div>
+      </section>
 
-  <button id="send">Pošalji</button>
+      <!-- APPROVALS CARD -->
+      <section class="card">
+        <div class="card-header">
+          <span class="card-title">Approvals Pipeline</span>
+          <span class="badge">BLOCKED → APPROVED → EXECUTED</span>
+        </div>
+        <div id="approvals-stats"></div>
+      </section>
 
-  <pre id="output"></pre>
+      <!-- RAW SNAPSHOT CARD -->
+      <section class="card" style="grid-column: span 2;">
+        <div class="card-header">
+          <span class="card-title">Raw Snapshot (debug)</span>
+          <div class="toolbar">
+            <button class="refresh" id="refresh-btn">Refresh snapshot</button>
+          </div>
+        </div>
+        <div id="json-view" class="json-view">{}</div>
+      </section>
+    </main>
+  </div>
 
-  <script src="script.js"></script>
+  <script>
+    async function loadSnapshot() {
+      const jsonView = document.getElementById("json-view");
+      const systemKv = document.getElementById("system-kv");
+      const identityBlock = document.getElementById("identity-block");
+      const modeBlock = document.getElementById("mode-block");
+      const approvalsStats = document.getElementById("approvals-stats");
+      const versionPill = document.getElementById("version-pill");
+      const channelPill = document.getElementById("channel-pill");
+      const bootBadge = document.getElementById("boot-badge");
+
+      jsonView.textContent = "Loading snapshot…";
+
+      try {
+        const res = await fetch("/api/ceo/console/snapshot");
+        if (!res.ok) {
+          throw new Error("HTTP " + res.status);
+        }
+        const data = await res.json();
+
+        jsonView.textContent = JSON.stringify(data, null, 2);
+
+        const system = data.system || {};
+        const identity = data.identity || {};
+        const mode = data.mode || {};
+        const approvals = data.approvals || {};
+
+        versionPill.textContent = `v${system.version || "?"}`;
+        channelPill.textContent = system.release_channel || "–";
+
+        const bootOk = !!system.boot_ready;
+        bootBadge.innerHTML = bootOk ? 'READY<span class="status-dot ok"></span>'
+                                     : 'BOOTING<span class="status-dot bad"></span>';
+
+        systemKv.innerHTML = "";
+        const kvPairs = [
+          ["Name", system.name],
+          ["Version", system.version],
+          ["Release channel", system.release_channel],
+          ["Arch lock", String(system.arch_lock)],
+          ["OS enabled", String(system.os_enabled)],
+          ["OPS safe mode", String(system.ops_safe_mode)],
+        ];
+        kvPairs.forEach(([k, v]) => {
+          const row = document.createElement("div");
+          row.className = "kv-row";
+          row.innerHTML = `<span class="kv-key">${k}</span><span class="kv-value">${v ?? "–"}</span>`;
+          systemKv.appendChild(row);
+        });
+
+        identityBlock.innerHTML = "";
+        const name = identity.name || "Adnan.AI";
+        const role = identity.role || "";
+        const essence = identity.essence || "";
+
+        const titleRow = document.createElement("div");
+        titleRow.className = "kv-row";
+        titleRow.innerHTML = `<span class="kv-key">Identity</span><span class="kv-value">${name}</span>`;
+        identityBlock.appendChild(titleRow);
+
+        if (role) {
+          const roleRow = document.createElement("div");
+          roleRow.className = "kv-row";
+          roleRow.innerHTML = `<span class="kv-key">Role</span><span class="kv-value">${role}</span>`;
+          identityBlock.appendChild(roleRow);
+        }
+
+        if (essence) {
+          const essRow = document.createElement("div");
+          essRow.style.marginTop = "6px";
+          essRow.style.fontSize = "11px";
+          essRow.style.opacity = "0.8";
+          essRow.textContent = essence;
+          identityBlock.appendChild(essRow);
+        }
+
+        const values = Array.isArray(identity.values) ? identity.values : [];
+        if (values.length > 0) {
+          const chipsRow = document.createElement("div");
+          chipsRow.className = "list-chip-row";
+          values.forEach(v => {
+            const chip = document.createElement("span");
+            chip.className = "chip chip-soft";
+            chip.textContent = v;
+            chipsRow.appendChild(chip);
+          });
+          identityBlock.appendChild(chipsRow);
+        }
+
+        modeBlock.innerHTML = "";
+        const currentMode = (data.state && data.state.current_mode) || mode.default_mode || "operational";
+        const modeRow = document.createElement("div");
+        modeRow.className = "kv-row";
+        modeRow.innerHTML = `<span class="kv-key">Current mode</span><span class="kv-value">${currentMode}</span>`;
+        modeBlock.appendChild(modeRow);
+
+        const modes = mode.modes || {};
+        const modeKeys = Object.keys(modes);
+        if (modeKeys.length > 0) {
+          const chipsRow = document.createElement("div");
+          chipsRow.className = "list-chip-row";
+          modeKeys.forEach(key => {
+            const chip = document.createElement("span");
+            chip.className = "chip";
+            chip.textContent = key;
+            chipsRow.appendChild(chip);
+          });
+          modeBlock.appendChild(chipsRow);
+        }
+
+        approvalsStats.innerHTML = "";
+        const total = approvals.total ?? 0;
+        const pendingCount = approvals.pending_count ?? 0;
+        const completedCount = approvals.completed_count ?? 0;
+        const failedCount = approvals.failed_count ?? 0;
+
+        const grid = document.createElement("div");
+        grid.className = "approvals-grid";
+
+        const items = [
+          ["Total", total],
+          ["Pending", pendingCount],
+          ["Completed", completedCount],
+          ["Failed", failedCount],
+        ];
+
+        items.forEach(([label, value]) => {
+          const pill = document.createElement("div");
+          pill.className = "stat-pill";
+          pill.innerHTML = `<div class="stat-label">${label}</div><div class="stat-value">${value}</div>`;
+          grid.appendChild(pill);
+        });
+
+        approvalsStats.appendChild(grid);
+
+        if (Array.isArray(approvals.pending) && approvals.pending.length > 0) {
+          const hint = document.createElement("div");
+          hint.className = "hint";
+          hint.textContent = `Pending approvals: ${approvals.pending.length} (detalji u /api/ai-ops/approval/pending).`;
+          approvalsStats.appendChild(hint);
+        }
+      } catch (err) {
+        jsonView.textContent = "Error loading snapshot: " + err;
+      }
+    }
+
+    document.getElementById("refresh-btn").addEventListener("click", loadSnapshot);
+
+    loadSnapshot();
+  </script>
 </body>
 </html>

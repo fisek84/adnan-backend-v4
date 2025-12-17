@@ -150,6 +150,33 @@ class ExecuteRawInput(BaseModel):
     metadata: Dict[str, Any] = {}
 
 
+def _to_serializable(obj: Any) -> Any:
+    """
+    Helper za CEO Console snapshot:
+    - ne uvodi novi state
+    - samo pretvara identity/mode/state u JSON-friendly oblik
+    """
+    if obj is None:
+        return None
+    if isinstance(obj, (str, int, float, bool)):
+        return obj
+    if isinstance(obj, dict):
+        return {k: _to_serializable(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_to_serializable(v) for v in obj]
+    if hasattr(obj, "dict"):
+        try:
+            return obj.dict()
+        except Exception:
+            pass
+    if hasattr(obj, "__dict__"):
+        try:
+            return {k: _to_serializable(v) for k, v in obj.__dict__.items()}
+        except Exception:
+            pass
+    return str(obj)
+
+
 @app.post("/api/execute")
 async def execute_command(payload: ExecuteInput):
     """
@@ -225,6 +252,55 @@ async def execute_raw_command(payload: ExecuteRawInput):
         "execution_id": ai_command.execution_id,
         "command": ai_command.dict(),
     }
+
+
+# ================================================================
+# CEO CONSOLE SNAPSHOT (READ-ONLY, BEZ EXECUTIONA)
+# ================================================================
+@app.get("/api/ceo/console/snapshot")
+async def ceo_console_snapshot():
+    """
+    Read-only sistemski snapshot za CEO Console.
+
+    Poštuje kanon:
+    - NEMA execution-a, NEMA write-a
+    - samo vraća već postojeće stanje sistema (identity/mode/state + approvals)
+    - sve je auditabilno i deterministicno
+    """
+    approval_state = get_approval_state()
+    approvals_map: Dict[str, Dict[str, Any]] = getattr(
+        approval_state, "_approvals", {}
+    )
+
+    approvals_list = list(approvals_map.values())
+    pending = [a for a in approvals_list if a.get("status") == "pending"]
+    completed = [a for a in approvals_list if a.get("status") == "completed"]
+    failed = [a for a in approvals_list if a.get("status") == "failed"]
+
+    snapshot: Dict[str, Any] = {
+        "system": {
+            "name": SYSTEM_NAME,
+            "version": VERSION,
+            "release_channel": RELEASE_CHANNEL,
+            "arch_lock": ARCH_LOCK,
+            "os_enabled": OS_ENABLED,
+            "ops_safe_mode": OPS_SAFE_MODE,
+            "boot_ready": _BOOT_READY,
+        },
+        "identity": _to_serializable(identity),
+        "mode": _to_serializable(mode),
+        "state": _to_serializable(state),
+        "approvals": {
+            "total": len(approvals_list),
+            "pending_count": len(pending),
+            "completed_count": len(completed),
+            "failed_count": len(failed),
+            "pending": pending,
+        },
+    }
+
+    return snapshot
+
 
 # ================================================================
 # ROOT
