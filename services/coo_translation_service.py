@@ -328,7 +328,8 @@ class COOTranslationService:
 
         # -----------------------------------------------------
         # 0.2) CEO NL → TASK QUERY (READ, NOTION DSL)
-        # 'prikazi taskove sa statusom X'
+        # 'prikazi taskove sa statusom X' ili
+        # 'prikazi taskove sa statusom X i prioritetom Y'
         # -----------------------------------------------------
         if "taskove" in lowered and "statusom" in lowered:
             logger.info("COO TRANSLATE: matched BOSNIAN TASK QUERY")
@@ -337,7 +338,10 @@ class COOTranslationService:
                 return None
 
             status_value = self._extract_segment(
-                r"statusom\s+(.+)$", text
+                r"statusom\s+(.+?)(?=\s+i\s+prioritetom\b|$)", text
+            )
+            priority_value = self._extract_segment(
+                r"prioritetom\s+(\w+)", text
             )
 
             property_specs: Dict[str, Any] = {}
@@ -345,6 +349,11 @@ class COOTranslationService:
                 property_specs["Status"] = {
                     "type": "select",
                     "name": status_value,
+                }
+            if priority_value:
+                property_specs["Priority"] = {
+                    "type": "select",
+                    "name": priority_value,
                 }
 
             return AICommand(
@@ -385,7 +394,8 @@ class COOTranslationService:
 
         # -----------------------------------------------------
         # 0.4) CEO NL → GOAL QUERY (READ, Notion DSL)
-        # 'prikazi ciljeve sa statusom X'
+        # 'prikazi ciljeve sa statusom X' ili
+        # 'prikazi ciljeve sa statusom X i prioritetom Y'
         # -----------------------------------------------------
         if "ciljeve" in lowered and "statusom" in lowered:
             logger.info("COO TRANSLATE: matched BOSNIAN GOAL QUERY")
@@ -394,7 +404,10 @@ class COOTranslationService:
                 return None
 
             status_value = self._extract_segment(
-                r"statusom\s+(.+)$", text
+                r"statusom\s+(.+?)(?=\s+i\s+prioritetom\b|$)", text
+            )
+            priority_value = self._extract_segment(
+                r"prioritetom\s+(\w+)", text
             )
 
             property_specs: Dict[str, Any] = {}
@@ -402,6 +415,11 @@ class COOTranslationService:
                 property_specs["Status"] = {
                     "type": "select",
                     "name": status_value,
+                }
+            if priority_value:
+                property_specs["Priority"] = {
+                    "type": "select",
+                    "name": priority_value,
                 }
 
             return AICommand(
@@ -545,6 +563,79 @@ class COOTranslationService:
                 "Priority": {
                     "type": "select",
                     "name": prio_value,
+                }
+            }
+
+            return AICommand(
+                command="notion_write",
+                intent="update_page",
+                read_only=False,
+                params={
+                    "page_id": page_id,
+                    "property_specs": property_specs,
+                },
+                metadata={"context_type": "system", "source": source},
+                validated=True,
+            )
+
+        # -----------------------------------------------------
+        # 0.9) CEO NL → TASK DUE DATE UPDATE (BY PAGE ID)
+        # 'promijeni due date taska <page_id> na 2026-02-10'
+        # -----------------------------------------------------
+        m_task_due = re.search(
+            r"(?i)^promijeni due date taska\s+([0-9a-f\-]{36})\s+na\s+(\d{4}-\d{2}-\d{2})$",
+            text.strip(),
+        )
+        if m_task_due:
+            logger.info("COO TRANSLATE: matched BOSNIAN TASK DUE DATE UPDATE")
+
+            if not is_valid_command("notion_write"):
+                return None
+
+            page_id = m_task_due.group(1).strip()
+            due_date = m_task_due.group(2).strip()
+
+            property_specs: Dict[str, Any] = {
+                "Due Date": {
+                    "type": "date",
+                    "start": due_date,
+                }
+            }
+
+            return AICommand(
+                command="notion_write",
+                intent="update_page",
+                read_only=False,
+                params={
+                    "page_id": page_id,
+                    "property_specs": property_specs,
+                },
+                metadata={"context_type": "system", "source": source},
+                validated=True,
+            )
+
+        # -----------------------------------------------------
+        # 0.10) CEO NL → GOAL DEADLINE UPDATE (BY PAGE ID)
+        # 'promijeni deadline cilja <page_id> na 2026-02-10'
+        # ili 'promijeni due date cilja <page_id> na 2026-02-10'
+        # -----------------------------------------------------
+        m_goal_deadline = re.search(
+            r"(?i)^promijeni (?:deadline|due date) cilja\s+([0-9a-f\-]{36})\s+na\s+(\d{4}-\d{2}-\d{2})$",
+            text.strip(),
+        )
+        if m_goal_deadline:
+            logger.info("COO TRANSLATE: matched BOSNIAN GOAL DEADLINE UPDATE")
+
+            if not is_valid_command("notion_write"):
+                return None
+
+            page_id = m_goal_deadline.group(1).strip()
+            deadline = m_goal_deadline.group(2).strip()
+
+            property_specs: Dict[str, Any] = {
+                "Deadline": {
+                    "type": "date",
+                    "start": deadline,
                 }
             }
 
