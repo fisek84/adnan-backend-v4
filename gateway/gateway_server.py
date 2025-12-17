@@ -4,11 +4,13 @@
 import os
 import logging
 import uuid
+from typing import Dict, Any
+
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
-from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
+from dotenv import load_dotenv
 from pydantic import BaseModel
 
 from system_version import (
@@ -24,7 +26,7 @@ from system_version import (
 load_dotenv(".env")
 
 OS_ENABLED = os.getenv("OS_ENABLED", "true").lower() == "true"
-OPS_SAFE_MODE = os.getenv("OPS_SAFE_MODE", "false").lower() == "true"
+OPS_SAFE_MODE = os.getenv("OPS_SAFE_MODE", "false").lower() == "false"
 
 _BOOT_READY = False
 
@@ -44,6 +46,7 @@ from services.ai_command_service import AICommandService
 from services.coo_translation_service import COOTranslationService
 from services.approval_state_service import get_approval_state
 from services.execution_registry import ExecutionRegistry
+from models.ai_command import AICommand
 
 # ================================================================
 # IDENTITY / MODE / STATE
@@ -127,11 +130,31 @@ ai_command_service = AICommandService()
 coo_translation_service = COOTranslationService()
 _execution_registry = ExecutionRegistry()
 
+
 class ExecuteInput(BaseModel):
     text: str
 
+
+class ExecuteRawInput(BaseModel):
+    """
+    RAW AICommand ulaz — za internu / agentsku upotrebu.
+
+    - NE preskače governance/approval: i dalje BLOCKED → APPROVAL → EXECUTED
+    - Samo za slučajeve kada već imaš strukturisan AICommand (npr. multi-DB Notion ops).
+    """
+    command: str
+    intent: str
+    params: Dict[str, Any] = {}
+    initiator: str = "ceo"
+    read_only: bool = False
+    metadata: Dict[str, Any] = {}
+
+
 @app.post("/api/execute")
 async def execute_command(payload: ExecuteInput):
+    """
+    Kanonski CEO → COO ulaz (natural language).
+    """
     ai_command = coo_translation_service.translate(
         raw_input=payload.text,
         source="system",
@@ -144,7 +167,7 @@ async def execute_command(payload: ExecuteInput):
     approval_id = str(uuid.uuid4())
     execution_id = str(uuid.uuid4())
 
-    # REGISTER EXECUTION
+    # REGISTER EXECUTION (legacy, ali sad ide kroz Registry normalizaciju)
     _execution_registry.register({
         "execution_id": execution_id,
         "status": "PENDING",
@@ -152,6 +175,51 @@ async def execute_command(payload: ExecuteInput):
     })
 
     # REGISTER PENDING APPROVAL
+    approval_state = get_approval_state()
+    approval_state._approvals[approval_id] = {
+        "approval_id": approval_id,
+        "execution_id": execution_id,
+        "status": "pending",
+        "source": "system",
+        "command": ai_command.dict(),
+    }
+
+    return {
+        "status": "BLOCKED",
+        "execution_state": "BLOCKED",
+        "approval_id": approval_id,
+        "execution_id": execution_id,
+        "command": ai_command.dict(),
+    }
+
+
+@app.post("/api/execute/raw")
+async def execute_raw_command(payload: ExecuteRawInput):
+    """
+    Kanonski RAW ulaz: direktno kreira AICommand bez COO NLP-a.
+
+    - i dalje: BLOCKED + approval_id
+    - resume i EXECUTED idu kroz /api/ai-ops/approval/approve
+    """
+    # 1) AICommand konstrukcija (bez interpretacije intent-a)
+    ai_command = AICommand(
+        command=payload.command,
+        intent=payload.intent,
+        params=payload.params,
+        initiator=payload.initiator,
+        read_only=payload.read_only,
+        metadata=payload.metadata,
+    )
+
+    # Forsiramo execution_id da bude jasan eksternom sistemu
+    approval_id = str(uuid.uuid4())
+    execution_id = str(uuid.uuid4())
+    ai_command.execution_id = execution_id
+
+    # 2) REGISTER EXECUTION
+    _execution_registry.register(ai_command)
+
+    # 3) REGISTER PENDING APPROVAL
     approval_state = get_approval_state()
     approval_state._approvals[approval_id] = {
         "approval_id": approval_id,
