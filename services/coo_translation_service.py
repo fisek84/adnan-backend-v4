@@ -6,6 +6,7 @@ COO TRANSLATION SERVICE (CANONICAL)
 from typing import Optional, Dict, Any
 import re
 import logging
+from datetime import datetime, timedelta
 
 from models.ai_command import AICommand
 from services.intent_classifier import IntentClassifier
@@ -218,7 +219,88 @@ class COOTranslationService:
             )
 
         # -----------------------------------------------------
-        # 0.A) CEO NL → GOAL + TASK WORKFLOW (BOSANSKI)
+        # 0.A) CEO NL → 7-DAY GOAL + TASK WORKFLOW (BOSANSKI)
+        # "kreiraj 7 day plan za cilj X status Y priority Z start YYYY-MM-DD"
+        # -----------------------------------------------------
+        m_7day = re.search(
+            r"(?i)^kreiraj\s+7\s*day\s+plan\s+za\s+cilj\s+(.+?)\s+status\s+(.+?)\s+priority\s+(\w+)\s+start\s+(\d{4}-\d{2}-\d{2})",
+            text,
+        )
+        if m_7day:
+            logger.info("COO TRANSLATE: matched BOSNIAN 7DAY GOAL+TASK WORKFLOW")
+
+            if not is_valid_command("goal_task_workflow"):
+                return None
+
+            goal_name = m_7day.group(1).strip()
+            goal_status = m_7day.group(2).strip()
+            goal_priority = m_7day.group(3).strip()
+            start_str = m_7day.group(4).strip()
+
+            try:
+                start_date = datetime.strptime(start_str, "%Y-%m-%d").date()
+            except ValueError:
+                # ako datum nije validan, bolje vratiti None nego slati neispravan workflow
+                return None
+
+            # Goal deadline = start + 6 dana (7-day window)
+            goal_deadline = start_date + timedelta(days=6)
+
+            goal_specs: Dict[str, Any] = {
+                "Name": {"type": "title", "text": goal_name},
+                "Status": {"type": "select", "name": goal_status},
+                "Priority": {"type": "select", "name": goal_priority},
+                "Deadline": {
+                    "type": "date",
+                    "start": goal_deadline.isoformat(),
+                },
+            }
+
+            tasks_specs = []
+            for i in range(7):
+                day_date = start_date + timedelta(days=i)
+                tasks_specs.append(
+                    {
+                        "db_key": "tasks",
+                        "property_specs": {
+                            "Name": {
+                                "type": "title",
+                                "text": f"{goal_name} - Day {i + 1}",
+                            },
+                            "Status": {
+                                "type": "select",
+                                "name": "Not Started",
+                            },
+                            "Priority": {
+                                "type": "select",
+                                "name": goal_priority,
+                            },
+                            "Due Date": {
+                                "type": "date",
+                                "start": day_date.isoformat(),
+                            },
+                        },
+                    }
+                )
+
+            return AICommand(
+                command="goal_task_workflow",
+                intent="run_workflow",
+                read_only=False,
+                params={
+                    "mode": "7day",
+                    "goal": {
+                        "db_key": "goals",
+                        "property_specs": goal_specs,
+                    },
+                    "tasks": tasks_specs,
+                },
+                metadata={"context_type": "system", "source": source},
+                validated=True,
+            )
+
+        # -----------------------------------------------------
+        # 0.B) CEO NL → GOAL + TASK WORKFLOW (BOSANSKI, generički)
         # "kreiraj cilj X ... i task Y ..."
         # koristi postojeće _build_goal/_build_task helpere
         # -----------------------------------------------------
