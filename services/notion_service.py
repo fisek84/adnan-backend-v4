@@ -4,8 +4,6 @@ from typing import Dict, Any, Optional
 import logging
 from datetime import datetime
 
-from models.ai_command import AICommand
-
 
 class NotionService:
     """
@@ -14,7 +12,7 @@ class NotionService:
     - ČIST EXECUTOR
     - prima AICommand
     - mapira intent → Notion API
-    - JEDINA write/query tačka prema Notionu
+    - JEDINA write/read tačka prema Notionu za AI agente
     """
 
     def __init__(
@@ -25,53 +23,52 @@ class NotionService:
         projects_db_id: str,
     ):
         self.api_key = api_key
-
-        # Kanonske baze iz konstruktora (backward kompatibilno)
         self.goals_db_id = goals_db_id
         self.tasks_db_id = tasks_db_id
         self.projects_db_id = projects_db_id
 
-        # SVE baze iz .env — centralni registry (apsolutna moć, ali eksplicitno)
-        self.database_map: Dict[str, Optional[str]] = {
-            # Core / Goals
+        # Centralna mapa svih baza kojima AI smije pristupiti
+        self.db_ids: Dict[str, str] = {
             "goals": goals_db_id,
-            "goals_active": os.getenv("NOTION_ACTIVE_GOALS_DB_ID", goals_db_id),
-            "goals_blocked": os.getenv("NOTION_BLOCKED_GOALS_DB_ID"),
-            "goals_completed": os.getenv("NOTION_COMPLETED_GOALS_DB_ID"),
-
-            # Tasks / Projects / Agent
             "tasks": tasks_db_id,
             "projects": projects_db_id,
-            "agent_projects": os.getenv("NOTION_AGENT_PROJECTS_DB_ID"),
-            "agent_exchange": os.getenv("NOTION_AGENT_EXCHANGE_DB_ID"),
-
-            # AI summaries / FLP / KPI / Leads
-            "ai_weekly_summary": os.getenv("NOTION_AI_WEEKLY_SUMMARY_DB_ID"),
-            "flp": os.getenv("NOTION_FLP_DB_ID"),
-            "kpi": os.getenv("NOTION_KPI_DB_ID"),
-            "leads": os.getenv("NOTION_LEAD_DB_ID"),
-
-            # SOP-ovi (sales / partner / customer / ops)
-            "outreach_sop": os.getenv("NOTION_OUTREACH_SOP_DB_ID"),
-            "qualification_sop": os.getenv("NOTION_QUALIFICATION_SOP_DB_ID"),
-            "follow_up_sop": os.getenv("NOTION_FOLLOW_UP_SOP_DB_ID"),
-            "fsc_sop": os.getenv("NOTION_FSC_SOP_DB_ID"),
-            "flp_ops_sop": os.getenv("NOTION_FLP_OPS_SOP_DB_ID"),
-            "lss_sop": os.getenv("NOTION_LSS_SOP_DB_ID"),
-            "partner_activation_sop": os.getenv("NOTION_PARTNER_ACTIVATION_SOP_DB_ID"),
-            "partner_performance_sop": os.getenv("NOTION_PARTNER_PERFORMANCE_SOP_DB_ID"),
-            "partner_leadership_sop": os.getenv("NOTION_PARTNER_LEADERSHIP_SOP_DB_ID"),
-            "customer_onboarding_sop": os.getenv("NOTION_CUSTOMER_ONBOARDING_SOP_DB_ID"),
-            "customer_retention_sop": os.getenv("NOTION_CUSTOMER_RETENTION_SOP_DB_ID"),
-            "customer_performance_sop": os.getenv("NOTION_CUSTOMER_PERFORMANCE_SOP_DB_ID"),
-            "partner_potential_sop": os.getenv("NOTION_PARTNER_POTENTIAL_SOP_DB_ID"),
-            "sales_closing_sop": os.getenv("NOTION_SALES_CLOSING_SOP_DB_ID"),
         }
+
+        # Dodatne baze iz .env (ako postoje)
+        extra_env_map = {
+            "active_goals": "NOTION_ACTIVE_GOALS_DB_ID",
+            "blocked_goals": "NOTION_BLOCKED_GOALS_DB_ID",
+            "completed_goals": "NOTION_COMPLETED_GOALS_DB_ID",
+            "agent_exchange": "NOTION_AGENT_EXCHANGE_DB_ID",
+            "agent_projects": "NOTION_AGENT_PROJECTS_DB_ID",
+            "ai_weekly_summary": "NOTION_AI_WEEKLY_SUMMARY_DB_ID",
+            "flp": "NOTION_FLP_DB_ID",
+            "kpi": "NOTION_KPI_DB_ID",
+            "lead": "NOTION_LEAD_DB_ID",
+            "outreach_sop": "NOTION_OUTREACH_SOP_DB_ID",
+            "qualification_sop": "NOTION_QUALIFICATION_SOP_DB_ID",
+            "follow_up_sop": "NOTION_FOLLOW_UP_SOP_DB_ID",
+            "fsc_sop": "NOTION_FSC_SOP_DB_ID",
+            "flp_ops_sop": "NOTION_FLP_OPS_SOP_DB_ID",
+            "lss_sop": "NOTION_LSS_SOP_DB_ID",
+            "partner_activation_sop": "NOTION_PARTNER_ACTIVATION_SOP_DB_ID",
+            "partner_performance_sop": "NOTION_PARTNER_PERFORMANCE_SOP_DB_ID",
+            "partner_leadership_sop": "NOTION_PARTNER_LEADERSHIP_SOP_DB_ID",
+            "customer_onboarding_sop": "NOTION_CUSTOMER_ONBOARDING_SOP_DB_ID",
+            "customer_retention_sop": "NOTION_CUSTOMER_RETENTION_SOP_DB_ID",
+            "customer_performance_sop": "NOTION_CUSTOMER_PERFORMANCE_SOP_DB_ID",
+            "partner_potential_sop": "NOTION_PARTNER_POTENTIAL_SOP_DB_ID",
+            "sales_closing_sop": "NOTION_SALES_CLOSING_SOP_DB_ID",
+        }
+
+        for key, env_name in extra_env_map.items():
+            value = os.getenv(env_name)
+            if value:
+                self.db_ids[key] = value
 
         self.session: Optional[aiohttp.ClientSession] = None
         self.logger = logging.getLogger(__name__)
 
-        # Minimalni snapshot (backward kompatibilno)
         self.knowledge_snapshot: Dict[str, Any] = {
             "last_sync": None,
             "goals": [],
@@ -82,7 +79,6 @@ class NotionService:
     # --------------------------------------------------
     # SESSION
     # --------------------------------------------------
-
     async def _get_session(self) -> aiohttp.ClientSession:
         if self.session is None or self.session.closed:
             self.session = aiohttp.ClientSession(
@@ -94,7 +90,7 @@ class NotionService:
             )
         return self.session
 
-    async def _safe_request(self, method: str, url: str, payload: Optional[Dict[str, Any]] = None):
+    async def _safe_request(self, method: str, url: str, payload=None):
         session = await self._get_session()
         async with session.request(method, url, json=payload) as response:
             text = await response.text()
@@ -103,389 +99,257 @@ class NotionService:
             return await response.json() if text else {}
 
     # --------------------------------------------------
-    # DB RESOLUTION
+    # HELPERS
     # --------------------------------------------------
+    def _resolve_db_id(
+        self,
+        db_key: Optional[str],
+        database_id: Optional[str],
+    ) -> str:
+        if database_id:
+            return database_id
+        if not db_key:
+            raise RuntimeError("Database not specified (db_key or database_id required).")
+        if db_key not in self.db_ids:
+            raise RuntimeError(f"Unknown db_key '{db_key}' for NotionService.")
+        return self.db_ids[db_key]
 
-    def _resolve_database_id(self, params: Dict[str, Any]) -> str:
-        """
-        Resolves database reference from params.
+    def _build_properties_from_specs(
+        self,
+        specs: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        props: Dict[str, Any] = {}
+        if not specs:
+            return props
 
-        Dozvoljeno:
-        - params["database_id"]  (direktni Notion DB ID)
-        - params["db_key"]       (ključ u self.database_map)
-        """
-        db_id = params.get("database_id")
-        if db_id:
-            return db_id
-
-        db_key = params.get("db_key") or params.get("database_key")
-        if db_key:
-            mapped = self.database_map.get(db_key)
-            if not mapped:
-                raise RuntimeError(f"Unknown db_key: {db_key}")
-            return mapped
-
-        raise RuntimeError("Missing database reference: provide 'database_id' or 'db_key' in params")
-
-    # --------------------------------------------------
-    # PROPERTY DSL → NOTION PROPERTIES
-    # --------------------------------------------------
-
-    def _build_properties_from_spec(self, property_specs: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
-        """
-        High-level DSL → Notion properties.
-
-        property_specs primjer:
-
-        {
-          "Name": { "type": "title", "text": "EVO-TASK-RAW-001" },
-          "Status": { "type": "select", "name": "To Do" },
-          "Due Date": { "type": "date", "start": "2025-12-20" },
-          "Goal": { "type": "relation", "page_ids": ["<goal_page_id>"] }
-        }
-        """
-        properties: Dict[str, Any] = {}
-
-        for prop_name, spec in property_specs.items():
+        for prop_name, spec in specs.items():
             if not isinstance(spec, dict):
-                raise RuntimeError(f"Invalid property spec for '{prop_name}'")
+                continue
 
-            p_type = spec.get("type")
-            if not p_type:
-                raise RuntimeError(f"Property '{prop_name}' missing type")
+            spec_type = spec.get("type")
 
-            # TITLE
-            if p_type == "title":
-                text = spec.get("text") or spec.get("content")
-                if not isinstance(text, str):
-                    raise RuntimeError(f"title property '{prop_name}' requires 'text' string")
-                properties[prop_name] = {
+            if spec_type == "title":
+                text = spec.get("text") or ""
+                props[prop_name] = {
                     "title": [
                         {
-                            "text": {
-                                "content": text
-                            }
+                            "text": {"content": text}
                         }
                     ]
                 }
 
-            # RICH TEXT
-            elif p_type == "rich_text":
-                text = spec.get("text") or spec.get("content")
-                if not isinstance(text, str):
-                    raise RuntimeError(f"rich_text property '{prop_name}' requires 'text' string")
-                properties[prop_name] = {
+            elif spec_type == "rich_text":
+                text = spec.get("text") or ""
+                props[prop_name] = {
                     "rich_text": [
                         {
-                            "text": {
-                                "content": text
-                            }
+                            "text": {"content": text}
                         }
                     ]
                 }
 
-            # NUMBER
-            elif p_type == "number":
-                value = spec.get("value")
-                if not isinstance(value, (int, float)):
-                    raise RuntimeError(f"number property '{prop_name}' requires numeric 'value'")
-                properties[prop_name] = {
-                    "number": value
-                }
-
-            # SELECT
-            elif p_type == "select":
-                name = spec.get("name") or spec.get("value")
-                if not isinstance(name, str):
-                    raise RuntimeError(f"select property '{prop_name}' requires 'name' string")
-                properties[prop_name] = {
-                    "select": {
-                        "name": name
+            elif spec_type == "select":
+                name = spec.get("name")
+                if name:
+                    props[prop_name] = {
+                        "select": {"name": name}
                     }
-                }
 
-            # MULTI_SELECT
-            elif p_type == "multi_select":
-                values = spec.get("values") or spec.get("names")
-                if not isinstance(values, list):
-                    raise RuntimeError(f"multi_select property '{prop_name}' requires list 'values'")
-                properties[prop_name] = {
+            elif spec_type == "multi_select":
+                names = spec.get("names") or []
+                props[prop_name] = {
                     "multi_select": [
-                        {"name": v} for v in values
+                        {"name": n} for n in names if n
                     ]
                 }
 
-            # DATE
-            elif p_type == "date":
+            elif spec_type == "relation":
+                page_ids = spec.get("page_ids") or []
+                props[prop_name] = {
+                    "relation": [{"id": pid} for pid in page_ids if pid]
+                }
+
+            elif spec_type == "date":
                 start = spec.get("start")
                 end = spec.get("end")
-                if not isinstance(start, str):
-                    raise RuntimeError(f"date property '{prop_name}' requires 'start' ISO date string")
-                properties[prop_name] = {
-                    "date": {
-                        "start": start,
-                        "end": end,
-                    }
-                }
+                date_payload: Dict[str, Any] = {}
+                if start:
+                    date_payload["start"] = start
+                if end:
+                    date_payload["end"] = end
+                if date_payload:
+                    props[prop_name] = {"date": date_payload}
 
-            # RELATION
-            elif p_type == "relation":
-                page_ids = spec.get("page_ids") or spec.get("ids")
-                if not isinstance(page_ids, list) or not page_ids:
-                    raise RuntimeError(f"relation property '{prop_name}' requires non-empty list 'page_ids'")
-                properties[prop_name] = {
-                    "relation": [
-                        {"id": pid} for pid in page_ids
-                    ]
-                }
+            elif spec_type == "checkbox":
+                value = bool(spec.get("value"))
+                props[prop_name] = {"checkbox": value}
 
-            # CHECKBOX
-            elif p_type == "checkbox":
-                value = bool(spec.get("value", False))
-                properties[prop_name] = {
-                    "checkbox": value
-                }
+            elif spec_type == "number":
+                value = spec.get("value")
+                if value is not None:
+                    props[prop_name] = {"number": value}
 
-            # URL
-            elif p_type == "url":
-                url = spec.get("url")
-                if not isinstance(url, str):
-                    raise RuntimeError(f"url property '{prop_name}' requires 'url' string")
-                properties[prop_name] = {
-                    "url": url
-                }
+            # Nepoznat tip – ignorišemo (bez rušenja)
 
-            else:
-                raise RuntimeError(f"Unsupported property type '{p_type}' for '{prop_name}'")
-
-        return properties
+        return props
 
     # --------------------------------------------------
-    # EXECUTION ENTRY POINT (WRITE / QUERY)
+    # EXECUTION ENTRY POINT
     # --------------------------------------------------
-
-    async def execute(self, command: AICommand) -> Dict[str, Any]:
+    async def execute(self, command) -> Dict[str, Any]:
         """
-        Jedina ulazna tačka za write/query akcije prema Notionu.
-
-        Očekivani intent-i:
-        - create_goal      (legacy + proširivo)
-        - create_page      (generic page create u bilo kom DB-u)
-        - update_page      (generic page update)
-        - query_database   (generic DB query)
+        Jedina ulazna tačka za AI write/read akcije ka Notionu.
         """
+        if not getattr(command, "intent", None):
+            raise RuntimeError("NotionService called without intent")
+
         intent = command.intent
-        if not intent:
-            raise RuntimeError("NotionService.execute called without intent")
-
         params = command.params or {}
 
+        # ----------------------------------------------
+        # LEGACY / GOAL CREATE (goals DB)
+        # ----------------------------------------------
         if intent == "create_goal":
-            return await self._create_goal(command, params)
+            name = params.get("name")
+            if not name:
+                raise RuntimeError("Missing goal name")
 
-        if intent == "create_page":
-            return await self._create_page_generic(params)
-
-        if intent == "update_page":
-            return await self._update_page_generic(params)
-
-        if intent == "query_database":
-            return await self._query_database_generic(params)
-
-        raise RuntimeError(f"Unsupported intent: {intent}")
-
-    # --------------------------------------------------
-    # INTENT: create_goal  (BACKWARD + PROŠIRENJE)
-    # --------------------------------------------------
-
-    async def _create_goal(self, command: AICommand, params: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Legacy + safe proširenje:
-
-        - Minimalno: params["name"] (string)  → postavi Name
-        - Opcionalno: params["properties"] (raw Notion properties dict)
-        - Opcionalno: params["property_specs"] (high-level DSL) → merge
-        """
-        name = params.get("name")
-        if not name:
-            raise RuntimeError("Missing goal name")
-
-        raw_properties: Dict[str, Any] = params.get("properties") or {}
-        property_specs: Dict[str, Any] = params.get("property_specs") or {}
-
-        # Bazni Name property
-        base_properties: Dict[str, Any] = {
-            "Name": {
-                "title": [
-                    {
-                        "text": {
-                            "content": name
-                        }
+            payload = {
+                "parent": {"database_id": self.goals_db_id},
+                "properties": {
+                    "Name": {
+                        "title": [
+                            {
+                                "text": {
+                                    "content": name
+                                }
+                            }
+                        ]
                     }
-                ]
+                },
             }
-        }
 
-        # DSL → properties
-        dsl_properties: Dict[str, Any] = {}
-        if property_specs:
-            if not isinstance(property_specs, dict):
-                raise RuntimeError("property_specs must be a dict")
-            dsl_properties = self._build_properties_from_spec(property_specs)
+            result = await self._safe_request(
+                "POST",
+                "https://api.notion.com/v1/pages",
+                payload,
+            )
 
-        # Merge redoslijed (prioritet):
-        # 1) base Name
-        # 2) DSL properties
-        # 3) raw properties (ako korisnik želi full override)
-        properties = {**base_properties, **dsl_properties, **raw_properties}
+            return {
+                "success": True,
+                "notion_page_id": result.get("id"),
+                "database_id": self.goals_db_id,
+            }
 
-        payload = {
-            "parent": {"database_id": self.goals_db_id},
-            "properties": properties,
-        }
+        # ----------------------------------------------
+        # GENERIC CREATE_PAGE (bilo koja DB)
+        # ----------------------------------------------
+        if intent == "create_page":
+            db_key = params.get("db_key")
+            database_id = params.get("database_id")
+            property_specs = params.get("property_specs") or {}
+            properties = params.get("properties")
 
-        result = await self._safe_request(
-            "POST",
-            "https://api.notion.com/v1/pages",
-            payload,
-        )
+            db_id = self._resolve_db_id(db_key, database_id)
 
-        return {
-            "success": True,
-            "notion_page_id": result.get("id"),
-        }
+            if property_specs and not properties:
+                properties = self._build_properties_from_specs(property_specs)
 
-    # --------------------------------------------------
-    # INTENT: create_page (GENERIC)
-    # --------------------------------------------------
+            if not properties:
+                raise RuntimeError("create_page requires properties or property_specs")
 
-    async def _create_page_generic(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Generic page create u bilo kojoj bazi.
+            payload = {
+                "parent": {"database_id": db_id},
+                "properties": properties,
+            }
 
-        params:
-        - database_id  ili db_key
-        - properties   (raw Notion properties dict)
-        - property_specs (opcionalno DSL; koristi se ako properties nije postavljen)
-        """
-        db_id = self._resolve_database_id(params)
+            result = await self._safe_request(
+                "POST",
+                "https://api.notion.com/v1/pages",
+                payload,
+            )
 
-        raw_properties: Dict[str, Any] = params.get("properties") or {}
-        property_specs: Dict[str, Any] = params.get("property_specs") or {}
+            return {
+                "success": True,
+                "notion_page_id": result.get("id"),
+                "database_id": db_id,
+            }
 
-        if raw_properties:
-            if not isinstance(raw_properties, dict):
-                raise RuntimeError("'properties' must be a dict when provided")
-            properties = raw_properties
-        else:
-            if not isinstance(property_specs, dict) or not property_specs:
-                raise RuntimeError("create_page requires 'properties' or 'property_specs' in params")
-            properties = self._build_properties_from_spec(property_specs)
+        # ----------------------------------------------
+        # GENERIC UPDATE_PAGE (bilo koja page)
+        # ----------------------------------------------
+        if intent == "update_page":
+            page_id = params.get("page_id")
+            if not page_id:
+                raise RuntimeError("update_page requires page_id")
 
-        payload = {
-            "parent": {"database_id": db_id},
-            "properties": properties,
-        }
+            property_specs = params.get("property_specs") or {}
+            properties = params.get("properties")
 
-        result = await self._safe_request(
-            "POST",
-            "https://api.notion.com/v1/pages",
-            payload,
-        )
+            if property_specs and not properties:
+                properties = self._build_properties_from_specs(property_specs)
 
-        return {
-            "success": True,
-            "notion_page_id": result.get("id"),
-            "database_id": db_id,
-        }
+            if not properties:
+                raise RuntimeError("update_page requires properties or property_specs")
 
-    # --------------------------------------------------
-    # INTENT: update_page (GENERIC)
-    # --------------------------------------------------
+            payload = {
+                "properties": properties,
+            }
 
-    async def _update_page_generic(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Generic page update.
+            result = await self._safe_request(
+                "PATCH",
+                f"https://api.notion.com/v1/pages/{page_id}",
+                payload,
+            )
 
-        params:
-        - page_id        (Notion page ID)
-        - properties     (partial properties dict)
-        - property_specs (opcionalno DSL; koristi se ako properties nije postavljen)
-        """
-        page_id = params.get("page_id")
-        raw_properties: Dict[str, Any] = params.get("properties") or {}
-        property_specs: Dict[str, Any] = params.get("property_specs") or {}
+            return {
+                "success": True,
+                "notion_page_id": result.get("id", page_id),
+            }
 
-        if not page_id:
-            raise RuntimeError("update_page requires 'page_id' in params")
+        # ----------------------------------------------
+        # GENERIC QUERY_DATABASE (READ-ONLY)
+        # ----------------------------------------------
+        if intent == "query_database":
+            db_key = params.get("db_key")
+            database_id = params.get("database_id")
+            db_id = self._resolve_db_id(db_key, database_id)
 
-        if raw_properties:
-            if not isinstance(raw_properties, dict):
-                raise RuntimeError("'properties' must be a dict when provided")
-            properties = raw_properties
-        else:
-            if not isinstance(property_specs, dict) or not property_specs:
-                raise RuntimeError("update_page requires 'properties' or 'property_specs' in params")
-            properties = self._build_properties_from_spec(property_specs)
+            filters = params.get("filters")
+            sorts = params.get("sorts")
+            page_size = params.get("page_size", 50)
 
-        payload = {
-            "properties": properties,
-        }
+            payload: Dict[str, Any] = {"page_size": page_size}
 
-        url = f"https://api.notion.com/v1/pages/{page_id}"
+            if filters:
+                # podržavamo ili dict (direct Notion filter) ili list[dict] → AND
+                if isinstance(filters, dict):
+                    payload["filter"] = filters
+                elif isinstance(filters, list):
+                    if len(filters) == 1:
+                        payload["filter"] = filters[0]
+                    elif len(filters) > 1:
+                        payload["filter"] = {"and": filters}
 
-        result = await self._safe_request(
-            "PATCH",
-            url,
-            payload,
-        )
+            if sorts:
+                payload["sorts"] = sorts
 
-        return {
-            "success": True,
-            "notion_page_id": result.get("id", page_id),
-        }
+            url = f"https://api.notion.com/v1/databases/{db_id}/query"
+            result = await self._safe_request("POST", url, payload)
+
+            return {
+                "success": True,
+                "database_id": db_id,
+                "results": result.get("results", []),
+                "has_more": result.get("has_more", False),
+                "next_cursor": result.get("next_cursor"),
+            }
+
+        raise RuntimeError(f"Unsupported intent: {command.intent}")
 
     # --------------------------------------------------
-    # INTENT: query_database (GENERIC)
+    # READ-ONLY SNAPSHOT (još uvijek stub)
     # --------------------------------------------------
-
-    async def _query_database_generic(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Generic database query.
-
-        params:
-        - database_id  ili db_key
-        - filter       (optional Notion filter object)
-        - sorts        (optional Notion sorts list)
-        """
-        db_id = self._resolve_database_id(params)
-
-        query_payload: Dict[str, Any] = {}
-        if "filter" in params:
-            query_payload["filter"] = params["filter"]
-        if "sorts" in params:
-            query_payload["sorts"] = params["sorts"]
-
-        url = f"https://api.notion.com/v1/databases/{db_id}/query"
-
-        result = await self._safe_request(
-            "POST",
-            url,
-            query_payload if query_payload else {},
-        )
-
-        return {
-            "success": True,
-            "database_id": db_id,
-            "results": result.get("results", []),
-            "has_more": result.get("has_more", False),
-            "next_cursor": result.get("next_cursor"),
-        }
-
-    # --------------------------------------------------
-    # READ-ONLY SNAPSHOT
-    # --------------------------------------------------
-
     async def sync_knowledge_snapshot(self):
         self.logger.info(">> Syncing Notion knowledge snapshot")
         self.knowledge_snapshot["last_sync"] = datetime.utcnow().isoformat()
@@ -498,7 +362,6 @@ class NotionService:
 # --------------------------------------------------
 # SINGLETON (KANONSKI)
 # --------------------------------------------------
-
 _NOTION_SERVICE_SINGLETON: Optional[NotionService] = None
 
 

@@ -1,14 +1,18 @@
+# services/coo_translation_service.py
 """
 COO TRANSLATION SERVICE (CANONICAL)
 """
 
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import re
+import logging
 
 from models.ai_command import AICommand
 from services.intent_classifier import IntentClassifier
 from services.intent_contract import Intent, IntentType
 from services.action_dictionary import is_valid_command
+
+logger = logging.getLogger(__name__)
 
 
 class COOTranslationService:
@@ -25,6 +29,152 @@ class COOTranslationService:
     def __init__(self):
         self.intent_classifier = IntentClassifier()
 
+    # -----------------------------------------------------
+    # INTERNAL HELPERS — NOTION DSL PARSING
+    # -----------------------------------------------------
+    @staticmethod
+    def _extract_name_after_prefix(
+        raw_input: str,
+        prefix: str,
+        stop_tokens: Optional[List[str]] = None,
+    ) -> str:
+        stop_tokens = stop_tokens or []
+        text_after = raw_input[len(prefix):].strip()
+
+        lowered_after = text_after.lower()
+        cut_pos = len(text_after)
+
+        for token in stop_tokens:
+            idx = lowered_after.find(f" {token.lower()} ")
+            if idx != -1 and idx < cut_pos:
+                cut_pos = idx
+
+        name = text_after[:cut_pos].strip(" ,")
+        return name or text_after
+
+    @staticmethod
+    def _extract_segment(regex: str, raw_input: str) -> Optional[str]:
+        m = re.search(regex, raw_input, flags=re.IGNORECASE)
+        if not m:
+            return None
+        return m.group(1).strip(" ,")
+
+    @staticmethod
+    def _build_task_property_specs_from_text(raw_input: str) -> Dict[str, Any]:
+        """
+        CEO NL → TASK DSL
+        npr:
+        'kreiraj task EVO-CEO-TASK-001 priority High status Not Started due date 2025-12-25'
+        """
+        stop_tokens = ["priority", "status", "due date"]
+        lowered = raw_input.lower()
+
+        if lowered.startswith("kreiraj task "):
+            name = COOTranslationService._extract_name_after_prefix(
+                raw_input,
+                prefix="kreiraj task ",
+                stop_tokens=stop_tokens,
+            )
+        elif lowered.startswith("napravi task "):
+            name = COOTranslationService._extract_name_after_prefix(
+                raw_input,
+                prefix="napravi task ",
+                stop_tokens=stop_tokens,
+            )
+        else:
+            name = raw_input
+
+        status = COOTranslationService._extract_segment(
+            r"status\s+(.+?)(?=\s+due date\b|$)", raw_input
+        )
+        priority = COOTranslationService._extract_segment(
+            r"priority\s+(\w+)", raw_input
+        )
+        due_date = COOTranslationService._extract_segment(
+            r"due date\s+(\d{4}-\d{2}-\d{2})", raw_input
+        )
+
+        property_specs: Dict[str, Any] = {
+            "Name": {"type": "title", "text": name},
+        }
+
+        if status:
+            property_specs["Status"] = {
+                "type": "select",
+                "name": status,
+            }
+
+        if priority:
+            property_specs["Priority"] = {
+                "type": "select",
+                "name": priority,
+            }
+
+        if due_date:
+            property_specs["Due Date"] = {
+                "type": "date",
+                "start": due_date,
+            }
+
+        return property_specs
+
+    @staticmethod
+    def _build_goal_property_specs_from_text(raw_input: str) -> Dict[str, Any]:
+        """
+        CEO NL → GOAL DSL
+        npr:
+        'kreiraj cilj FLP manager status Not Started priority High deadline 2025-12-31'
+        """
+        stop_tokens = ["priority", "status", "due date", "deadline"]
+        lowered = raw_input.lower()
+
+        if lowered.startswith("kreiraj cilj "):
+            name = COOTranslationService._extract_name_after_prefix(
+                raw_input,
+                prefix="kreiraj cilj ",
+                stop_tokens=stop_tokens,
+            )
+        else:
+            name = raw_input
+
+        status = COOTranslationService._extract_segment(
+            r"status\s+(.+?)(?=\s+priority\b|\s+due date\b|\s+deadline\b|$)",
+            raw_input,
+        )
+        priority = COOTranslationService._extract_segment(
+            r"priority\s+(\w+)", raw_input
+        )
+        deadline = COOTranslationService._extract_segment(
+            r"(?:due date|deadline)\s+(\d{4}-\d{2}-\d{2})", raw_input
+        )
+
+        property_specs: Dict[str, Any] = {
+            "Name": {"type": "title", "text": name},
+        }
+
+        if status:
+            property_specs["Status"] = {
+                "type": "select",
+                "name": status,
+            }
+
+        if priority:
+            property_specs["Priority"] = {
+                "type": "select",
+                "name": priority,
+            }
+
+        if deadline:
+            property_specs["Deadline"] = {
+                "type": "date",
+                "start": deadline,
+            }
+
+        return property_specs
+
+    # -----------------------------------------------------
+    # MAIN TRANSLATION ENTRYPOINT
+    # -----------------------------------------------------
     def translate(
         self,
         raw_input: str,
@@ -37,8 +187,60 @@ class COOTranslationService:
         lowered = text.lower()
         context = context or {}
 
+        logger.info("COO TRANSLATE v2 ACTIVE: raw='%s'", text)
+
+        # ==============================================
+        # BOSNIAN GOAL CREATE (CEO NL → Notion DSL)
+        # ==============================================
+        if lowered.startswith("kreiraj cilj "):
+            logger.info("COO TRANSLATE: matched BOSNIAN GOAL CREATE")
+
+            property_specs = self._build_goal_property_specs_from_text(text)
+
+            return AICommand(
+                command="notion_write",
+                intent="create_page",
+                read_only=False,
+                params={
+                    "db_key": "goals",
+                    "property_specs": property_specs,
+                },
+                metadata={"context_type": "system", "source": source},
+                validated=True,
+            )
+
+        # ==============================================
+        # BOSNIAN GOAL QUERY (CEO NL → Notion DSL)
+        # 'prikazi ciljeve sa statusom X'
+        # ==============================================
+        if "prikazi ciljeve" in lowered and "statusom" in lowered:
+            logger.info("COO TRANSLATE: matched BOSNIAN GOAL QUERY")
+
+            status_value = self._extract_segment(
+                r"statusom\s+(.+)$", text
+            )
+
+            property_specs: Dict[str, Any] = {}
+            if status_value:
+                property_specs["Status"] = {
+                    "type": "select",
+                    "name": status_value,
+                }
+
+            return AICommand(
+                command="notion_write",
+                intent="query_database",
+                read_only=True,
+                params={
+                    "db_key": "goals",
+                    "property_specs": property_specs,
+                },
+                metadata={"context_type": "system", "source": source},
+                validated=True,
+            )
+
         # -----------------------------------------------------
-        # 0) CEO READ-ONLY HARD MATCH
+        # CEO READ-ONLY HARD MATCH
         # -----------------------------------------------------
         if text in self.CEO_READ_ONLY_MATCHES:
             if not is_valid_command(self.READ_ONLY_COMMAND):
@@ -55,90 +257,65 @@ class COOTranslationService:
             )
 
         # -----------------------------------------------------
-        # 0B) DIRECT NOTION TASK CREATE (CEO → Notion Ops, Tasks DB)
-        #     "kreiraj task ..." / "create task ..."
+        # CEO NL → TASK CREATE (NOTION DSL)
         # -----------------------------------------------------
-        m_task = re.match(r"^\s*(kreiraj|create)\s+task[:\-]?\s*(.+)$", text, re.IGNORECASE)
-        if m_task:
-            tail = m_task.group(2).strip()
-
-            # Default: cijeli ostatak je naziv taska
-            name = tail
-            priority = None
-            status = None
-            due_date = None
-
-            # PRIORITY
-            m_prio = re.search(r"\bpriority\b[:\-]?\s*([^,;]+)", tail, re.IGNORECASE)
-            if m_prio:
-                priority = m_prio.group(1).strip()
-
-            # STATUS
-            m_status = re.search(r"\bstatus\b[:\-]?\s*([^,;]+)", tail, re.IGNORECASE)
-            if m_status:
-                status = m_status.group(1).strip()
-
-            # DUE DATE / ROK / DEADLINE
-            m_due = re.search(r"\b(due date|rok|deadline)\b[:\-]?\s*([^,;]+)", tail, re.IGNORECASE)
-            if m_due:
-                due_date = m_due.group(2).strip()
-
-            # Iz naziva taska izbacimo “priority/status/due date …” dio
-            cut_idx = None
-            for kw in [" priority", " status", " due date", " rok", " deadline"]:
-                idx = tail.lower().find(kw)
-                if idx != -1:
-                    cut_idx = idx if cut_idx is None else min(cut_idx, idx)
-            if cut_idx is not None:
-                name = tail[:cut_idx].strip(" ,;-")
-
-            # DSL za Notion properties
-            property_specs: Dict[str, Dict[str, Any]] = {
-                "Name": {
-                    "type": "title",
-                    "text": name or tail,
-                }
-            }
-
-            if status:
-                property_specs["Status"] = {
-                    "type": "select",
-                    "name": status,
-                }
-
-            if priority:
-                property_specs["Priority"] = {
-                    "type": "select",
-                    "name": priority,
-                }
-
-            if due_date:
-                # Očekujemo ISO string (npr. 2025-12-25) – Notion date
-                property_specs["Due Date"] = {
-                    "type": "date",
-                    "start": due_date,
-                }
+        if lowered.startswith("kreiraj task ") or lowered.startswith(
+            "napravi task "
+        ):
+            property_specs = self._build_task_property_specs_from_text(text)
 
             return AICommand(
                 command="notion_write",
                 intent="create_page",
                 read_only=False,
                 params={
-                    "db_key": "tasks",           # NOTION_TASKS_DB_ID
+                    "db_key": "tasks",
                     "property_specs": property_specs,
                 },
-                metadata={"context_type": "system"},
+                metadata={"context_type": "system", "source": source},
                 validated=True,
             )
 
         # -----------------------------------------------------
-        # 1) INTENT CLASSIFICATION
+        # CEO NL → TASK QUERY (READ, NOTION DSL)
+        # 'prikazi taskove sa statusom X'
+        # -----------------------------------------------------
+        if "prikazi taskove" in lowered and "statusom" in lowered:
+
+            status_value = self._extract_segment(
+                r"statusom\s+(.+)$", text
+            )
+
+            property_specs: Dict[str, Any] = {}
+            if status_value:
+                property_specs["Status"] = {
+                    "type": "select",
+                    "name": status_value,
+                }
+
+            return AICommand(
+                command="notion_write",
+                intent="query_database",
+                read_only=True,
+                params={
+                    "db_key": "tasks",
+                    "property_specs": property_specs,
+                },
+                metadata={"context_type": "system", "source": source},
+                validated=True,
+            )
+
+        # -----------------------------------------------------
+        # 1) INTENT CLASSIFICATION (SVE OSTALO)
         # -----------------------------------------------------
         intent: Intent = self.intent_classifier.classify(
             raw_input, source=source
         )
 
-        if intent.confidence < self.intent_classifier.DEFAULT_CONFIDENCE_THRESHOLD:
+        if (
+            intent.confidence
+            < self.intent_classifier.DEFAULT_CONFIDENCE_THRESHOLD
+        ):
             return None
 
         if not intent.is_executable:
@@ -175,12 +352,10 @@ class COOTranslationService:
             )
 
         # -----------------------------------------------------
-        # 4) GOAL CREATE (WRITE)
+        # 4) GOAL CREATE (WRITE — HAPPY PATH V1, ENG)
         # -----------------------------------------------------
         if intent.type == IntentType.GOAL_CREATE:
-            params: Dict[str, Any] = {
-                "name": raw_input
-            }
+            params: Dict[str, Any] = {"name": raw_input}
 
             m_q = re.search(r"\bq([1-4])\b", lowered)
             if m_q:
