@@ -55,6 +55,83 @@ class COOTranslationService:
             )
 
         # -----------------------------------------------------
+        # 0B) DIRECT NOTION TASK CREATE (CEO → Notion Ops, Tasks DB)
+        #     "kreiraj task ..." / "create task ..."
+        # -----------------------------------------------------
+        m_task = re.match(r"^\s*(kreiraj|create)\s+task[:\-]?\s*(.+)$", text, re.IGNORECASE)
+        if m_task:
+            tail = m_task.group(2).strip()
+
+            # Default: cijeli ostatak je naziv taska
+            name = tail
+            priority = None
+            status = None
+            due_date = None
+
+            # PRIORITY
+            m_prio = re.search(r"\bpriority\b[:\-]?\s*([^,;]+)", tail, re.IGNORECASE)
+            if m_prio:
+                priority = m_prio.group(1).strip()
+
+            # STATUS
+            m_status = re.search(r"\bstatus\b[:\-]?\s*([^,;]+)", tail, re.IGNORECASE)
+            if m_status:
+                status = m_status.group(1).strip()
+
+            # DUE DATE / ROK / DEADLINE
+            m_due = re.search(r"\b(due date|rok|deadline)\b[:\-]?\s*([^,;]+)", tail, re.IGNORECASE)
+            if m_due:
+                due_date = m_due.group(2).strip()
+
+            # Iz naziva taska izbacimo “priority/status/due date …” dio
+            cut_idx = None
+            for kw in [" priority", " status", " due date", " rok", " deadline"]:
+                idx = tail.lower().find(kw)
+                if idx != -1:
+                    cut_idx = idx if cut_idx is None else min(cut_idx, idx)
+            if cut_idx is not None:
+                name = tail[:cut_idx].strip(" ,;-")
+
+            # DSL za Notion properties
+            property_specs: Dict[str, Dict[str, Any]] = {
+                "Name": {
+                    "type": "title",
+                    "text": name or tail,
+                }
+            }
+
+            if status:
+                property_specs["Status"] = {
+                    "type": "select",
+                    "name": status,
+                }
+
+            if priority:
+                property_specs["Priority"] = {
+                    "type": "select",
+                    "name": priority,
+                }
+
+            if due_date:
+                # Očekujemo ISO string (npr. 2025-12-25) – Notion date
+                property_specs["Due Date"] = {
+                    "type": "date",
+                    "start": due_date,
+                }
+
+            return AICommand(
+                command="notion_write",
+                intent="create_page",
+                read_only=False,
+                params={
+                    "db_key": "tasks",           # NOTION_TASKS_DB_ID
+                    "property_specs": property_specs,
+                },
+                metadata={"context_type": "system"},
+                validated=True,
+            )
+
+        # -----------------------------------------------------
         # 1) INTENT CLASSIFICATION
         # -----------------------------------------------------
         intent: Intent = self.intent_classifier.classify(
