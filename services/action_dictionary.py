@@ -118,7 +118,7 @@ def action_system_inbox_delegation_preview(payload: Dict[str, Any]):
 # ------------------------------------------
 # PRAVILO:
 # - READ → ima handler
-# - WRITE → NEMA handler (nikad se lokalno ne izvršava)
+# - WRITE → NEMA handler (delegira se agentima)
 
 ACTION_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     # READ
@@ -143,9 +143,14 @@ ACTION_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "allowed_owners": ["system"],
     },
 
-    # WRITE (NO LOCAL EXECUTION)
-    "update_goal": {
+    # WRITE (DELEGATED TO AGENTS)
+    "goal_write": {
         "handler": None,              # ❗️NAMJERNO
+        "category": "write",
+        "allowed_owners": ["system"],
+    },
+    "update_goal": {
+        "handler": None,
         "category": "write",
         "allowed_owners": ["system"],
     },

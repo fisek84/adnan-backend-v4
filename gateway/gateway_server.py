@@ -3,11 +3,13 @@
 # ================================================================
 import os
 import logging
+import uuid
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 from system_version import (
     SYSTEM_NAME,
@@ -27,7 +29,7 @@ OPS_SAFE_MODE = os.getenv("OPS_SAFE_MODE", "false").lower() == "true"
 _BOOT_READY = False
 
 # ================================================================
-# LOGGING
+# LOGGING (KANONSKI)
 # ================================================================
 logging.basicConfig(
     level=logging.INFO,
@@ -36,11 +38,12 @@ logging.basicConfig(
 logger = logging.getLogger("gateway")
 
 # ================================================================
-# CORE MODELS / SERVICES
+# CORE SERVICES
 # ================================================================
-from services.conversation_state_service import ConversationStateService
-from services.awareness_service import AwarenessService
-from services.response_formatter import ResponseFormatter
+from services.ai_command_service import AICommandService
+from services.coo_translation_service import COOTranslationService
+from services.approval_state_service import get_approval_state
+from services.execution_registry import ExecutionRegistry
 
 # ================================================================
 # IDENTITY / MODE / STATE
@@ -50,16 +53,30 @@ from services.adnan_mode_service import load_mode
 from services.adnan_state_service import load_state
 
 # ================================================================
-# NOTION (READ-ONLY SNAPSHOT)
+# NOTION SERVICE (KANONSKI INIT)
 # ================================================================
-from services.notion_service import NotionService
+from services.notion_service import (
+    NotionService,
+    set_notion_service,
+)
+
+set_notion_service(
+    NotionService(
+        api_key=os.getenv("NOTION_API_KEY"),
+        goals_db_id=os.getenv("NOTION_GOALS_DB_ID"),
+        tasks_db_id=os.getenv("NOTION_TASKS_DB_ID"),
+        projects_db_id=os.getenv("NOTION_PROJECTS_DB_ID"),
+    )
+)
+
+logger.info("✅ NotionService singleton initialized")
 
 # ================================================================
 # ROUTERS
 # ================================================================
 from routers.audit_router import router as audit_router
 from routers.adnan_ai_router import router as adnan_ai_router
-from routers.ai_ops_router import ai_ops_router  # ✅ ISPRAVAN, BEZ notion_ops
+from routers.ai_ops_router import ai_ops_router
 
 # ================================================================
 # APPLICATION BOOTSTRAP
@@ -67,7 +84,7 @@ from routers.ai_ops_router import ai_ops_router  # ✅ ISPRAVAN, BEZ notion_ops
 from services.app_bootstrap import bootstrap_application
 
 # ================================================================
-# INITIAL LOAD (FAIL FAST)
+# INITIAL LOAD
 # ================================================================
 if not OS_ENABLED:
     logger.critical("❌ OS_ENABLED=false — system will not start.")
@@ -86,12 +103,9 @@ app = FastAPI(
 )
 
 # ================================================================
-# FRONTEND (STATIC UI)
+# FRONTEND
 # ================================================================
 FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "frontend")
-
-if not os.path.isdir(FRONTEND_DIR):
-    logger.warning("⚠️ Frontend directory not found: %s", FRONTEND_DIR)
 
 app.mount(
     "/frontend",
@@ -100,14 +114,63 @@ app.mount(
 )
 
 # ================================================================
-# INCLUDE ROUTERS (API)
+# INCLUDE ROUTERS
 # ================================================================
 app.include_router(audit_router, prefix="/api")
 app.include_router(adnan_ai_router, prefix="/api")
 app.include_router(ai_ops_router, prefix="/api")
 
 # ================================================================
-# ROOT → FRONTEND
+# KANONSKI EXECUTION ENTRYPOINT (INIT ONLY)
+# ================================================================
+ai_command_service = AICommandService()
+coo_translation_service = COOTranslationService()
+_execution_registry = ExecutionRegistry()
+
+class ExecuteInput(BaseModel):
+    text: str
+
+@app.post("/api/execute")
+async def execute_command(payload: ExecuteInput):
+    ai_command = coo_translation_service.translate(
+        raw_input=payload.text,
+        source="system",
+        context={"mode": "execute"},
+    )
+
+    if not ai_command:
+        raise HTTPException(400, "Could not translate input to command")
+
+    approval_id = str(uuid.uuid4())
+    execution_id = str(uuid.uuid4())
+
+    # REGISTER EXECUTION
+    _execution_registry.register({
+        "execution_id": execution_id,
+        "status": "PENDING",
+        "command": ai_command.dict(),
+    })
+
+    # REGISTER PENDING APPROVAL
+    approval_state = get_approval_state()
+    approval_state._approvals[approval_id] = {
+        "approval_id": approval_id,
+        "execution_id": execution_id,
+        "status": "pending",
+        "source": "system",
+        "command": ai_command.dict(),
+    }
+
+    return {
+        "status": "BLOCKED",
+        "execution_state": "BLOCKED",
+        "approval_id": approval_id,
+        "execution_id": execution_id,
+        "command": ai_command.dict(),
+    }
+
+# ================================================================
+# ROOT
 # ================================================================
 @app.get("/")
 async def serve_frontend():
@@ -126,24 +189,7 @@ async def health_check():
     return {"status": "ok"}
 
 # ================================================================
-# SINGLETON SERVICES
-# ================================================================
-conversation_state_service = ConversationStateService()
-awareness_service = AwarenessService()
-response_formatter = ResponseFormatter()
-
-# ================================================================
-# NOTION SERVICE (READ SNAPSHOT ONLY)
-# ================================================================
-notion_service = NotionService(
-    api_key=os.getenv("NOTION_API_KEY"),
-    goals_db_id=os.getenv("NOTION_GOALS_DB_ID"),
-    tasks_db_id=os.getenv("NOTION_TASKS_DB_ID"),
-    projects_db_id=os.getenv("NOTION_PROJECTS_DB_ID"),
-)
-
-# ================================================================
-# GLOBAL ERROR HANDLER
+# ERROR HANDLER
 # ================================================================
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
@@ -160,10 +206,11 @@ async def global_exception_handler(request: Request, exc: Exception):
 async def startup_event():
     global _BOOT_READY
 
-    # BOOTSTRAP APPLICATION (WIRE SERVICES)
     bootstrap_application()
 
-    logger.info(">> Startup: syncing Notion knowledge snapshot")
+    from services.notion_service import get_notion_service
+    notion_service = get_notion_service()
+
     await notion_service.sync_knowledge_snapshot()
 
     _BOOT_READY = True

@@ -1,157 +1,131 @@
-from typing import Dict, Any
-from datetime import datetime
-from uuid import uuid4
+from typing import Dict, Any, Union
 import logging
 
 from models.ai_command import AICommand
 from services.execution_governance_service import ExecutionGovernanceService
-from services.autonomy.autonomy_decision_service import AutonomyDecisionService
-from services.system_read_executor import SystemReadExecutor
-from services.action_execution_service import ActionExecutionService
-from services.failure_handler import FailureHandler
+from services.execution_registry import ExecutionRegistry
+from services.notion_ops_agent import NotionOpsAgent
+from services.notion_service import get_notion_service
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 
 class ExecutionOrchestrator:
     """
-    EXECUTION ORCHESTRATOR — KANONSKI (FAZA 3.7)
+    CANONICAL EXECUTION ORCHESTRATOR
 
-    Pravila:
-    - READ: read_only=True, NO intent
-    - WRITE: intent-based
-    - nikad ne miješati
+    - orchestrira lifecycle
+    - NE odlučuje policy
+    - NE izvršava write
+    - radi ISKLJUČIVO nad AICommand, uz ulaznu normalizaciju
     """
 
-    STATE_COMPLETED = "COMPLETED"
-    STATE_FAILED = "FAILED"
-    STATE_BLOCKED = "BLOCKED"
-
-    CONTRACT_VERSION = "3.3"
-
     def __init__(self):
-        self._governance = ExecutionGovernanceService()
-        self._autonomy = AutonomyDecisionService()
+        self.governance = ExecutionGovernanceService()
+        self.registry = ExecutionRegistry()
+        self.notion_agent = NotionOpsAgent(get_notion_service())
 
-        self._read_executor = SystemReadExecutor()
-        self._write_executor = ActionExecutionService()
-        self._failure_handler = FailureHandler()
+    async def execute(self, command: Union[AICommand, Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Ulaz može biti AICommand ili dict (npr. direktno iz API sloja).
+        CANON: ovdje se payload kanonizuje u AICommand, bez interpretacije intent-a.
+        """
+        cmd = self._normalize_command(command)
+        execution_id = cmd.execution_id
 
-    # =========================================================
-    # MAIN ENTRYPOINT
-    # =========================================================
-    async def execute(self, command: AICommand) -> Dict[str, Any]:
+        # 1) REGISTER (idempotent)
+        self.registry.register(cmd)
 
-        # -----------------------------------------------------
-        # AUTONOMY WRAPPER (NO EXECUTION)
-        # -----------------------------------------------------
-        if command.command == "request_execution":
-            approved_command = await self._autonomy.decide(command)
-            if not approved_command:
-                return self._failure_handler.classify(
-                    source="autonomy",
-                    reason="Autonomy decision rejected.",
-                    execution_id="N/A",
-                    metadata={"command": command.command},
-                )
-            return await self.execute(approved_command)
-
-        if not command.validated:
-            raise RuntimeError("Execution attempted on non-validated AICommand.")
-
-        execution_id = str(uuid4())
-        started_at = datetime.utcnow().isoformat()
-
-        # -----------------------------------------------------
-        # GOVERNANCE
-        # -----------------------------------------------------
-        governance = self._governance.evaluate(
-            role=command.owner,
-            context_type=command.metadata.get("context_type", "system"),
-            directive=command.command,
-            params=command.input or {},
-            approval_id=command.approval_id,
+        # 2) GOVERNANCE (FIRST-PASS ONLY)
+        decision = self.governance.evaluate(
+            initiator=cmd.initiator,
+            context_type=cmd.command,
+            directive=cmd.command,
+            params=cmd.params or {},
+            execution_id=execution_id,
+            approval_id=cmd.approval_id,
         )
 
-        # -----------------------------------------------------
-        # APPROVAL BLOCK
-        # -----------------------------------------------------
-        if not governance.get("allowed"):
-            if (
-                governance.get("source") == "governance"
-                and governance.get("next_csi_state") == "DECISION_PENDING"
-            ):
-                return {
-                    "execution_id": execution_id,
-                    "execution_state": self.STATE_BLOCKED,
-                    "reason": governance.get("reason"),
-                    "command": command.command,
-                    "approval_required": True,
-                    "read_only": False,
-                    "timestamp": started_at,
-                }
-
-            return self._failure_handler.classify(
-                source=governance.get("source"),
-                reason=governance.get("reason"),
-                execution_id=execution_id,
-                metadata={
-                    "governance": governance,
-                    "command": command.command,
-                },
-            )
-
-        # =====================================================
-        # READ PATH — SANITIZED (NO INTENT)
-        # =====================================================
-        if command.read_only:
-            try:
-                # 🔒 KLJUČNO: READ nikad ne nosi intent
-                command.intent = None
-
-                return await self._read_executor.execute(
-                    command=command,
-                    execution_contract={
-                        "execution_id": execution_id,
-                        "command": command.command,
-                        "contract_version": self.CONTRACT_VERSION,
-                        "started_at": started_at,
-                    },
-                )
-            except Exception as e:
-                return self._failure_handler.classify(
-                    source="system",
-                    reason=str(e),
-                    execution_id=execution_id,
-                    metadata={"command": command.command},
-                )
-
-        # =====================================================
-        # WRITE PATH — INTENT BASED
-        # =====================================================
-        if not command.intent:
-            raise RuntimeError("WRITE execution requires intent.")
-
-        try:
-            result = await self._write_executor.execute(
-                intent=command.intent,
-                payload=command.input or {},
-            )
+        # 3) APPROVAL GATE
+        if not decision.get("allowed"):
+            cmd.execution_state = "BLOCKED"
+            self.registry.block(execution_id, decision)
 
             return {
                 "execution_id": execution_id,
-                "execution_state": self.STATE_COMPLETED,
-                "intent": command.intent,
-                "result": result,
-                "contract_version": self.CONTRACT_VERSION,
-                "timestamp": datetime.utcnow().isoformat(),
-                "read_only": False,
+                "execution_state": "BLOCKED",
+                "reason": decision.get("reason"),
+                "approval_id": decision.get("approval_id"),
             }
 
-        except Exception as e:
-            return self._failure_handler.classify(
-                source="execution",
-                reason=str(e),
-                execution_id=execution_id,
-                metadata={"intent": command.intent},
-            )
+        return await self._execute_after_approval(cmd)
+
+    async def resume(self, execution_id: str) -> Dict[str, Any]:
+        """
+        Resume nakon eksplicitnog odobrenja:
+        - ne radi novi governance pass
+        - koristi već registrirani AICommand
+        """
+        command = self.registry.get(execution_id)
+        if not command:
+            raise RuntimeError("Execution not found")
+
+        # Defanzivno: ako je historijski ostao dict, kanonizuj i osvježi registry
+        cmd = self._normalize_command(command)
+        if cmd is not command:
+            self.registry.register(cmd)
+
+        logger.info("Resuming approved execution %s", execution_id)
+
+        return await self._execute_after_approval(cmd)
+
+    async def _execute_after_approval(self, command: AICommand) -> Dict[str, Any]:
+        execution_id = command.execution_id
+
+        # 4) EXECUTE (AGENT)
+        command.execution_state = "EXECUTING"
+        result = await self.notion_agent.execute(command)
+
+        # 5) COMPLETE
+        command.execution_state = "COMPLETED"
+        self.registry.complete(execution_id, result)
+
+        return {
+            "execution_id": execution_id,
+            "execution_state": "COMPLETED",
+            "result": result,
+        }
+
+    @staticmethod
+    def _normalize_command(raw: Union[AICommand, Dict[str, Any]]) -> AICommand:
+        """
+        Jedini dozvoljeni kanonski tip unutar Orchestratora je AICommand.
+        Ako dođe dict, radimo istu normalizaciju kao Registry:
+        - rasklapamo ugniježđeni "command" dict
+        - propagiramo intent
+        - odbacujemo polja koja AICommand ne poznaje
+        """
+        if isinstance(raw, AICommand):
+            return raw
+
+        if isinstance(raw, dict):
+            data = dict(raw)
+
+            inner_cmd = data.get("command")
+            if isinstance(inner_cmd, dict):
+                if "command" in inner_cmd:
+                    data["command"] = inner_cmd["command"]
+                if "params" in inner_cmd and "params" not in data:
+                    data["params"] = inner_cmd["params"]
+                if "context_type" in inner_cmd and "context_type" not in data:
+                    data["context_type"] = inner_cmd["context_type"]
+                if "intent" in inner_cmd and "intent" not in data:
+                    data["intent"] = inner_cmd["intent"]
+
+            allowed_fields = set(AICommand.model_fields.keys())
+            filtered = {k: v for k, v in data.items() if k in allowed_fields}
+
+            return AICommand(**filtered)
+
+        raise TypeError("ExecutionOrchestrator requires AICommand or dict payload")

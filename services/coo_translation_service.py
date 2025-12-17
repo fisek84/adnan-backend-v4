@@ -9,7 +9,6 @@ from models.ai_command import AICommand
 from services.intent_classifier import IntentClassifier
 from services.intent_contract import Intent, IntentType
 from services.action_dictionary import is_valid_command
-from services.approval_state_service import get_approval_state
 
 
 class COOTranslationService:
@@ -25,7 +24,6 @@ class COOTranslationService:
 
     def __init__(self):
         self.intent_classifier = IntentClassifier()
-        self.approvals = get_approval_state()
 
     def translate(
         self,
@@ -36,7 +34,7 @@ class COOTranslationService:
     ) -> Optional[AICommand]:
 
         text = (raw_input or "").strip()
-        lowered = text.lower().strip()
+        lowered = text.lower()
         context = context or {}
 
         # -----------------------------------------------------
@@ -48,13 +46,11 @@ class COOTranslationService:
 
             return AICommand(
                 command=self.READ_ONLY_COMMAND,
-                intent=None,
-                input={
-                    "raw_text": raw_input,
+                read_only=True,
+                params={
                     "snapshot_type": self.CEO_READ_ONLY_MATCHES[text],
                 },
-                params={},
-                metadata={"context_type": "system", "read_only": True},
+                metadata={"context_type": "system"},
                 validated=True,
             )
 
@@ -80,10 +76,9 @@ class COOTranslationService:
 
             return AICommand(
                 command=self.READ_ONLY_COMMAND,
-                intent=None,
-                input={"raw_text": raw_input},
+                read_only=True,
                 params={},
-                metadata={"context_type": "system", "read_only": True},
+                metadata={"context_type": "system"},
                 validated=True,
             )
 
@@ -96,59 +91,38 @@ class COOTranslationService:
 
             return AICommand(
                 command="list_goals",
-                intent=None,
-                input={"raw_text": raw_input},
+                read_only=True,
                 params={},
-                metadata={"context_type": "system", "read_only": True},
+                metadata={"context_type": "system"},
                 validated=True,
             )
 
         # -----------------------------------------------------
-        # 4) GOAL CREATE (WRITE → APPROVAL)
+        # 4) GOAL CREATE (WRITE)
         # -----------------------------------------------------
         if intent.type == IntentType.GOAL_CREATE:
-
-            approval_id = context.get("approval_id")
-
-            if approval_id:
-                try:
-                    approval = self.approvals.get(approval_id)
-                except KeyError:
-                    approval = None
-            else:
-                approval = None
-
-            if not approval:
-                approval = self.approvals.create(
-                    command="goal_write",
-                    payload_summary={"raw_text": raw_input},
-                    scope="goals",
-                    risk_level="medium",
-                )
-                approval_id = approval["approval_id"]
+            params: Dict[str, Any] = {
+                "name": raw_input
+            }
 
             m_q = re.search(r"\bq([1-4])\b", lowered)
-            quarter = f"Q{m_q.group(1)}" if m_q else None
+            if m_q:
+                params["quarter"] = f"Q{m_q.group(1)}"
+
             m_year = re.search(r"\b(20\d{2})\b", lowered)
-            year = int(m_year.group(1)) if m_year else None
+            if m_year:
+                params["year"] = int(m_year.group(1))
+
             m_pct = re.search(r"(\d{1,3})\s*%+", lowered)
-            target_pct = int(m_pct.group(1)) if m_pct else None
+            if m_pct:
+                params["target_pct"] = int(m_pct.group(1))
 
             return AICommand(
                 command="goal_write",
-                intent=IntentType.GOAL_CREATE.value,
-                input={
-                    "raw_text": raw_input,
-                    "quarter": quarter,
-                    "year": year,
-                    "target_pct": target_pct,
-                },
-                params={},
-                metadata={
-                    "context_type": "system",
-                    "approval_id": approval_id,
-                    "read_only": False,
-                },
+                intent="create_goal",
+                read_only=False,
+                params=params,
+                metadata={"context_type": "system"},
                 validated=True,
             )
 

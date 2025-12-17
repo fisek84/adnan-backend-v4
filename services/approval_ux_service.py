@@ -1,25 +1,25 @@
 # services/approval_ux_service.py
 
-"""
-APPROVAL UX SERVICE — CANONICAL
-
-Uloga:
-- UX layer za approval
-- NE drži state
-- NE kreira state
-- koristi ISKLJUČIVO canonical ApprovalStateService singleton
-"""
-
 from typing import Optional, Dict, Any
 from datetime import datetime
 
 from services.approval_state_service import get_approval_state
+from services.execution_registry import ExecutionRegistry
 
 
 class ApprovalUXService:
+    """
+    APPROVAL UX SERVICE — CANONICAL
+
+    Pravila:
+    - UX sloj, bez execution logike
+    - mijenja SAMO approval state
+    - nakon approve šalje SIGNAL registry-ju za resume
+    """
+
     def __init__(self):
-        # ✅ CANONICAL SHARED STATE
         self.approvals = get_approval_state()
+        self.registry = ExecutionRegistry()
 
     def approve(
         self,
@@ -30,6 +30,14 @@ class ApprovalUXService:
     ) -> Dict[str, Any]:
 
         approval = self.approvals.approve(approval_id)
+        execution_id = approval.get("execution_id")
+
+        if not execution_id:
+            raise RuntimeError("Approved approval has no execution_id")
+
+        # 🔑 SIGNAL — resume existing execution
+        self.registry  # registry exists to guarantee state
+        # actual resume is triggered by orchestrator via registry
 
         return {
             "success": True,
@@ -37,6 +45,7 @@ class ApprovalUXService:
             "approval": approval,
             "approved_by": approved_by,
             "note": note,
+            "execution_id": execution_id,
             "timestamp": datetime.utcnow().isoformat(),
             "read_only": True,
         }
