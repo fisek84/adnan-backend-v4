@@ -1,4 +1,4 @@
-from typing import Dict, Any, Union
+from typing import Dict, Any, Union, List
 import logging
 
 from models.ai_command import AICommand
@@ -83,9 +83,15 @@ class ExecutionOrchestrator:
     async def _execute_after_approval(self, command: AICommand) -> Dict[str, Any]:
         execution_id = command.execution_id
 
-        # 4) EXECUTE (AGENT)
+        # 4) EXECUTE (AGENT / WORKFLOW)
         command.execution_state = "EXECUTING"
-        result = await self.notion_agent.execute(command)
+
+        # Specijalni workflow za goal + taskove (multi-step), ali i dalje preko NotionOpsAgent-a
+        if command.command == "goal_task_workflow":
+            result = await self._execute_goal_with_tasks_workflow(command)
+        else:
+            # Svi ostali idu direktno u NotionOpsAgent (npr. goal_write, notion_write, ...)
+            result = await self.notion_agent.execute(command)
 
         # 5) COMPLETE
         command.execution_state = "COMPLETED"
@@ -95,6 +101,89 @@ class ExecutionOrchestrator:
             "execution_id": execution_id,
             "execution_state": "COMPLETED",
             "result": result,
+        }
+
+    async def _execute_goal_with_tasks_workflow(self, command: AICommand) -> Dict[str, Any]:
+        """
+        WORKFLOW:
+        - kreira Goal u Goals DB
+        - kreira jedan ili više Taskova u Tasks DB
+        - automatski ih veže relation-om "Goal" na kreirani Goal
+
+        Ovdje NEMA dodatnog governance passa — top-level goal_task_workflow je već odobren.
+        Sve write operacije idu kroz NotionOpsAgent → NotionService.
+        """
+        params = command.params or {}
+        goal_spec = params.get("goal") or {}
+        tasks_specs: List[Dict[str, Any]] = params.get("tasks") or []
+
+        # ---------------------------
+        # 1) KREIRAJ GOAL
+        # ---------------------------
+        goal_cmd = AICommand(
+            command="notion_write",
+            intent="create_page",
+            read_only=False,
+            params={
+                "db_key": goal_spec.get("db_key", "goals"),
+                "property_specs": goal_spec.get("property_specs") or {},
+            },
+            initiator=command.initiator,
+            owner="system",
+            executor="notion_agent",
+            validated=True,
+            metadata={
+                "context_type": "workflow",
+                "workflow": "goal_task_workflow",
+                "step": "create_goal",
+            },
+        )
+
+        goal_result = await self.notion_agent.execute(goal_cmd)
+        goal_page_id = goal_result.get("notion_page_id")
+
+        # ---------------------------
+        # 2) KREIRAJ TASKOVE POVEZANE NA TAJ GOAL
+        # ---------------------------
+        created_tasks = []
+
+        for t in tasks_specs:
+            base_specs = dict(t.get("property_specs") or {})
+
+            # Automatski enforce-amo relation "Goal" na kreirani goal
+            if goal_page_id:
+                base_specs["Goal"] = {
+                    "type": "relation",
+                    "page_ids": [goal_page_id],
+                }
+
+            task_cmd = AICommand(
+                command="notion_write",
+                intent="create_page",
+                read_only=False,
+                params={
+                    "db_key": t.get("db_key", "tasks"),
+                    "property_specs": base_specs,
+                },
+                initiator=command.initiator,
+                owner="system",
+                executor="notion_agent",
+                validated=True,
+                metadata={
+                    "context_type": "workflow",
+                    "workflow": "goal_task_workflow",
+                    "step": "create_task",
+                },
+            )
+
+            task_result = await self.notion_agent.execute(task_cmd)
+            created_tasks.append(task_result)
+
+        return {
+            "success": True,
+            "workflow": "goal_task_workflow",
+            "goal": goal_result,
+            "tasks": created_tasks,
         }
 
     @staticmethod

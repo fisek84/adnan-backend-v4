@@ -145,11 +145,25 @@ ACTION_DEFINITIONS: Dict[str, Dict[str, Any]] = {
 
     # WRITE (DELEGATED TO AGENTS)
     "goal_write": {
-        "handler": None,              # ❗️NAMJERNO
+        "handler": None,              # ❗️NAMJERNO — delegira se NotionOpsAgent-u
         "category": "write",
         "allowed_owners": ["system"],
     },
     "update_goal": {
+        "handler": None,
+        "category": "write",
+        "allowed_owners": ["system"],
+    },
+
+    # GENERIC NOTION WRITE/READ (create_page / update_page / query_database)
+    "notion_write": {
+        "handler": None,              # sve ide kroz NotionOpsAgent + NotionService
+        "category": "write",
+        "allowed_owners": ["system"],
+    },
+
+    # WORKFLOW (goal + taskovi) — KROZ AGENTA, NE DIREKTNO
+    "goal_task_workflow": {
         "handler": None,
         "category": "write",
         "allowed_owners": ["system"],
