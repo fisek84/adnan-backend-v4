@@ -2,7 +2,7 @@
 <html lang="bs">
 <head>
   <meta charset="UTF-8" />
-  <title>Adnan.AI / Evolia OS — CEO Console</title>
+  <title>Adnan.AI / Evolia OS — CEO konzola</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
     body {
@@ -57,7 +57,7 @@
       padding: 16px 24px 24px 24px;
       display: grid;
       grid-template-columns: 2fr 3fr;
-      grid-template-rows: auto auto 1fr;
+      grid-template-rows: auto auto auto;
       gap: 16px;
       align-items: flex-start;
     }
@@ -170,7 +170,7 @@
       line-height: 1.5;
       white-space: pre;
       overflow: auto;
-      max-height: 360px;
+      max-height: 260px;
       padding: 10px 12px;
       border-radius: 10px;
       background: rgba(15, 23, 42, 0.95);
@@ -185,7 +185,7 @@
       margin-bottom: 8px;
     }
 
-    button.refresh {
+    button {
       font-size: 11px;
       padding: 6px 10px;
       border-radius: 999px;
@@ -195,7 +195,7 @@
       cursor: pointer;
     }
 
-    button.refresh:hover {
+    button:hover {
       border-color: rgba(129, 140, 248, 0.85);
     }
 
@@ -221,6 +221,45 @@
       opacity: 0.6;
       margin-top: 4px;
     }
+
+    .textarea {
+      width: 100%;
+      min-height: 72px;
+      max-height: 180px;
+      resize: vertical;
+      border-radius: 12px;
+      padding: 8px 10px;
+      border: 1px solid rgba(148, 163, 184, 0.4);
+      background: rgba(15, 23, 42, 0.95);
+      color: #e5e7eb;
+      font-family: inherit;
+      font-size: 13px;
+    }
+
+    .textarea:focus {
+      outline: none;
+      border-color: rgba(129, 140, 248, 0.9);
+    }
+
+    .cmd-status {
+      font-size: 11px;
+      margin-top: 6px;
+      opacity: 0.8;
+      white-space: pre-line;
+    }
+
+    .cmd-log {
+      margin-top: 8px;
+      font-family: "JetBrains Mono", ui-monospace;
+      font-size: 11px;
+      background: rgba(15, 23, 42, 0.95);
+      border-radius: 10px;
+      padding: 8px 10px;
+      border: 1px solid rgba(55, 65, 81, 0.8);
+      max-height: 160px;
+      overflow: auto;
+      white-space: pre-wrap;
+    }
   </style>
 </head>
 <body>
@@ -228,7 +267,7 @@
     <header>
       <div class="brand">
         <span class="brand-title">Adnan.AI / Evolia OS</span>
-        <span class="brand-subtitle">CEO Console · Read-only system snapshot</span>
+        <span class="brand-subtitle">CEO konzola izvršnog direktora · Snimak sustava samo za čitanje</span>
       </div>
       <div style="display:flex;align-items:center;gap:8px;">
         <span class="pill" id="version-pill">v–</span>
@@ -237,43 +276,66 @@
     </header>
 
     <main>
-      <!-- SYSTEM CARD -->
+      <!-- SUSTAV -->
       <section class="card">
         <div class="card-header">
-          <span class="card-title">System</span>
+          <span class="card-title">SUSTAV</span>
           <span class="badge" id="boot-badge">
             BOOTING
             <span class="status-dot bad"></span>
           </span>
         </div>
         <div id="system-kv"></div>
-        <div class="hint">Ovdje CEO vidi realni OS status (bez executa, samo state).</div>
+        <div class="hint">Ovdje izvršni direktor vidi stvarni status operativnog sustava (verzija, zaključaj, stanje).</div>
       </section>
 
-      <!-- IDENTITY / MODE CARD -->
+      <!-- IDENTITET I MODA -->
       <section class="card">
         <div class="card-header">
-          <span class="card-title">Identity & Mode</span>
+          <span class="card-title">IDENTITET I MODA</span>
         </div>
         <div id="identity-block"></div>
         <div id="mode-block" style="margin-top:10px;"></div>
       </section>
 
-      <!-- APPROVALS CARD -->
+      <!-- CJEVO VOD ODOBRENJA -->
       <section class="card">
         <div class="card-header">
-          <span class="card-title">Approvals Pipeline</span>
-          <span class="badge">BLOCKED → APPROVED → EXECUTED</span>
+          <span class="card-title">CJEVO VOD ODOBRENJA</span>
+          <span class="badge">BLOKIRANO → ODOBRENO → IZVRŠENO</span>
         </div>
         <div id="approvals-stats"></div>
       </section>
 
-      <!-- RAW SNAPSHOT CARD -->
+      <!-- CEO KOMANDA (NL → /api/execute) -->
+      <section class="card">
+        <div class="card-header">
+          <span class="card-title">CEO NL KOMANDA</span>
+          <span class="badge-danger">GOVERNANCE ACTIVE</span>
+        </div>
+        <textarea
+          id="ceo-input"
+          class="textarea"
+          placeholder="Upiši CEO komandu, npr: &#10;kreiraj task EVO-CEO-TASK-UI-001 priority High status Not Started due date 2026-01-15">
+        </textarea>
+        <div class="toolbar" style="justify-content:flex-start;margin-top:8px;">
+          <button id="send-btn">Pošalji komandu (BLOCKED)</button>
+          <button id="approve-btn">Odobri zadnji zahtjev</button>
+          <button id="snapshot-btn">Osvježi snimku</button>
+        </div>
+        <div id="cmd-status" class="cmd-status"></div>
+        <div id="cmd-log" class="cmd-log"></div>
+        <div class="hint">
+          UX ne preskače governance: svaka komanda ide CEO → BLOCKED → ODOBRENJE → EXECUTED.
+        </div>
+      </section>
+
+      <!-- NEOBRAĐENI SNIMAK -->
       <section class="card" style="grid-column: span 2;">
         <div class="card-header">
-          <span class="card-title">Raw Snapshot (debug)</span>
-          <div class="toolbar">
-            <button class="refresh" id="refresh-btn">Refresh snapshot</button>
+          <span class="card-title">NEOBRAĐENI SNIMAK (OTKLANJANJE GREŠAKA)</span>
+          <div class="toolbar" style="margin-bottom:0;">
+            <button id="refresh-btn">Osvježi snimku</button>
           </div>
         </div>
         <div id="json-view" class="json-view">{}</div>
@@ -282,6 +344,14 @@
   </div>
 
   <script>
+    let lastApprovalId = null;
+    let lastExecutionId = null;
+
+    function safeString(v) {
+      if (v === null || v === undefined) return "–";
+      return String(v);
+    }
+
     async function loadSnapshot() {
       const jsonView = document.getElementById("json-view");
       const systemKv = document.getElementById("system-kv");
@@ -292,13 +362,11 @@
       const channelPill = document.getElementById("channel-pill");
       const bootBadge = document.getElementById("boot-badge");
 
-      jsonView.textContent = "Loading snapshot…";
+      jsonView.textContent = "Učitavam snimku…";
 
       try {
         const res = await fetch("/api/ceo/console/snapshot");
-        if (!res.ok) {
-          throw new Error("HTTP " + res.status);
-        }
+        if (!res.ok) throw new Error("HTTP " + res.status);
         const data = await res.json();
 
         jsonView.textContent = JSON.stringify(data, null, 2);
@@ -308,26 +376,27 @@
         const mode = data.mode || {};
         const approvals = data.approvals || {};
 
-        versionPill.textContent = `v${system.version || "?"}`;
-        channelPill.textContent = system.release_channel || "–";
+        versionPill.textContent = `v${safeString(system.version)}`;
+        channelPill.textContent = safeString(system.release_channel);
 
         const bootOk = !!system.boot_ready;
-        bootBadge.innerHTML = bootOk ? 'READY<span class="status-dot ok"></span>'
-                                     : 'BOOTING<span class="status-dot bad"></span>';
+        bootBadge.innerHTML = bootOk
+          ? 'SPREMAN<span class="status-dot ok"></span>'
+          : 'BOOTING<span class="status-dot bad"></span>';
 
         systemKv.innerHTML = "";
         const kvPairs = [
-          ["Name", system.name],
-          ["Version", system.version],
-          ["Release channel", system.release_channel],
-          ["Arch lock", String(system.arch_lock)],
-          ["OS enabled", String(system.os_enabled)],
-          ["OPS safe mode", String(system.ops_safe_mode)],
+          ["Ime", system.name],
+          ["Verzija", system.version],
+          ["Kanal izdanja", system.release_channel],
+          ["Luk brava", String(system.arch_lock)],
+          ["Omogućen OS", String(system.os_enabled)],
+          ["OPS siguran način rada", String(system.ops_safe_mode)],
         ];
         kvPairs.forEach(([k, v]) => {
           const row = document.createElement("div");
           row.className = "kv-row";
-          row.innerHTML = `<span class="kv-key">${k}</span><span class="kv-value">${v ?? "–"}</span>`;
+          row.innerHTML = `<span class="kv-key">${k}</span><span class="kv-value">${safeString(v)}</span>`;
           systemKv.appendChild(row);
         });
 
@@ -338,13 +407,13 @@
 
         const titleRow = document.createElement("div");
         titleRow.className = "kv-row";
-        titleRow.innerHTML = `<span class="kv-key">Identity</span><span class="kv-value">${name}</span>`;
+        titleRow.innerHTML = `<span class="kv-key">Identitet</span><span class="kv-value">${name}</span>`;
         identityBlock.appendChild(titleRow);
 
         if (role) {
           const roleRow = document.createElement("div");
           roleRow.className = "kv-row";
-          roleRow.innerHTML = `<span class="kv-key">Role</span><span class="kv-value">${role}</span>`;
+          roleRow.innerHTML = `<span class="kv-key">Uloge</span><span class="kv-value">${role}</span>`;
           identityBlock.appendChild(roleRow);
         }
 
@@ -371,10 +440,10 @@
         }
 
         modeBlock.innerHTML = "";
-        const currentMode = (data.state && data.state.current_mode) || mode.default_mode || "operational";
+        const currentMode = (data.state && data.state.current_mode) || mode.default_mode || "operativni";
         const modeRow = document.createElement("div");
         modeRow.className = "kv-row";
-        modeRow.innerHTML = `<span class="kv-key">Current mode</span><span class="kv-value">${currentMode}</span>`;
+        modeRow.innerHTML = `<span class="kv-key">Trenutni način rada</span><span class="kv-value">${currentMode}</span>`;
         modeBlock.appendChild(modeRow);
 
         const modes = mode.modes || {};
@@ -400,14 +469,12 @@
         const grid = document.createElement("div");
         grid.className = "approvals-grid";
 
-        const items = [
-          ["Total", total],
-          ["Pending", pendingCount],
-          ["Completed", completedCount],
-          ["Failed", failedCount],
-        ];
-
-        items.forEach(([label, value]) => {
+        [
+          ["Ukupno", total],
+          ["Na čekanju", pendingCount],
+          ["Završeno", completedCount],
+          ["Neuspješno", failedCount],
+        ].forEach(([label, value]) => {
           const pill = document.createElement("div");
           pill.className = "stat-pill";
           pill.innerHTML = `<div class="stat-label">${label}</div><div class="stat-value">${value}</div>`;
@@ -415,19 +482,94 @@
         });
 
         approvalsStats.appendChild(grid);
-
-        if (Array.isArray(approvals.pending) && approvals.pending.length > 0) {
-          const hint = document.createElement("div");
-          hint.className = "hint";
-          hint.textContent = `Pending approvals: ${approvals.pending.length} (detalji u /api/ai-ops/approval/pending).`;
-          approvalsStats.appendChild(hint);
-        }
       } catch (err) {
-        jsonView.textContent = "Error loading snapshot: " + err;
+        jsonView.textContent = "Greška pri učitavanju snimke: " + err;
       }
     }
 
+    async function sendCommand() {
+      const input = document.getElementById("ceo-input");
+      const statusEl = document.getElementById("cmd-status");
+      const logEl = document.getElementById("cmd-log");
+      const text = (input.value || "").trim();
+      if (!text) {
+        statusEl.textContent = "Unesi CEO komandu.";
+        return;
+      }
+
+      statusEl.textContent = "Šaljem /api/execute…";
+      logEl.textContent = "";
+
+      try {
+        const res = await fetch("/api/execute", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text }),
+        });
+
+        if (!res.ok) {
+          const errText = await res.text();
+          statusEl.textContent = "Greška: " + errText;
+          return;
+        }
+
+        const data = await res.json();
+        lastApprovalId = data.approval_id || null;
+        lastExecutionId = data.execution_id || null;
+
+        statusEl.textContent =
+          "STATUS: " + data.execution_state +
+          "\napproval_id: " + safeString(lastApprovalId) +
+          "\nexecution_id: " + safeString(lastExecutionId);
+
+        logEl.textContent = JSON.stringify(data, null, 2);
+
+        await loadSnapshot();
+      } catch (err) {
+        statusEl.textContent = "Greška pri slanju komande: " + err;
+      }
+    }
+
+    async function approveLast() {
+      const statusEl = document.getElementById("cmd-status");
+      const logEl = document.getElementById("cmd-log");
+
+      if (!lastApprovalId) {
+        statusEl.textContent = "Nema aktivnog approval_id za odobriti (prvo pošalji komandu).";
+        return;
+      }
+
+      statusEl.textContent = "Šaljem /api/ai-ops/approval/approve…";
+
+      try {
+        const res = await fetch("/api/ai-ops/approval/approve", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ approval_id: lastApprovalId }),
+        });
+
+        if (!res.ok) {
+          const errText = await res.text();
+          statusEl.textContent = "Greška pri odobravanju: " + errText;
+          return;
+        }
+
+        const data = await res.json();
+        statusEl.textContent =
+          "ODOBRENO.\nexecution_state: " + safeString(data.execution_state);
+        logEl.textContent = JSON.stringify(data, null, 2);
+
+        lastApprovalId = null; // ovaj je završen
+        await loadSnapshot();
+      } catch (err) {
+        statusEl.textContent = "Greška pri odobravanju: " + err;
+      }
+    }
+
+    document.getElementById("send-btn").addEventListener("click", sendCommand);
+    document.getElementById("approve-btn").addEventListener("click", approveLast);
     document.getElementById("refresh-btn").addEventListener("click", loadSnapshot);
+    document.getElementById("snapshot-btn").addEventListener("click", loadSnapshot);
 
     loadSnapshot();
   </script>
