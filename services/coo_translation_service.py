@@ -3,7 +3,7 @@
 COO TRANSLATION SERVICE (CANONICAL)
 """
 
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import re
 import logging
 
@@ -37,7 +37,7 @@ class COOTranslationService:
     def _extract_name_after_prefix(
         raw_input: str,
         prefix: str,
-        stop_tokens: Optional[list[str]] = None,
+        stop_tokens: Optional[List[str]] = None,
     ) -> str:
         """
         Uzmemo sve nakon prefiksa, do prvog stop tokena (priority, status, due date, ...).
@@ -65,6 +65,65 @@ class COOTranslationService:
         if not m:
             return None
         return m.group(1).strip(" ,")
+
+    @staticmethod
+    def _extract_date_range(raw_input: str) -> Optional[Dict[str, str]]:
+        """
+        Podržava:
+        - 'od YYYY-MM-DD do YYYY-MM-DD'
+        - 'između YYYY-MM-DD i YYYY-MM-DD'
+        """
+        lowered = raw_input.lower()
+
+        m = re.search(
+            r"od\s+(\d{4}-\d{2}-\d{2})\s+do\s+(\d{4}-\d{2}-\d{2})",
+            lowered,
+        )
+        if m:
+            return {"start": m.group(1), "end": m.group(2)}
+
+        m = re.search(
+            r"između\s+(\d{4}-\d{2}-\d{2})\s+i\s+(\d{4}-\d{2}-\d{2})",
+            lowered,
+        )
+        if m:
+            return {"start": m.group(1), "end": m.group(2)}
+
+        return None
+
+    @staticmethod
+    def _extract_quarter_range(raw_input: str) -> Optional[Dict[str, str]]:
+        """
+        Podržava:
+        - 'za Q1 2026', 'u Q2 2025', itd.
+        Mapira Qx + godina u [start, end] range.
+        """
+        lowered = raw_input.lower()
+
+        m_q = re.search(r"\bq([1-4])\b", lowered)
+        if not m_q:
+            return None
+        q = int(m_q.group(1))
+
+        m_year = re.search(r"\b(20\d{2})\b", lowered)
+        if not m_year:
+            return None
+        year = int(m_year.group(1))
+
+        if q == 1:
+            start = f"{year}-01-01"
+            end = f"{year}-03-31"
+        elif q == 2:
+            start = f"{year}-04-01"
+            end = f"{year}-06-30"
+        elif q == 3:
+            start = f"{year}-07-01"
+            end = f"{year}-09-30"
+        else:
+            start = f"{year}-10-01"
+            end = f"{year}-12-31"
+
+        return {"start": start, "end": end}
 
     @staticmethod
     def _build_task_property_specs_from_text(raw_input: str) -> Dict[str, Any]:
@@ -304,6 +363,61 @@ class COOTranslationService:
             )
 
         # -----------------------------------------------------
+        # 0.C) CEO NL → FLP MANAGER PLAN (GOAL + TEMPLATE TASKS)
+        # "kreiraj flp manager plan za cilj EVO-FLP-MANAGER-PLAN-001 status Not Started priority High"
+        # -----------------------------------------------------
+        if lowered.startswith("kreiraj flp manager plan za cilj "):
+            logger.info("COO TRANSLATE: matched FLP MANAGER PLAN WORKFLOW")
+
+            if not is_valid_command("goal_task_workflow"):
+                return None
+
+            prefix = "kreiraj flp manager plan za cilj "
+            goal_tail = text[len(prefix):].strip()
+
+            synthetic_goal_sentence = "kreiraj cilj " + goal_tail
+            goal_specs = self._build_goal_property_specs_from_text(
+                synthetic_goal_sentence
+            )
+
+            goal_name: Optional[str] = None
+            name_spec = goal_specs.get("Name")
+            if isinstance(name_spec, dict):
+                goal_name = name_spec.get("text") or None
+
+            base_task_name = goal_name or "FLP manager task"
+
+            tasks: List[Dict[str, Any]] = []
+            for i in range(1, 6):
+                tasks.append(
+                    {
+                        "db_key": "tasks",
+                        "property_specs": {
+                            "Name": {
+                                "type": "title",
+                                "text": f"{base_task_name} — step {i}",
+                            },
+                        },
+                    }
+                )
+
+            return AICommand(
+                command="goal_task_workflow",
+                intent="run_workflow",
+                read_only=False,
+                params={
+                    "mode": "flp_manager",
+                    "goal": {
+                        "db_key": "goals",
+                        "property_specs": goal_specs,
+                    },
+                    "tasks": tasks,
+                },
+                metadata={"context_type": "system", "source": source},
+                validated=True,
+            )
+
+        # -----------------------------------------------------
         # 0.1) CEO NL → TASK CREATE (NOTION DSL)
         # -----------------------------------------------------
         if lowered.startswith("kreiraj task ") or lowered.startswith("napravi task "):
@@ -327,9 +441,62 @@ class COOTranslationService:
             )
 
         # -----------------------------------------------------
+        # 0.2.a) CEO NL → TASK STATUS SUMMARY (REPORT)
+        # 'daj mi sažetak taskova po statusu'
+        # -----------------------------------------------------
+        if "sažetak taskova po statusu" in lowered or "sazetak taskova po statusu" in lowered:
+            logger.info("COO TRANSLATE: matched TASK STATUS SUMMARY REPORT")
+
+            if not is_valid_command("notion_write"):
+                return None
+
+            return AICommand(
+                command="notion_write",
+                intent="query_database",
+                read_only=True,
+                params={
+                    "db_key": "tasks",
+                    "property_specs": {},
+                },
+                metadata={
+                    "context_type": "system",
+                    "source": source,
+                    "report_type": "tasks_by_status",
+                },
+                validated=True,
+            )
+
+        # -----------------------------------------------------
+        # 0.2.b) CEO NL → GOAL STATUS SUMMARY (REPORT)
+        # 'daj mi sažetak ciljeva po statusu'
+        # -----------------------------------------------------
+        if "sažetak ciljeva po statusu" in lowered or "sazetak ciljeva po statusu" in lowered:
+            logger.info("COO TRANSLATE: matched GOAL STATUS SUMMARY REPORT")
+
+            if not is_valid_command("notion_write"):
+                return None
+
+            return AICommand(
+                command="notion_write",
+                intent="query_database",
+                read_only=True,
+                params={
+                    "db_key": "goals",
+                    "property_specs": {},
+                },
+                metadata={
+                    "context_type": "system",
+                    "source": source,
+                    "report_type": "goals_by_status",
+                },
+                validated=True,
+            )
+
+        # -----------------------------------------------------
         # 0.2) CEO NL → TASK QUERY (READ, NOTION DSL)
-        # 'prikazi taskove sa statusom X' ili
-        # 'prikazi taskove sa statusom X i prioritetom Y'
+        # 'prikazi/daj mi taskove sa statusom X'
+        # ili '... sa statusom X i prioritetom Y'
+        # + opcioni date range (Due Date)
         # -----------------------------------------------------
         if "taskove" in lowered and "statusom" in lowered:
             logger.info("COO TRANSLATE: matched BOSNIAN TASK QUERY")
@@ -343,6 +510,7 @@ class COOTranslationService:
             priority_value = self._extract_segment(
                 r"prioritetom\s+(\w+)", text
             )
+            date_range = self._extract_date_range(text)
 
             property_specs: Dict[str, Any] = {}
             if status_value:
@@ -354,6 +522,12 @@ class COOTranslationService:
                 property_specs["Priority"] = {
                     "type": "select",
                     "name": priority_value,
+                }
+            if date_range:
+                property_specs["Due Date"] = {
+                    "type": "date_range",
+                    "start": date_range["start"],
+                    "end": date_range["end"],
                 }
 
             return AICommand(
@@ -394,8 +568,9 @@ class COOTranslationService:
 
         # -----------------------------------------------------
         # 0.4) CEO NL → GOAL QUERY (READ, Notion DSL)
-        # 'prikazi ciljeve sa statusom X' ili
-        # 'prikazi ciljeve sa statusom X i prioritetom Y'
+        # 'prikazi/daj mi ciljeve sa statusom X'
+        # ili '... sa statusom X i prioritetom Y'
+        # + opcioni date range (Deadline) ili Q-range
         # -----------------------------------------------------
         if "ciljeve" in lowered and "statusom" in lowered:
             logger.info("COO TRANSLATE: matched BOSNIAN GOAL QUERY")
@@ -409,6 +584,9 @@ class COOTranslationService:
             priority_value = self._extract_segment(
                 r"prioritetom\s+(\w+)", text
             )
+            date_range = self._extract_date_range(text)
+            if not date_range:
+                date_range = self._extract_quarter_range(text)
 
             property_specs: Dict[str, Any] = {}
             if status_value:
@@ -420,6 +598,12 @@ class COOTranslationService:
                 property_specs["Priority"] = {
                     "type": "select",
                     "name": priority_value,
+                }
+            if date_range:
+                property_specs["Deadline"] = {
+                    "type": "date_range",
+                    "start": date_range["start"],
+                    "end": date_range["end"],
                 }
 
             return AICommand(
