@@ -26,7 +26,7 @@ from system_version import (
 load_dotenv(".env")
 
 OS_ENABLED = os.getenv("OS_ENABLED", "true").lower() == "true"
-OPS_SAFE_MODE = os.getenv("OPS_SAFE_MODE", "false").lower() == "false"
+OPS_SAFE_MODE = os.getenv("OPS_SAFE_MODE", "false").lower() == "true"
 
 _BOOT_READY = False
 
@@ -140,7 +140,7 @@ class ExecuteRawInput(BaseModel):
     RAW AICommand ulaz — za internu / agentsku upotrebu.
 
     - NE preskače governance/approval: i dalje BLOCKED → APPROVAL → EXECUTED
-    - Samo za slučajeve kada već imaš strukturisan AICommand (npr. multi-DB Notion ops).
+    - Kada već imaš strukturisan AICommand (npr. multi-DB Notion ops).
     """
     command: str
     intent: str
@@ -164,21 +164,15 @@ async def execute_command(payload: ExecuteInput):
     if not ai_command:
         raise HTTPException(400, "Could not translate input to command")
 
+    # AICommand već ima request_id / execution_id (normalize_ids)
+    _execution_registry.register(ai_command)
+
     approval_id = str(uuid.uuid4())
-    execution_id = str(uuid.uuid4())
 
-    # REGISTER EXECUTION (legacy, ali sad ide kroz Registry normalizaciju)
-    _execution_registry.register({
-        "execution_id": execution_id,
-        "status": "PENDING",
-        "command": ai_command.dict(),
-    })
-
-    # REGISTER PENDING APPROVAL
     approval_state = get_approval_state()
     approval_state._approvals[approval_id] = {
         "approval_id": approval_id,
-        "execution_id": execution_id,
+        "execution_id": ai_command.execution_id,
         "status": "pending",
         "source": "system",
         "command": ai_command.dict(),
@@ -188,7 +182,7 @@ async def execute_command(payload: ExecuteInput):
         "status": "BLOCKED",
         "execution_state": "BLOCKED",
         "approval_id": approval_id,
-        "execution_id": execution_id,
+        "execution_id": ai_command.execution_id,
         "command": ai_command.dict(),
     }
 
@@ -201,7 +195,6 @@ async def execute_raw_command(payload: ExecuteRawInput):
     - i dalje: BLOCKED + approval_id
     - resume i EXECUTED idu kroz /api/ai-ops/approval/approve
     """
-    # 1) AICommand konstrukcija (bez interpretacije intent-a)
     ai_command = AICommand(
         command=payload.command,
         intent=payload.intent,
@@ -211,19 +204,15 @@ async def execute_raw_command(payload: ExecuteRawInput):
         metadata=payload.metadata,
     )
 
-    # Forsiramo execution_id da bude jasan eksternom sistemu
-    approval_id = str(uuid.uuid4())
-    execution_id = str(uuid.uuid4())
-    ai_command.execution_id = execution_id
-
-    # 2) REGISTER EXECUTION
+    # execution_id je već generisan (request_id), ali ga možemo eksplicitno koristiti
     _execution_registry.register(ai_command)
 
-    # 3) REGISTER PENDING APPROVAL
+    approval_id = str(uuid.uuid4())
+
     approval_state = get_approval_state()
     approval_state._approvals[approval_id] = {
         "approval_id": approval_id,
-        "execution_id": execution_id,
+        "execution_id": ai_command.execution_id,
         "status": "pending",
         "source": "system",
         "command": ai_command.dict(),
@@ -233,7 +222,7 @@ async def execute_raw_command(payload: ExecuteRawInput):
         "status": "BLOCKED",
         "execution_state": "BLOCKED",
         "approval_id": approval_id,
-        "execution_id": execution_id,
+        "execution_id": ai_command.execution_id,
         "command": ai_command.dict(),
     }
 
