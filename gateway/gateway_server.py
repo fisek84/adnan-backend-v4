@@ -26,7 +26,7 @@ from system_version import (
 load_dotenv(".env")
 
 OS_ENABLED = os.getenv("OS_ENABLED", "true").lower() == "true"
-OPS_SAFE_MODE = os.getenv("OPS_SAFE_MODE", "false").lower() == "true"
+OPS_SAFE_MODE = os.getenv("OPS_SAFE_MODE", "false").lower() == "false"
 
 _BOOT_READY = False
 
@@ -107,15 +107,35 @@ app = FastAPI(
 )
 
 # ================================================================
-# FRONTEND
+# FRONTEND (CEO DASHBOARD)
 # ================================================================
 FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "frontend")
 
-app.mount(
-    "/frontend",
-    StaticFiles(directory=FRONTEND_DIR),
-    name="frontend",
-)
+if not os.path.isdir(FRONTEND_DIR):
+    logger.warning("Frontend directory not found: %s", FRONTEND_DIR)
+else:
+    # /static -> sve iz gateway/frontend (style.css, script.js, slike...)
+    app.mount(
+        "/static",
+        StaticFiles(directory=FRONTEND_DIR),
+        name="static",
+    )
+
+    # Direktni routeovi za postojeće linkove /style.css i /script.js
+    @app.get("/style.css", include_in_schema=False)
+    async def serve_style_css():
+        path = os.path.join(FRONTEND_DIR, "style.css")
+        if not os.path.isfile(path):
+            raise HTTPException(status_code=404, detail="style.css not found")
+        return FileResponse(path)
+
+    @app.get("/script.js", include_in_schema=False)
+    async def serve_script_js():
+        path = os.path.join(FRONTEND_DIR, "script.js")
+        if not os.path.isfile(path):
+            raise HTTPException(status_code=404, detail="script.js not found")
+        return FileResponse(path)
+
 
 # ================================================================
 # INCLUDE ROUTERS
