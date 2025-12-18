@@ -18,7 +18,7 @@ def set_ai_services(
     command_service: AICommandService,
     conversation_service: COOConversationService,
     translation_service: COOTranslationService,
-):
+) -> None:
     global ai_command_service
     global coo_conversation_service
     global coo_translation_service
@@ -33,10 +33,11 @@ logger.setLevel(logging.INFO)
 
 router = APIRouter(prefix="/ai", tags=["AI"])
 
-
 # ============================================================
 # REQUEST MODEL (UX INPUT ONLY)
 # ============================================================
+
+
 class AIRequest(BaseModel):
     text: str = Field(..., min_length=1)
     context: Optional[Dict[str, Any]] = None
@@ -45,6 +46,8 @@ class AIRequest(BaseModel):
 # ============================================================
 # RUN AI — UX ENTRYPOINT
 # ============================================================
+
+
 @router.post("/run")
 async def run_ai(req: AIRequest):
     logger.info("[AI] UX request received")
@@ -87,4 +90,3 @@ async def run_ai(req: AIRequest):
 
     # 3) EXECUTION
     return await ai_command_service.execute(command)
-    

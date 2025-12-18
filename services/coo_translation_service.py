@@ -11,6 +11,7 @@ from models.ai_command import AICommand
 from services.intent_classifier import IntentClassifier
 from services.intent_contract import Intent, IntentType
 from services.action_dictionary import is_valid_command
+from services.goal_nl_parser import parse_ceo_goal_plan  # trenutno se ne koristi, ali ostaje za kompatibilnost
 
 
 logger = logging.getLogger(__name__)
@@ -124,6 +125,114 @@ class COOTranslationService:
             end = f"{year}-12-31"
 
         return {"start": start, "end": end}
+
+    @staticmethod
+    def _parse_bosnian_date(date_str: str) -> Optional[str]:
+        """
+        Pretvara 'DD.MM.YYYY' u 'YYYY-MM-DD'.
+        """
+        if not date_str:
+            return None
+        m = re.match(r"^\s*(\d{1,2})\.(\d{1,2})\.(\d{4})\s*$", date_str)
+        if not m:
+            return None
+        day = int(m.group(1))
+        month = int(m.group(2))
+        year = int(m.group(3))
+        return f"{year:04d}-{month:02d}-{day:02d}"
+
+    @staticmethod
+    def _parse_ceo_goal_plan_bosnian(raw_input: str) -> Dict[str, Any]:
+        """
+        Parsira CEO NL plan:
+        - centralni cilj
+        - podciljevi
+        - 7-dnevni plan taskova
+
+        Vraća strukturirani plan koji ćemo kasnije mapirati u Notion DSL.
+        """
+        text = raw_input.strip()
+        plan: Dict[str, Any] = {
+            "central_goal": {},
+            "subgoals": [],
+            "tasks": [],
+            "project_name": None,
+        }
+
+        # --- CENTRALNI CILJ ---
+        m_central = re.search(
+            r"kreiraj centralni cilj\s+[\"“](.+?)[\"”]\s+sa\s+due date\s+([0-9\.]+),\s*prioritet\s+(\w+),\s*status\s+(\w+)",
+            text,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if m_central:
+            name = m_central.group(1).strip()
+            due_raw = m_central.group(2).strip()
+            priority = m_central.group(3).strip()
+            status = m_central.group(4).strip()
+            due_iso = COOTranslationService._parse_bosnian_date(due_raw)
+
+            plan["central_goal"] = {
+                "name": name,
+                "priority": priority,
+                "status": status,
+                "due_date_iso": due_iso,
+                "due_date_raw": due_raw,
+            }
+
+        # --- PODCILJEVI ---
+        m_sub_section = re.search(
+            r"kreiraj tri podcilja:(.*?)(?:kreiraj 7[- ]dnevni plan taskova|kreiraj 7-dnevni plan taskova)",
+            text,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if m_sub_section:
+            sub_text = m_sub_section.group(1)
+            for name, prio in re.findall(
+                r"([^\n,]+?)\s*\(prioritet\s+([^)]+)\)",
+                sub_text,
+                flags=re.IGNORECASE,
+            ):
+                plan["subgoals"].append(
+                    {
+                        "name": name.strip(" \n\r-•"),
+                        "priority": prio.strip(" \n\r,"),
+                        "status": "Not Started",
+                    }
+                )
+
+        # --- PROJEKAT ---
+        m_proj = re.search(
+            r"projekat\s+[\"“](.+?)[\"”]",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if m_proj:
+            plan["project_name"] = m_proj.group(1).strip()
+
+        # --- TASKOVI (DAN 1..7) ---
+        m_task_section = re.search(
+            r"(kreiraj 7[- ]dnevni plan taskova.*?:)(.*?)(?:svi taskovi moraju|$)",
+            text,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if m_task_section:
+            tasks_text = m_task_section.group(2)
+            for day, name, prio in re.findall(
+                r"Dan\s+(\d+)\s*:\s*(.+?)\s*\(([^)]+)\)",
+                tasks_text,
+                flags=re.IGNORECASE,
+            ):
+                plan["tasks"].append(
+                    {
+                        "day_index": int(day),
+                        "name": name.strip(),
+                        "priority": prio.strip(),
+                        "status": "To Do",
+                    }
+                )
+
+        return plan
 
     @staticmethod
     def _build_task_property_specs_from_text(raw_input: str) -> Dict[str, Any]:
@@ -242,6 +351,101 @@ class COOTranslationService:
 
         return property_specs
 
+    @staticmethod
+    def _build_ceo_goal_plan_params(plan: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Pretvara strukturirani CEO plan u parametre za goal_task_workflow:
+        - goal: centralni cilj
+        - subgoals: lista podciljeva
+        - tasks: lista taskova
+        """
+        # --- CENTRAL GOAL ---
+        central = plan.get("central_goal") or {}
+        cg_name = central.get("name") or ""
+        cg_status = central.get("status")
+        cg_priority = central.get("priority")
+        cg_due_iso = central.get("due_date_iso")
+
+        goal_sentence = f"kreiraj cilj {cg_name}"
+        if cg_status:
+            goal_sentence += f" status {cg_status}"
+        if cg_priority:
+            goal_sentence += f" priority {cg_priority}"
+        if cg_due_iso:
+            goal_sentence += f" due date {cg_due_iso}"
+
+        goal_specs = COOTranslationService._build_goal_property_specs_from_text(
+            goal_sentence
+        )
+
+        # --- SUBGOALS ---
+        subgoals_cfg: List[Dict[str, Any]] = []
+        for sg in plan.get("subgoals") or []:
+            sg_name = sg.get("name") or ""
+            sg_priority = sg.get("priority")
+            sg_status = sg.get("status") or "Not Started"
+
+            sg_sentence = f"kreiraj cilj {sg_name}"
+            if sg_status:
+                sg_sentence += f" status {sg_status}"
+            if sg_priority:
+                sg_sentence += f" priority {sg_priority}"
+
+            sg_specs = COOTranslationService._build_goal_property_specs_from_text(
+                sg_sentence
+            )
+
+            subgoals_cfg.append(
+                {
+                    "db_key": "goals",
+                    "property_specs": sg_specs,
+                    # hint orchestratoru da ih veže kao child ciljeve
+                    "link_to_parent_goal": True,
+                }
+            )
+
+        # --- TASKS ---
+        tasks_cfg: List[Dict[str, Any]] = []
+        for t in plan.get("tasks") or []:
+            t_name = t.get("name") or ""
+            t_priority = t.get("priority")
+            t_status = t.get("status") or "To Do"
+
+            t_sentence = f"kreiraj task {t_name}"
+            if t_priority:
+                t_sentence += f" priority {t_priority}"
+            if t_status:
+                t_sentence += f" status {t_status}"
+
+            t_specs = COOTranslationService._build_task_property_specs_from_text(
+                t_sentence
+            )
+
+            cfg: Dict[str, Any] = {
+                "db_key": "tasks",
+                "property_specs": t_specs,
+            }
+            if "day_index" in t:
+                cfg["day_index"] = t["day_index"]
+
+            tasks_cfg.append(cfg)
+
+        params: Dict[str, Any] = {
+            "mode": "ceo_goal_plan",
+            "goal": {
+                "db_key": "goals",
+                "property_specs": goal_specs,
+            },
+            "subgoals": subgoals_cfg,
+            "tasks": tasks_cfg,
+        }
+
+        project_name = plan.get("project_name")
+        if project_name:
+            params["project"] = {"name": project_name}
+
+        return params
+
     # -----------------------------------------------------
     # MAIN TRANSLATION ENTRYPOINT
     # -----------------------------------------------------
@@ -257,7 +461,7 @@ class COOTranslationService:
         lowered = text.lower()
         context = context or {}
 
-        logger.info("COO TRANSLATE v2 ACTIVE: raw='%s'", text)
+        logger.info("COO TRANSLATE v3 ACTIVE: raw='%s'", text)
 
         # -----------------------------------------------------
         # 0) CEO READ-ONLY HARD MATCH
@@ -277,7 +481,30 @@ class COOTranslationService:
             )
 
         # -----------------------------------------------------
-        # 0.A) CEO NL → GOAL + TASK WORKFLOW (BOSANSKI)
+        # 0.A) CEO GOAL PLAN (centralni cilj + podciljevi + 7-dnevni taskovi)
+        # -----------------------------------------------------
+        if lowered.startswith("kreiraj centralni cilj"):
+            logger.info(
+                "COO TRANSLATE: matched CEO GOAL PLAN (central goal + subgoals + tasks)"
+            )
+
+            if not is_valid_command("goal_task_workflow"):
+                return None
+
+            structured_plan = self._parse_ceo_goal_plan_bosnian(text)
+            params = self._build_ceo_goal_plan_params(structured_plan)
+
+            return AICommand(
+                command="goal_task_workflow",
+                intent="run_workflow",
+                read_only=False,
+                params=params,
+                metadata={"context_type": "system", "source": source},
+                validated=True,
+            )
+
+        # -----------------------------------------------------
+        # 0.B) CEO NL → GOAL + TASK WORKFLOW (BOSANSKI)
         # "kreiraj cilj X ... i task Y ..."
         # koristi postojeće _build_goal/_build_task helpere
         # -----------------------------------------------------
@@ -318,7 +545,7 @@ class COOTranslationService:
             )
 
         # -----------------------------------------------------
-        # 0.B) CEO NL → 7-DAY PLAN (GOAL + 7 TASKS)
+        # 0.C) CEO NL → 7-DAY PLAN (GOAL + 7 TASKS)
         # "kreiraj 7 day plan za cilj EVO-GOAL-7DAY-002 status Not Started priority High start 2026-02-01"
         # -----------------------------------------------------
         if lowered.startswith("kreiraj 7 day plan za cilj "):
@@ -363,7 +590,7 @@ class COOTranslationService:
             )
 
         # -----------------------------------------------------
-        # 0.C) CEO NL → FLP MANAGER PLAN (GOAL + TEMPLATE TASKS)
+        # 0.D) CEO NL → FLP MANAGER PLAN (GOAL + TEMPLATE TASKS)
         # "kreiraj flp manager plan za cilj EVO-FLP-MANAGER-PLAN-001 status Not Started priority High"
         # -----------------------------------------------------
         if lowered.startswith("kreiraj flp manager plan za cilj "):

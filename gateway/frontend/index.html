@@ -203,6 +203,11 @@
       border-color: rgba(129, 140, 248, 0.85);
     }
 
+    button:disabled {
+      opacity: 0.6;
+      cursor: default;
+    }
+
     .status-dot {
       width: 8px;
       height: 8px;
@@ -321,6 +326,65 @@
     details.debug-toggle[open] summary::before {
       content: "▼";
     }
+
+    /* NOVO: lista pending approvals unutar cijevovoda */
+    .approvals-list {
+      margin-top: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      max-height: 260px;
+      overflow: auto;
+    }
+
+    .approval-item {
+      border-radius: 10px;
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      background: rgba(15, 23, 42, 0.95);
+      padding: 8px 10px;
+      font-size: 11px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .approval-header {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .approval-pill {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 2px 8px;
+      font-size: 10px;
+      font-weight: 500;
+      background: rgba(252, 211, 77, 0.15);
+      border: 1px solid rgba(251, 191, 36, 0.6);
+      color: #facc15;
+    }
+
+    .approval-title {
+      font-size: 12px;
+      font-weight: 500;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .approval-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      color: #9ca3af;
+    }
+
+    .approval-footer {
+      display: flex;
+      justify-content: flex-end;
+    }
   </style>
 </head>
 <body>
@@ -350,14 +414,17 @@
         <div class="hint">Status operativnog sustava (verzija, zaključavanje arhitekture, mod rada).</div>
       </section>
 
-      <!-- CJEVO VOD ODOBRENJA -->
+      <!-- CJEVO VOD ODOBRENJA (STAT + PENDING LISTA) -->
       <section class="card">
         <div class="card-header">
           <span class="card-title">CJEVO VOD ODOBRENJA</span>
           <span class="badge">BLOKIRANO → ODOBRENO → IZVRŠENO</span>
         </div>
         <div id="approvals-stats"></div>
-        <div class="hint">Pregled koliko zahtjeva je na čekanju, odobreno i neuspješno.</div>
+        <div id="approvals-list" class="approvals-list"></div>
+        <div class="hint">
+          Pregled koliko zahtjeva je na čekanju, odobreno i neuspješno, sa direktnim odobravanjem pojedinačnih zahtjeva.
+        </div>
       </section>
 
       <!-- GOALS & TASKS PREGLED (READ-ONLY BIZNIS PANEL) -->
@@ -399,8 +466,7 @@
         <textarea
           id="ceo-input"
           class="textarea"
-          placeholder="Upiši CEO komandu, npr:&#10;kreiraj task EVO-CEO-TASK-UI-001 priority High status Not Started due date 2026-01-15">
-        </textarea>
+          placeholder="Upiši CEO komandu, npr:&#10;kreiraj task EVO-CEO-TASK-UI-001 priority High status Not Started due date 2026-01-15"></textarea>
         <div class="toolbar" style="justify-content:flex-start;margin-top:8px;">
           <button id="send-btn">Pošalji komandu (kreiraj zahtjev)</button>
           <button id="approve-btn">Odobri zadnji zahtjev</button>
@@ -439,7 +505,16 @@
       return String(v);
     }
 
-    function renderSummaryPills(container, label, obj) {
+    function escapeHtml(str) {
+      return String(str)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+    }
+
+    function renderSummaryPills(container, obj) {
       container.innerHTML = "";
       if (!obj || typeof obj !== "object" || Object.keys(obj).length === 0) {
         const pill = document.createElement("div");
@@ -447,16 +522,16 @@
         pill.textContent = "Nema agregiranih podataka";
         container.appendChild(pill);
         return;
-    }
+      }
 
-    const entries = Object.entries(obj);
-    entries.forEach(([key, value]) => {
-      const pill = document.createElement("div");
-      pill.className = "summary-pill";
-      pill.textContent = `${key}: ${value}`;
-      container.appendChild(pill);
-    });
-  }
+      const entries = Object.entries(obj);
+      entries.forEach(([key, value]) => {
+        const pill = document.createElement("div");
+        pill.className = "summary-pill";
+        pill.textContent = key + ": " + value;
+        container.appendChild(pill);
+      });
+    }
 
     async function loadSnapshot() {
       const jsonView = document.getElementById("json-view");
@@ -486,7 +561,7 @@
         const goalsSummaryData = data.goals_summary || null;
         const tasksSummaryData = data.tasks_summary || null;
 
-        versionPill.textContent = `v${safeString(system.version)}`;
+        versionPill.textContent = "v" + safeString(system.version);
         channelPill.textContent = safeString(system.release_channel);
 
         const bootOk = !!system.boot_ready;
@@ -506,7 +581,12 @@
         kvPairs.forEach(([k, v]) => {
           const row = document.createElement("div");
           row.className = "kv-row";
-          row.innerHTML = `<span class="kv-key">${k}</span><span class="kv-value">${safeString(v)}</span>`;
+          row.innerHTML =
+            '<span class="kv-key">' +
+            k +
+            '</span><span class="kv-value">' +
+            safeString(v) +
+            "</span>";
           systemKv.appendChild(row);
         });
 
@@ -517,13 +597,19 @@
 
         const titleRow = document.createElement("div");
         titleRow.className = "kv-row";
-        titleRow.innerHTML = `<span class="kv-key">Identitet</span><span class="kv-value">${name}</span>`;
+        titleRow.innerHTML =
+          '<span class="kv-key">Identitet</span><span class="kv-value">' +
+          safeString(name) +
+          "</span>";
         identityBlock.appendChild(titleRow);
 
         if (role) {
           const roleRow = document.createElement("div");
           roleRow.className = "kv-row";
-          roleRow.innerHTML = `<span class="kv-key">Uloga sustava</span><span class="kv-value">${role}</span>`;
+          roleRow.innerHTML =
+            '<span class="kv-key">Uloga sustava</span><span class="kv-value">' +
+            safeString(role) +
+            "</span>";
           identityBlock.appendChild(roleRow);
         }
 
@@ -540,7 +626,7 @@
         if (values.length > 0) {
           const chipsRow = document.createElement("div");
           chipsRow.className = "list-chip-row";
-          values.forEach(v => {
+          values.forEach((v) => {
             const chip = document.createElement("span");
             chip.className = "chip chip-soft";
             chip.textContent = v;
@@ -550,10 +636,16 @@
         }
 
         modeBlock.innerHTML = "";
-        const currentMode = (data.state && data.state.current_mode) || mode.default_mode || "operational";
+        const currentMode =
+          (data.state && data.state.current_mode) ||
+          mode.default_mode ||
+          "operational";
         const modeRow = document.createElement("div");
         modeRow.className = "kv-row";
-        modeRow.innerHTML = `<span class="kv-key">Trenutni način rada</span><span class="kv-value">${currentMode}</span>`;
+        modeRow.innerHTML =
+          '<span class="kv-key">Trenutni način rada</span><span class="kv-value">' +
+          safeString(currentMode) +
+          "</span>";
         modeBlock.appendChild(modeRow);
 
         const modes = mode.modes || {};
@@ -561,7 +653,7 @@
         if (modeKeys.length > 0) {
           const chipsRow = document.createElement("div");
           chipsRow.className = "list-chip-row";
-          modeKeys.forEach(key => {
+          modeKeys.forEach((key) => {
             const chip = document.createElement("span");
             chip.className = "chip";
             chip.textContent = key;
@@ -573,8 +665,11 @@
         approvalsStats.innerHTML = "";
         const total = approvals.total ?? 0;
         const pendingCount = approvals.pending_count ?? 0;
-        const completedCount = approvals.completed_count ?? 0;
+        const approvedCount =
+          approvals.approved_count ?? approvals.completed_count ?? 0;
+        const rejectedCount = approvals.rejected_count ?? 0;
         const failedCount = approvals.failed_count ?? 0;
+        const unsuccessfulCount = rejectedCount + failedCount;
 
         const grid = document.createElement("div");
         grid.className = "approvals-grid";
@@ -582,12 +677,17 @@
         [
           ["Ukupno", total],
           ["Na čekanju", pendingCount],
-          ["Završeno", completedCount],
-          ["Neuspješno", failedCount],
+          ["Odobreno", approvedCount],
+          ["Neuspješno", unsuccessfulCount],
         ].forEach(([label, value]) => {
           const pill = document.createElement("div");
           pill.className = "stat-pill";
-          pill.innerHTML = `<div class="stat-label">${label}</div><div class="stat-value">${value}</div>`;
+          pill.innerHTML =
+            '<div class="stat-label">' +
+            label +
+            '</div><div class="stat-value">' +
+            value +
+            "</div>";
           grid.appendChild(pill);
         });
 
@@ -605,11 +705,96 @@
           tasksStatus = tasksSummaryData.by_status || tasksSummaryData;
         }
 
-        renderSummaryPills(goalsSummaryEl, "Ciljevi", goalsStatus);
-        renderSummaryPills(tasksSummaryEl, "Taskovi", tasksStatus);
+        renderSummaryPills(goalsSummaryEl, goalsStatus);
+        renderSummaryPills(tasksSummaryEl, tasksStatus);
+
+        // nakon snimke, učitaj pending approvals listu
+        await loadPendingApprovals();
       } catch (err) {
         jsonView.textContent = "Greška pri učitavanju snimke: " + err;
       }
+    }
+
+    async function loadPendingApprovals() {
+      const listEl = document.getElementById("approvals-list");
+      if (!listEl) return;
+
+      listEl.innerHTML =
+        '<div class="hint">Učitavam pending approvals…</div>';
+
+      try {
+        const res = await fetch("/api/ai-ops/approval/pending");
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const data = await res.json();
+        const approvals = Array.isArray(data.approvals)
+          ? data.approvals
+          : [];
+
+        renderPendingApprovals(listEl, approvals);
+      } catch (err) {
+        listEl.innerHTML =
+          '<div class="hint">Greška pri učitavanju approvals: ' +
+          safeString(err) +
+          "</div>";
+      }
+    }
+
+    function renderPendingApprovals(listEl, approvals) {
+      if (!listEl) return;
+
+      if (!approvals || approvals.length === 0) {
+        listEl.innerHTML =
+          '<div class="hint">Trenutno nema zahtjeva na čekanju.</div>';
+        return;
+      }
+
+      const html = approvals
+        .map(function (appr) {
+          const cmd = appr.command || {};
+          const meta = cmd.metadata || {};
+
+          const createdAt = appr.created_at || meta.created_at;
+          const createdLabel = createdAt
+            ? new Date(createdAt).toLocaleString()
+            : "n/a";
+
+          const title =
+            meta.title ||
+            meta.summary ||
+            cmd.intent ||
+            cmd.command ||
+            "AICommand";
+
+          return (
+            '<div class="approval-item">' +
+            '<div class="approval-header">' +
+            '<span class="approval-pill">Pending</span>' +
+            '<span class="approval-title">' +
+            escapeHtml(title) +
+            "</span>" +
+            "</div>" +
+            '<div class="approval-meta">' +
+            "<span>ID: " +
+            escapeHtml(appr.approval_id || "") +
+            "</span>" +
+            "<span>Exec: " +
+            escapeHtml(appr.execution_id || "") +
+            "</span>" +
+            "<span>Created: " +
+            escapeHtml(createdLabel) +
+            "</span>" +
+            "</div>" +
+            '<div class="approval-footer">' +
+            '<button type="button" data-approval-id="' +
+            escapeHtml(appr.approval_id || "") +
+            '">Odobri</button>' +
+            "</div>" +
+            "</div>"
+          );
+        })
+        .join("");
+
+      listEl.innerHTML = html;
     }
 
     async function sendCommand() {
@@ -629,7 +814,7 @@
         const res = await fetch("/api/execute", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text }),
+          body: JSON.stringify({ text: text }),
         });
 
         if (!res.ok) {
@@ -646,7 +831,8 @@
         let human = "";
 
         if (state === "BLOCKED") {
-          human = "Zadnja komanda je zabilježena i čeka tvoje odobrenje.";
+          human =
+            "Zadnja komanda je zabilježena i čeka tvoje odobrenje.";
         } else if (state === "COMPLETED") {
           human = "Zadnja komanda je izvršena.";
         } else {
@@ -655,14 +841,17 @@
 
         statusEl.textContent =
           human +
-          "\napproval_id: " + safeString(lastApprovalId) +
-          "\nexecution_id: " + safeString(lastExecutionId);
+          "\napproval_id: " +
+          safeString(lastApprovalId) +
+          "\nexecution_id: " +
+          safeString(lastExecutionId);
 
         logEl.textContent = JSON.stringify(data, null, 2);
 
         await loadSnapshot();
       } catch (err) {
-        statusEl.textContent = "Greška pri slanju komande: " + err;
+        statusEl.textContent =
+          "Greška pri slanju komande: " + safeString(err);
       }
     }
 
@@ -671,11 +860,13 @@
       const logEl = document.getElementById("cmd-log");
 
       if (!lastApprovalId) {
-        statusEl.textContent = "Nema aktivnog zahtjeva za odobriti (prvo pošalji komandu).";
+        statusEl.textContent =
+          "Nema aktivnog zahtjeva za odobriti (prvo pošalji komandu).";
         return;
       }
 
-      statusEl.textContent = "Odobravam kroz /api/ai-ops/approval/approve…";
+      statusEl.textContent =
+        "Odobravam kroz /api/ai-ops/approval/approve…";
 
       try {
         const res = await fetch("/api/ai-ops/approval/approve", {
@@ -686,7 +877,8 @@
 
         if (!res.ok) {
           const errText = await res.text();
-          statusEl.textContent = "Greška pri odobravanju: " + errText;
+          statusEl.textContent =
+            "Greška pri odobravanju: " + errText;
           return;
         }
 
@@ -697,7 +889,8 @@
         if (state === "COMPLETED") {
           human = "Zahtjev je odobren i izvršen.";
         } else {
-          human = "Stanje nakon odobravanja: " + safeString(state);
+          human =
+            "Stanje nakon odobravanja: " + safeString(state);
         }
 
         statusEl.textContent = human;
@@ -706,7 +899,95 @@
         lastApprovalId = null;
         await loadSnapshot();
       } catch (err) {
-        statusEl.textContent = "Greška pri odobravanju: " + err;
+        statusEl.textContent =
+          "Greška pri odobravanju: " + safeString(err);
+      }
+    }
+
+    async function approveById(approvalId) {
+      const statusEl = document.getElementById("cmd-status");
+      const logEl = document.getElementById("cmd-log");
+      const listEl = document.getElementById("approvals-list");
+
+      const ok = window.confirm(
+        "Odobri izvršenje?\n\nApproval ID: " + approvalId
+      );
+      if (!ok) return;
+
+      if (statusEl) {
+        statusEl.textContent =
+          "Odobravam zahtjev " + approvalId + "…";
+      }
+
+      if (listEl) {
+        const btns = listEl.querySelectorAll(
+          "button[data-approval-id]"
+        );
+        btns.forEach((b) => {
+          b.disabled = true;
+        });
+      }
+
+      try {
+        const res = await fetch("/api/ai-ops/approval/approve", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ approval_id: approvalId }),
+        });
+
+        if (!res.ok) {
+          const errText = await res.text();
+          if (statusEl) {
+            statusEl.textContent =
+              "Greška pri odobravanju: " + errText;
+          }
+          if (listEl) {
+            const btns = listEl.querySelectorAll(
+              "button[data-approval-id]"
+            );
+            btns.forEach((b) => {
+              b.disabled = false;
+            });
+          }
+          return;
+        }
+
+        const data = await res.json();
+        if (logEl) {
+          logEl.textContent = JSON.stringify(data, null, 2);
+        }
+
+        const state = data.execution_state || "";
+        let human = "";
+        if (state === "COMPLETED") {
+          human =
+            "Zahtjev " + approvalId + " je odobren i izvršen.";
+        } else {
+          human =
+            "Stanje nakon odobravanja (" +
+            approvalId +
+            "): " +
+            safeString(state);
+        }
+
+        if (statusEl) {
+          statusEl.textContent = human;
+        }
+
+        await loadSnapshot();
+      } catch (err) {
+        if (statusEl) {
+          statusEl.textContent =
+            "Greška pri odobravanju: " + safeString(err);
+        }
+        if (listEl) {
+          const btns = listEl.querySelectorAll(
+            "button[data-approval-id]"
+          );
+          btns.forEach((b) => {
+            b.disabled = false;
+          });
+        }
       }
     }
 
@@ -722,11 +1003,36 @@
       }
     }
 
-    document.getElementById("send-btn").addEventListener("click", sendCommand);
-    document.getElementById("approve-btn").addEventListener("click", approveLast);
-    document.getElementById("refresh-btn").addEventListener("click", loadSnapshot);
-    document.getElementById("snapshot-btn").addEventListener("click", loadSnapshot);
-    document.getElementById("toggle-log-btn").addEventListener("click", toggleLog);
+    document
+      .getElementById("send-btn")
+      .addEventListener("click", sendCommand);
+    document
+      .getElementById("approve-btn")
+      .addEventListener("click", approveLast);
+    document
+      .getElementById("refresh-btn")
+      .addEventListener("click", loadSnapshot);
+    document
+      .getElementById("snapshot-btn")
+      .addEventListener("click", loadSnapshot);
+    document
+      .getElementById("toggle-log-btn")
+      .addEventListener("click", toggleLog);
+
+    // delegirani handler za odobravanje direktno iz liste
+    (function attachApprovalsListHandler() {
+      const listEl = document.getElementById("approvals-list");
+      if (!listEl) return;
+      listEl.addEventListener("click", function (ev) {
+        const target = ev.target;
+        if (!target || !target.closest) return;
+        const btn = target.closest("button[data-approval-id]");
+        if (!btn) return;
+        const id = btn.getAttribute("data-approval-id");
+        if (!id) return;
+        approveById(id);
+      });
+    })();
 
     loadSnapshot();
   </script>

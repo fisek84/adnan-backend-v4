@@ -19,8 +19,9 @@ class TasksService:
     Pravila:
     - ne zna Notion
     - ne zna agente
-    - ne izvršava WRITE
-    - proizvodi samo čistu NAMJERU
+    - ne poziva direktno vanjske API-je
+    - proizvodi NAMJERU + lokalnu domensku promjenu,
+      a sync servis rješava I/O sloj (npr. Notion)
     """
 
     sync_service = None
@@ -31,12 +32,14 @@ class TasksService:
     # ------------------------------------------------------------
     # BINDINGS
     # ------------------------------------------------------------
+
     def bind_sync_service(self, sync_service):
         self.sync_service = sync_service
 
     # ------------------------------------------------------------
     # HELPERS
     # ------------------------------------------------------------
+
     def _now(self):
         return datetime.now(timezone.utc)
 
@@ -55,9 +58,10 @@ class TasksService:
     # ------------------------------------------------------------
     # CREATE TASK (DOMAIN)
     # ------------------------------------------------------------
+
     def create_task(self, data: TaskCreate) -> Dict[str, any]:
         """
-        Kreira Task domeni objekat i vraća NAMJERU za execution.
+        Kreira Task domenski objekat i vraća NAMJERU za execution.
         """
         logger.info("Creating task (domain only)...")
 
@@ -95,12 +99,14 @@ class TasksService:
     # ------------------------------------------------------------
     # READ
     # ------------------------------------------------------------
+
     def get_all(self) -> List[TaskModel]:
         return list(self.tasks.values())
 
     # ------------------------------------------------------------
     # UPDATE (DOMAIN)
     # ------------------------------------------------------------
+
     def update_task(self, task_id: str, data: TaskUpdate) -> Dict[str, any]:
         if task_id not in self.tasks:
             raise ValueError(f"Task {task_id} not found")
@@ -131,6 +137,7 @@ class TasksService:
     # ------------------------------------------------------------
     # DELETE (DOMAIN)
     # ------------------------------------------------------------
+
     def delete_task(self, task_id: str) -> Dict[str, any]:
         if task_id not in self.tasks:
             raise ValueError(f"Task {task_id} not found")

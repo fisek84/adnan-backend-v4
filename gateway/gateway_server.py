@@ -62,6 +62,7 @@ from services.notion_service import (
     NotionService,
     set_notion_service,
 )
+from services.knowledge_snapshot_service import KnowledgeSnapshotService
 
 set_notion_service(
     NotionService(
@@ -177,10 +178,18 @@ def _to_serializable(obj: Any) -> Any:
     return str(obj)
 
 
+# ================================================================
+# /api/execute — CEO → COO (NL INPUT)
+# ================================================================
 @app.post("/api/execute")
 async def execute_command(payload: ExecuteInput):
     """
     Kanonski CEO → COO ulaz (natural language).
+
+    - CEO daje tekstualnu komandu
+    - COO Translation pretvara u AICommand
+    - AICommand se REGISTRUJE i BLOKUJE (BLOCKED)
+    - Approval ide kroz /api/ai-ops/approval/approve
     """
     ai_command = coo_translation_service.translate(
         raw_input=payload.text,
@@ -214,6 +223,9 @@ async def execute_command(payload: ExecuteInput):
     }
 
 
+# ================================================================
+# /api/execute/raw — DIREKTAN AICommand (AGENT / SYSTEM)
+# ================================================================
 @app.post("/api/execute/raw")
 async def execute_raw_command(payload: ExecuteRawInput):
     """
@@ -264,8 +276,8 @@ async def ceo_console_snapshot():
 
     Poštuje kanon:
     - NEMA execution-a, NEMA write-a
-    - samo vraća već postojeće stanje sistema (identity/mode/state + approvals)
-    - sve je auditabilno i deterministicno
+    - samo vraća već postojeće stanje sistema (identity/mode/state + approvals + goals/tasks summary)
+    - sve je auditabilno i determinističko
     """
     approval_state = get_approval_state()
     approvals_map: Dict[str, Dict[str, Any]] = getattr(
@@ -273,9 +285,19 @@ async def ceo_console_snapshot():
     )
 
     approvals_list = list(approvals_map.values())
+
+    # deriviramo cijevovod po statusima (čisto čitanje)
     pending = [a for a in approvals_list if a.get("status") == "pending"]
-    completed = [a for a in approvals_list if a.get("status") == "completed"]
+    approved = [a for a in approvals_list if a.get("status") == "approved"]
+    rejected = [a for a in approvals_list if a.get("status") == "rejected"]
     failed = [a for a in approvals_list if a.get("status") == "failed"]
+    completed = [a for a in approvals_list if a.get("status") == "completed"]
+
+    # Knowledge snapshot (goals/tasks agregati) — čist READ
+    ks = KnowledgeSnapshotService.get_snapshot()
+    ks_dbs = ks.get("databases") or {}
+    goals_summary_raw = ks_dbs.get("goals_summary")
+    tasks_summary_raw = ks_dbs.get("tasks_summary")
 
     snapshot: Dict[str, Any] = {
         "system": {
@@ -293,10 +315,24 @@ async def ceo_console_snapshot():
         "approvals": {
             "total": len(approvals_list),
             "pending_count": len(pending),
+            # kompatibilnost + precizniji statusi
             "completed_count": len(completed),
+            "approved_count": len(approved),
+            "rejected_count": len(rejected),
             "failed_count": len(failed),
             "pending": pending,
         },
+        "knowledge_snapshot": {
+            "ready": ks.get("ready"),
+            "last_sync": ks.get("last_sync"),
+        },
+        # novi ključevi za CEO Goals/Tasks panel
+        "goals_summary": _to_serializable(goals_summary_raw)
+        if goals_summary_raw is not None
+        else None,
+        "tasks_summary": _to_serializable(tasks_summary_raw)
+        if tasks_summary_raw is not None
+        else None,
     }
 
     return snapshot
@@ -312,6 +348,7 @@ async def serve_frontend():
         raise HTTPException(status_code=404, detail="Frontend not found")
     return FileResponse(index_path)
 
+
 # ================================================================
 # HEALTH
 # ================================================================
@@ -320,6 +357,7 @@ async def health_check():
     if not _BOOT_READY:
         raise HTTPException(status_code=503, detail="System not ready")
     return {"status": "ok"}
+
 
 # ================================================================
 # ERROR HANDLER
@@ -331,6 +369,7 @@ async def global_exception_handler(request: Request, exc: Exception):
         status_code=500,
         content={"status": "error", "message": str(exc)},
     )
+
 
 # ================================================================
 # STARTUP
@@ -344,10 +383,12 @@ async def startup_event():
     from services.notion_service import get_notion_service
     notion_service = get_notion_service()
 
+    # READ-ONLY sync znanja iz Notiona (goals/tasks agregati)
     await notion_service.sync_knowledge_snapshot()
 
     _BOOT_READY = True
     logger.info("🟢 System boot completed. READY.")
+
 
 # ================================================================
 # CORS

@@ -1,7 +1,3 @@
-from models.base_model import GoalModel
-from models.goal_create import GoalCreate
-from models.goal_update import GoalUpdate
-
 import asyncio
 from uuid import uuid4
 from datetime import datetime, timezone
@@ -10,10 +6,23 @@ import logging
 import json
 import sqlite3
 
+from models.base_model import GoalModel
+from models.goal_create import GoalCreate
+from models.goal_update import GoalUpdate
+
 logger = logging.getLogger(__name__)
 
 
 class GoalsService:
+    """
+    DOMAIN GOAL SERVICE — KANONSKI
+
+    - radi sa lokalnim domenim modelom (GoalModel)
+    - persisitira u SQLite kao interni storage
+    - ne zna za agente
+    - sync ka Notion-u ide preko posebnog sync_service sloja
+    """
+
     tasks_service = None
     sync_service = None
 
@@ -26,6 +35,7 @@ class GoalsService:
     # ---------------------------------------------------------
     # BIND METHODS
     # ---------------------------------------------------------
+
     def bind_tasks_service(self, tasks_service):
         self.tasks_service = tasks_service
 
@@ -35,6 +45,7 @@ class GoalsService:
     # ---------------------------------------------------------
     # DB INIT
     # ---------------------------------------------------------
+
     def _create_table(self):
         query = """
         CREATE TABLE IF NOT EXISTS goals (
@@ -58,6 +69,7 @@ class GoalsService:
     # ---------------------------------------------------------
     # LOAD FROM DB
     # ---------------------------------------------------------
+
     def load_from_db(self):
         logger.info("📥 Loading goals from SQLite DB…")
 
@@ -89,6 +101,7 @@ class GoalsService:
     # ---------------------------------------------------------
     # INTERNAL HELPERS
     # ---------------------------------------------------------
+
     def _now(self):
         return datetime.now(timezone.utc)
 
@@ -113,20 +126,23 @@ class GoalsService:
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
 
-        self.db.execute(query, (
-            goal.id,
-            goal.notion_id,
-            goal.title,
-            goal.description,
-            goal.deadline,
-            goal.parent_id,
-            goal.priority,
-            goal.status,
-            goal.progress,
-            json.dumps(goal.children),
-            goal.created_at.isoformat(),
-            goal.updated_at.isoformat(),
-        ))
+        self.db.execute(
+            query,
+            (
+                goal.id,
+                goal.notion_id,
+                goal.title,
+                goal.description,
+                goal.deadline,
+                goal.parent_id,
+                goal.priority,
+                goal.status,
+                goal.progress,
+                json.dumps(goal.children),
+                goal.created_at.isoformat(),
+                goal.updated_at.isoformat(),
+            ),
+        )
 
         self.db.commit()
 
@@ -137,13 +153,13 @@ class GoalsService:
     # ---------------------------------------------------------
     # CREATE GOAL
     # ---------------------------------------------------------
+
     def create_goal(
         self,
         data: GoalCreate,
         forced_id: Optional[str] = None,
-        notion_id: Optional[str] = None
+        notion_id: Optional[str] = None,
     ) -> GoalModel:
-
         if isinstance(data, dict):
             title = data.get("title")
             description = data.get("description")
@@ -185,6 +201,7 @@ class GoalsService:
     # ---------------------------------------------------------
     # GET ALL (FIX REQUIRED BY ROUTER)
     # ---------------------------------------------------------
+
     def get_all(self) -> List[GoalModel]:
         """
         Required by /goals/all router.
@@ -197,8 +214,8 @@ class GoalsService:
     # ---------------------------------------------------------
     # UPDATE GOAL
     # ---------------------------------------------------------
-    async def update_goal(self, goal_id: str, data: dict):
 
+    async def update_goal(self, goal_id: str, data: dict):
         logger.info(f"[GOALS] Updating goal {goal_id}")
 
         goal = self.goals.get(goal_id)
@@ -227,7 +244,6 @@ class GoalsService:
 
         # PARENT-CHILD LOGIC
         if old_parent_id != new_parent_id:
-
             if old_parent_id and old_parent_id in self.goals:
                 old_parent = self.goals[old_parent_id]
                 if goal_id in old_parent.children:
@@ -254,6 +270,7 @@ class GoalsService:
     # ---------------------------------------------------------
     # DELETE GOAL
     # ---------------------------------------------------------
+
     async def delete_goal(self, goal_id: str) -> dict:
         goal = self.goals.get(goal_id)
         if not goal:

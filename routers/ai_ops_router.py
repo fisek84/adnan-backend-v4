@@ -35,6 +35,8 @@ def set_cron_service(cron_service: CronService) -> None:
 # ============================================================
 # CRON OPS (READ-ONLY)
 # ============================================================
+
+
 @router.post("/cron/run")
 def cron_run():
     if _cron_service is None:
@@ -52,12 +54,15 @@ def cron_status():
 # ============================================================
 # APPROVAL OPS (UX ONLY)
 # ============================================================
+
+
 @router.get("/approval/pending")
 def list_pending():
     approval_state = get_approval_state()
     return {
         "approvals": [
-            a for a in approval_state._approvals.values()
+            a
+            for a in approval_state._approvals.values()
             if a.get("status") == "pending"
         ],
         "read_only": True,
@@ -100,6 +105,8 @@ def reject(body: Dict[str, Any]):
 # ============================================================
 # AGENT HEALTH (READ-ONLY)
 # ============================================================
+
+
 @router.get("/agents/health")
 def agents_health():
     return {
@@ -111,4 +118,5 @@ def agents_health():
 # ============================================================
 # EXPORT
 # ============================================================
+
 ai_ops_router = router

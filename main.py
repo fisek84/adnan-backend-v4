@@ -1,8 +1,8 @@
 import os
 import sys
 import logging
-from dotenv import load_dotenv
 
+from dotenv import load_dotenv
 from uvicorn import run
 from fastapi.staticfiles import StaticFiles
 

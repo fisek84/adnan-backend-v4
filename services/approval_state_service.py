@@ -23,6 +23,7 @@ class ApprovalStateService:
     # ============================================================
     # CREATE
     # ============================================================
+
     def create(
         self,
         *,
@@ -32,7 +33,6 @@ class ApprovalStateService:
         risk_level: str,
         execution_id: str,
     ) -> Dict[str, Any]:
-
         if not execution_id:
             raise ValueError("execution_id is required for approval")
 
@@ -69,6 +69,7 @@ class ApprovalStateService:
     # ============================================================
     # DECISIONS
     # ============================================================
+
     def approve(self, approval_id: str) -> Dict[str, Any]:
         with self._lock:
             approval = self._require(approval_id)
@@ -92,6 +93,7 @@ class ApprovalStateService:
     # ============================================================
     # READ
     # ============================================================
+
     def is_fully_approved(self, approval_id: str) -> bool:
         with self._lock:
             approval = self._approvals.get(approval_id)
@@ -104,6 +106,7 @@ class ApprovalStateService:
     # ============================================================
     # INTERNAL
     # ============================================================
+
     def _require(self, approval_id: str) -> Dict[str, Any]:
         if approval_id not in self._approvals:
             raise KeyError("Approval not found")
