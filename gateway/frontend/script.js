@@ -425,12 +425,62 @@ function renderApprovals(approvals) {
   }
 }
 
-// Weekly memory – za sada placeholder (može se kasnije vezati na Notion)
+// Weekly memory – sada vezan na weekly_memory.latest_ai_summary iz snapshot-a
 function renderWeeklyMemory(snapshot) {
   if (!els.weeklyMemory) return;
 
-  els.weeklyMemory.innerHTML =
-    '<p class="placeholder-text">Nema sačuvanih prioriteta za ovu sedmicu.</p>';
+  const container = els.weeklyMemory;
+
+  if (!snapshot || typeof snapshot !== "object") {
+    container.innerHTML =
+      '<p class="placeholder-text">Nema AI sedmičnog sažetka u snapshotu.</p>';
+    return;
+  }
+
+  const weekly = snapshot.weekly_memory || null;
+  const latest =
+    weekly && typeof weekly === "object"
+      ? weekly.latest_ai_summary || null
+      : null;
+
+  if (!latest || typeof latest !== "object") {
+    container.innerHTML =
+      '<p class="placeholder-text">Nema AI sedmičnog sažetka u snapshotu.</p>';
+    return;
+  }
+
+  const title = latest.title || "AI Weekly Summary";
+  const weekRange = latest.week_range || "";
+  const shortSummary =
+    latest.short_summary || "Nema kratkog sažetka za ovu sedmicu.";
+  const notionUrl = latest.notion_url || null;
+  const notionPageId = latest.notion_page_id || null;
+
+  let linkHtml = "";
+  if (notionUrl) {
+    linkHtml = `<a href="${notionUrl}" target="_blank" rel="noopener noreferrer" class="link-small">Otvori puni sažetak u Notionu</a>`;
+  } else if (notionPageId) {
+    linkHtml = `<span class="muted-text">Notion page ID: ${notionPageId}</span>`;
+  }
+
+  container.innerHTML = `
+    <div class="weekly-memory-card">
+      <div class="weekly-memory-header">
+        <h3>${title}</h3>
+        ${
+          weekRange
+            ? `<span class="weekly-memory-period">${weekRange}</span>`
+            : ""
+        }
+      </div>
+      <p class="weekly-memory-summary">
+        ${shortSummary}
+      </p>
+      <div class="weekly-memory-footer">
+        ${linkHtml}
+      </div>
+    </div>
+  `;
 }
 
 // --- SNAPSHOT FETCH -------------------------------------------------

@@ -313,11 +313,61 @@ async def ceo_console_snapshot():
     failed = [a for a in approvals_list if a.get("status") == "failed"]
     completed = [a for a in approvals_list if a.get("status") == "completed"]
 
-    # Knowledge snapshot (goals/tasks agregati) — čist READ
+    # Knowledge snapshot (goals/tasks agregati + AI summary) — čist READ
     ks = KnowledgeSnapshotService.get_snapshot()
     ks_dbs = ks.get("databases") or {}
     goals_summary_raw = ks_dbs.get("goals_summary")
     tasks_summary_raw = ks_dbs.get("tasks_summary")
+    ai_summary_raw = ks_dbs.get("ai_summary")
+
+    weekly_memory = None
+
+    # Izvučemo najnoviji AI summary (best-effort, bez pisanja)
+    if isinstance(ai_summary_raw, list) and ai_summary_raw:
+        latest_item = ai_summary_raw[0]
+
+        title = None
+        week_range = None
+        short_summary = None
+        notion_page_id = None
+        notion_url = None
+
+        if isinstance(latest_item, dict):
+            title = (
+                latest_item.get("title")
+                or latest_item.get("Name")
+            )
+            week_range = (
+                latest_item.get("week")
+                or latest_item.get("Week")
+                or latest_item.get("period")
+                or latest_item.get("Period")
+                or latest_item.get("date")
+                or latest_item.get("Date")
+            )
+            short_summary = (
+                latest_item.get("summary")
+                or latest_item.get("Summary")
+                or latest_item.get("description")
+                or latest_item.get("Description")
+            )
+            notion_page_id = latest_item.get("id") or latest_item.get("page_id")
+            notion_url = latest_item.get("url") or latest_item.get("notion_url")
+
+            latest_raw = _to_serializable(latest_item)
+        else:
+            latest_raw = _to_serializable(latest_item)
+
+        weekly_memory = {
+            "latest_ai_summary": {
+                "title": title,
+                "week_range": week_range,
+                "short_summary": short_summary,
+                "notion_page_id": notion_page_id,
+                "notion_url": notion_url,
+                "raw": latest_raw,
+            }
+        }
 
     snapshot: Dict[str, Any] = {
         "system": {
@@ -346,7 +396,11 @@ async def ceo_console_snapshot():
             "ready": ks.get("ready"),
             "last_sync": ks.get("last_sync"),
         },
-        # novi ključevi za CEO Goals/Tasks panel
+        # novi blok za CEO Weekly Memory (AI summary)
+        "weekly_memory": _to_serializable(weekly_memory)
+        if weekly_memory is not None
+        else None,
+        # postojeći ključevi za CEO Goals/Tasks panel
         "goals_summary": _to_serializable(goals_summary_raw)
         if goals_summary_raw is not None
         else None,
