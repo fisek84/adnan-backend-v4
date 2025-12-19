@@ -38,7 +38,8 @@ class NotionOpsAgent:
         if command.command == "goal_task_workflow":
             return await self._execute_goal_task_workflow(command)
 
-        # SVE OSTALO → direktno NotionService (create_page, update_page, query_database, create_goal, ...)
+        # SVE OSTALO → direktno NotionService
+        # (create_page, update_page, query_database, retrieve_page_content, create_goal, ...)
         return await self.notion.execute(command)
 
     async def _execute_goal_task_workflow(self, command: AICommand) -> Dict[str, Any]:

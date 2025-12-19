@@ -27,6 +27,24 @@ class COOTranslationService:
         "SYSTEM MODE": "mode",
     }
 
+    SOP_DB_KEYWORDS: Dict[str, str] = {
+        "outreach": "outreach_sop",
+        "qualification": "qualification_sop",
+        "follow up": "follow_up_sop",
+        "follow-up": "follow_up_sop",
+        "fsc": "fsc_sop",
+        "flp ops": "flp_ops_sop",
+        "lss": "lss_sop",
+        "partner activation": "partner_activation_sop",
+        "partner performance": "partner_performance_sop",
+        "partner leadership": "partner_leadership_sop",
+        "customer onboarding": "customer_onboarding_sop",
+        "customer retention": "customer_retention_sop",
+        "customer performance": "customer_performance_sop",
+        "partner potential": "partner_potential_sop",
+        "sales closing": "sales_closing_sop",
+    }
+
     def __init__(self):
         self.intent_classifier = IntentClassifier()
 
@@ -377,6 +395,68 @@ class COOTranslationService:
 
         if deadline:
             property_specs["Deadline"] = {
+                "type": "date",
+                "start": deadline,
+            }
+
+        return property_specs
+
+    @staticmethod
+    def _build_project_property_specs_from_text(raw_input: str) -> Dict[str, Any]:
+        """
+        Mapira CEO NL za PROJECT u Notion DSL property_specs.
+
+        Primjer:
+        'kreiraj projekt EVO-OS rollout status In Progress priority High target deadline 2026-03-31'
+        """
+        stop_tokens = ["status", "priority", "target deadline", "deadline", "due date"]
+        lowered = raw_input.lower()
+
+        if lowered.startswith("kreiraj projekt "):
+            name = COOTranslationService._extract_name_after_prefix(
+                raw_input,
+                prefix="kreiraj projekt ",
+                stop_tokens=stop_tokens,
+            )
+        elif lowered.startswith("napravi projekt "):
+            name = COOTranslationService._extract_name_after_prefix(
+                raw_input,
+                prefix="napravi projekt ",
+                stop_tokens=stop_tokens,
+            )
+        else:
+            name = raw_input
+
+        status = COOTranslationService._extract_segment(
+            r"status\s+(.+?)(?=\s+priority\b|\s+target deadline\b|\s+deadline\b|\s+due date\b|$)",
+            raw_input,
+        )
+        priority = COOTranslationService._extract_segment(
+            r"priority\s+(\w+)", raw_input
+        )
+        deadline = COOTranslationService._extract_segment(
+            r"(?:target deadline|deadline|due date)\s+(\d{4}-\d{2}-\d{2})",
+            raw_input,
+        )
+
+        property_specs: Dict[str, Any] = {
+            "Project Name": {"type": "title", "text": name},
+        }
+
+        if status:
+            property_specs["Status"] = {
+                "type": "select",
+                "name": status,
+            }
+
+        if priority:
+            property_specs["Priority"] = {
+                "type": "select",
+                "name": priority,
+            }
+
+        if deadline:
+            property_specs["Target Deadline"] = {
                 "type": "date",
                 "start": deadline,
             }
@@ -787,6 +867,165 @@ class COOTranslationService:
             )
 
         # -----------------------------------------------------
+        # 0.2.d) CEO NL → KPI PERIOD SUMMARY (Qx YYYY)
+        # -----------------------------------------------------
+        if "kpi" in lowered and (
+            "rezime" in lowered or "sažetak" in lowered or "sazetak" in lowered
+        ) and "weekly kpi" not in lowered:
+            m_period = re.search(r"\bq([1-4])\s*(20\d{2})", lowered)
+            if m_period:
+                logger.info("COO TRANSLATE: matched KPI PERIOD SUMMARY")
+
+                if not is_valid_command("notion_write"):
+                    return None
+
+                q = m_period.group(1)
+                year = m_period.group(2)
+                period_label = f"Q{q} {year}"
+
+                property_specs: Dict[str, Any] = {
+                    "Period": {
+                        "type": "select",
+                        "name": period_label,
+                    }
+                }
+
+                return AICommand(
+                    command="notion_write",
+                    intent="query_database",
+                    read_only=True,
+                    params={
+                        "db_key": "kpi",
+                        "property_specs": property_specs,
+                    },
+                    metadata={
+                        "context_type": "system",
+                        "source": source,
+                        "report_type": "kpi_period_summary",
+                        "period": period_label,
+                    },
+                    validated=True,
+                )
+
+        # -----------------------------------------------------
+        # 0.2.e) CEO NL → KPI TOP N BY STATUS
+        # -----------------------------------------------------
+        if "kpi" in lowered and "top" in lowered and (
+            "statusom" in lowered or "status" in lowered
+        ):
+            logger.info("COO TRANSLATE: matched KPI TOP N BY STATUS")
+
+            if not is_valid_command("notion_write"):
+                return None
+
+            m_top = re.search(r"top\s+(\d+)", lowered)
+            limit: Optional[int] = None
+            if m_top:
+                try:
+                    limit = int(m_top.group(1))
+                except ValueError:
+                    limit = None
+
+            status_value = self._extract_segment(
+                r"(?:statusom|status)\s+(.+)$",
+                text,
+            )
+
+            property_specs: Dict[str, Any] = {}
+            if status_value:
+                property_specs["Status"] = {
+                    "type": "select",
+                    "name": status_value,
+                }
+
+            metadata: Dict[str, Any] = {
+                "context_type": "system",
+                "source": source,
+                "report_type": "kpi_top_by_status",
+            }
+            if limit is not None:
+                metadata["limit"] = limit
+            if status_value:
+                metadata["status"] = status_value
+
+            return AICommand(
+                command="notion_write",
+                intent="query_database",
+                read_only=True,
+                params={
+                    "db_key": "kpi",
+                    "property_specs": property_specs,
+                },
+                metadata=metadata,
+                validated=True,
+            )
+
+        # -----------------------------------------------------
+        # 0.2.f) CEO NL → SOP LOOKUP (READ-ONLY)
+        # -----------------------------------------------------
+        if "sop" in lowered or "proces" in lowered or "procedure" in lowered:
+            for keyword, db_key in self.SOP_DB_KEYWORDS.items():
+                if keyword in lowered:
+                    logger.info(
+                        "COO TRANSLATE: matched SOP LOOKUP (%s -> %s)", keyword, db_key
+                    )
+
+                    if not is_valid_command("notion_write"):
+                        return None
+
+                    return AICommand(
+                        command="notion_write",
+                        intent="query_database",
+                        read_only=True,
+                        params={
+                            "db_key": db_key,
+                            "property_specs": {},
+                        },
+                        metadata={
+                            "context_type": "system",
+                            "source": source,
+                            "report_type": "sop_lookup",
+                            "sop_key": db_key,
+                            "keyword": keyword,
+                        },
+                        validated=True,
+                    )
+
+        # -----------------------------------------------------
+        # 0.2.g) CEO NL → AGENT EXCHANGE OPEN REQUESTS (READ-ONLY)
+        # -----------------------------------------------------
+        if ("agent exchange" in lowered or ("zahtjev" in lowered and "agent" in lowered)) and (
+            "otvorene" in lowered or "otvoreni" in lowered or "open" in lowered
+        ):
+            logger.info("COO TRANSLATE: matched AGENT EXCHANGE OPEN REQUESTS")
+
+            if not is_valid_command("notion_write"):
+                return None
+
+            property_specs: Dict[str, Any] = {
+                "Status": {
+                    "type": "select",
+                    "name": "Open",
+                }
+            }
+
+            return AICommand(
+                command="notion_write",
+                intent="query_database",
+                read_only=True,
+                params={
+                    "db_key": "agent_exchange",
+                    "property_specs": property_specs,
+                },
+                metadata={
+                    "context_type": "system",
+                    "source": source,
+                    "report_type": "agent_exchange_open",
+                },
+                validated=True,
+            )
+
+        # -----------------------------------------------------
         # 0.2) CEO NL → TASK QUERY (READ, NOTION DSL)
         # -----------------------------------------------------
         if "taskove" in lowered and "statusom" in lowered:
@@ -864,6 +1103,36 @@ class COOTranslationService:
             )
 
         # -----------------------------------------------------
+        # 0.3.b) CEO NL → PROJECT CREATE (KREIRAJ / NAPRAVI PROJEKT ...)
+        # -----------------------------------------------------
+        m_new_project = re.match(
+            r"(?i)^(kreiraj|napravi)\s+(novi\s+)?projekt\s*[:\-]?\s*(.+)$",
+            text.strip(),
+        )
+        if m_new_project:
+            logger.info("COO TRANSLATE: matched PROJECT CREATE")
+
+            if not is_valid_command("notion_write"):
+                return None
+
+            tail = m_new_project.group(3).strip()
+            synthetic = "kreiraj projekt " + tail
+
+            property_specs = self._build_project_property_specs_from_text(synthetic)
+
+            return AICommand(
+                command="notion_write",
+                intent="create_page",
+                read_only=False,
+                params={
+                    "db_key": "projects",
+                    "property_specs": property_specs,
+                },
+                metadata={"context_type": "system", "source": source},
+                validated=True,
+            )
+
+        # -----------------------------------------------------
         # 0.3) CEO NL → GOAL CREATE (NOTION DSL, Bosanski)
         # -----------------------------------------------------
         if lowered.startswith("kreiraj cilj "):
@@ -929,6 +1198,42 @@ class COOTranslationService:
                 read_only=True,
                 params={
                     "db_key": "goals",
+                    "property_specs": property_specs,
+                },
+                metadata={"context_type": "system", "source": source},
+                validated=True,
+            )
+
+        # -----------------------------------------------------
+        # 0.4.a) CEO NL → PROJECT QUERY BY STATUS (READ)
+        # -----------------------------------------------------
+        if (
+            ("projekat" in lowered or "projekti" in lowered or "projekte" in lowered or "projekt" in lowered)
+            and "statusu" in lowered
+        ):
+            logger.info("COO TRANSLATE: matched PROJECT QUERY BY STATUS")
+
+            if not is_valid_command("notion_write"):
+                return None
+
+            status_value = self._extract_segment(
+                r"statusu\s+(.+)$",
+                text,
+            )
+
+            property_specs: Dict[str, Any] = {}
+            if status_value:
+                property_specs["Status"] = {
+                    "type": "select",
+                    "name": status_value,
+                }
+
+            return AICommand(
+                command="notion_write",
+                intent="query_database",
+                read_only=True,
+                params={
+                    "db_key": "projects",
                     "property_specs": property_specs,
                 },
                 metadata={"context_type": "system", "source": source},

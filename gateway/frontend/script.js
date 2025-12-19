@@ -1,5 +1,5 @@
 // ====================================================================
-// CEO DASHBOARD FRONTEND SCRIPT (V1)
+// CEO DASHBOARD FRONTEND SCRIPT (V1.1 — SNAPSHOT AGGREGATES)
 // ====================================================================
 
 const API_BASE = "";
@@ -173,9 +173,9 @@ async function approveLatest() {
 
     setDebug(data);
     setFooterStatus(
-      `Zahtjev ${approvalIdToUse} odobren. Stanje: ${data.execution_state ||
-        data.status ||
-        "N/A"}`
+      `Zahtjev ${approvalIdToUse} odobren. Stanje: ${
+        data.execution_state || data.status || "N/A"
+      }`
     );
 
     // nakon odobrenja osvježi snapshot (goals/tasks/pipeline)
@@ -207,10 +207,10 @@ function renderGoals(summary) {
     summary.goals ||
     [];
 
-  if (!Array.isArray(items) || items.length === 0) {
-    tbody.innerHTML =
-      '<tr><td colspan="4" class="placeholder-text">Nema ciljeva u snapshotu.</td></tr>';
-  } else {
+  const hasAggregates = summary.by_status || summary.by_priority;
+
+  if (Array.isArray(items) && items.length > 0) {
+    // Detaljan mod (ako ikad bude vraćan)
     for (const g of items) {
       const tr = document.createElement("tr");
       tr.innerHTML = `
@@ -221,15 +221,64 @@ function renderGoals(summary) {
       `;
       tbody.appendChild(tr);
     }
+  } else if (hasAggregates) {
+    // Kanonski mod: agregati iz NotionService._build_status_priority_summary
+    const byStatus = summary.by_status || {};
+    const byPriority = summary.by_priority || {};
+
+    const statusParts =
+      Object.keys(byStatus).length > 0
+        ? Object.entries(byStatus)
+            .map(([k, v]) => `${k}: ${v}`)
+            .join(" · ")
+        : "N/A";
+
+    const priorityParts =
+      Object.keys(byPriority).length > 0
+        ? Object.entries(byPriority)
+            .map(([k, v]) => `${k}: ${v}`)
+            .join(" · ")
+        : "N/A";
+
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td colspan="4">
+        <div class="agg-section">
+          <div class="agg-label">Statusi</div>
+          <div class="agg-values">${statusParts}</div>
+        </div>
+        <div class="agg-section">
+          <div class="agg-label">Prioriteti</div>
+          <div class="agg-values">${priorityParts}</div>
+        </div>
+      </td>
+    `;
+    tbody.appendChild(tr);
+  } else {
+    tbody.innerHTML =
+      '<tr><td colspan="4" class="placeholder-text">Nema ciljeva u snapshotu.</td></tr>';
   }
 
+  const total =
+    typeof summary.total === "number"
+      ? summary.total
+      : Array.isArray(items)
+      ? items.length
+      : 0;
+
   if (els.goalsTotalPill) {
-    const total = summary.total ?? items.length ?? 0;
     els.goalsTotalPill.textContent = `Ukupno: ${total}`;
   }
+
   if (els.goalsActivePill) {
-    const active = summary.active_count ?? summary.active ?? 0;
-    els.goalsActivePill.textContent = `Aktivni: ${active}`;
+    const byStatus = summary.by_status || {};
+    const activeGuess =
+      byStatus["Active"] ??
+      byStatus["Aktivni"] ??
+      byStatus["In Progress"] ??
+      byStatus["In progress"] ??
+      0;
+    els.goalsActivePill.textContent = `Aktivni: ${activeGuess}`;
   }
 }
 
@@ -253,10 +302,10 @@ function renderTasks(summary) {
     summary.tasks ||
     [];
 
-  if (!Array.isArray(items) || items.length === 0) {
-    tbody.innerHTML =
-      '<tr><td colspan="4" class="placeholder-text">Nema taskova u snapshotu.</td></tr>';
-  } else {
+  const hasAggregates = summary.by_status || summary.by_priority;
+
+  if (Array.isArray(items) && items.length > 0) {
+    // Detaljan mod (ako ikad bude vraćan)
     for (const t of items) {
       const tr = document.createElement("tr");
       tr.innerHTML = `
@@ -267,15 +316,64 @@ function renderTasks(summary) {
       `;
       tbody.appendChild(tr);
     }
+  } else if (hasAggregates) {
+    // Kanonski mod: agregati iz NotionService._build_status_priority_summary
+    const byStatus = summary.by_status || {};
+    const byPriority = summary.by_priority || {};
+
+    const statusParts =
+      Object.keys(byStatus).length > 0
+        ? Object.entries(byStatus)
+            .map(([k, v]) => `${k}: ${v}`)
+            .join(" · ")
+        : "N/A";
+
+    const priorityParts =
+      Object.keys(byPriority).length > 0
+        ? Object.entries(byPriority)
+            .map(([k, v]) => `${k}: ${v}`)
+            .join(" · ")
+        : "N/A";
+
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td colspan="4">
+        <div class="agg-section">
+          <div class="agg-label">Statusi</div>
+          <div class="agg-values">${statusParts}</div>
+        </div>
+        <div class="agg-section">
+          <div class="agg-label">Prioriteti</div>
+          <div class="agg-values">${priorityParts}</div>
+        </div>
+      </td>
+    `;
+    tbody.appendChild(tr);
+  } else {
+    tbody.innerHTML =
+      '<tr><td colspan="4" class="placeholder-text">Nema taskova u snapshotu.</td></tr>';
   }
 
+  const total =
+    typeof summary.total === "number"
+      ? summary.total
+      : Array.isArray(items)
+      ? items.length
+      : 0;
+
   if (els.tasksTotalPill) {
-    const total = summary.total ?? items.length ?? 0;
     els.tasksTotalPill.textContent = `Ukupno: ${total}`;
   }
+
   if (els.tasksActivePill) {
-    const active = summary.active_count ?? summary.active ?? 0;
-    els.tasksActivePill.textContent = `Aktivni: ${active}`;
+    const byStatus = summary.by_status || {};
+    const activeGuess =
+      byStatus["Active"] ??
+      byStatus["Aktivni"] ??
+      byStatus["In Progress"] ??
+      byStatus["In progress"] ??
+      0;
+    els.tasksActivePill.textContent = `Aktivni: ${activeGuess}`;
   }
 }
 
@@ -285,7 +383,8 @@ function renderApprovals(approvals) {
   const pendingCount = approvals.pending_count ?? 0;
   const completedCount = approvals.completed_count ?? 0;
   const approvedCount = approvals.approved_count ?? 0;
-  const failedCount = approvals.failed_count ?? approvals.rejected_count ?? 0;
+  const failedCount =
+    approvals.failed_count ?? approvals.rejected_count ?? 0;
   const pendingList = approvals.pending || [];
 
   els.pendingCount.textContent = pendingCount;
