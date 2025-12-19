@@ -4,7 +4,8 @@
 import os
 import logging
 import uuid
-from typing import Dict, Any
+import re
+from typing import Dict, Any, Optional, List
 
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse, FileResponse
@@ -76,11 +77,17 @@ set_notion_service(
 logger.info("✅ NotionService singleton initialized")
 
 # ================================================================
+# WEEKLY MEMORY SERVICE (CEO DASHBOARD)
+# ================================================================
+from services.weekly_memory_service import get_weekly_memory_service
+
+# ================================================================
 # ROUTERS
 # ================================================================
 from routers.audit_router import router as audit_router
 from routers.adnan_ai_router import router as adnan_ai_router
 from routers.ai_ops_router import ai_ops_router
+from routers.ceo_console_router import router as ceo_console_router
 
 # ================================================================
 # APPLICATION BOOTSTRAP
@@ -143,6 +150,7 @@ else:
 app.include_router(audit_router, prefix="/api")
 app.include_router(adnan_ai_router, prefix="/api")
 app.include_router(ai_ops_router, prefix="/api")
+app.include_router(ceo_console_router, prefix="/api")
 
 # ================================================================
 # KANONSKI EXECUTION ENTRYPOINT (INIT ONLY)
@@ -171,6 +179,18 @@ class ExecuteRawInput(BaseModel):
     metadata: Dict[str, Any] = {}
 
 
+class CeoCommandInput(BaseModel):
+    """
+    CEO Dashboard → COO (NL input + opcioni smart_context).
+
+    - Poštuje isti governance pipeline kao /api/execute
+    - smart_context se koristi kao HINT, ne kao direktan write
+    """
+    input_text: str
+    smart_context: Optional[Dict[str, Any]] = None
+    source: str = "ceo_dashboard"
+
+
 def _to_serializable(obj: Any) -> Any:
     """
     Helper za CEO Console snapshot:
@@ -196,6 +216,144 @@ def _to_serializable(obj: Any) -> Any:
         except Exception:
             pass
     return str(obj)
+
+
+def _preprocess_ceo_nl_input(
+    raw_text: str,
+    smart_context: Optional[Dict[str, Any]],
+) -> str:
+    """
+    Minimalni, deterministički preprocessing za CEO Dashboard NL input.
+
+    Cilj:
+    - ispraviti grešku "Kreiraj cilj ..." gdje se glagol lijepi u GOAL NAME
+    - NE uvodi nove side-effecte, samo čisti tekst za COOTranslationService
+
+    Pravila:
+    - ako smart_context.command_type == "create_goal" i postoji goal.name,
+      tekst koji šaljemo COO-u počinje nazivom cilja (bez "kreiraj cilj")
+    - fallback: regex strip samo prefiksa "kreiraj cilj" / "napravi cilj" / "create cilj"
+    """
+    text = (raw_text or "").strip()
+    if not text:
+        return text
+
+    if smart_context:
+        command_type = smart_context.get("command_type")
+        goal_ctx = smart_context.get("goal") or {}
+        goal_name = (goal_ctx.get("name") or "").strip()
+        priority = (goal_ctx.get("priority") or "").strip()
+        status = (goal_ctx.get("status") or "").strip()
+        due = (goal_ctx.get("due") or "").strip()
+        project = (goal_ctx.get("project") or "").strip()
+
+        if command_type == "create_goal" and goal_name:
+            parts: List[str] = [goal_name]
+            if priority:
+                parts.append(f"prioritet {priority}")
+            if status:
+                parts.append(f"status {status}")
+            if due:
+                parts.append(f"due {due}")
+            if project:
+                parts.append(f"projekt {project}")
+            return ", ".join(parts)
+
+    # fallback: samo skidamo komandni prefiks, ostatak ostaje identičan
+    cleaned = re.sub(
+        r"^(?i)(kreiraj|napravi|create)\s+cilj[a]?\s*[:\-]?\s*",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    ).strip()
+
+    return cleaned or text
+
+
+def _extract_candidate_lists(container: Any) -> List[Any]:
+    """
+    Best-effort ekstrakcija potencijalnih weekly-priority listi
+    iz snapshot strukture (koju puni NotionOpsAgent).
+
+    - ne mijenja state
+    - ne pretpostavlja tačan shape; samo traži list-e ugniježdene u dict-ove
+    """
+    items: List[Any] = []
+    if isinstance(container, list):
+        return container
+
+    if isinstance(container, dict):
+        for value in container.values():
+            if isinstance(value, list):
+                items.extend(value)
+            elif isinstance(value, dict):
+                items.extend(_extract_candidate_lists(value))
+
+    return items
+
+
+def _pick_first(d: Dict[str, Any], *keys: str) -> Optional[Any]:
+    for k in keys:
+        if k in d and d[k] not in (None, ""):
+            return d[k]
+    return None
+
+
+def _normalize_priority_item(raw: Any) -> Dict[str, Any]:
+    """
+    Normalize jedan raw zapis iz WeeklyMemoryService u uniformnu CEO tabelu:
+
+    {
+        "type": "...",
+        "name": "...",
+        "status": "...",
+        "priority": "...",
+        "due_period": "...",
+        "raw": {...}  # za debug / audit u JSON-u
+    }
+    """
+    if not isinstance(raw, dict):
+        return {
+            "type": None,
+            "name": str(raw),
+            "status": None,
+            "priority": None,
+            "due_period": None,
+            "raw": raw,
+        }
+
+    type_val = _pick_first(raw, "type", "Type", "tip", "Tip", "kind", "Kind")
+    name_val = _pick_first(
+        raw, "name", "Name", "title", "Title", "goal_name", "Goal", "Naziv", "naziv"
+    )
+    status_val = _pick_first(raw, "status", "Status", "state", "State")
+    priority_val = _pick_first(
+        raw, "priority", "Priority", "prioritet", "Prioritet", "prio", "Prio"
+    )
+    due_val = _pick_first(
+        raw,
+        "due",
+        "Due",
+        "date",
+        "Date",
+        "deadline",
+        "Deadline",
+        "period",
+        "Period",
+        "week",
+        "Week",
+        "range",
+        "Range",
+    )
+
+    return {
+        "type": type_val,
+        "name": name_val or str(raw),
+        "status": status_val,
+        "priority": priority_val,
+        "due_period": due_val,
+        "raw": raw,
+    }
 
 
 # ================================================================
@@ -231,6 +389,58 @@ async def execute_command(payload: ExecuteInput):
         "execution_id": ai_command.execution_id,
         "status": "pending",
         "source": "system",
+        "command": ai_command.dict(),
+    }
+
+    return {
+        "status": "BLOCKED",
+        "execution_state": "BLOCKED",
+        "approval_id": approval_id,
+        "execution_id": ai_command.execution_id,
+        "command": ai_command.dict(),
+    }
+
+
+# ================================================================
+# /ceo/command — CEO DASHBOARD → COO (NL + SMART CONTEXT)
+# ================================================================
+@app.post("/ceo/command")
+async def ceo_dashboard_command(payload: CeoCommandInput):
+    """
+    CEO Dashboard entrypoint.
+
+    - koristi isti kanonski pipeline kao /api/execute (BLOCKED → APPROVAL → EXECUTED)
+    - prima raw tekst + smart_context (hint iz frontenda)
+    - smart_context se koristi SAMO za poboljšanje parsiranja, ne mijenja governance
+    """
+    cleaned_text = _preprocess_ceo_nl_input(
+        raw_text=payload.input_text,
+        smart_context=payload.smart_context,
+    )
+
+    ai_command = coo_translation_service.translate(
+        raw_input=cleaned_text,
+        source=payload.source or "ceo_dashboard",
+        context={
+            "mode": "execute",
+            "smart_context": payload.smart_context,
+            "original_text": payload.input_text,
+        },
+    )
+
+    if not ai_command:
+        raise HTTPException(400, "Could not translate input to command")
+
+    _execution_registry.register(ai_command)
+
+    approval_id = str(uuid.uuid4())
+
+    approval_state = get_approval_state()
+    approval_state._approvals[approval_id] = {
+        "approval_id": approval_id,
+        "execution_id": ai_command.execution_id,
+        "status": "pending",
+        "source": payload.source or "ceo_dashboard",
         "command": ai_command.dict(),
     }
 
@@ -396,7 +606,7 @@ async def ceo_console_snapshot():
             "ready": ks.get("ready"),
             "last_sync": ks.get("last_sync"),
         },
-        # novi blok za CEO Weekly Memory (AI summary)
+        # novi blok za CEO Weekly Memory (AI summary) – best-effort iz KnowledgeSnapshot-a
         "weekly_memory": _to_serializable(weekly_memory)
         if weekly_memory is not None
         else None,
@@ -410,6 +620,99 @@ async def ceo_console_snapshot():
     }
 
     return snapshot
+
+
+# ================================================================
+# CEO WEEKLY MEMORY (READ-ONLY, IN-MEMORY CACHE)
+# ================================================================
+@app.get("/api/ceo/console/weekly-memory")
+async def ceo_weekly_memory():
+    """
+    Read-only API za WEEKLY PRIORITY MEMORY karticu.
+
+    Vraća striktno ono što je NotionOpsAgent zadnje upisao
+    u WeeklyMemoryService (npr. nakon KPI weekly summary workflowa).
+    """
+    wm_service = get_weekly_memory_service()
+    wm_snapshot = wm_service.get_snapshot()
+    return {"weekly_memory": _to_serializable(wm_snapshot)}
+
+
+# ================================================================
+# CEO WEEKLY PRIORITY LIST (FLATTENED ZA FRONTEND TABELU)
+# ================================================================
+@app.get("/ceo/weekly-priority-memory")
+async def ceo_weekly_priority_memory():
+    """
+    Novi CEO Dashboard endpoint:
+
+    - čisto READ, bez side-effects
+    - flatten-a WeeklyMemoryService snapshot u listu stavki:
+      [{type, name, status, priority, due_period, raw}, ...]
+    - frontend koristi type/name/status/priority/due_period za tabelu
+    """
+    wm_service = get_weekly_memory_service()
+    wm_snapshot = wm_service.get_snapshot()
+
+    candidates = _extract_candidate_lists(wm_snapshot)
+    items = [_normalize_priority_item(raw) for raw in candidates]
+
+    return {"items": items}
+
+
+# ================================================================
+# CEO AGENTS (READ-ONLY, STATIC + FUTURE DYNAMIC)
+# ================================================================
+@app.get("/ceo/agents")
+async def ceo_agents():
+    """
+    Read-only lista agenata dostupnih CEO-u.
+
+    Za sada statična (bez side-effects), može se proširiti da čita
+    iz ExecutionRegistry / agent registrija kada bude spremno.
+    """
+    agents = [
+        {
+            "id": "notion_ops_agent",
+            "name": "Notion Ops Agent",
+            "role": "executor",
+            "status": "idle",
+        },
+        {
+            "id": "ai_command_service",
+            "name": "AI Command Service",
+            "role": "system",
+            "status": "ready",
+        },
+        {
+            "id": "coo_translation_service",
+            "name": "COO Translation Service",
+            "role": "translation",
+            "status": "ready",
+        },
+    ]
+    return agents
+
+
+# ================================================================
+# LEGACY ROUTES (BACKWARD COMPATIBILITY ZA STARI FRONTEND)
+# ================================================================
+@app.get("/ceo-console/snapshot", include_in_schema=False)
+async def legacy_ceo_console_snapshot():
+    """
+    Legacy ruta za stari frontend.
+    Proksira na kanonski /api/ceo/console/snapshot da ne baca 500.
+    """
+    return await ceo_console_snapshot()
+
+
+@app.get("/ceo-console/weekly-memory", include_in_schema=False)
+async def legacy_ceo_weekly_memory():
+    """
+    Legacy ruta za stari frontend.
+    Proksira na kanonski /api/ceo/console/weekly-memory.
+    """
+    return await ceo_weekly_memory()
 
 
 # ================================================================

@@ -830,14 +830,17 @@ class COOTranslationService:
             )
 
         # -----------------------------------------------------
-        # 0.2.c) CEO NL → KPI WEEKLY SUMMARY (REPORT)
+        # 0.2.c) CEO NL → KPI WEEKLY SUMMARY WORKFLOW (KPI → AI SUMMARY DB)
         # -----------------------------------------------------
         if "weekly kpi" in lowered and (
             "rezime" in lowered or "sažetak" in lowered or "sazetak" in lowered
         ):
-            logger.info("COO TRANSLATE: matched KPI WEEKLY SUMMARY REPORT")
+            logger.info(
+                "COO TRANSLATE: matched KPI WEEKLY SUMMARY WORKFLOW (KPI → AI SUMMARY DB)"
+            )
 
-            if not is_valid_command("notion_write"):
+            # koristimo workflow command, backend će orkestrirati KPI → AI SUMMARY DB
+            if not is_valid_command("goal_task_workflow"):
                 return None
 
             time_scope = "this_week"
@@ -850,12 +853,13 @@ class COOTranslationService:
                 time_scope = "last_week"
 
             return AICommand(
-                command="notion_write",
-                intent="query_database",
-                read_only=True,
+                command="goal_task_workflow",
+                intent="run_workflow",
+                read_only=False,  # pišemo u AI SUMMARY DB
                 params={
+                    "workflow_type": "kpi_weekly_summary",
                     "db_key": "kpi",
-                    "property_specs": {},
+                    "time_scope": time_scope,
                 },
                 metadata={
                     "context_type": "system",

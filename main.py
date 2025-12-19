@@ -5,6 +5,7 @@ import logging
 from dotenv import load_dotenv
 from uvicorn import run
 from fastapi.staticfiles import StaticFiles
+from fastapi.routing import APIRoute
 
 # ============================================================
 # ENV + PATH
@@ -27,7 +28,7 @@ logging.basicConfig(
 )
 
 # ============================================================
-# RUNTIME GUARDS
+# RUNTIME GUARDS (CORE)
 # ============================================================
 
 REQUIRED_ENV_VARS = [
@@ -43,18 +44,20 @@ if missing:
 logger.info("✅ Environment variables validated.")
 
 # ============================================================
-# LOAD FASTAPI APP
+# LOAD FASTAPI APP (GATEWAY)
 # ============================================================
 
-from gateway.gateway_server import app  # noqa
+from gateway.gateway_server import app  # noqa: E402
+
+logger.info("✅ FastAPI gateway app loaded.")
 
 # ============================================================
 # SERVICE INITIALIZATION
 # ============================================================
 
-from services.ai_command_service import AICommandService
-from services.coo_translation_service import COOTranslationService
-from services.coo_conversation_service import COOConversationService
+from services.ai_command_service import AICommandService  # noqa: E402
+from services.coo_translation_service import COOTranslationService  # noqa: E402
+from services.coo_conversation_service import COOConversationService  # noqa: E402
 
 ai_command_service = AICommandService()
 coo_translation_service = COOTranslationService()
@@ -66,8 +69,8 @@ logger.info("🧠 Core AI services initialized.")
 # ROUTER DEPENDENCY INJECTION
 # ============================================================
 
-from routers.ai_router import set_ai_services
-from routers.adnan_ai_router import set_adnan_ai_services
+from routers.ai_router import set_ai_services  # noqa: E402
+from routers.adnan_ai_router import set_adnan_ai_services  # noqa: E402
 
 # --- PRIMARY /ai ROUTER (UX → SYSTEM → EXECUTION) ---
 set_ai_services(
@@ -86,9 +89,38 @@ set_adnan_ai_services(
 logger.info("🔌 AI services injected.")
 
 # ============================================================
+# CEO CONSOLE ROUTER MOUNT (READ‑ONLY DASHBOARD)
+# ============================================================
+
+# CEO dashboard je čist READ layer: prikazuje stanje (snapshot), ne izvršava ništa.
+# Da ne bismo duplo registrovali rute, prvo provjeravamo da li već postoje /ceo-console putevi.
+
+from routers import ceo_console_router  # noqa: E402
+
+
+def ensure_ceo_console_router_mounted() -> None:
+    existing_paths = set()
+
+    for route in app.routes:
+        if isinstance(route, APIRoute):
+            existing_paths.add(route.path)
+
+    # Ako već postoji bilo koja ruta pod /ceo-console, ne mountamo ponovo.
+    if any(path.startswith("/ceo-console") for path in existing_paths):
+        logger.info("ℹ️ CEO console router already mounted; skipping include_router.")
+        return
+
+    app.include_router(ceo_console_router.router)
+    logger.info("✅ CEO console router mounted at /ceo-console")
+
+
+ensure_ceo_console_router_mounted()
+
+# ============================================================
 # FRONTEND STATIC MOUNT
 # ============================================================
 
+# UX je čisto čitanje kroz static files; sve operativno stanje dolazi iz backend API-ja.
 app.mount(
     "/",
     StaticFiles(directory="gateway/frontend", html=True),
