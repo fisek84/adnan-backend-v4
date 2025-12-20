@@ -1,4 +1,3 @@
-# services/coo_translation_service.py
 """
 COO TRANSLATION SERVICE (CANONICAL)
 """
@@ -292,64 +291,64 @@ class COOTranslationService:
         """
         Mapira CEO NL za TASK u Notion DSL property_specs.
 
-        Podržava:
-        - 'kreiraj task: ...' / 'napravi novi zadatak - ...'
-        - 'prioritet' ili 'priority'
-        - 'rok' ili 'due date' ili 'deadline'
-        - datum 'DD.MM.YYYY' ili 'YYYY-MM-DD'
+        Primjer:
+        'kreiraj task EVO-CEO-TASK-001 priority High status Not Started due date 2025-12-25'
         """
-        stop_tokens = ["priority", "prioritet", "status", "due date", "rok", "deadline"]
+        stop_tokens = ["priority", "status", "due date"]
+        raw = (raw_input or "").strip()
 
-        original = (raw_input or "").strip()
-        if not original:
-            return {"Name": {"type": "title", "text": ""}}
+        # Normalizuj prefiks (podrži "kreiraj task:", "napravi zadatak -", itd.)
+        m = re.match(
+            r"(?i)^(kreiraj|napravi)\s+(novi\s+)?(task|zadatak)\s*[:\-]?\s*(.+)$",
+            raw,
+        )
+        if m:
+            tail = m.group(4).strip()
+            # Reuse existing extractor logic by reconstructing a canonical prefix
+            canonical = "kreiraj task " + tail
+            name = COOTranslationService._extract_name_after_prefix(
+                canonical,
+                prefix="kreiraj task ",
+                stop_tokens=stop_tokens,
+            )
+            lowered = canonical.lower()
+            src_for_segments = canonical
+        else:
+            name = raw
+            lowered = raw.lower()
+            src_for_segments = raw
 
-        # skini prefiks (kreiraj/napravi (novi) task|zadatak [:|-]?)
-        text_after = re.sub(
-            r"(?i)^(kreiraj|napravi)\s+(novi\s+)?(task|zadatak)\s*[:\-]?\s*",
-            "",
-            original,
-        ).strip()
-
-        # ime: do prvog stop tokena
-        lowered_after = text_after.lower()
-        cut_pos = len(text_after)
-        for token in stop_tokens:
-            idx = lowered_after.find(f" {token.lower()} ")
-            if idx != -1 and idx < cut_pos:
-                cut_pos = idx
-        name = text_after[:cut_pos].strip(" ,") or text_after
-
-        # status/prioritet/rok
         status = COOTranslationService._extract_segment(
-            r"status\s+(.+?)(?=\s+(?:prioritet|priority|due date|rok|deadline)\b|$)",
-            original,
+            r"status\s+(.+?)(?=\s+due date\b|$)", src_for_segments
         )
         priority = COOTranslationService._extract_segment(
-            r"(?:prioritet|priority)\s+(.+?)(?=\s+(?:status|due date|rok|deadline)\b|$)",
-            original,
+            r"priority\s+(\w+)", src_for_segments
         )
-        due_raw = COOTranslationService._extract_segment(
-            r"(?:due date|rok|deadline)\s+([0-9./\-]+)",
-            original,
+        due_date = COOTranslationService._extract_segment(
+            r"due date\s+(\d{4}-\d{2}-\d{2})", src_for_segments
         )
-
-        due_date = None
-        if due_raw:
-            due_date = COOTranslationService._parse_bosnian_date(due_raw) or due_raw.strip()
 
         property_specs: Dict[str, Any] = {
             "Name": {"type": "title", "text": name},
         }
 
         if status:
-            property_specs["Status"] = {"type": "select", "name": status}
+            property_specs["Status"] = {
+                "type": "select",
+                "name": status,
+            }
 
         if priority:
-            property_specs["Priority"] = {"type": "select", "name": priority}
+            property_specs["Priority"] = {
+                "type": "select",
+                "name": priority,
+            }
 
-        if due_date and re.match(r"^\d{4}-\d{2}-\d{2}$", due_date):
-            property_specs["Due Date"] = {"type": "date", "start": due_date}
+        if due_date:
+            property_specs["Due Date"] = {
+                "type": "date",
+                "start": due_date,
+            }
 
         return property_specs
 
@@ -764,45 +763,21 @@ class COOTranslationService:
             )
 
         # -----------------------------------------------------
-        # 0.1.a) CEO NL → TASK CREATE SYNONYMS ("kreiraj/napravi (novi) task|zadatak: ...")
+        # 0.1) CEO NL → TASK CREATE (NOTION DSL)  [FIX: podrži ":" i "zadatak" i "novi"]
         # -----------------------------------------------------
-        m_new_task = re.match(
+        m_task_create = re.match(
             r"(?i)^(kreiraj|napravi)\s+(novi\s+)?(task|zadatak)\s*[:\-]?\s*(.+)$",
             text.strip(),
         )
-        if m_new_task:
-            logger.info("COO TRANSLATE: matched TASK CREATE (SYNONYMS)")
-
-            if not is_valid_command("notion_write"):
-                return None
-
-            tail = m_new_task.group(4).strip()
-            synthetic = "kreiraj task " + tail
-
-            property_specs = self._build_task_property_specs_from_text(synthetic)
-
-            return AICommand(
-                command="notion_write",
-                intent="create_page",
-                read_only=False,
-                params={
-                    "db_key": "tasks",
-                    "property_specs": property_specs,
-                },
-                metadata={"context_type": "system", "source": source},
-                validated=True,
-            )
-
-        # -----------------------------------------------------
-        # 0.1) CEO NL → TASK CREATE (NOTION DSL)
-        # -----------------------------------------------------
-        if lowered.startswith("kreiraj task ") or lowered.startswith("napravi task "):
+        if m_task_create:
             logger.info("COO TRANSLATE: matched BOSNIAN TASK CREATE")
 
             if not is_valid_command("notion_write"):
                 return None
 
-            property_specs = self._build_task_property_specs_from_text(text)
+            tail = m_task_create.group(4).strip()
+            synthetic = "kreiraj task " + tail
+            property_specs = self._build_task_property_specs_from_text(synthetic)
 
             return AICommand(
                 command="notion_write",
@@ -876,7 +851,6 @@ class COOTranslationService:
                 "COO TRANSLATE: matched KPI WEEKLY SUMMARY WORKFLOW (KPI → AI SUMMARY DB)"
             )
 
-            # koristimo workflow command, backend će orkestrirati KPI → AI SUMMARY DB
             if not is_valid_command("goal_task_workflow"):
                 return None
 
@@ -892,7 +866,7 @@ class COOTranslationService:
             return AICommand(
                 command="goal_task_workflow",
                 intent="run_workflow",
-                read_only=False,  # pišemo u AI SUMMARY DB
+                read_only=False,
                 params={
                     "workflow_type": "kpi_weekly_summary",
                     "db_key": "kpi",
