@@ -1,0 +1,317 @@
+:root {
+  --ceo-bg: #0b0f14;
+  --ceo-surface: #0f1720;
+  --ceo-surface-2: #111b26;
+  --ceo-border: rgba(255,255,255,0.08);
+  --ceo-text: rgba(255,255,255,0.92);
+  --ceo-muted: rgba(255,255,255,0.62);
+  --ceo-muted-2: rgba(255,255,255,0.46);
+  --ceo-focus: rgba(255,255,255,0.16);
+
+  --ceo-bubble-ceo: #1a2531;
+  --ceo-bubble-system: #0f1720;
+
+  --ceo-badge-blocked-bg: rgba(245, 158, 11, 0.14);
+  --ceo-badge-blocked-tx: rgba(245, 158, 11, 0.92);
+
+  --ceo-badge-approved-bg: rgba(34, 197, 94, 0.14);
+  --ceo-badge-approved-tx: rgba(34, 197, 94, 0.92);
+
+  --ceo-badge-executed-bg: rgba(59, 130, 246, 0.14);
+  --ceo-badge-executed-tx: rgba(59, 130, 246, 0.92);
+
+  --ceo-radius: 14px;
+  --ceo-font: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji";
+}
+
+.ceoChatbox {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--ceo-bg);
+  color: var(--ceo-text);
+  font-family: var(--ceo-font);
+}
+
+.ceoHeader {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: linear-gradient(to bottom, rgba(11,15,20,0.98), rgba(11,15,20,0.86));
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--ceo-border);
+  padding: 12px 14px;
+}
+
+.ceoHeaderTitleRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ceoHeaderTitle {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+
+.ceoHeaderSubtitle {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--ceo-muted);
+}
+
+.ceoHeaderActions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.ceoHeaderButton {
+  border: 1px solid var(--ceo-border);
+  background: rgba(255,255,255,0.04);
+  color: var(--ceo-text);
+  border-radius: 10px;
+  padding: 6px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.ceoHeaderButton:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.ceoViewport {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 14px 96px 14px;
+}
+
+.ceoList {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.ceoRow {
+  display: flex;
+  width: 100%;
+}
+
+.ceoRow.right {
+  justify-content: flex-end;
+}
+
+.ceoRow.left {
+  justify-content: flex-start;
+}
+
+.ceoBubble {
+  max-width: 92%;
+  border-radius: var(--ceo-radius);
+  border: 1px solid var(--ceo-border);
+  padding: 10px 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.55;
+  font-size: 14px;
+}
+
+.ceoBubble.ceo {
+  background: var(--ceo-bubble-ceo);
+}
+
+.ceoBubble.system {
+  background: var(--ceo-bubble-system);
+}
+
+.ceoMeta {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--ceo-muted-2);
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.ceoStatusDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.28);
+}
+
+.ceoStatusDot.ok { background: rgba(34,197,94,0.75); }
+.ceoStatusDot.err { background: rgba(239,68,68,0.75); }
+
+.ceoTyping {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--ceo-muted);
+  font-size: 13px;
+}
+
+.ceoDots {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.ceoDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.42);
+  animation: ceoPulse 1.2s infinite ease-in-out;
+}
+.ceoDot:nth-child(2) { animation-delay: 0.15s; }
+.ceoDot:nth-child(3) { animation-delay: 0.3s; }
+
+@keyframes ceoPulse {
+  0%, 100% { transform: translateY(0); opacity: 0.5; }
+  50% { transform: translateY(-2px); opacity: 0.95; }
+}
+
+.govCard {
+  max-width: 94%;
+  border-radius: var(--ceo-radius);
+  border: 1px solid var(--ceo-border);
+  background: var(--ceo-surface);
+  padding: 12px 12px;
+}
+
+.govTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.govTitle {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.govBadge {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--ceo-border);
+}
+
+.govBadge.blocked { background: var(--ceo-badge-blocked-bg); color: var(--ceo-badge-blocked-tx); }
+.govBadge.approved { background: var(--ceo-badge-approved-bg); color: var(--ceo-badge-approved-tx); }
+.govBadge.executed { background: var(--ceo-badge-executed-bg); color: var(--ceo-badge-executed-tx); }
+
+.govBody {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.govSummary {
+  color: var(--ceo-text);
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.govReasons {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--ceo-muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.govActions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.govButton {
+  border: 1px solid var(--ceo-border);
+  background: rgba(255,255,255,0.04);
+  color: var(--ceo-text);
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.govButton:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.ceoComposer {
+  position: sticky;
+  bottom: 0;
+  z-index: 6;
+  padding: 12px 14px;
+  background: linear-gradient(to top, rgba(11,15,20,0.98), rgba(11,15,20,0.82));
+  backdrop-filter: blur(10px);
+  border-top: 1px solid var(--ceo-border);
+}
+
+.ceoComposerInner {
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+  border: 1px solid var(--ceo-border);
+  border-radius: 14px;
+  background: rgba(255,255,255,0.03);
+  padding: 10px 10px;
+}
+
+.ceoTextarea {
+  flex: 1;
+  min-height: 24px;
+  max-height: 180px;
+  resize: none;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--ceo-text);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.ceoTextarea::placeholder {
+  color: rgba(255,255,255,0.38);
+}
+
+.ceoComposerInner:focus-within {
+  box-shadow: 0 0 0 3px var(--ceo-focus);
+}
+
+.ceoSendBtn {
+  border: 1px solid var(--ceo-border);
+  background: rgba(255,255,255,0.06);
+  color: var(--ceo-text);
+  border-radius: 12px;
+  padding: 9px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.ceoSendBtn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.ceoHintRow {
+  margin-top: 8px;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--ceo-muted-2);
+  font-size: 11px;
+}

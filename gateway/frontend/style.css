@@ -196,7 +196,7 @@ body {
   flex: 1;
   padding: 18px 32px 28px;
   display: grid;
-  grid-template-columns: minmax(0, 1.4fr) minmax(0, 0.9fr);
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 1.35fr);
   gap: 22px;
   min-height: calc(100vh - 140px);
 }
@@ -205,10 +205,6 @@ body {
   display: flex;
   flex-direction: column;
   gap: 18px;
-  min-height: 0;
-}
-
-.column-left {
   min-height: 0;
 }
 
@@ -227,7 +223,7 @@ body {
   min-height: 0;
 }
 
-/* CEO COMMAND CARD = FULL HEIGHT LIJEVE KOLONE */
+/* CEO COMMAND CARD */
 
 .card-command {
   flex: 1;
@@ -265,145 +261,115 @@ body {
 }
 
 /* -------------------------------------------------------
-   CEO COMMAND CHAT
+   CEO COMMAND CHATGPT STYLE
 -------------------------------------------------------- */
 
-.command-layout {
+.command-main {
   display: flex;
   flex-direction: column;
   flex: 1;
   min-height: 0;
 }
 
-.command-input-wrapper {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
+/* Historija */
+
+.conversation-history {
   flex: 1;
-  min-height: 0;
+  min-height: 160px;
+  max-height: 380px;
+  border-radius: 16px;
+  border: 1px solid var(--border-subtle);
+  background: radial-gradient(circle at top left, #020617, #020617);
+  padding: 10px 14px;
+  overflow-y: auto;
+  margin-bottom: 10px;
 }
 
-.label-inline {
-  font-size: 11px;
-  font-weight: 500;
+.history-placeholder {
+  font-size: 12px;
   color: var(--text-muted);
 }
 
-/* TEXTAREA PREKO CIJELE LIJEVE KOLONE */
+.conv-message {
+  margin-bottom: 8px;
+  padding: 6px 9px;
+  border-radius: 12px;
+  max-width: 100%;
+  font-size: 13px;
+  line-height: 1.45;
+}
 
-.command-input {
-  width: 100%;
-  flex: 1;
-  min-height: 0;
-  resize: vertical;
-  padding: 12px 14px;
-  border-radius: 16px;
+.conv-user {
+  background: rgba(37, 99, 235, 0.2);
+  border: 1px solid rgba(96, 165, 250, 0.6);
+  align-self: flex-end;
+}
+
+.conv-system {
+  background: rgba(15, 23, 42, 0.9);
+  border: 1px solid rgba(148, 163, 184, 0.4);
+}
+
+.conv-error {
+  border-color: rgba(248, 113, 113, 0.8);
+}
+
+/* INPUT BAR NA DNU */
+
+.chat-input-bar {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  border-radius: 18px;
   border: 1px solid var(--border-strong);
   background: radial-gradient(circle at top left, #020617, #020617);
+  padding: 6px 8px;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.85);
+}
+
+.chat-input-icon-btn {
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.5);
+  background: rgba(15, 23, 42, 0.9);
   color: var(--text-main);
-  font-size: 13px;
-  line-height: 1.5;
-  outline: none;
-  box-shadow: 0 14px 32px rgba(15, 23, 42, 0.85);
-}
-
-.command-input:focus {
-  border-color: var(--accent-strong);
-  box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.35),
-    0 18px 40px rgba(15, 23, 42, 0.95);
-}
-
-/* BUTTONS */
-
-.command-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: center;
-}
-
-.btn {
-  border-radius: var(--radius-pill);
-  border: 1px solid transparent;
-  padding: 7px 14px;
-  font-size: 12px;
-  font-weight: 500;
-  cursor: pointer;
-  background: transparent;
-  color: var(--text-main);
+  font-size: 14px;
+  width: 30px;
+  height: 30px;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  white-space: nowrap;
+  justify-content: center;
+  cursor: pointer;
 }
 
-.btn-primary {
-  background: linear-gradient(135deg, #22d3ee, #0ea5e9);
-  color: #0b1220;
-  box-shadow: 0 12px 22px rgba(8, 145, 178, 0.6);
-}
-
-.btn-primary:hover {
-  filter: brightness(1.05);
-}
-
-.btn-outline {
-  border-color: rgba(148, 163, 184, 0.6);
-  background: rgba(15, 23, 42, 0.8);
-}
-
-.btn-outline:hover {
-  border-color: var(--accent);
-}
-
-.btn-ghost {
-  border-color: rgba(148, 163, 184, 0.4);
-  background: rgba(15, 23, 42, 0.6);
-  color: var(--text-muted);
-}
-
-.btn-ghost:hover {
-  border-color: rgba(148, 163, 184, 0.7);
-  color: var(--text-main);
-}
-
-.btn-pill {
-  border-radius: var(--radius-pill);
-  border: 1px solid rgba(148, 163, 184, 0.6);
-  padding: 5px 12px;
-  background: radial-gradient(circle at top left, #020617, #020617);
-  font-size: 12px;
-}
-
-.btn-xs {
-  padding: 4px 10px;
-  font-size: 11px;
-}
-
-/* VOICE */
-
-.voice-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-top: 2px;
-}
-
-.voice-status {
-  font-size: 11px;
-  color: var(--text-muted);
-}
-
-.btn-active {
+.chat-input-icon-btn:hover {
   border-color: var(--accent-strong);
-  box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.4),
-    0 12px 24px rgba(15, 23, 42, 0.95);
+}
+
+.chat-input-send-btn {
+  background: linear-gradient(135deg, #22d3ee, #0ea5e9);
+  color: #020617;
+  box-shadow: 0 10px 22px rgba(8, 145, 178, 0.7);
+  border-color: transparent;
+}
+
+.chat-input-textarea {
+  flex: 1;
+  border: none;
+  outline: none;
+  resize: none;
+  max-height: 120px;
+  min-height: 24px;
+  font-size: 13px;
+  line-height: 1.45;
+  background: transparent;
+  color: var(--text-main);
+  padding: 4px 6px;
 }
 
 /* STATUS AREA */
 
 .command-status {
-  margin-top: 4px;
+  margin-top: 8px;
   padding: 8px 10px;
   border-radius: 14px;
   background: rgba(15, 23, 42, 0.9);
@@ -472,7 +438,7 @@ body {
 }
 
 /* -------------------------------------------------------
-   RIGHT COLUMN – GOALS, TASKS, WEEKLY TABLE
+   RIGHT COLUMN – GOALS, TASKS, WEEKLY
 -------------------------------------------------------- */
 
 .cards-grid {
@@ -510,6 +476,12 @@ body {
   overflow: hidden;
 }
 
+/* oko 5 redova vidljivo + scroll */
+.table-wrapper-scroll {
+  max-height: 240px;
+  overflow-y: auto;
+}
+
 .data-table {
   width: 100%;
   border-collapse: collapse;
@@ -518,6 +490,9 @@ body {
 
 .data-table thead {
   background: rgba(15, 23, 42, 0.95);
+  position: sticky;
+  top: 0;
+  z-index: 1;
 }
 
 .data-table thead th {
