@@ -6,9 +6,6 @@ function $(id) {
   return document.getElementById(id);
 }
 
-/* --------------------------------------------------
- * STATUS BAR
- * -------------------------------------------------- */
 function setCommandStatus(chipText, text, variant) {
   const chip = $("command-status-chip");
   const label = $("command-status-text");
@@ -16,25 +13,21 @@ function setCommandStatus(chipText, text, variant) {
   if (chip) {
     chip.textContent = chipText || "";
     chip.style.visibility = chipText ? "visible" : "hidden";
+    if (variant === "error") {
+      chip.style.background = "rgba(127,29,29,0.5)";
+      chip.style.borderColor = "rgba(248,113,113,0.9)";
+    } else {
+      chip.style.background = "";
+      chip.style.borderColor = "";
+    }
   }
+
   if (label) {
     label.textContent = text || "";
   }
-
-  if (!chip) return;
-
-  if (variant === "error") {
-    chip.style.background = "rgba(127,29,29,0.5)";
-    chip.style.borderColor = "rgba(248,113,113,0.9)";
-  } else {
-    chip.style.background = "";
-    chip.style.borderColor = "";
-  }
 }
 
-/* --------------------------------------------------
- * CHAT HISTORY (ChatGPT-style bubbles)
- * -------------------------------------------------- */
+// ChatGPT-style message append
 function appendHistoryMessage(role, text) {
   const history = $("ceo-history");
   if (!history) return null;
@@ -103,9 +96,9 @@ function clearHistory() {
   history.appendChild(empty);
 }
 
-/* --------------------------------------------------
- * SNAPSHOT
- * -------------------------------------------------- */
+// --------------------------------------------------
+// SNAPSHOT
+// --------------------------------------------------
 async function loadSnapshot() {
   try {
     const res = await fetch("/ceo/console/snapshot");
@@ -265,9 +258,9 @@ function renderTasks(tasks, errorMsg) {
   }
 }
 
-/* --------------------------------------------------
- * WEEKLY PRIORITY
- * -------------------------------------------------- */
+// --------------------------------------------------
+// WEEKLY PRIORITY
+// --------------------------------------------------
 async function loadWeeklyPriority() {
   const tbody = $("weekly-priority-body");
   if (!tbody) return;
@@ -323,9 +316,9 @@ async function loadWeeklyPriority() {
   }
 }
 
-/* --------------------------------------------------
- * CEO COMMAND / APPROVAL
- * -------------------------------------------------- */
+// --------------------------------------------------
+// CEO COMMAND / APPROVAL
+// --------------------------------------------------
 async function sendCeoCommand() {
   const inputEl = $("ceo-command-input");
   if (!inputEl) return;
@@ -370,9 +363,8 @@ async function sendCeoCommand() {
     const lastIdEl2 = $("last-approval-id");
     if (lastIdEl2) lastIdEl2.textContent = lastApprovalId || "–";
 
-    // čim imamo approval_id, eksplicitno otključaj dugme
     const approveBtn = $("approve-latest-btn");
-    if (approveBtn) approveBtn.disabled = !lastApprovalId ? true : false;
+    if (approveBtn) approveBtn.disabled = !lastApprovalId;
 
     if (data && data.system_message) {
       appendHistoryMessage("system", data.system_message);
@@ -384,7 +376,7 @@ async function sendCeoCommand() {
     );
 
     inputEl.value = "";
-    inputEl.style.height = "42px";
+    autoResizeTextarea(inputEl);
   } catch (err) {
     console.error("ceo/command failed", err);
     setCommandStatus("ERROR", "Greška pri slanju naredbe.", "error");
@@ -435,9 +427,18 @@ async function approveLatest() {
   }
 }
 
-/* --------------------------------------------------
- * INIT
- * -------------------------------------------------- */
+// Auto-resize textarea
+function autoResizeTextarea(el) {
+  if (!el) return;
+  el.style.height = "42px";
+  const max = 160;
+  const newH = Math.min(el.scrollHeight, max);
+  el.style.height = newH + "px";
+}
+
+// --------------------------------------------------
+// INIT
+// --------------------------------------------------
 document.addEventListener("DOMContentLoaded", () => {
   const sendBtn = $("send-command-btn");
   if (sendBtn) sendBtn.addEventListener("click", sendCeoCommand);
@@ -449,30 +450,10 @@ document.addEventListener("DOMContentLoaded", () => {
   if (weeklyBtn) weeklyBtn.addEventListener("click", loadWeeklyPriority);
 
   const approveBtn = $("approve-latest-btn");
-  if (approveBtn) {
-    approveBtn.disabled = true; // start: nema pending approval-a
-    approveBtn.addEventListener("click", approveLatest);
-  }
+  if (approveBtn) approveBtn.addEventListener("click", approveLatest);
 
   const clearBtn = $("clear-history-btn");
   if (clearBtn) clearBtn.addEventListener("click", clearHistory);
-
-  const history = $("ceo-history");
-  const scrollBtn = $("ceo-scroll-btn");
-  if (history && scrollBtn) {
-    history.addEventListener("scroll", () => {
-      const delta =
-        history.scrollHeight - history.scrollTop - history.clientHeight;
-      if (delta > 80) {
-        scrollBtn.classList.remove("hidden");
-      } else {
-        scrollBtn.classList.add("hidden");
-      }
-    });
-    scrollBtn.addEventListener("click", () => {
-      history.scrollTop = history.scrollHeight;
-    });
-  }
 
   const input = $("ceo-command-input");
   if (input) {
@@ -489,11 +470,21 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     });
 
-    input.addEventListener("input", () => {
-      input.style.height = "42px";
-      input.style.height = Math.min(input.scrollHeight, 160) + "px";
+    input.addEventListener("input", () => autoResizeTextarea(input));
+    // init default height
+    autoResizeTextarea(input);
+  }
+
+  // Voice button stub
+  const voiceBtn = $("ceo-voice-btn");
+  if (voiceBtn) {
+    voiceBtn.addEventListener("click", () => {
+      console.log("[VOICE] TODO: implement Web Speech API / audio capture.");
+      setCommandStatus("VOICE", "Voice input još nije implementiran (stub).");
     });
   }
+
+  if (approveBtn) approveBtn.disabled = !lastApprovalId;
 
   loadSnapshot();
   loadWeeklyPriority();

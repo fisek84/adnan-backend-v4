@@ -20,7 +20,7 @@
       </div>
 
       <div class="top-status">
-        <span id="os-status-pill" class="status-pill">OS OFFLINE</span>
+        <span id="os-status-pill" class="status-pill">OS</span>
         <span class="status-pill status-pill-safe">
           GOVERNANCE: WHOLE → BLOCKED → APPROVAL → EXECUTED
         </span>
@@ -28,7 +28,7 @@
     </header>
 
     <main class="layout">
-      <!-- LEFT COLUMN: CEO CHAT (ChatGPT-like) -->
+      <!-- LEFT COLUMN: CEO CHAT (ChatGPT-style) -->
       <section class="column column-left">
         <section class="card card-command">
           <div class="card-header">
@@ -50,28 +50,25 @@
                   </div>
                 </div>
 
-                <!-- SCROLL TO BOTTOM BUTTON -->
-                <button
-                  id="ceo-scroll-btn"
-                  class="ceo-chat-scrollbtn hidden"
-                  type="button"
-                  aria-label="Na dno"
-                >
-                  ↓
-                </button>
-
-                <!-- COMPOSER (PINNED AT BOTTOM) -->
+                <!-- COMPOSER (pinned at bottom) -->
                 <div class="ceo-chat-composer">
                   <div class="ceo-composer-shell">
                     <textarea
                       id="ceo-command-input"
                       class="ceo-chat-input"
-                      rows="1"
-                      placeholder="Unesi CEO COMMAND...
-(Enter = pošalji, Shift+Enter = novi red)"
+                      placeholder="Unesi CEO COMMAND... (Enter = pošalji, Shift+Enter = novi red)"
                     ></textarea>
 
                     <div class="ceo-chat-actions">
+                      <button
+                        id="ceo-voice-btn"
+                        type="button"
+                        class="btn btn-ghost ceo-btn-voice"
+                        title="Voice input (beta)"
+                      >
+                        🎤
+                      </button>
+
                       <button
                         id="clear-history-btn"
                         type="button"
@@ -84,7 +81,6 @@
                         id="approve-latest-btn"
                         type="button"
                         class="ceo-btn-approve"
-                        disabled
                       >
                         Odobri
                       </button>
@@ -93,32 +89,39 @@
                         id="send-command-btn"
                         type="button"
                         class="ceo-btn-send"
-                        aria-label="Pošalji"
                       >
-                        ▶
+                        ➤
                       </button>
                     </div>
                   </div>
 
-                  <!-- STATUS LINIJA -->
-                  <div class="ceo-chat-status small-muted" style="margin-top:6px;">
-                    <span
-                      id="command-status-chip"
-                      class="status-pill"
-                      style="margin-right:8px; visibility:hidden;"
-                    ></span>
+                  <div class="small-muted" id="command-status-row">
+                    <span id="command-status-chip"></span>
                     <span id="command-status-text"></span>
-
-                    <!-- meta info za script.js (skriveno) -->
-                    <span id="last-execution-state" class="hidden"></span>
                     <span id="last-approval-id" class="hidden"></span>
+                    <span id="last-execution-state" class="hidden"></span>
                   </div>
                 </div>
               </div>
-            </div>
 
-            <pre id="debug-output" class="debug-output hidden"></pre>
+              <!-- Legacy, hidden DOM za stari kod (fallback) -->
+              <div id="ceo-chat-legacy" style="display:none">
+                <div id="legacy-ceo-history"></div>
+                <textarea id="legacy-ceo-command-input"></textarea>
+                <button id="legacy-send-command-btn" type="button"></button>
+
+                <button id="refresh-snapshot-btn" type="button"></button>
+                <button id="legacy-approve-latest-btn" type="button"></button>
+                <button id="refresh-weekly-btn" type="button"></button>
+
+                <span id="footer-status"></span>
+
+                <tbody id="weekly-priority-body"></tbody>
+              </div>
+            </div>
           </div>
+
+          <pre id="debug-output" class="debug-output hidden"></pre>
         </section>
       </section>
 
@@ -197,11 +200,6 @@
               <h3>Odobrenje cjevovoda</h3>
               <p class="card-subtitle">WHOLE → BLOCKED → APPROVAL → EXECUTED</p>
             </div>
-            <!-- ako želiš ručni refresh snapshot-a, odkomentariši dugme ispod
-            <button id="refresh-snapshot-btn" class="btn btn-ghost" type="button">
-              Osvježi snapshot
-            </button>
-            -->
           </div>
 
           <div class="pipeline-row">
@@ -241,11 +239,7 @@
               <h3>Weekly Priority</h3>
               <p class="card-subtitle">Lista iz AI Summary DB (Notion)</p>
             </div>
-            <button
-              id="refresh-weekly-btn"
-              class="btn btn-ghost"
-              type="button"
-            >
+            <button id="refresh-weekly-btn" class="btn btn-ghost" type="button">
               Osvježi listu
             </button>
           </div>
