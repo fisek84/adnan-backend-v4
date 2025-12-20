@@ -51,7 +51,8 @@ p{ margin:0; }
 
 /* Shell */
 .app-shell{
-  min-height: 100vh;
+  height: 100vh;          /* ključ: tačno koliko viewport */
+  min-height: 0;
   display:flex;
   flex-direction: column;
 }
@@ -126,6 +127,7 @@ p{ margin:0; }
   min-height: 0;
   display:grid;
   grid-template-columns: 0.88fr 1.12fr;
+  grid-template-rows: minmax(0, 1fr); /* red tačno visine raspoloživog prostora */
   gap: 14px;
   padding: 14px 14px 10px;
   overflow: hidden; /* internal scroll only */
@@ -140,10 +142,15 @@ p{ margin:0; }
   gap: 14px;
   height: 100%;
 }
-.column-left,
+.column-left {
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;       /* lijevi panel bez dodatnog scrolla */
+}
 .column-right {
   min-height: 0;
   height: 100%;
+  overflow-y: auto;       /* desna kolona može scrollati ako je visoka */
 }
 
 /* Card */

@@ -9,27 +9,27 @@
   <!-- 1-screen layout + fixed left chat, right-side internal scroll -->
   <style>
     html, body { height: 100%; }
-    body { overflow: hidden; }
 
-    .app-shell {
-      min-height: 100vh;
+    /* CEO cockpit tačno visine prozora (nema odsijecanja dna kartice) */
+    .app-shell{
+      height: 100vh;
       display: flex;
       flex-direction: column;
     }
 
-    /* Glavni grid: dvije kolone, jedan red fiksiran na visinu ekrana */
+    /* Glavni grid: dvije kolone, jedan red fiksiran na raspoloživu visinu */
     .layout{
       flex: 1;
       min-height: 0;
       display: grid;
       grid-template-columns: 0.88fr 1.12fr;
-      grid-template-rows: minmax(0, 1fr); /* ključ: red je tačno visine raspoloživog prostora */
+      grid-template-rows: minmax(0, 1fr); /* ključ: red visine raspoloživog prostora */
       gap: 14px;
       padding: 14px 14px 10px;
       overflow: hidden; /* nema page scrolla, samo interni */
     }
 
-    /* Kolone su flex stupci sa internim scrollom po potrebi */
+    /* Kolone su flex stupci */
     .column{
       min-height: 0;
       display: flex;
@@ -37,10 +37,10 @@
       gap: 14px;
     }
     .column-left{
-      overflow: hidden;        /* chat box mora ostati unutar kolone */
+      overflow: hidden;      /* chat ostaje unutar kartice, bez dodatnog scrolla */
     }
     .column-right{
-      overflow-y: auto;        /* desna kolona scrolla kad je viša od ekrana */
+      overflow-y: auto;      /* desna kolona scrolla kad je viša od ekrana */
     }
 
     /* Lijeva CEO kartica = full-height container za chat */
@@ -57,7 +57,7 @@
       flex-direction: column;
     }
 
-    /* Tablice desno: ~5 redova pa scroll (zadržavamo tvoj behaviour) */
+    /* Tablice desno: ~5 redova pa scroll (zadržavamo tvoje ponašanje) */
     .table-wrapper-compact {
       max-height: 300px;
       overflow: auto;
@@ -304,7 +304,7 @@
     </footer>
   </div>
 
-  <!-- Samo stari script.js koji koristi postojeće ID-eve -->
+  <!-- JS koji koristi postojeće ID-jeve -->
   <script src="/static/script.js" defer></script>
 </body>
 </html>
