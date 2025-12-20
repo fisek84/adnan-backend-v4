@@ -432,6 +432,28 @@ p{ margin:0; }
   flex-direction: column;
   padding: 14px 14px 12px;
 }
+/* Legacy CEO history box (stari UI) */
+.card-command{
+  display:flex;
+  flex-direction:column;
+  min-height:0;
+  height:100%;
+}
+
+.command-layout{
+  flex:1;
+  min-height:0;
+  display:flex;
+  flex-direction:column;
+}
+
+#ceo-history{
+  flex:1;
+  min-height:0;
+  overflow:auto;              /* omogući scroll historije */
+  padding: 14px 16px 18px;
+}
+
 
 .ceo-chat-history{
   flex: 1;
