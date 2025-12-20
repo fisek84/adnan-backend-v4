@@ -1,5 +1,3 @@
-console.log("SCRIPT_VERSION=2025-12-20-A");
-
 // gateway/frontend/script.js
 
 let lastApprovalId = null;
@@ -11,6 +9,7 @@ function $(id) {
 function setCommandStatus(chipText, text, variant) {
   const chip = $("command-status-chip");
   const label = $("command-status-text");
+  if (!chip || !label) return;
 
   chip.textContent = chipText || "";
   label.textContent = text || "";
@@ -33,11 +32,8 @@ function appendHistoryMessage(role, text) {
 
   const msg = document.createElement("div");
   msg.classList.add("conv-message");
-  if (role === "user") {
-    msg.classList.add("conv-user");
-  } else {
-    msg.classList.add("conv-system");
-  }
+  if (role === "user") msg.classList.add("conv-user");
+  else msg.classList.add("conv-system");
 
   msg.textContent = text;
   history.appendChild(msg);
@@ -55,28 +51,36 @@ async function loadSnapshot() {
     const data = await res.json();
 
     const osPill = $("os-status-pill");
-    const bootReady = data.system?.boot_ready;
-    const osEnabled = data.system?.os_enabled;
-    if (osEnabled && bootReady) {
-      osPill.textContent = "OS ONLINE";
-      osPill.classList.add("status-pill-online");
-    } else {
-      osPill.textContent = "OS OFFLINE";
-      osPill.classList.remove("status-pill-online");
+    if (osPill) {
+      const bootReady = data.system?.boot_ready;
+      const osEnabled = data.system?.os_enabled;
+      if (osEnabled && bootReady) {
+        osPill.textContent = "OS ONLINE";
+        osPill.classList.add("status-pill-online");
+      } else {
+        osPill.textContent = "OS OFFLINE";
+        osPill.classList.remove("status-pill-online");
+      }
     }
 
     const approvals = data.approvals || {};
-    $("pending-count-pill").textContent = approvals.pending_count ?? 0;
-    $("approved-today-pill").textContent = approvals.approved_count ?? 0;
-    $("executed-total-pill").textContent = approvals.completed_count ?? 0;
-    $("errors-total-pill").textContent =
+    const pending = $("pending-count-pill");
+    const approvedToday = $("approved-today-pill");
+    const executedTotal = $("executed-total-pill");
+    const errorsTotal = $("errors-total-pill");
+
+    if (pending) pending.textContent = approvals.pending_count ?? 0;
+    if (approvedToday) approvedToday.textContent = approvals.approved_count ?? 0;
+    if (executedTotal) executedTotal.textContent = approvals.completed_count ?? 0;
+    if (errorsTotal) errorsTotal.textContent =
       (approvals.failed_count ?? 0) + (approvals.rejected_count ?? 0);
 
     renderGoals(data.goals_summary);
     renderTasks(data.tasks_summary);
 
     const lastSync = data.knowledge_snapshot?.last_sync || "n/a";
-    $("footer-status").textContent = `Last sync: ${lastSync}`;
+    const footer = $("footer-status");
+    if (footer) footer.textContent = `Last sync: ${lastSync}`;
   } catch (err) {
     console.error("Failed to load snapshot", err);
     renderGoals(null, "Greška pri učitavanju ciljeva.");
@@ -86,6 +90,8 @@ async function loadSnapshot() {
 
 function renderGoals(goals, errorMsg) {
   const tbody = $("goals-table-body");
+  if (!tbody) return;
+
   tbody.innerHTML = "";
 
   if (errorMsg) {
@@ -110,11 +116,11 @@ function renderGoals(goals, errorMsg) {
     return;
   }
 
-  $("goals-total-pill").textContent = `Ukupno: ${goals.length}`;
-  $("goals-active-pill").textContent = `Aktivni: ${
-    goals.filter((g) =>
-      String(g.status || "").toLowerCase().includes("aktiv")
-    ).length
+  const totalPill = $("goals-total-pill");
+  const activePill = $("goals-active-pill");
+  if (totalPill) totalPill.textContent = `Ukupno: ${goals.length}`;
+  if (activePill) activePill.textContent = `Aktivni: ${
+    goals.filter((g) => String(g.status || "").toLowerCase().includes("aktiv")).length
   }`;
 
   for (const g of goals) {
@@ -136,6 +142,8 @@ function renderGoals(goals, errorMsg) {
 
 function renderTasks(tasks, errorMsg) {
   const tbody = $("tasks-table-body");
+  if (!tbody) return;
+
   tbody.innerHTML = "";
 
   if (errorMsg) {
@@ -160,8 +168,10 @@ function renderTasks(tasks, errorMsg) {
     return;
   }
 
-  $("tasks-total-pill").textContent = `Ukupno: ${tasks.length}`;
-  $("tasks-active-pill").textContent = `Aktivni: ${
+  const totalPill = $("tasks-total-pill");
+  const activePill = $("tasks-active-pill");
+  if (totalPill) totalPill.textContent = `Ukupno: ${tasks.length}`;
+  if (activePill) activePill.textContent = `Aktivni: ${
     tasks.filter((t) =>
       String(t.status || "").toLowerCase().includes("to do") ||
       String(t.status || "").toLowerCase().includes("aktiv")
@@ -190,6 +200,8 @@ function renderTasks(tasks, errorMsg) {
 // --------------------------------------------------
 async function loadWeeklyPriority() {
   const tbody = $("weekly-priority-body");
+  if (!tbody) return;
+
   tbody.innerHTML = `
     <tr><td colspan="5" class="placeholder-text">
       Učitavanje weekly priority liste...
@@ -242,17 +254,20 @@ async function loadWeeklyPriority() {
 }
 
 // --------------------------------------------------
-// CEO COMMAND
+// LEGACY CEO COMMAND (kept; ceo_chatbox.js runs the UX)
 // --------------------------------------------------
 async function sendCeoCommand() {
   const inputEl = $("ceo-command-input");
+  if (!inputEl) return;
+
   const text = inputEl.value.trim();
   if (!text) return;
 
   const msgEl = appendHistoryMessage("user", text);
 
   setCommandStatus("PENDING", "Naredba poslana, čekam COO prevod...");
-  $("last-approval-id").textContent = "–";
+  const lastIdEl = $("last-approval-id");
+  if (lastIdEl) lastIdEl.textContent = "–";
 
   try {
     const res = await fetch("/ceo/command", {
@@ -269,7 +284,7 @@ async function sendCeoCommand() {
       const detailText = await res.text();
       setCommandStatus(
         "ERROR",
-        `Greška: 400 — ${detailText || "COO nije uspio prevesti naredbu."}`,
+        `Greška: ${res.status} — ${detailText || "COO nije uspio prevesti naredbu."}`,
         "error"
       );
       if (msgEl) msgEl.classList.add("conv-error");
@@ -278,11 +293,8 @@ async function sendCeoCommand() {
 
     const data = await res.json();
     lastApprovalId = data.approval_id;
-    $("last-approval-id").textContent = lastApprovalId || "–";
-    setCommandStatus(
-      "BLOCKED",
-      "Naredba je BLOCKED. Odobri zahtjev da bi se izvršila."
-    );
+    if (lastIdEl) lastIdEl.textContent = lastApprovalId || "–";
+    setCommandStatus("BLOCKED", "Naredba je BLOCKED. Odobri zahtjev da bi se izvršila.");
 
     inputEl.value = "";
     inputEl.style.height = "24px";
@@ -294,13 +306,8 @@ async function sendCeoCommand() {
 }
 
 async function approveLatest() {
-  const idFromStatus = lastApprovalId;
-  if (!idFromStatus) {
-    setCommandStatus(
-      "INFO",
-      "Nema pending zahtjeva iz ove sesije.",
-      "error"
-    );
+  if (!lastApprovalId) {
+    setCommandStatus("INFO", "Nema pending zahtjeva iz ove sesije.", "error");
     return;
   }
 
@@ -308,32 +315,20 @@ async function approveLatest() {
     const res = await fetch("/api/ai-ops/approval/approve", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ approval_id: idFromStatus }),
+      body: JSON.stringify({ approval_id: lastApprovalId }),
     });
 
     if (!res.ok) {
       const detail = await res.text();
-      setCommandStatus(
-        "ERROR",
-        `Greška pri odobravanju: ${res.status} — ${detail || ""}`,
-        "error"
-      );
+      setCommandStatus("ERROR", `Greška pri odobravanju: ${res.status} — ${detail || ""}`, "error");
       return;
     }
 
-    setCommandStatus(
-      "EXECUTED",
-      "Zahtjev odobren. Execution će biti vidljiv u metrikama."
-    );
-
+    setCommandStatus("EXECUTED", "Zahtjev odobren. Execution će biti vidljiv u metrikama.");
     await loadSnapshot();
   } catch (err) {
     console.error("approveLatest failed", err);
-    setCommandStatus(
-      "ERROR",
-      "Greška pri odobravanju zahtjeva.",
-      "error"
-    );
+    setCommandStatus("ERROR", "Greška pri odobravanju zahtjeva.", "error");
   }
 }
 
@@ -341,33 +336,32 @@ async function approveLatest() {
 // INIT
 // --------------------------------------------------
 document.addEventListener("DOMContentLoaded", () => {
-  $("send-command-btn").addEventListener("click", sendCeoCommand);
-  $("refresh-snapshot-btn")?.addEventListener("click", loadSnapshot);
-  $("refresh-weekly-btn").addEventListener("click", loadWeeklyPriority);
+  const sendBtn = $("send-command-btn");
+  if (sendBtn) sendBtn.addEventListener("click", sendCeoCommand);
+
+  const snapBtn = $("refresh-snapshot-btn");
+  if (snapBtn) snapBtn.addEventListener("click", loadSnapshot);
+
+  const weeklyBtn = $("refresh-weekly-btn");
+  if (weeklyBtn) weeklyBtn.addEventListener("click", loadWeeklyPriority);
 
   const approveBtn = $("approve-latest-btn");
   if (approveBtn) approveBtn.addEventListener("click", approveLatest);
 
   const input = $("ceo-command-input");
-  input.addEventListener("keydown", (e) => {
-    // Enter = send, Shift+Enter = novi red
-    if (
-      e.key === "Enter" &&
-      !e.shiftKey &&
-      !e.ctrlKey &&
-      !e.altKey &&
-      !e.metaKey
-    ) {
-      e.preventDefault();
-      sendCeoCommand();
-    }
-  });
+  if (input) {
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        e.preventDefault();
+        sendCeoCommand();
+      }
+    });
 
-  // auto-resize textarea (ChatGPT stil)
-  input.addEventListener("input", () => {
-    input.style.height = "24px";
-    input.style.height = Math.min(input.scrollHeight, 120) + "px";
-  });
+    input.addEventListener("input", () => {
+      input.style.height = "24px";
+      input.style.height = Math.min(input.scrollHeight, 120) + "px";
+    });
+  }
 
   loadSnapshot();
   loadWeeklyPriority();
