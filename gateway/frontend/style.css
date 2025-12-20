@@ -51,7 +51,7 @@ p{ margin:0; }
 
 /* Shell */
 .app-shell{
-  height: 100vh;          /* ključ: tačno koliko viewport */
+  height: 100vh;      /* tačno visina viewporta */
   min-height: 0;
   display:flex;
   flex-direction: column;
@@ -127,7 +127,7 @@ p{ margin:0; }
   min-height: 0;
   display:grid;
   grid-template-columns: 0.88fr 1.12fr;
-  grid-template-rows: minmax(0, 1fr); /* red tačno visine raspoloživog prostora */
+  grid-template-rows: minmax(0, 1fr);
   gap: 14px;
   padding: 14px 14px 10px;
   overflow: hidden; /* internal scroll only */
@@ -142,15 +142,15 @@ p{ margin:0; }
   gap: 14px;
   height: 100%;
 }
-.column-left {
+.column-left{
   min-height: 0;
   height: 100%;
-  overflow: hidden;       /* lijevi panel bez dodatnog scrolla */
+  overflow: hidden;          /* lijevi panel nema svoj scroll; scroll je samo u history boxu */
 }
-.column-right {
+.column-right{
   min-height: 0;
   height: 100%;
-  overflow-y: auto;       /* desna kolona može scrollati ako je visoka */
+  overflow-y: auto;          /* desna kolona može da scrolla ako je previsoka */
 }
 
 /* Card */
@@ -399,19 +399,19 @@ p{ margin:0; }
 /* Scrollbars (WebKit) */
 .table-wrapper-compact::-webkit-scrollbar,
 .table-wrapper-weekly::-webkit-scrollbar,
-.ceo-chat-history::-webkit-scrollbar{
+#ceo-history::-webkit-scrollbar{
   width: 10px;
 }
 .table-wrapper-compact::-webkit-scrollbar-thumb,
 .table-wrapper-weekly::-webkit-scrollbar-thumb,
-.ceo-chat-history::-webkit-scrollbar-thumb{
+#ceo-history::-webkit-scrollbar-thumb{
   background: rgba(255,255,255,.12);
   border: 2px solid rgba(0,0,0,.18);
   border-radius: 999px;
 }
 .table-wrapper-compact::-webkit-scrollbar-track,
 .table-wrapper-weekly::-webkit-scrollbar-track,
-.ceo-chat-history::-webkit-scrollbar-track{
+#ceo-history::-webkit-scrollbar-track{
   background: rgba(0,0,0,.10);
 }
 
@@ -433,44 +433,13 @@ p{ margin:0; }
   padding: 14px 14px 12px;
 }
 
-/* CEO history kontejner – pravi se scroll box preko cijele lijeve kolone */
-#ceo-history {
+/* CEO history kontejner – scroll box preko cijele lijeve kolone */
+#ceo-history{
   flex: 1;
   min-height: 0;
   max-height: 100%;
   overflow-y: auto;          /* ovdje se pali scroll */
-  padding: 8px 10px 18px;
-}
-
-/* Legacy CEO history box (stari UI) */
-.card-command{
-  display:flex;
-  flex-direction:column;
-  min-height:0;
-  height:100%;
-}
-
-.command-layout{
-  flex:1;
-  min-height:0;
-  display:flex;
-  flex-direction:column;
-}
-
-#ceo-history{
-  flex:1;
-  min-height:0;
-  overflow:auto;              /* omogući scroll historije */
   padding: 14px 16px 18px;
-}
-
-
-.ceo-chat-history{
-  flex: 1;
-  min-height: 0;
-  overflow: auto;              /* ONLY history scrolls */
-  padding: 4px 2px 14px;
-  scroll-behavior: smooth;
 }
 
 .ceo-chat-day{
