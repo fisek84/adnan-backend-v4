@@ -6,13 +6,22 @@ function $(id) {
   return document.getElementById(id);
 }
 
+/* --------------------------------------------------
+ * STATUS BAR
+ * -------------------------------------------------- */
 function setCommandStatus(chipText, text, variant) {
   const chip = $("command-status-chip");
   const label = $("command-status-text");
-  if (!chip || !label) return;
 
-  chip.textContent = chipText || "";
-  label.textContent = text || "";
+  if (chip) {
+    chip.textContent = chipText || "";
+    chip.style.visibility = chipText ? "visible" : "hidden";
+  }
+  if (label) {
+    label.textContent = text || "";
+  }
+
+  if (!chip) return;
 
   if (variant === "error") {
     chip.style.background = "rgba(127,29,29,0.5)";
@@ -23,27 +32,80 @@ function setCommandStatus(chipText, text, variant) {
   }
 }
 
+/* --------------------------------------------------
+ * CHAT HISTORY (ChatGPT-style bubbles)
+ * -------------------------------------------------- */
 function appendHistoryMessage(role, text) {
   const history = $("ceo-history");
   if (!history) return null;
 
-  const placeholder = history.querySelector(".history-placeholder");
+  const placeholder = history.querySelector(".ceo-chat-empty");
   if (placeholder) placeholder.remove();
 
-  const msg = document.createElement("div");
-  msg.classList.add("conv-message");
-  if (role === "user") msg.classList.add("conv-user");
-  else msg.classList.add("conv-system");
+  const wrap = document.createElement("div");
+  wrap.classList.add("ceo-chat-msg");
 
-  msg.textContent = text;
-  history.appendChild(msg);
+  const avatar = document.createElement("div");
+  avatar.classList.add("ceo-chat-avatar");
+  const isUser = role === "user";
+  if (isUser) {
+    avatar.classList.add("ceo");
+    avatar.textContent = "CEO";
+  } else {
+    avatar.classList.add("sys");
+    avatar.textContent = "SYS";
+  }
+
+  const bubble = document.createElement("div");
+  bubble.classList.add("ceo-chat-bubble");
+
+  const meta = document.createElement("div");
+  meta.classList.add("meta");
+
+  const roleSpan = document.createElement("span");
+  roleSpan.classList.add("role");
+  roleSpan.textContent = isUser ? "CEO" : "SYSTEM";
+
+  const timeSpan = document.createElement("span");
+  const now = new Date();
+  timeSpan.textContent = now.toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+
+  meta.appendChild(roleSpan);
+  meta.appendChild(timeSpan);
+
+  const body = document.createElement("div");
+  body.classList.add("text");
+  body.textContent = text;
+
+  bubble.appendChild(meta);
+  bubble.appendChild(body);
+
+  wrap.appendChild(avatar);
+  wrap.appendChild(bubble);
+
+  history.appendChild(wrap);
   history.scrollTop = history.scrollHeight;
-  return msg;
+
+  return wrap;
 }
 
-// --------------------------------------------------
-// SNAPSHOT
-// --------------------------------------------------
+function clearHistory() {
+  const history = $("ceo-history");
+  if (!history) return;
+
+  history.innerHTML = "";
+  const empty = document.createElement("div");
+  empty.className = "ceo-chat-empty";
+  empty.textContent = "History je očišćen. Unesi novu CEO komandu.";
+  history.appendChild(empty);
+}
+
+/* --------------------------------------------------
+ * SNAPSHOT
+ * -------------------------------------------------- */
 async function loadSnapshot() {
   try {
     const res = await fetch("/ceo/console/snapshot");
@@ -72,8 +134,10 @@ async function loadSnapshot() {
     if (pending) pending.textContent = approvals.pending_count ?? 0;
     if (approvedToday) approvedToday.textContent = approvals.approved_count ?? 0;
     if (executedTotal) executedTotal.textContent = approvals.completed_count ?? 0;
-    if (errorsTotal) errorsTotal.textContent =
-      (approvals.failed_count ?? 0) + (approvals.rejected_count ?? 0);
+    if (errorsTotal) {
+      errorsTotal.textContent =
+        (approvals.failed_count ?? 0) + (approvals.rejected_count ?? 0);
+    }
 
     renderGoals(data.goals_summary);
     renderTasks(data.tasks_summary);
@@ -119,9 +183,13 @@ function renderGoals(goals, errorMsg) {
   const totalPill = $("goals-total-pill");
   const activePill = $("goals-active-pill");
   if (totalPill) totalPill.textContent = `Ukupno: ${goals.length}`;
-  if (activePill) activePill.textContent = `Aktivni: ${
-    goals.filter((g) => String(g.status || "").toLowerCase().includes("aktiv")).length
-  }`;
+  if (activePill) {
+    activePill.textContent = `Aktivni: ${
+      goals.filter((g) =>
+        String(g.status || "").toLowerCase().includes("aktiv")
+      ).length
+    }`;
+  }
 
   for (const g of goals) {
     const tr = document.createElement("tr");
@@ -171,12 +239,14 @@ function renderTasks(tasks, errorMsg) {
   const totalPill = $("tasks-total-pill");
   const activePill = $("tasks-active-pill");
   if (totalPill) totalPill.textContent = `Ukupno: ${tasks.length}`;
-  if (activePill) activePill.textContent = `Aktivni: ${
-    tasks.filter((t) =>
-      String(t.status || "").toLowerCase().includes("to do") ||
-      String(t.status || "").toLowerCase().includes("aktiv")
-    ).length
-  }`;
+  if (activePill) {
+    activePill.textContent = `Aktivni: ${
+      tasks.filter((t) => {
+        const s = String(t.status || "").toLowerCase();
+        return s.includes("to do") || s.includes("aktiv");
+      }).length
+    }`;
+  }
 
   for (const t of tasks) {
     const tr = document.createElement("tr");
@@ -195,9 +265,9 @@ function renderTasks(tasks, errorMsg) {
   }
 }
 
-// --------------------------------------------------
-// WEEKLY PRIORITY
-// --------------------------------------------------
+/* --------------------------------------------------
+ * WEEKLY PRIORITY
+ * -------------------------------------------------- */
 async function loadWeeklyPriority() {
   const tbody = $("weekly-priority-body");
   if (!tbody) return;
@@ -253,9 +323,9 @@ async function loadWeeklyPriority() {
   }
 }
 
-// --------------------------------------------------
-// LEGACY CEO COMMAND (kept; ceo_chatbox.js runs the UX)
-// --------------------------------------------------
+/* --------------------------------------------------
+ * CEO COMMAND / APPROVAL
+ * -------------------------------------------------- */
 async function sendCeoCommand() {
   const inputEl = $("ceo-command-input");
   if (!inputEl) return;
@@ -266,6 +336,7 @@ async function sendCeoCommand() {
   const msgEl = appendHistoryMessage("user", text);
 
   setCommandStatus("PENDING", "Naredba poslana, čekam COO prevod...");
+
   const lastIdEl = $("last-approval-id");
   if (lastIdEl) lastIdEl.textContent = "–";
 
@@ -284,7 +355,9 @@ async function sendCeoCommand() {
       const detailText = await res.text();
       setCommandStatus(
         "ERROR",
-        `Greška: ${res.status} — ${detailText || "COO nije uspio prevesti naredbu."}`,
+        `Greška: ${res.status} — ${
+          detailText || "COO nije uspio prevesti naredbu."
+        }`,
         "error"
       );
       if (msgEl) msgEl.classList.add("conv-error");
@@ -292,12 +365,26 @@ async function sendCeoCommand() {
     }
 
     const data = await res.json();
-    lastApprovalId = data.approval_id;
-    if (lastIdEl) lastIdEl.textContent = lastApprovalId || "–";
-    setCommandStatus("BLOCKED", "Naredba je BLOCKED. Odobri zahtjev da bi se izvršila.");
+    lastApprovalId = data.approval_id || null;
+
+    const lastIdEl2 = $("last-approval-id");
+    if (lastIdEl2) lastIdEl2.textContent = lastApprovalId || "–";
+
+    // čim imamo approval_id, eksplicitno otključaj dugme
+    const approveBtn = $("approve-latest-btn");
+    if (approveBtn) approveBtn.disabled = !lastApprovalId ? true : false;
+
+    if (data && data.system_message) {
+      appendHistoryMessage("system", data.system_message);
+    }
+
+    setCommandStatus(
+      "BLOCKED",
+      "Naredba je BLOCKED. Odobri zahtjev da bi se izvršila."
+    );
 
     inputEl.value = "";
-    inputEl.style.height = "24px";
+    inputEl.style.height = "42px";
   } catch (err) {
     console.error("ceo/command failed", err);
     setCommandStatus("ERROR", "Greška pri slanju naredbe.", "error");
@@ -320,11 +407,27 @@ async function approveLatest() {
 
     if (!res.ok) {
       const detail = await res.text();
-      setCommandStatus("ERROR", `Greška pri odobravanju: ${res.status} — ${detail || ""}`, "error");
+      setCommandStatus(
+        "ERROR",
+        `Greška pri odobravanju: ${res.status} — ${detail || ""}`,
+        "error"
+      );
       return;
     }
 
-    setCommandStatus("EXECUTED", "Zahtjev odobren. Execution će biti vidljiv u metrikama.");
+    const approveBtn = $("approve-latest-btn");
+    if (approveBtn) approveBtn.disabled = true;
+
+    const lastExecEl = $("last-execution-state");
+    if (lastExecEl) lastExecEl.textContent = "EXECUTED";
+
+    setCommandStatus(
+      "EXECUTED",
+      "Zahtjev odobren. Execution će biti vidljiv u metrikama."
+    );
+
+    lastApprovalId = null;
+
     await loadSnapshot();
   } catch (err) {
     console.error("approveLatest failed", err);
@@ -332,9 +435,9 @@ async function approveLatest() {
   }
 }
 
-// --------------------------------------------------
-// INIT
-// --------------------------------------------------
+/* --------------------------------------------------
+ * INIT
+ * -------------------------------------------------- */
 document.addEventListener("DOMContentLoaded", () => {
   const sendBtn = $("send-command-btn");
   if (sendBtn) sendBtn.addEventListener("click", sendCeoCommand);
@@ -346,20 +449,49 @@ document.addEventListener("DOMContentLoaded", () => {
   if (weeklyBtn) weeklyBtn.addEventListener("click", loadWeeklyPriority);
 
   const approveBtn = $("approve-latest-btn");
-  if (approveBtn) approveBtn.addEventListener("click", approveLatest);
+  if (approveBtn) {
+    approveBtn.disabled = true; // start: nema pending approval-a
+    approveBtn.addEventListener("click", approveLatest);
+  }
+
+  const clearBtn = $("clear-history-btn");
+  if (clearBtn) clearBtn.addEventListener("click", clearHistory);
+
+  const history = $("ceo-history");
+  const scrollBtn = $("ceo-scroll-btn");
+  if (history && scrollBtn) {
+    history.addEventListener("scroll", () => {
+      const delta =
+        history.scrollHeight - history.scrollTop - history.clientHeight;
+      if (delta > 80) {
+        scrollBtn.classList.remove("hidden");
+      } else {
+        scrollBtn.classList.add("hidden");
+      }
+    });
+    scrollBtn.addEventListener("click", () => {
+      history.scrollTop = history.scrollHeight;
+    });
+  }
 
   const input = $("ceo-command-input");
   if (input) {
     input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
+      if (
+        e.key === "Enter" &&
+        !e.shiftKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        !e.metaKey
+      ) {
         e.preventDefault();
         sendCeoCommand();
       }
     });
 
     input.addEventListener("input", () => {
-      input.style.height = "24px";
-      input.style.height = Math.min(input.scrollHeight, 120) + "px";
+      input.style.height = "42px";
+      input.style.height = Math.min(input.scrollHeight, 160) + "px";
     });
   }
 

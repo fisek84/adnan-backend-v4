@@ -1,497 +1,285 @@
-// gateway/frontend/script.js
-
-let lastApprovalId = null;
-
-function $(id) {
-  return document.getElementById(id);
-}
-
-function setCommandStatus(chipText, text, variant) {
-  const chip = $("command-status-chip");
-  const label = $("command-status-text");
-
-  if (chip) {
-    chip.textContent = chipText || "";
-    // ako nema teksta, sakrij vizuelno chip
-    chip.style.visibility = chipText ? "visible" : "hidden";
-  }
-  if (label) {
-    label.textContent = text || "";
-  }
-
-  if (chip) {
-    if (variant === "error") {
-      chip.style.background = "rgba(127,29,29,0.5)";
-      chip.style.borderColor = "rgba(248,113,113,0.9)";
-    } else {
-      chip.style.background = "";
-      chip.style.borderColor = "";
-    }
-  }
-}
-
-function appendHistoryMessage(role, text) {
-  const history = $("ceo-history");
-  if (!history) return null;
-
-  const placeholder = history.querySelector(".ceo-chat-empty");
-  if (placeholder) placeholder.remove();
-
-  const wrap = document.createElement("div");
-  wrap.classList.add("ceo-chat-msg");
-
-  const avatar = document.createElement("div");
-  avatar.classList.add("ceo-chat-avatar");
-  const isUser = role === "user";
-  if (isUser) {
-    avatar.classList.add("ceo");
-    avatar.textContent = "CEO";
-  } else {
-    avatar.classList.add("sys");
-    avatar.textContent = "SYS";
-  }
-
-  const bubble = document.createElement("div");
-  bubble.classList.add("ceo-chat-bubble");
-
-  const meta = document.createElement("div");
-  meta.classList.add("meta");
-
-  const roleSpan = document.createElement("span");
-  roleSpan.classList.add("role");
-  roleSpan.textContent = isUser ? "CEO" : "SYSTEM";
-
-  const timeSpan = document.createElement("span");
-  const now = new Date();
-  timeSpan.textContent = now.toLocaleTimeString(undefined, {
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-
-  meta.appendChild(roleSpan);
-  meta.appendChild(timeSpan);
-
-  const body = document.createElement("div");
-  body.classList.add("text");
-  body.textContent = text;
-
-  bubble.appendChild(meta);
-  bubble.appendChild(body);
-
-  wrap.appendChild(avatar);
-  wrap.appendChild(bubble);
-
-  history.appendChild(wrap);
-  history.scrollTop = history.scrollHeight;
-
-  return wrap;
-}
-
-function clearHistory() {
-  const history = $("ceo-history");
-  if (!history) return;
-
-  history.innerHTML = "";
-  const empty = document.createElement("div");
-  empty.className = "ceo-chat-empty";
-  empty.textContent =
-    "History je očišćen. Unesi novu CEO komandu.";
-  history.appendChild(empty);
-}
-
-// --------------------------------------------------
-// SNAPSHOT
-// --------------------------------------------------
-async function loadSnapshot() {
-  try {
-    const res = await fetch("/ceo/console/snapshot");
-    if (!res.ok) throw new Error(`Snapshot HTTP ${res.status}`);
-    const data = await res.json();
-
-    const osPill = $("os-status-pill");
-    if (osPill) {
-      const bootReady = data.system?.boot_ready;
-      const osEnabled = data.system?.os_enabled;
-      if (osEnabled && bootReady) {
-        osPill.textContent = "OS ONLINE";
-        osPill.classList.add("status-pill-online");
-      } else {
-        osPill.textContent = "OS OFFLINE";
-        osPill.classList.remove("status-pill-online");
-      }
-    }
-
-    const approvals = data.approvals || {};
-    const pending = $("pending-count-pill");
-    const approvedToday = $("approved-today-pill");
-    const executedTotal = $("executed-total-pill");
-    const errorsTotal = $("errors-total-pill");
-
-    if (pending) pending.textContent = approvals.pending_count ?? 0;
-    if (approvedToday) approvedToday.textContent = approvals.approved_count ?? 0;
-    if (executedTotal) executedTotal.textContent = approvals.completed_count ?? 0;
-    if (errorsTotal) {
-      errorsTotal.textContent =
-        (approvals.failed_count ?? 0) +
-        (approvals.rejected_count ?? 0);
-    }
-
-    renderGoals(data.goals_summary);
-    renderTasks(data.tasks_summary);
-
-    const lastSync = data.knowledge_snapshot?.last_sync || "n/a";
-    const footer = $("footer-status");
-    if (footer) footer.textContent = `Last sync: ${lastSync}`;
-  } catch (err) {
-    console.error("Failed to load snapshot", err);
-    renderGoals(null, "Greška pri učitavanju ciljeva.");
-    renderTasks(null, "Greška pri učitavanju taskova.");
-  }
-}
-
-function renderGoals(goals, errorMsg) {
-  const tbody = $("goals-table-body");
-  if (!tbody) return;
-
-  tbody.innerHTML = "";
-
-  if (errorMsg) {
-    const tr = document.createElement("tr");
-    const td = document.createElement("td");
-    td.colSpan = 4;
-    td.className = "placeholder-text";
-    td.textContent = errorMsg;
-    tr.appendChild(td);
-    tbody.appendChild(tr);
-    return;
-  }
-
-  if (!goals || !goals.length) {
-    const tr = document.createElement("tr");
-    const td = document.createElement("td");
-    td.colSpan = 4;
-    td.className = "placeholder-text";
-    td.textContent = "Nema ciljeva u snapshotu.";
-    tr.appendChild(td);
-    tbody.appendChild(tr);
-    return;
-  }
-
-  const totalPill = $("goals-total-pill");
-  const activePill = $("goals-active-pill");
-  if (totalPill) totalPill.textContent = `Ukupno: ${goals.length}`;
-  if (activePill) {
-    activePill.textContent = `Aktivni: ${
-      goals.filter((g) =>
-        String(g.status || "").toLowerCase().includes("aktiv")
-      ).length
-    }`;
-  }
-
-  for (const g of goals) {
-    const tr = document.createElement("tr");
-    const cols = [
-      g.name ?? g.title ?? "(bez naziva)",
-      g.status ?? "-",
-      g.priority ?? "-",
-      g.due_date ?? g.deadline ?? "-",
-    ];
-    for (const c of cols) {
-      const td = document.createElement("td");
-      td.textContent = c;
-      tr.appendChild(td);
-    }
-    tbody.appendChild(tr);
-  }
-}
-
-function renderTasks(tasks, errorMsg) {
-  const tbody = $("tasks-table-body");
-  if (!tbody) return;
-
-  tbody.innerHTML = "";
-
-  if (errorMsg) {
-    const tr = document.createElement("tr");
-    const td = document.createElement("td");
-    td.colSpan = 4;
-    td.className = "placeholder-text";
-    td.textContent = errorMsg;
-    tr.appendChild(td);
-    tbody.appendChild(tr);
-    return;
-  }
-
-  if (!tasks || !tasks.length) {
-    const tr = document.createElement("tr");
-    const td = document.createElement("td");
-    td.colSpan = 4;
-    td.className = "placeholder-text";
-    td.textContent = "Nema taskova u snapshotu.";
-    tr.appendChild(td);
-    tbody.appendChild(tr);
-    return;
-  }
-
-  const totalPill = $("tasks-total-pill");
-  const activePill = $("tasks-active-pill");
-  if (totalPill) totalPill.textContent = `Ukupno: ${tasks.length}`;
-  if (activePill) {
-    activePill.textContent = `Aktivni: ${
-      tasks.filter((t) => {
-        const s = String(t.status || "").toLowerCase();
-        return s.includes("to do") || s.includes("aktiv");
-      }).length
-    }`;
-  }
-
-  for (const t of tasks) {
-    const tr = document.createElement("tr");
-    const cols = [
-      t.title ?? t.name ?? "(bez naziva)",
-      t.status ?? "-",
-      t.priority ?? "-",
-      t.due_date ?? t.deadline ?? "-",
-    ];
-    for (const c of cols) {
-      const td = document.createElement("td");
-      td.textContent = c;
-      tr.appendChild(td);
-    }
-    tbody.appendChild(tr);
-  }
-}
-
-// --------------------------------------------------
-// WEEKLY PRIORITY
-// --------------------------------------------------
-async function loadWeeklyPriority() {
-  const tbody = $("weekly-priority-body");
-  if (!tbody) return;
-
-  tbody.innerHTML = `
-    <tr><td colspan="5" class="placeholder-text">
-      Učitavanje weekly priority liste...
-    </td></tr>
-  `;
-
-  try {
-    const res = await fetch("/ceo/weekly-priority-memory");
-    if (!res.ok) throw new Error(`Weekly HTTP ${res.status}`);
-    const data = await res.json();
-    const items = data.items || [];
-
-    tbody.innerHTML = "";
-
-    if (!items.length) {
-      const tr = document.createElement("tr");
-      const td = document.createElement("td");
-      td.colSpan = 5;
-      td.className = "placeholder-text";
-      td.textContent = "Nema podataka za ovu sedmicu.";
-      tr.appendChild(td);
-      tbody.appendChild(tr);
-      return;
-    }
-
-    for (const i of items) {
-      const tr = document.createElement("tr");
-      const cols = [
-        i.type || "-",
-        i.name || "-",
-        i.status || "-",
-        i.priority || "-",
-        i.period || i.week || "-",
-      ];
-      for (const c of cols) {
-        const td = document.createElement("td");
-        td.textContent = c;
-        tr.appendChild(td);
-      }
-      tbody.appendChild(tr);
-    }
-  } catch (err) {
-    console.error("Failed to load weekly priority", err);
-    tbody.innerHTML = `
-      <tr><td colspan="5" class="placeholder-text">
-        Greška pri učitavanju weekly priority liste.
-      </td></tr>
-    `;
-  }
-}
-
-// --------------------------------------------------
-// CEO COMMAND / APPROVAL
-// --------------------------------------------------
-async function sendCeoCommand() {
-  const inputEl = $("ceo-command-input");
-  if (!inputEl) return;
-
-  const text = inputEl.value.trim();
-  if (!text) return;
-
-  const msgEl = appendHistoryMessage("user", text);
-
-  setCommandStatus("PENDING", "Naredba poslana, čekam COO prevod...");
-
-  const lastIdEl = $("last-approval-id");
-  if (lastIdEl) lastIdEl.textContent = "–";
-
-  try {
-    const res = await fetch("/ceo/command", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        input_text: text,
-        smart_context: null,
-        source: "ceo_dashboard",
-      }),
-    });
-
-    if (!res.ok) {
-      const detailText = await res.text();
-      setCommandStatus(
-        "ERROR",
-        `Greška: ${res.status} — ${
-          detailText || "COO nije uspio prevesti naredbu."
-        }`,
-        "error"
-      );
-      if (msgEl) msgEl.classList.add("conv-error");
-      return;
-    }
-
-    const data = await res.json();
-    lastApprovalId = data.approval_id || null;
-
-    const lastIdEl2 = $("last-approval-id");
-    if (lastIdEl2) lastIdEl2.textContent = lastApprovalId || "–";
-
-    const approveBtn = $("approve-latest-btn");
-    if (approveBtn) approveBtn.disabled = !lastApprovalId;
-
-    // eventualna kratka sistemska poruka, ako backend šalje
-    if (data && data.system_message) {
-      appendHistoryMessage("system", data.system_message);
-    }
-
-    setCommandStatus(
-      "BLOCKED",
-      "Naredba je BLOCKED. Odobri zahtjev da bi se izvršila."
-    );
-
-    inputEl.value = "";
-    inputEl.style.height = "42px";
-  } catch (err) {
-    console.error("ceo/command failed", err);
-    setCommandStatus("ERROR", "Greška pri slanju naredbe.", "error");
-    if (msgEl) msgEl.classList.add("conv-error");
-  }
-}
-
-async function approveLatest() {
-  if (!lastApprovalId) {
-    setCommandStatus("INFO", "Nema pending zahtjeva iz ove sesije.", "error");
-    return;
-  }
-
-  try {
-    const res = await fetch("/api/ai-ops/approval/approve", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ approval_id: lastApprovalId }),
-    });
-
-    if (!res.ok) {
-      const detail = await res.text();
-      setCommandStatus(
-        "ERROR",
-        `Greška pri odobravanju: ${res.status} — ${detail || ""}`,
-        "error"
-      );
-      return;
-    }
-
-    const approveBtn = $("approve-latest-btn");
-    if (approveBtn) approveBtn.disabled = true;
-
-    const lastExecEl = $("last-execution-state");
-    if (lastExecEl) lastExecEl.textContent = "EXECUTED";
-
-    setCommandStatus(
-      "EXECUTED",
-      "Zahtjev odobren. Execution će biti vidljiv u metrikama."
-    );
-
-    lastApprovalId = null;
-
-    await loadSnapshot();
-  } catch (err) {
-    console.error("approveLatest failed", err);
-    setCommandStatus("ERROR", "Greška pri odobravanju zahtjeva.", "error");
-  }
-}
-
-// --------------------------------------------------
-// INIT
-// --------------------------------------------------
-document.addEventListener("DOMContentLoaded", () => {
-  const sendBtn = $("send-command-btn");
-  if (sendBtn) sendBtn.addEventListener("click", sendCeoCommand);
-
-  const snapBtn = $("refresh-snapshot-btn");
-  if (snapBtn) snapBtn.addEventListener("click", loadSnapshot);
-
-  const weeklyBtn = $("refresh-weekly-btn");
-  if (weeklyBtn) weeklyBtn.addEventListener("click", loadWeeklyPriority);
-
-  const approveBtn = $("approve-latest-btn");
-  if (approveBtn) approveBtn.addEventListener("click", approveLatest);
-
-  const clearBtn = $("clear-history-btn");
-  if (clearBtn) clearBtn.addEventListener("click", clearHistory);
-
-  const history = $("ceo-history");
-  const scrollBtn = $("ceo-scroll-btn");
-  if (history && scrollBtn) {
-    history.addEventListener("scroll", () => {
-      const delta =
-        history.scrollHeight - history.scrollTop - history.clientHeight;
-      if (delta > 80) {
-        scrollBtn.classList.remove("hidden");
-      } else {
-        scrollBtn.classList.add("hidden");
-      }
-    });
-    scrollBtn.addEventListener("click", () => {
-      history.scrollTop = history.scrollHeight;
-    });
-  }
-
-  const input = $("ceo-command-input");
-  if (input) {
-    input.addEventListener("keydown", (e) => {
-      if (
-        e.key === "Enter" &&
-        !e.shiftKey &&
-        !e.ctrlKey &&
-        !e.altKey &&
-        !e.metaKey
-      ) {
-        e.preventDefault();
-        sendCeoCommand();
-      }
-    });
-
-    input.addEventListener("input", () => {
-      input.style.height = "42px";
-      input.style.height = Math.min(input.scrollHeight, 160) + "px";
-    });
-  }
-
-  // start state: approve je zaključan dok nema pending approval_id
-  if (approveBtn) approveBtn.disabled = !lastApprovalId;
-
-  loadSnapshot();
-  loadWeeklyPriority();
-});
+<!DOCTYPE html>
+<html lang="bs">
+<head>
+  <meta charset="UTF-8" />
+  <title>Adnan.AI / Evolia OS — CEO Control Center</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+
+<body>
+  <div class="app-shell">
+    <!-- TOP BAR -->
+    <header class="top-bar">
+      <div class="brand">
+        <div class="brand-orb"></div>
+        <div>
+          <div class="brand-title">Adnan.AI / Evolia OS</div>
+          <div class="brand-subtitle">CEO Control Center</div>
+        </div>
+      </div>
+
+      <div class="top-status">
+        <span id="os-status-pill" class="status-pill">OS OFFLINE</span>
+        <span class="status-pill status-pill-safe">
+          GOVERNANCE: WHOLE → BLOCKED → APPROVAL → EXECUTED
+        </span>
+      </div>
+    </header>
+
+    <main class="layout">
+      <!-- LEFT COLUMN: CEO CHAT (ChatGPT-like) -->
+      <section class="column column-left">
+        <section class="card card-command">
+          <div class="card-header">
+            <div>
+              <h2>CEO COMMAND (NL)</h2>
+              <p class="card-subtitle">
+                CEO → SYSTEM kanal (unos komande). Tok: BLOCKED → APPROVAL → EXECUTED.
+              </p>
+            </div>
+          </div>
+
+          <div class="command-layout">
+            <div class="ceo-chat-panel">
+              <div class="ceo-chatbox">
+                <!-- HISTORY AREA (scrollable) -->
+                <div id="ceo-history" class="ceo-chat-history">
+                  <div class="ceo-chat-empty">
+                    Napiši CEO komandu ispod. History je scroll, input je fiksno na dnu.
+                  </div>
+                </div>
+
+                <!-- SCROLL TO BOTTOM BUTTON -->
+                <button
+                  id="ceo-scroll-btn"
+                  class="ceo-chat-scrollbtn hidden"
+                  type="button"
+                  aria-label="Na dno"
+                >
+                  ↓
+                </button>
+
+                <!-- COMPOSER (PINNED AT BOTTOM) -->
+                <div class="ceo-chat-composer">
+                  <div class="ceo-composer-shell">
+                    <textarea
+                      id="ceo-command-input"
+                      class="ceo-chat-input"
+                      rows="1"
+                      placeholder="Unesi CEO COMMAND...
+(Enter = pošalji, Shift+Enter = novi red)"
+                    ></textarea>
+
+                    <div class="ceo-chat-actions">
+                      <button
+                        id="clear-history-btn"
+                        type="button"
+                        class="btn btn-ghost"
+                      >
+                        Clear
+                      </button>
+
+                      <button
+                        id="approve-latest-btn"
+                        type="button"
+                        class="ceo-btn-approve"
+                        disabled
+                      >
+                        Odobri
+                      </button>
+
+                      <button
+                        id="send-command-btn"
+                        type="button"
+                        class="ceo-btn-send"
+                        aria-label="Pošalji"
+                      >
+                        ▶
+                      </button>
+                    </div>
+                  </div>
+
+                  <!-- STATUS LINIJA -->
+                  <div class="ceo-chat-status small-muted" style="margin-top:6px;">
+                    <span
+                      id="command-status-chip"
+                      class="status-pill"
+                      style="margin-right:8px; visibility:hidden;"
+                    ></span>
+                    <span id="command-status-text"></span>
+
+                    <!-- meta info za script.js (skriveno) -->
+                    <span id="last-execution-state" class="hidden"></span>
+                    <span id="last-approval-id" class="hidden"></span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <pre id="debug-output" class="debug-output hidden"></pre>
+          </div>
+        </section>
+      </section>
+
+      <!-- RIGHT COLUMN -->
+      <section class="column column-right">
+        <div class="cards-grid">
+          <!-- GOALS -->
+          <section class="card">
+            <div class="card-header card-header-compact">
+              <div>
+                <h3>Ciljevi &amp; Podciljevi</h3>
+                <p class="card-subtitle">Snapshot iz Notion Goals DB</p>
+              </div>
+              <div class="pill-group">
+                <span class="pill" id="goals-total-pill">Ukupno: –</span>
+                <span class="pill pill-accent" id="goals-active-pill">Aktivni: –</span>
+              </div>
+            </div>
+
+            <div class="table-wrapper table-wrapper-compact">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>Goal</th>
+                    <th>Status</th>
+                    <th>Priority</th>
+                    <th>Deadline</th>
+                  </tr>
+                </thead>
+                <tbody id="goals-table-body">
+                  <tr>
+                    <td colspan="4" class="placeholder-text">Učitavanje ciljeva...</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <!-- TASKS -->
+          <section class="card">
+            <div class="card-header card-header-compact">
+              <div>
+                <h3>Taskovi</h3>
+                <p class="card-subtitle">Aktivni operativni zadaci</p>
+              </div>
+              <div class="pill-group">
+                <span class="pill" id="tasks-total-pill">Ukupno: –</span>
+                <span class="pill pill-accent" id="tasks-active-pill">Aktivni: –</span>
+              </div>
+            </div>
+
+            <div class="table-wrapper table-wrapper-compact">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>Task</th>
+                    <th>Status</th>
+                    <th>Priority</th>
+                    <th>Due date</th>
+                  </tr>
+                </thead>
+                <tbody id="tasks-table-body">
+                  <tr>
+                    <td colspan="4" class="placeholder-text">Učitavanje taskova...</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+
+        <!-- PIPELINE SNAPSHOT -->
+        <section class="card">
+          <div class="card-header card-header-compact">
+            <div>
+              <h3>Odobrenje cjevovoda</h3>
+              <p class="card-subtitle">WHOLE → BLOCKED → APPROVAL → EXECUTED</p>
+            </div>
+            <!-- ako želiš ručni refresh snapshot-a, odkomentariši dugme ispod
+            <button id="refresh-snapshot-btn" class="btn btn-ghost" type="button">
+              Osvježi snapshot
+            </button>
+            -->
+          </div>
+
+          <div class="pipeline-row">
+            <div class="pipeline-stage">
+              <span class="stage-label">Pending</span>
+              <div class="stage-value" id="pending-count-pill">0</div>
+            </div>
+            <div class="pipeline-stage">
+              <span class="stage-label">Odobreno danas</span>
+              <div class="stage-value" id="approved-today-pill">0</div>
+            </div>
+            <div class="pipeline-stage">
+              <span class="stage-label">Ukupno izvršeno</span>
+              <div class="stage-value" id="executed-total-pill">0</div>
+            </div>
+            <div class="pipeline-stage">
+              <span class="stage-label">Greške</span>
+              <div class="stage-value" id="errors-total-pill">0</div>
+            </div>
+          </div>
+
+          <div class="pipeline-list-wrapper">
+            <div class="pipeline-list-header">
+              <span>Pending zahtjevi</span>
+              <span id="pending-label" class="small-muted">–</span>
+            </div>
+            <ul id="pending-approvals-list" class="pipeline-list">
+              <li class="placeholder-text">Trenutno nema zahtjeva na čekanju.</li>
+            </ul>
+          </div>
+        </section>
+
+        <!-- WEEKLY PRIORITY TABLE -->
+        <section class="card">
+          <div class="card-header card-header-compact">
+            <div>
+              <h3>Weekly Priority</h3>
+              <p class="card-subtitle">Lista iz AI Summary DB (Notion)</p>
+            </div>
+            <button
+              id="refresh-weekly-btn"
+              class="btn btn-ghost"
+              type="button"
+            >
+              Osvježi listu
+            </button>
+          </div>
+
+          <div class="table-wrapper table-wrapper-weekly">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Tip</th>
+                  <th>Naziv</th>
+                  <th>Status</th>
+                  <th>Prioritet</th>
+                  <th>Period</th>
+                </tr>
+              </thead>
+              <tbody id="weekly-priority-body">
+                <tr>
+                  <td colspan="5" class="placeholder-text">Učitavanje liste...</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="footer-hint small-muted" id="weekly-priority-footer"></div>
+        </section>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <span>Adnan.AI / Evolia OS · CEO cockpit</span>
+      <span id="footer-status" class="small-muted"></span>
+    </footer>
+  </div>
+
+  <script src="/static/script.js" defer></script>
+</body>
+</html>
