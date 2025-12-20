@@ -53,6 +53,7 @@ p{ margin:0; }
   min-height: 100vh;
   display:flex;
   flex-direction: column;
+  min-height: 0; /* critical for nested flex/grid scroll */
 }
 
 /* Top bar */
@@ -128,6 +129,7 @@ p{ margin:0; }
   gap: 14px;
   padding: 14px 14px 10px;
   overflow: hidden; /* internal scroll only */
+  align-content: stretch;
 }
 
 /* Columns */
@@ -136,8 +138,9 @@ p{ margin:0; }
   display:flex;
   flex-direction: column;
   gap: 14px;
+  overflow: hidden; /* IMPORTANT: prevents column from pushing page */
 }
-.column-left, .column-right { min-height: 0; }
+.column-left, .column-right { min-height: 0; overflow: hidden; }
 
 /* Card */
 .card{
@@ -146,6 +149,7 @@ p{ margin:0; }
   border-radius: var(--radius);
   box-shadow: var(--shadow2);
   overflow: hidden;
+  min-height: 0; /* IMPORTANT for internal scroll */
 }
 .card-header{
   display:flex;
@@ -154,6 +158,7 @@ p{ margin:0; }
   padding: 14px 16px;
   border-bottom: 1px solid rgba(255,255,255,.07);
   background: rgba(255,255,255,.02);
+  flex: 0 0 auto;
 }
 .card-header-compact{
   padding: 12px 14px;
@@ -178,11 +183,23 @@ p{ margin:0; }
   min-height: 0;
   display:flex;
   flex-direction: column;
+  overflow: hidden;
 }
+
+/* Chat mount must be a flex column container so history can scroll and composer stays visible */
 #ceo-left-panel{
   flex: 1;
   min-height: 0;
   height: 100%;
+  display:flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Weekly memory card (keep small, does not push layout) */
+.card-memory{
+  flex: 0 0 auto;
+  min-height: 0;
 }
 
 /* Right grid (goals/tasks) */
@@ -191,6 +208,7 @@ p{ margin:0; }
   grid-template-columns: 1fr 1fr;
   gap: 14px;
   min-height: 0;
+  overflow: hidden;
 }
 
 /* Pills */
@@ -218,6 +236,7 @@ p{ margin:0; }
 .table-wrapper{
   padding: 8px 10px 12px;
   min-height: 0;
+  overflow: hidden;
 }
 .table-wrapper-compact{
   max-height: 300px; /* ~5 rows visible then scroll */
@@ -286,6 +305,7 @@ p{ margin:0; }
 
 .pipeline-list-wrapper{
   padding: 8px 14px 14px;
+  min-height: 0;
 }
 .pipeline-list-header{
   display:flex;
@@ -405,8 +425,12 @@ p{ margin:0; }
     grid-template-columns: 1fr;
     overflow: visible;
   }
+  .column{
+    overflow: visible;
+  }
   .cards-grid{
     grid-template-columns: 1fr;
+    overflow: visible;
   }
   .table-wrapper-compact,
   .table-wrapper-weekly{
