@@ -1,3 +1,4 @@
+# gateway/gateway_server.py
 # ================================================================
 # SYSTEM VERSION (V1.1 — VERZIJA C)
 # ================================================================
@@ -261,12 +262,13 @@ def _preprocess_ceo_nl_input(
                 parts.append(f"projekt {project}")
             return ", ".join(parts)
 
+    # FIX: ispravan re.sub signature (pattern, repl, string)
+    # FIX: inline flag (?i) mora biti na početku, bez dodatnog flags=...
     cleaned = re.sub(
-        r"^(?i)(kreiraj|napravi|create)\s+cilj[a]?\s*[:\-]?\s*",
+        r"(?i)^(kreiraj|napravi|create)\s+cilj[a]?\s*[:\-]?\s*",
         "",
         text,
-        flags=re.IGNORECASE,
-    ).strip()
+    ).strip(" \t\r\n:,-")
 
     return cleaned or text
 
