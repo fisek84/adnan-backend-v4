@@ -19,9 +19,8 @@
     .column-left, .column-right { min-height: 0; }
 
     /* Left card becomes full-height container */
-    .card-command { display: flex; flex-direction: column; min-height: 0; }
-    .command-layout, .ceo-chat-panel { display: flex; flex-direction: column; min-height: 0; height: 100%; }
-    #ceo-left-panel { flex: 1; min-height: 0; height: 100%; }
+    .card-command { display: flex; flex-direction: column; min-height: 0; height: 100%; }
+    .command-layout { display: flex; flex-direction: column; min-height: 0; height: 100%; }
 
     /* Right: make tables show ~5 rows then scroll */
     .table-wrapper-compact {
@@ -71,27 +70,52 @@
           </div>
 
           <div class="command-layout">
-            <div class="ceo-chat-panel">
-              <!-- CEO Chatbox mount -->
-              <div id="ceo-left-panel"></div>
+            <!-- CEO CHATBOX (direktno u DOM-u, bez ceo_chatbox.js) -->
+            <div class="ceo-chatbox" id="ceo-left-panel">
+              <!-- HISTORY (scrollable) -->
+              <div class="ceo-chat-history" id="ceo-history">
+                <div class="ceo-chat-empty">
+                  Napiši CEO komandu ispod. History je scroll, input je fiksno na dnu.
+                </div>
+              </div>
 
-              <!-- Legacy DOM kept hidden so existing script.js doesn't crash -->
-              <div id="ceo-chat-legacy" style="display:none">
-                <div id="ceo-history"></div>
-                <textarea id="ceo-command-input"></textarea>
-                <button id="send-command-btn" type="button"></button>
+              <!-- INPUT (pinned at bottom of card) -->
+              <div class="ceo-chat-composer">
+                <div class="ceo-composer-shell">
+                  <textarea
+                    class="ceo-chat-input"
+                    id="ceo-command-input"
+                    placeholder="Unesi CEO COMMAND...
+(Enter = pošalji, Shift+Enter = novi red)"
+                  ></textarea>
 
-                <button id="approve-latest-btn" type="button"></button>
-                <button id="refresh-snapshot-btn" type="button"></button>
+                  <div class="ceo-chat-actions">
+                    <button
+                      type="button"
+                      class="ceo-btn-approve"
+                      id="approve-latest-btn"
+                      disabled
+                    >
+                      Odobri
+                    </button>
 
-                <span id="command-status-chip"></span>
-                <span id="command-status-text"></span>
+                    <button
+                      type="button"
+                      class="ceo-btn-send"
+                      id="send-command-btn"
+                    >
+                      ▶
+                    </button>
+                  </div>
+                </div>
 
-                <span id="last-execution-state"></span>
-                <span id="last-approval-id"></span>
-
-                <button id="refresh-weekly-btn" type="button"></button>
-                <tbody id="weekly-priority-body"></tbody>
+                <!-- Status linija / hidden meta, iste ID-eve koristi script.js -->
+                <div class="small-muted" style="margin-top:6px; display:flex; gap:8px; flex-wrap:wrap;">
+                  <span id="command-status-chip"></span>
+                  <span id="command-status-text"></span>
+                  <span id="last-execution-state" class="hidden"></span>
+                  <span id="last-approval-id" class="hidden"></span>
+                </div>
               </div>
             </div>
           </div>
@@ -247,17 +271,7 @@
     </footer>
   </div>
 
-  <!-- CEO Chatbox boot config -->
-  <script>
-    window.__EVO_UI__ = window.__EVO_UI__ || {};
-    window.__EVO_UI__.mountSelector = window.__EVO_UI__.mountSelector || "#ceo-left-panel";
-    // Optional overrides (no backend changes):
-    // window.__EVO_UI__.ceoCommandUrl = "/ceo/command";
-    // window.__EVO_UI__.approveUrl = "/api/ai-ops/approval/approve";
-    // window.__EVO_UI__.headers = {};
-  </script>
-
+  <!-- Samo stari script.js (radi sa gore definisanim ID-jevima) -->
   <script src="/static/script.js" defer></script>
-  <script src="/static/ceo_chatbox.js" defer></script>
 </body>
 </html>
