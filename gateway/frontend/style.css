@@ -124,7 +124,7 @@ p{ margin:0; }
   flex: 1;
   min-height: 0;
   display:grid;
-  grid-template-columns: 1.15fr .85fr;
+  grid-template-columns: 0.95fr 1.05fr;
   gap: 14px;
   padding: 14px 14px 10px;
   overflow: hidden; /* internal scroll only */
