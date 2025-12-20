@@ -125,11 +125,11 @@ p{ margin:0; }
   flex: 1;
   min-height: 0;
   display:grid;
-  /* malo suzi lijevu stranu da desna čitljivije stane */
   grid-template-columns: 0.88fr 1.12fr;
   gap: 14px;
   padding: 14px 14px 10px;
   overflow: hidden; /* internal scroll only */
+  align-items: stretch;
 }
 
 /* Columns */
@@ -138,8 +138,13 @@ p{ margin:0; }
   display:flex;
   flex-direction: column;
   gap: 14px;
+  height: 100%;
 }
-.column-left, .column-right { min-height: 0; }
+.column-left,
+.column-right {
+  min-height: 0;
+  height: 100%;
+}
 
 /* Card */
 .card{
@@ -173,6 +178,7 @@ p{ margin:0; }
   min-height: 0;
   display:flex;
   flex-direction: column;
+  height: 100%;
 }
 
 /* Ensure CEO chat mount inherits full height */
@@ -403,7 +409,7 @@ p{ margin:0; }
 }
 
 /* ===================================================================== */
-/* CEO CHATBOX — ChatGPT-like behavior (history scrolls, input pinned)     */
+/* CEO CHATBOX — ChatGPT-like behavior (history scrolls, input pinned)   */
 /* ===================================================================== */
 
 @keyframes ceoRise {
