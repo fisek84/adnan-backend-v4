@@ -6,29 +6,62 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <link rel="stylesheet" href="/static/style.css" />
 
-  <!-- UX overrides: 1-screen dashboard + right tables scroll (5 rows visible) -->
+  <!-- 1-screen layout + fixed left chat, right-side internal scroll -->
   <style>
-    /* 1-screen layout: page does NOT scroll; panels scroll internally */
     html, body { height: 100%; }
     body { overflow: hidden; }
 
-    .app-shell { min-height: 100vh; display: flex; flex-direction: column; }
-    .layout { flex: 1; min-height: 0; overflow: hidden; }
-
-    .column { min-height: 0; }
-    .column-left, .column-right { min-height: 0; }
-
-    /* Left card becomes full-height container */
-    .card-command { display: flex; flex-direction: column; min-height: 0; height: 100%; }
-    .command-layout { display: flex; flex-direction: column; min-height: 0; height: 100%; }
-
-    /* Right: make tables show ~5 rows then scroll */
-    .table-wrapper-compact {
-      max-height: 300px; /* header + ~5 rows */
-      overflow: auto;
+    .app-shell {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
     }
 
-    /* Weekly priority table: a bit taller but still scroll */
+    /* Glavni grid: dvije kolone, jedan red fiksiran na visinu ekrana */
+    .layout{
+      flex: 1;
+      min-height: 0;
+      display: grid;
+      grid-template-columns: 0.88fr 1.12fr;
+      grid-template-rows: minmax(0, 1fr); /* ključ: red je tačno visine raspoloživog prostora */
+      gap: 14px;
+      padding: 14px 14px 10px;
+      overflow: hidden; /* nema page scrolla, samo interni */
+    }
+
+    /* Kolone su flex stupci sa internim scrollom po potrebi */
+    .column{
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    .column-left{
+      overflow: hidden;        /* chat box mora ostati unutar kolone */
+    }
+    .column-right{
+      overflow-y: auto;        /* desna kolona scrolla kad je viša od ekrana */
+    }
+
+    /* Lijeva CEO kartica = full-height container za chat */
+    .card-command{
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+    }
+    .command-layout{
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* Tablice desno: ~5 redova pa scroll (zadržavamo tvoj behaviour) */
+    .table-wrapper-compact {
+      max-height: 300px;
+      overflow: auto;
+    }
     .table-wrapper-weekly {
       max-height: 340px;
       overflow: auto;
@@ -57,7 +90,7 @@
     </header>
 
     <main class="layout">
-      <!-- LEFT COLUMN: CEO CHAT ONLY (ChatGPT-style) -->
+      <!-- LEFT COLUMN: CEO CHAT (ChatGPT-style) -->
       <section class="column column-left">
         <section class="card card-command">
           <div class="card-header">
@@ -70,16 +103,16 @@
           </div>
 
           <div class="command-layout">
-            <!-- CEO CHATBOX (direktno u DOM-u, bez ceo_chatbox.js) -->
+            <!-- CEO CHATBOX: history scrolla, input pinovan na dnu kartice -->
             <div class="ceo-chatbox" id="ceo-left-panel">
-              <!-- HISTORY (scrollable) -->
+              <!-- HISTORY -->
               <div class="ceo-chat-history" id="ceo-history">
                 <div class="ceo-chat-empty">
                   Napiši CEO komandu ispod. History je scroll, input je fiksno na dnu.
                 </div>
               </div>
 
-              <!-- INPUT (pinned at bottom of card) -->
+              <!-- COMPOSER (input + dugmad) -->
               <div class="ceo-chat-composer">
                 <div class="ceo-composer-shell">
                   <textarea
@@ -109,7 +142,7 @@
                   </div>
                 </div>
 
-                <!-- Status linija / hidden meta, iste ID-eve koristi script.js -->
+                <!-- Status / meta -->
                 <div class="small-muted" style="margin-top:6px; display:flex; gap:8px; flex-wrap:wrap;">
                   <span id="command-status-chip"></span>
                   <span id="command-status-text"></span>
@@ -271,7 +304,7 @@
     </footer>
   </div>
 
-  <!-- Samo stari script.js (radi sa gore definisanim ID-jevima) -->
+  <!-- Samo stari script.js koji koristi postojeće ID-eve -->
   <script src="/static/script.js" defer></script>
 </body>
 </html>
