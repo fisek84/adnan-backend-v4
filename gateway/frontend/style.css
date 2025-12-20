@@ -432,6 +432,16 @@ p{ margin:0; }
   flex-direction: column;
   padding: 14px 14px 12px;
 }
+
+/* CEO history kontejner – pravi se scroll box preko cijele lijeve kolone */
+#ceo-history {
+  flex: 1;
+  min-height: 0;
+  max-height: 100%;
+  overflow-y: auto;          /* ovdje se pali scroll */
+  padding: 8px 10px 18px;
+}
+
 /* Legacy CEO history box (stari UI) */
 .card-command{
   display:flex;
