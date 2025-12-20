@@ -1,4 +1,7 @@
 # gateway/gateway_server.py
+# FULL FILE — zamijeni cijeli gateway_server.py ovim.
+# (Ispravka: _preprocess_ceo_nl_input re.sub bug + zadržano sve ostalo)
+
 # ================================================================
 # SYSTEM VERSION (V1.1 — VERZIJA C)
 # ================================================================
@@ -262,13 +265,13 @@ def _preprocess_ceo_nl_input(
                 parts.append(f"projekt {project}")
             return ", ".join(parts)
 
-    # FIX: ispravan re.sub signature (pattern, repl, string)
-    # FIX: inline flag (?i) mora biti na početku, bez dodatnog flags=...
+    # FIX: obavezan zarez nakon pattern stringa (da se ne “zalijepi” sa replacement stringom)
     cleaned = re.sub(
-        r"(?i)^(kreiraj|napravi|create)\s+cilj[a]?\s*[:\-]?\s*",
+        r"^(kreiraj|napravi|create)\s+cilj[a]?\s*[:\-]?\s*",
         "",
         text,
-    ).strip(" \t\r\n:,-")
+        flags=re.IGNORECASE,
+    ).strip()
 
     return cleaned or text
 
@@ -299,14 +302,12 @@ async def _query_notion_db(db_id: Optional[str], page_size: int = 20) -> List[Di
 
 
 def _extract_title(properties: Dict[str, Any]) -> Optional[str]:
-    # title property
     for prop in properties.values():
         if prop.get("type") == "title":
             pieces = prop.get("title") or []
             text = "".join(p.get("plain_text", "") for p in pieces).strip()
             if text:
                 return text
-    # fallback: rich_text
     for prop in properties.values():
         if prop.get("type") == "rich_text":
             pieces = prop.get("rich_text") or []
@@ -317,7 +318,6 @@ def _extract_title(properties: Dict[str, Any]) -> Optional[str]:
 
 
 def _extract_select(properties: Dict[str, Any], keywords: List[str]) -> Optional[str]:
-    # status / priority from Status / Select / Multi-select
     for name, prop in properties.items():
         lower_name = name.lower()
         if not any(k in lower_name for k in keywords):
@@ -347,7 +347,6 @@ def _extract_date(properties: Dict[str, Any], keywords: List[str]) -> Optional[s
         if prop.get("type") == "date":
             d = prop.get("date") or {}
             return d.get("start") or d.get("end")
-    # fallback – bilo koji date
     for prop in properties.values():
         if prop.get("type") == "date":
             d = prop.get("date") or {}
@@ -410,9 +409,6 @@ async def _load_tasks_summary() -> List[Dict[str, Any]]:
 # ================================================================
 @app.post("/api/execute")
 async def execute_command(payload: ExecuteInput):
-    """
-    Kanonski CEO → COO ulaz (natural language).
-    """
     ai_command = coo_translation_service.translate(
         raw_input=payload.text,
         source="system",
@@ -449,9 +445,6 @@ async def execute_command(payload: ExecuteInput):
 # ================================================================
 @app.post("/ceo/command")
 async def ceo_dashboard_command(payload: CeoCommandInput):
-    """
-    CEO Dashboard entrypoint.
-    """
     cleaned_text = _preprocess_ceo_nl_input(
         raw_text=payload.input_text,
         smart_context=payload.smart_context,
@@ -497,9 +490,6 @@ async def ceo_dashboard_command(payload: CeoCommandInput):
 # ================================================================
 @app.post("/api/execute/raw")
 async def execute_raw_command(payload: ExecuteRawInput):
-    """
-    Kanonski RAW ulaz: direktno kreira AICommand bez COO NLP-a.
-    """
     ai_command = AICommand(
         command=payload.command,
         intent=payload.intent,
@@ -536,14 +526,8 @@ async def execute_raw_command(payload: ExecuteRawInput):
 # ================================================================
 @app.get("/api/ceo/console/snapshot")
 async def ceo_console_snapshot():
-    """
-    Read-only sistemski snapshot za CEO Console.
-    """
     approval_state = get_approval_state()
-    approvals_map: Dict[str, Dict[str, Any]] = getattr(
-        approval_state, "_approvals", {}
-    )
-
+    approvals_map: Dict[str, Dict[str, Any]] = getattr(approval_state, "_approvals", {})
     approvals_list = list(approvals_map.values())
 
     pending = [a for a in approvals_list if a.get("status") == "pending"]
@@ -552,13 +536,11 @@ async def ceo_console_snapshot():
     failed = [a for a in approvals_list if a.get("status") == "failed"]
     completed = [a for a in approvals_list if a.get("status") == "completed"]
 
-    # Knowledge snapshot (AI summary) – READ only
     ks = KnowledgeSnapshotService.get_snapshot()
     ks_dbs = ks.get("databases") or {}
     ai_summary_raw = ks_dbs.get("ai_summary")
 
     weekly_memory = None
-
     if isinstance(ai_summary_raw, list) and ai_summary_raw:
         latest_item = ai_summary_raw[0]
 
@@ -586,7 +568,6 @@ async def ceo_console_snapshot():
             )
             notion_page_id = latest_item.get("id") or latest_item.get("page_id")
             notion_url = latest_item.get("url") or latest_item.get("notion_url")
-
             latest_raw = _to_serializable(latest_item)
         else:
             latest_raw = _to_serializable(latest_item)
@@ -602,7 +583,6 @@ async def ceo_console_snapshot():
             }
         }
 
-    # NOVO: direktno čitanje ciljeva / taskova iz Notion baza
     goals_summary = await _load_goals_summary()
     tasks_summary = await _load_tasks_summary()
 
@@ -632,9 +612,7 @@ async def ceo_console_snapshot():
             "ready": ks.get("ready"),
             "last_sync": ks.get("last_sync"),
         },
-        "weekly_memory": _to_serializable(weekly_memory)
-        if weekly_memory is not None
-        else None,
+        "weekly_memory": _to_serializable(weekly_memory) if weekly_memory is not None else None,
         "goals_summary": goals_summary,
         "tasks_summary": tasks_summary,
     }
@@ -642,15 +620,11 @@ async def ceo_console_snapshot():
     return snapshot
 
 
-# Public ruta koju koristi frontend
 @app.get("/ceo/console/snapshot")
 async def ceo_console_snapshot_public():
     return await ceo_console_snapshot()
 
 
-# ================================================================
-# CEO WEEKLY MEMORY (READ-ONLY, IN-MEMORY CACHE — LEGACY)
-# ================================================================
 @app.get("/api/ceo/console/weekly-memory")
 async def ceo_weekly_memory():
     wm_service = get_weekly_memory_service()
@@ -658,9 +632,6 @@ async def ceo_weekly_memory():
     return {"weekly_memory": _to_serializable(wm_snapshot)}
 
 
-# ================================================================
-# CEO WEEKLY PRIORITY LIST (AI SUMMARY DB → FRONTEND TABELA)
-# ================================================================
 @app.get("/ceo/weekly-priority-memory")
 async def ceo_weekly_priority_memory():
     try:
@@ -676,37 +647,16 @@ async def ceo_weekly_priority_memory():
     return {"items": [i.dict() for i in items]}
 
 
-# ================================================================
-# CEO AGENTS (READ-ONLY, STATIC + FUTURE DYNAMIC)
-# ================================================================
 @app.get("/ceo/agents")
 async def ceo_agents():
     agents = [
-        {
-            "id": "notion_ops_agent",
-            "name": "Notion Ops Agent",
-            "role": "executor",
-            "status": "idle",
-        },
-        {
-            "id": "ai_command_service",
-            "name": "AI Command Service",
-            "role": "system",
-            "status": "ready",
-        },
-        {
-            "id": "coo_translation_service",
-            "name": "COO Translation Service",
-            "role": "translation",
-            "status": "ready",
-        },
+        {"id": "notion_ops_agent", "name": "Notion Ops Agent", "role": "executor", "status": "idle"},
+        {"id": "ai_command_service", "name": "AI Command Service", "role": "system", "status": "ready"},
+        {"id": "coo_translation_service", "name": "COO Translation Service", "role": "translation", "status": "ready"},
     ]
     return agents
 
 
-# ================================================================
-# LEGACY ROUTES (BACKWARD COMPATIBILITY ZA STARI FRONTEND)
-# ================================================================
 @app.get("/ceo-console/snapshot", include_in_schema=False)
 async def legacy_ceo_console_snapshot():
     return await ceo_console_snapshot()
@@ -717,9 +667,6 @@ async def legacy_ceo_weekly_memory():
     return await ceo_weekly_memory()
 
 
-# ================================================================
-# ROOT
-# ================================================================
 @app.get("/")
 async def serve_frontend():
     index_path = os.path.join(FRONTEND_DIR, "index.html")
@@ -728,9 +675,6 @@ async def serve_frontend():
     return FileResponse(index_path)
 
 
-# ================================================================
-# HEALTH
-# ================================================================
 @app.get("/health")
 async def health_check():
     if not _BOOT_READY:
@@ -738,9 +682,6 @@ async def health_check():
     return {"status": "ok"}
 
 
-# ================================================================
-# ERROR HANDLER
-# ================================================================
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     logger.exception("GLOBAL ERROR")
@@ -750,9 +691,6 @@ async def global_exception_handler(request: Request, exc: Exception):
     )
 
 
-# ================================================================
-# STARTUP
-# ================================================================
 @app.on_event("startup")
 async def startup_event():
     global _BOOT_READY
@@ -760,19 +698,14 @@ async def startup_event():
     bootstrap_application()
 
     from services.notion_service import get_notion_service
-
     notion_service = get_notion_service()
 
-    # READ-ONLY sync znanja iz Notiona (AI summary i sl.)
     await notion_service.sync_knowledge_snapshot()
 
     _BOOT_READY = True
     logger.info("🟢 System boot completed. READY.")
 
 
-# ================================================================
-# CORS
-# ================================================================
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

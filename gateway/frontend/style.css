@@ -24,6 +24,7 @@
 
 * { box-sizing: border-box; }
 html, body { height: 100%; }
+
 body{
   margin:0;
   font-family: var(--font);
@@ -50,10 +51,11 @@ p{ margin:0; }
 
 /* Shell */
 .app-shell{
-  min-height: 100vh;
+  /* HARD OVERRIDE: nešto ti postavlja inline min-height:0px — ovo ga pregazi */
+  min-height: 100vh !important;
+  height: 100vh;
   display:flex;
   flex-direction: column;
-  min-height: 0; /* critical for nested flex/grid scroll */
 }
 
 /* Top bar */
@@ -65,6 +67,7 @@ p{ margin:0; }
   border-bottom: 1px solid rgba(255,255,255,.08);
   background: rgba(0,0,0,.18);
   backdrop-filter: blur(10px);
+  flex: 0 0 auto;
 }
 
 .brand{
@@ -125,11 +128,11 @@ p{ margin:0; }
   flex: 1;
   min-height: 0;
   display:grid;
-  grid-template-columns: 0.95fr 1.05fr;
+  /* Lijeva malo uža da desna bolje “diše” */
+  grid-template-columns: 0.90fr 1.10fr;
   gap: 14px;
   padding: 14px 14px 10px;
   overflow: hidden; /* internal scroll only */
-  align-content: stretch;
 }
 
 /* Columns */
@@ -138,9 +141,8 @@ p{ margin:0; }
   display:flex;
   flex-direction: column;
   gap: 14px;
-  overflow: hidden; /* IMPORTANT: prevents column from pushing page */
 }
-.column-left, .column-right { min-height: 0; overflow: hidden; }
+.column-left, .column-right { min-height: 0; }
 
 /* Card */
 .card{
@@ -149,7 +151,6 @@ p{ margin:0; }
   border-radius: var(--radius);
   box-shadow: var(--shadow2);
   overflow: hidden;
-  min-height: 0; /* IMPORTANT for internal scroll */
 }
 .card-header{
   display:flex;
@@ -158,7 +159,6 @@ p{ margin:0; }
   padding: 14px 16px;
   border-bottom: 1px solid rgba(255,255,255,.07);
   background: rgba(255,255,255,.02);
-  flex: 0 0 auto;
 }
 .card-header-compact{
   padding: 12px 14px;
@@ -183,23 +183,11 @@ p{ margin:0; }
   min-height: 0;
   display:flex;
   flex-direction: column;
-  overflow: hidden;
 }
-
-/* Chat mount must be a flex column container so history can scroll and composer stays visible */
 #ceo-left-panel{
   flex: 1;
   min-height: 0;
   height: 100%;
-  display:flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-
-/* Weekly memory card (keep small, does not push layout) */
-.card-memory{
-  flex: 0 0 auto;
-  min-height: 0;
 }
 
 /* Right grid (goals/tasks) */
@@ -208,7 +196,6 @@ p{ margin:0; }
   grid-template-columns: 1fr 1fr;
   gap: 14px;
   min-height: 0;
-  overflow: hidden;
 }
 
 /* Pills */
@@ -236,7 +223,6 @@ p{ margin:0; }
 .table-wrapper{
   padding: 8px 10px 12px;
   min-height: 0;
-  overflow: hidden;
 }
 .table-wrapper-compact{
   max-height: 300px; /* ~5 rows visible then scroll */
@@ -305,7 +291,6 @@ p{ margin:0; }
 
 .pipeline-list-wrapper{
   padding: 8px 14px 14px;
-  min-height: 0;
 }
 .pipeline-list-header{
   display:flex;
@@ -384,6 +369,7 @@ p{ margin:0; }
   font-size: 11px;
   border-top: 1px solid rgba(255,255,255,.06);
   background: rgba(0,0,0,.12);
+  flex: 0 0 auto;
 }
 
 /* Debug */
@@ -399,38 +385,229 @@ p{ margin:0; }
 }
 .hidden{ display:none !important; }
 
+/* ========================================================= */
+/* CEO CHATBOX — ChatGPT-like: sticky composer + scroll history */
+/* ========================================================= */
+
+.ceo-chatbox{
+  height: 100%;
+  min-height: 0;
+  display:flex;
+  flex-direction: column;
+}
+
+.ceo-chatbox-history{
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 14px;
+  border: 1px solid rgba(255,255,255,.10);
+  border-radius: 14px;
+  background: rgba(0,0,0,.10);
+}
+
+.ceo-chatbox-empty{
+  height: 100%;
+  min-height: 220px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  color: rgba(255,255,255,.50);
+  font-size: 12px;
+}
+
+.ceo-chatbox-row{
+  display:flex;
+  gap:12px;
+  margin: 10px 0;
+  animation: ceoMsgIn 140ms ease-out;
+}
+
+@keyframes ceoMsgIn{
+  from { transform: translateY(3px); opacity: .0; }
+  to   { transform: translateY(0); opacity: 1; }
+}
+
+.ceo-chatbox-row.grouped{
+  margin-top: 4px;
+}
+
+.ceo-chatbox-badge{
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  font-weight: 800;
+  font-size: 12px;
+  border: 1px solid rgba(255,255,255,.12);
+  background: rgba(255,255,255,.04);
+  color: rgba(255,255,255,.85);
+  flex: 0 0 auto;
+}
+
+.ceo-chatbox-msg{
+  flex:1;
+  white-space: pre-wrap;
+  line-height: 1.45;
+  font-size: 14px;
+  color: rgba(255,255,255,.92);
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,.10);
+  background: rgba(0,0,0,.12);
+}
+.ceo-chatbox-msg.ceo { background: rgba(0,0,0,.16); }
+.ceo-chatbox-msg.sys { background: rgba(255,255,255,.06); }
+
+.ceo-chatbox-meta{
+  margin-top: 8px;
+  display:flex;
+  gap:10px;
+  align-items:center;
+  flex-wrap: wrap;
+}
+
+.ceo-chatbox-pill{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  padding:6px 10px;
+  border-radius:999px;
+  border: 1px solid rgba(255,255,255,.12);
+  background: rgba(0,0,0,.12);
+  color: rgba(255,255,255,.78);
+  font-size: 12px;
+}
+.ceo-chatbox-pill strong{
+  color: rgba(255,255,255,.92);
+  font-weight: 800;
+}
+
+.ceo-chatbox-typing{
+  margin-top: 10px;
+  color: rgba(255,255,255,.62);
+  font-size: 12px;
+  padding: 0 2px;
+}
+
+.ceo-chatbox-composer{
+  position: sticky;
+  bottom: 0;
+  margin-top: 12px;
+  border: 1px solid rgba(255,255,255,.10);
+  border-radius: 14px;
+  background: rgba(0,0,0,.22);
+  padding: 10px;
+  display:flex;
+  gap: 10px;
+  align-items: flex-end;
+}
+
+.ceo-chatbox-textarea{
+  flex: 1;
+  resize:none;
+  border: 1px solid rgba(255,255,255,.12);
+  border-radius: 12px;
+  background: rgba(0,0,0,.20);
+  color: rgba(255,255,255,.92);
+  padding: 10px 12px;
+  line-height: 1.35;
+  font-size: 14px;
+  max-height: 160px;
+  min-height: 44px;
+  outline: none;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.ceo-chatbox-textarea:focus{
+  border-color: rgba(34,197,94,.40);
+  box-shadow: 0 0 0 3px rgba(34,197,94,.12);
+}
+
+.ceo-chatbox-btn{
+  border-radius: 12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255,255,255,.12);
+  background: rgba(255,255,255,.08);
+  color: rgba(255,255,255,.92);
+  font-weight: 900;
+  cursor: pointer;
+  transition: transform 120ms ease, background 120ms ease, border-color 120ms ease, opacity 120ms ease;
+}
+.ceo-chatbox-btn:hover{
+  background: rgba(255,255,255,.10);
+  border-color: rgba(255,255,255,.18);
+  transform: translateY(-1px);
+}
+.ceo-chatbox-btn:active{ transform: translateY(0); }
+.ceo-chatbox-btn:disabled{
+  opacity: .55;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.ceo-chatbox-btn.primary{
+  background: rgba(34,197,94,.18);
+  border-color: rgba(34,197,94,.35);
+}
+.ceo-chatbox-btn.primary:hover{
+  background: rgba(34,197,94,.22);
+  border-color: rgba(34,197,94,.45);
+}
+
+.ceo-chatbox-scrollbtn{
+  position: sticky;
+  bottom: 76px;
+  margin-left: auto;
+  margin-right: 6px;
+  display:none;
+  align-items:center;
+  justify-content:center;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,.12);
+  background: rgba(0,0,0,.35);
+  color: rgba(255,255,255,.85);
+  font-size: 12px;
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+}
+.ceo-chatbox-scrollbtn:hover{
+  background: rgba(0,0,0,.45);
+}
+
 /* Scrollbars (WebKit) */
 .table-wrapper-compact::-webkit-scrollbar,
 .table-wrapper-weekly::-webkit-scrollbar,
-.ceo-chat-history::-webkit-scrollbar{
+.ceo-chatbox-history::-webkit-scrollbar{
   width: 10px;
 }
 .table-wrapper-compact::-webkit-scrollbar-thumb,
 .table-wrapper-weekly::-webkit-scrollbar-thumb,
-.ceo-chat-history::-webkit-scrollbar-thumb{
+.ceo-chatbox-history::-webkit-scrollbar-thumb{
   background: rgba(255,255,255,.12);
   border: 2px solid rgba(0,0,0,.18);
   border-radius: 999px;
 }
 .table-wrapper-compact::-webkit-scrollbar-track,
 .table-wrapper-weekly::-webkit-scrollbar-track,
-.ceo-chat-history::-webkit-scrollbar-track{
+.ceo-chatbox-history::-webkit-scrollbar-track{
   background: rgba(0,0,0,.10);
 }
 
 /* Responsive: stack columns on smaller screens (allow page scroll) */
 @media (max-width: 980px){
   body{ overflow:auto; }
+  .app-shell{ height: auto; }
   .layout{
     grid-template-columns: 1fr;
     overflow: visible;
   }
-  .column{
-    overflow: visible;
-  }
   .cards-grid{
     grid-template-columns: 1fr;
-    overflow: visible;
   }
   .table-wrapper-compact,
   .table-wrapper-weekly{
