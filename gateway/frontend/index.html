@@ -4,12 +4,12 @@
   <meta charset="UTF-8" />
   <title>Adnan.AI / Evolia OS — CEO Control Center</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <!-- koristimo /static jer je tako mountano u main.py -->
+  <!-- /static je mountan u main.py -->
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
   <div class="app-shell">
-    <!-- GORNJI BAR -->
+    <!-- TOP BAR -->
     <header class="top-bar">
       <div class="brand">
         <div class="brand-orb"></div>
@@ -20,7 +20,7 @@
       </div>
 
       <div class="top-status">
-        <span class="status-pill status-pill-online">OS ONLINE</span>
+        <span id="os-status-pill" class="status-pill">OS –</span>
         <span class="status-pill status-pill-safe">
           GOVERNANCE: WHOLE → BLOCKED → APPROVAL → EXECUTED
         </span>
@@ -28,9 +28,8 @@
     </header>
 
     <main class="layout">
-      <!-- LIJEVA KOLONA: CEO CHAT + WEEKLY MEMORY -->
+      <!-- LEFT -->
       <section class="column column-left">
-        <!-- CEO COMMAND CHAT PANEL -->
         <section class="card card-command">
           <div class="card-header">
             <div>
@@ -43,40 +42,57 @@
 
           <div class="command-layout">
             <div class="ceo-chat-panel">
-              <!-- MOUNT AREA: ovdje će se renderovati novi chatbox -->
-              <div id="ceo-left-panel" style="height:100%"></div>
+              <!-- OPTIONAL: React mount target (ne dira script.js) -->
+              <div id="ceo-left-panel" style="height:auto;margin-bottom:12px;"></div>
 
-              <!-- LEGACY DOM: zadržan radi script.js, ali sakriven -->
-              <div id="ceo-chat-legacy" style="display:none">
-                <div id="ceo-chat-history" class="chat-history"></div>
+              <!-- HISTORY (script.js očekuje: ceo-history + history-placeholder) -->
+              <div id="ceo-history" class="chat-history">
+                <div class="history-placeholder conv-message conv-system">
+                  Dobrodošli u CEO Command. Sve naredbe prolaze kroz CANON cjevovod
+                  (BLOCKED → APPROVAL → EXECUTED).
+                </div>
+              </div>
 
-                <div class="chat-input-bar">
-                  <textarea id="ceo-command-input" class="chat-input" rows="1"></textarea>
-                  <button id="send-command-btn" class="btn btn-primary" type="button">Pošalji</button>
+              <!-- INPUT BAR (script.js očekuje: ceo-command-input, send-command-btn) -->
+              <div class="chat-input-bar">
+                <textarea
+                  id="ceo-command-input"
+                  class="chat-input"
+                  rows="1"
+                  placeholder='Npr: Kreiraj centralni cilj "Implementirati FLP OS" sa due date 01.05.2025, prioritet Visok, status Aktivan...'
+                ></textarea>
+
+                <button id="send-command-btn" class="btn btn-primary" type="button">
+                  Pošalji naredbu
+                </button>
+              </div>
+
+              <!-- STATUS CHIP (script.js očekuje: command-status-chip, command-status-text) -->
+              <div class="command-status">
+                <div class="status-row">
+                  <span id="command-status-chip" class="status-pill"> </span>
+                  <span id="command-status-text" class="small-muted"></span>
                 </div>
 
-                <div class="command-status">
-                  <div>
-                    <span class="status-label">Zadnje stanje:</span>
-                    <span id="last-execution-state" class="status-value">–</span>
-                  </div>
-                  <div>
-                    <span class="status-label">approval_id:</span>
-                    <span id="last-approval-id" class="status-value">–</span>
-                  </div>
+                <div class="status-row">
+                  <span class="status-label">Zadnje stanje:</span>
+                  <span id="last-execution-state" class="status-value">–</span>
                 </div>
 
-                <div class="command-actions-row">
-                  <button id="approve-latest-btn" class="btn btn-outline" type="button">
-                    Odobri zadnji zahtjev
-                  </button>
-                  <button id="refresh-snapshot-btn" class="btn btn-ghost" type="button">
-                    Osvježi snapshot
-                  </button>
-                  <button id="toggle-debug-btn" class="btn btn-ghost" type="button">
-                    Prikaži tehničke detalje
-                  </button>
+                <div class="status-row">
+                  <span class="status-label">approval_id:</span>
+                  <span id="last-approval-id" class="status-value">–</span>
                 </div>
+              </div>
+
+              <!-- ACTIONS (script.js očekuje: approve-latest-btn, refresh-snapshot-btn) -->
+              <div class="command-actions-row">
+                <button id="approve-latest-btn" class="btn btn-outline" type="button">
+                  Odobri zadnji zahtjev
+                </button>
+                <button id="refresh-snapshot-btn" class="btn btn-ghost" type="button">
+                  Osvježi snapshot
+                </button>
               </div>
             </div>
           </div>
@@ -84,7 +100,6 @@
           <pre id="debug-output" class="debug-output hidden"></pre>
         </section>
 
-        <!-- WEEKLY PRIORITY MEMORY -->
         <section class="card card-memory">
           <div class="card-header">
             <div>
@@ -102,7 +117,7 @@
         </section>
       </section>
 
-      <!-- DESNA KOLONA -->
+      <!-- RIGHT -->
       <section class="column column-right">
         <div class="cards-grid">
           <!-- GOALS -->
@@ -168,31 +183,18 @@
           </section>
         </div>
 
-        <!-- APPROVAL PIPELINE -->
+        <!-- PIPELINE AGGREGATES (script.js očekuje: pending-count-pill, approved-today-pill, executed-total-pill, errors-total-pill) -->
         <section class="card">
           <div class="card-header card-header-compact">
             <div>
               <h3>Odobrenje cjevovoda</h3>
               <p class="card-subtitle">WHOLE → BLOCKED → APPROVAL → EXECUTED</p>
             </div>
-          </div>
-
-          <div class="pipeline-row">
-            <div class="pipeline-stage">
-              <span class="stage-label">Pending</span>
-              <div class="stage-value" id="pending-count">0</div>
-            </div>
-            <div class="pipeline-stage">
-              <span class="stage-label">Odobreno danas</span>
-              <div class="stage-value" id="approved-today-count">0</div>
-            </div>
-            <div class="pipeline-stage">
-              <span class="stage-label">Ukupno izvršeno</span>
-              <div class="stage-value" id="executed-total-count">0</div>
-            </div>
-            <div class="pipeline-stage">
-              <span class="stage-label">Greške</span>
-              <div class="stage-value" id="errors-total-count">0</div>
+            <div class="pill-group">
+              <span class="pill" id="pending-count-pill">0</span>
+              <span class="pill" id="approved-today-pill">0</span>
+              <span class="pill" id="executed-total-pill">0</span>
+              <span class="pill" id="errors-total-pill">0</span>
             </div>
           </div>
 
@@ -207,7 +209,7 @@
           </div>
         </section>
 
-        <!-- WEEKLY PRIORITY LIST -->
+        <!-- WEEKLY PRIORITY (script.js očekuje: weekly-priority-body, refresh-weekly-btn) -->
         <section class="card">
           <div class="card-header card-header-compact">
             <div>
@@ -216,7 +218,7 @@
                 Lista iz AI Summary DB (Notion) – ciljevi / taskovi za ovu sedmicu.
               </p>
             </div>
-            <button id="refresh-weekly-list-btn" class="btn btn-ghost" type="button">
+            <button id="refresh-weekly-btn" class="btn btn-ghost" type="button">
               Osvježi listu
             </button>
           </div>
@@ -232,7 +234,7 @@
                   <th>Period</th>
                 </tr>
               </thead>
-              <tbody id="weekly-priority-table-body">
+              <tbody id="weekly-priority-body">
                 <tr>
                   <td colspan="5" class="placeholder-text">Učitavanje liste...</td>
                 </tr>
@@ -251,20 +253,13 @@
     </footer>
   </div>
 
-  <!-- CEO Chatbox boot config (ACTIVE, ne komentar) -->
   <script>
     window.__EVO_UI__ = window.__EVO_UI__ || {};
     window.__EVO_UI__.mountSelector = "#ceo-left-panel";
     window.__EVO_UI__.ceoCommandUrl = "/ceo/command";
-    // ako ti treba approve endpoint, dodaj kasnije:
-    // window.__EVO_UI__.approveUrl = "/api/ai-ops/approval/approve";
-    // window.__EVO_UI__.headers = {};
   </script>
 
-  <!-- Existing dashboard script -->
   <script src="/static/script.js" defer></script>
-
-  <!-- CEO chatbox loader (mora postojati kao statični fajl) -->
   <script src="/static/ceo_chatbox.js" defer></script>
 </body>
 </html>
