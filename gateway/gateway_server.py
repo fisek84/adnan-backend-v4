@@ -7,6 +7,8 @@ import uuid
 import re
 from typing import Dict, Any, Optional, List
 
+import httpx  # <-- novo
+
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -28,6 +30,10 @@ load_dotenv(".env")
 
 OS_ENABLED = os.getenv("OS_ENABLED", "true").lower() == "true"
 OPS_SAFE_MODE = os.getenv("OPS_SAFE_MODE", "false").lower() == "false"
+
+NOTION_API_KEY = os.getenv("NOTION_API_KEY") or os.getenv("NOTION_TOKEN")
+NOTION_GOALS_DB_ID = os.getenv("NOTION_GOALS_DB_ID")
+NOTION_TASKS_DB_ID = os.getenv("NOTION_TASKS_DB_ID")
 
 _BOOT_READY = False
 
@@ -80,6 +86,9 @@ logger.info("✅ NotionService singleton initialized")
 # WEEKLY MEMORY SERVICE (CEO DASHBOARD)
 # ================================================================
 from services.weekly_memory_service import get_weekly_memory_service
+
+# AI SUMMARY DB SERVICE (REALNO STANJE WEEKLY PRIORITY)
+from services.ai_summary_service import get_ai_summary_service
 
 # ================================================================
 # ROUTERS
@@ -171,6 +180,7 @@ class ExecuteRawInput(BaseModel):
     - NE preskače governance/approval: i dalje BLOCKED → APPROVAL → EXECUTED
     - Kada već imaš strukturisan AICommand (npr. multi-DB Notion ops).
     """
+
     command: str
     intent: str
     params: Dict[str, Any] = {}
@@ -186,6 +196,7 @@ class CeoCommandInput(BaseModel):
     - Poštuje isti governance pipeline kao /api/execute
     - smart_context se koristi kao HINT, ne kao direktan write
     """
+
     input_text: str
     smart_context: Optional[Dict[str, Any]] = None
     source: str = "ceo_dashboard"
@@ -224,15 +235,6 @@ def _preprocess_ceo_nl_input(
 ) -> str:
     """
     Minimalni, deterministički preprocessing za CEO Dashboard NL input.
-
-    Cilj:
-    - ispraviti grešku "Kreiraj cilj ..." gdje se glagol lijepi u GOAL NAME
-    - NE uvodi nove side-effecte, samo čisti tekst za COOTranslationService
-
-    Pravila:
-    - ako smart_context.command_type == "create_goal" i postoji goal.name,
-      tekst koji šaljemo COO-u počinje nazivom cilja (bez "kreiraj cilj")
-    - fallback: regex strip samo prefiksa "kreiraj cilj" / "napravi cilj" / "create cilj"
     """
     text = (raw_text or "").strip()
     if not text:
@@ -259,7 +261,6 @@ def _preprocess_ceo_nl_input(
                 parts.append(f"projekt {project}")
             return ", ".join(parts)
 
-    # fallback: samo skidamo komandni prefiks, ostatak ostaje identičan
     cleaned = re.sub(
         r"^(?i)(kreiraj|napravi|create)\s+cilj[a]?\s*[:\-]?\s*",
         "",
@@ -270,90 +271,136 @@ def _preprocess_ceo_nl_input(
     return cleaned or text
 
 
-def _extract_candidate_lists(container: Any) -> List[Any]:
-    """
-    Best-effort ekstrakcija potencijalnih weekly-priority listi
-    iz snapshot strukture (koju puni NotionOpsAgent).
-
-    - ne mijenja state
-    - ne pretpostavlja tačan shape; samo traži list-e ugniježdene u dict-ove
-    """
-    items: List[Any] = []
-    if isinstance(container, list):
-        return container
-
-    if isinstance(container, dict):
-        for value in container.values():
-            if isinstance(value, list):
-                items.extend(value)
-            elif isinstance(value, dict):
-                items.extend(_extract_candidate_lists(value))
-
-    return items
+# ================================================================
+# NOTION HELPERS ZA GOALS/TASKS SNAPSHOT
+# ================================================================
+NOTION_VERSION = "2022-06-28"
 
 
-def _pick_first(d: Dict[str, Any], *keys: str) -> Optional[Any]:
-    for k in keys:
-        if k in d and d[k] not in (None, ""):
-            return d[k]
+async def _query_notion_db(db_id: Optional[str], page_size: int = 20) -> List[Dict[str, Any]]:
+    if not NOTION_API_KEY or not db_id:
+        return []
+
+    url = f"https://api.notion.com/v1/databases/{db_id}/query"
+    headers = {
+        "Authorization": f"Bearer {NOTION_API_KEY}",
+        "Notion-Version": NOTION_VERSION,
+        "Content-Type": "application/json",
+    }
+    body: Dict[str, Any] = {"page_size": page_size}
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.post(url, headers=headers, json=body)
+        resp.raise_for_status()
+        data = resp.json()
+    return data.get("results", [])
+
+
+def _extract_title(properties: Dict[str, Any]) -> Optional[str]:
+    # title property
+    for prop in properties.values():
+        if prop.get("type") == "title":
+            pieces = prop.get("title") or []
+            text = "".join(p.get("plain_text", "") for p in pieces).strip()
+            if text:
+                return text
+    # fallback: rich_text
+    for prop in properties.values():
+        if prop.get("type") == "rich_text":
+            pieces = prop.get("rich_text") or []
+            text = "".join(p.get("plain_text", "") for p in pieces).strip()
+            if text:
+                return text
     return None
 
 
-def _normalize_priority_item(raw: Any) -> Dict[str, Any]:
-    """
-    Normalize jedan raw zapis iz WeeklyMemoryService u uniformnu CEO tabelu:
+def _extract_select(properties: Dict[str, Any], keywords: List[str]) -> Optional[str]:
+    # status / priority from Status / Select / Multi-select
+    for name, prop in properties.items():
+        lower_name = name.lower()
+        if not any(k in lower_name for k in keywords):
+            continue
 
-    {
-        "type": "...",
-        "name": "...",
-        "status": "...",
-        "priority": "...",
-        "due_period": "...",
-        "raw": {...}  # za debug / audit u JSON-u
-    }
-    """
-    if not isinstance(raw, dict):
-        return {
-            "type": None,
-            "name": str(raw),
-            "status": None,
-            "priority": None,
-            "due_period": None,
-            "raw": raw,
-        }
+        t = prop.get("type")
+        if t == "status":
+            v = prop.get("status")
+            if v and v.get("name"):
+                return v["name"]
+        if t == "select":
+            v = prop.get("select")
+            if v and v.get("name"):
+                return v["name"]
+        if t == "multi_select":
+            vals = prop.get("multi_select") or []
+            if vals:
+                return ", ".join(v.get("name", "") for v in vals if v.get("name"))
+    return None
 
-    type_val = _pick_first(raw, "type", "Type", "tip", "Tip", "kind", "Kind")
-    name_val = _pick_first(
-        raw, "name", "Name", "title", "Title", "goal_name", "Goal", "Naziv", "naziv"
-    )
-    status_val = _pick_first(raw, "status", "Status", "state", "State")
-    priority_val = _pick_first(
-        raw, "priority", "Priority", "prioritet", "Prioritet", "prio", "Prio"
-    )
-    due_val = _pick_first(
-        raw,
-        "due",
-        "Due",
-        "date",
-        "Date",
-        "deadline",
-        "Deadline",
-        "period",
-        "Period",
-        "week",
-        "Week",
-        "range",
-        "Range",
-    )
 
-    return {
-        "type": type_val,
-        "name": name_val or str(raw),
-        "status": status_val,
-        "priority": priority_val,
-        "due_period": due_val,
-        "raw": raw,
-    }
+def _extract_date(properties: Dict[str, Any], keywords: List[str]) -> Optional[str]:
+    for name, prop in properties.items():
+        lower_name = name.lower()
+        if not any(k in lower_name for k in keywords):
+            continue
+        if prop.get("type") == "date":
+            d = prop.get("date") or {}
+            return d.get("start") or d.get("end")
+    # fallback – bilo koji date
+    for prop in properties.values():
+        if prop.get("type") == "date":
+            d = prop.get("date") or {}
+            return d.get("start") or d.get("end")
+    return None
+
+
+async def _load_goals_summary() -> List[Dict[str, Any]]:
+    try:
+        rows = await _query_notion_db(NOTION_GOALS_DB_ID, page_size=50)
+    except Exception as exc:
+        logger.exception("Failed to query Goals DB from Notion: %s", exc)
+        return []
+
+    result: List[Dict[str, Any]] = []
+    for row in rows:
+        props = row.get("properties") or {}
+        name = _extract_title(props) or "(bez naziva)"
+        status = _extract_select(props, ["status", "stanje"])
+        priority = _extract_select(props, ["prioritet", "priority"])
+        deadline = _extract_date(props, ["due", "deadline", "rok", "datum"])
+        result.append(
+            {
+                "name": name,
+                "status": status or "-",
+                "priority": priority or "-",
+                "due_date": deadline or "-",
+            }
+        )
+    return result
+
+
+async def _load_tasks_summary() -> List[Dict[str, Any]]:
+    try:
+        rows = await _query_notion_db(NOTION_TASKS_DB_ID, page_size=50)
+    except Exception as exc:
+        logger.exception("Failed to query Tasks DB from Notion: %s", exc)
+        return []
+
+    result: List[Dict[str, Any]] = []
+    for row in rows:
+        props = row.get("properties") or {}
+        name = _extract_title(props) or "(bez naziva)"
+        status = _extract_select(props, ["status", "stanje"])
+        priority = _extract_select(props, ["prioritet", "priority"])
+        due = _extract_date(props, ["due", "deadline", "rok", "datum"])
+        result.append(
+            {
+                "title": name,
+                "status": status or "-",
+                "priority": priority or "-",
+                "due_date": due or "-",
+            }
+        )
+    return result
 
 
 # ================================================================
@@ -363,11 +410,6 @@ def _normalize_priority_item(raw: Any) -> Dict[str, Any]:
 async def execute_command(payload: ExecuteInput):
     """
     Kanonski CEO → COO ulaz (natural language).
-
-    - CEO daje tekstualnu komandu
-    - COO Translation pretvara u AICommand
-    - AICommand se REGISTRUJE i BLOKUJE (BLOCKED)
-    - Approval ide kroz /api/ai-ops/approval/approve
     """
     ai_command = coo_translation_service.translate(
         raw_input=payload.text,
@@ -378,7 +420,6 @@ async def execute_command(payload: ExecuteInput):
     if not ai_command:
         raise HTTPException(400, "Could not translate input to command")
 
-    # AICommand već ima request_id / execution_id (normalize_ids)
     _execution_registry.register(ai_command)
 
     approval_id = str(uuid.uuid4())
@@ -408,10 +449,6 @@ async def execute_command(payload: ExecuteInput):
 async def ceo_dashboard_command(payload: CeoCommandInput):
     """
     CEO Dashboard entrypoint.
-
-    - koristi isti kanonski pipeline kao /api/execute (BLOCKED → APPROVAL → EXECUTED)
-    - prima raw tekst + smart_context (hint iz frontenda)
-    - smart_context se koristi SAMO za poboljšanje parsiranja, ne mijenja governance
     """
     cleaned_text = _preprocess_ceo_nl_input(
         raw_text=payload.input_text,
@@ -460,9 +497,6 @@ async def ceo_dashboard_command(payload: CeoCommandInput):
 async def execute_raw_command(payload: ExecuteRawInput):
     """
     Kanonski RAW ulaz: direktno kreira AICommand bez COO NLP-a.
-
-    - i dalje: BLOCKED + approval_id
-    - resume i EXECUTED idu kroz /api/ai-ops/approval/approve
     """
     ai_command = AICommand(
         command=payload.command,
@@ -473,7 +507,6 @@ async def execute_raw_command(payload: ExecuteRawInput):
         metadata=payload.metadata,
     )
 
-    # execution_id je već generisan (request_id), ali ga možemo eksplicitno koristiti
     _execution_registry.register(ai_command)
 
     approval_id = str(uuid.uuid4())
@@ -503,11 +536,6 @@ async def execute_raw_command(payload: ExecuteRawInput):
 async def ceo_console_snapshot():
     """
     Read-only sistemski snapshot za CEO Console.
-
-    Poštuje kanon:
-    - NEMA execution-a, NEMA write-a
-    - samo vraća već postojeće stanje sistema (identity/mode/state + approvals + goals/tasks summary)
-    - sve je auditabilno i determinističko
     """
     approval_state = get_approval_state()
     approvals_map: Dict[str, Dict[str, Any]] = getattr(
@@ -516,23 +544,19 @@ async def ceo_console_snapshot():
 
     approvals_list = list(approvals_map.values())
 
-    # deriviramo cijevovod po statusima (čisto čitanje)
     pending = [a for a in approvals_list if a.get("status") == "pending"]
     approved = [a for a in approvals_list if a.get("status") == "approved"]
     rejected = [a for a in approvals_list if a.get("status") == "rejected"]
     failed = [a for a in approvals_list if a.get("status") == "failed"]
     completed = [a for a in approvals_list if a.get("status") == "completed"]
 
-    # Knowledge snapshot (goals/tasks agregati + AI summary) — čist READ
+    # Knowledge snapshot (AI summary) – READ only
     ks = KnowledgeSnapshotService.get_snapshot()
     ks_dbs = ks.get("databases") or {}
-    goals_summary_raw = ks_dbs.get("goals_summary")
-    tasks_summary_raw = ks_dbs.get("tasks_summary")
     ai_summary_raw = ks_dbs.get("ai_summary")
 
     weekly_memory = None
 
-    # Izvučemo najnoviji AI summary (best-effort, bez pisanja)
     if isinstance(ai_summary_raw, list) and ai_summary_raw:
         latest_item = ai_summary_raw[0]
 
@@ -543,10 +567,7 @@ async def ceo_console_snapshot():
         notion_url = None
 
         if isinstance(latest_item, dict):
-            title = (
-                latest_item.get("title")
-                or latest_item.get("Name")
-            )
+            title = latest_item.get("title") or latest_item.get("Name")
             week_range = (
                 latest_item.get("week")
                 or latest_item.get("Week")
@@ -579,6 +600,10 @@ async def ceo_console_snapshot():
             }
         }
 
+    # NOVO: direktno čitanje ciljeva / taskova iz Notion baza
+    goals_summary = await _load_goals_summary()
+    tasks_summary = await _load_tasks_summary()
+
     snapshot: Dict[str, Any] = {
         "system": {
             "name": SYSTEM_NAME,
@@ -595,7 +620,6 @@ async def ceo_console_snapshot():
         "approvals": {
             "total": len(approvals_list),
             "pending_count": len(pending),
-            # kompatibilnost + precizniji statusi
             "completed_count": len(completed),
             "approved_count": len(approved),
             "rejected_count": len(rejected),
@@ -606,58 +630,48 @@ async def ceo_console_snapshot():
             "ready": ks.get("ready"),
             "last_sync": ks.get("last_sync"),
         },
-        # novi blok za CEO Weekly Memory (AI summary) – best-effort iz KnowledgeSnapshot-a
         "weekly_memory": _to_serializable(weekly_memory)
         if weekly_memory is not None
         else None,
-        # postojeći ključevi za CEO Goals/Tasks panel
-        "goals_summary": _to_serializable(goals_summary_raw)
-        if goals_summary_raw is not None
-        else None,
-        "tasks_summary": _to_serializable(tasks_summary_raw)
-        if tasks_summary_raw is not None
-        else None,
+        "goals_summary": goals_summary,
+        "tasks_summary": tasks_summary,
     }
 
     return snapshot
 
 
+# Public ruta koju koristi frontend
+@app.get("/ceo/console/snapshot")
+async def ceo_console_snapshot_public():
+    return await ceo_console_snapshot()
+
+
 # ================================================================
-# CEO WEEKLY MEMORY (READ-ONLY, IN-MEMORY CACHE)
+# CEO WEEKLY MEMORY (READ-ONLY, IN-MEMORY CACHE — LEGACY)
 # ================================================================
 @app.get("/api/ceo/console/weekly-memory")
 async def ceo_weekly_memory():
-    """
-    Read-only API za WEEKLY PRIORITY MEMORY karticu.
-
-    Vraća striktno ono što je NotionOpsAgent zadnje upisao
-    u WeeklyMemoryService (npr. nakon KPI weekly summary workflowa).
-    """
     wm_service = get_weekly_memory_service()
     wm_snapshot = wm_service.get_snapshot()
     return {"weekly_memory": _to_serializable(wm_snapshot)}
 
 
 # ================================================================
-# CEO WEEKLY PRIORITY LIST (FLATTENED ZA FRONTEND TABELU)
+# CEO WEEKLY PRIORITY LIST (AI SUMMARY DB → FRONTEND TABELA)
 # ================================================================
 @app.get("/ceo/weekly-priority-memory")
 async def ceo_weekly_priority_memory():
-    """
-    Novi CEO Dashboard endpoint:
+    try:
+        service = get_ai_summary_service()
+        items = service.get_this_week_priorities()
+    except Exception as exc:
+        logger.exception("Failed to load Weekly Priority Memory from AI SUMMARY DB")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to load Weekly Priority Memory from AI SUMMARY DB: {exc}",
+        ) from exc
 
-    - čisto READ, bez side-effects
-    - flatten-a WeeklyMemoryService snapshot u listu stavki:
-      [{type, name, status, priority, due_period, raw}, ...]
-    - frontend koristi type/name/status/priority/due_period za tabelu
-    """
-    wm_service = get_weekly_memory_service()
-    wm_snapshot = wm_service.get_snapshot()
-
-    candidates = _extract_candidate_lists(wm_snapshot)
-    items = [_normalize_priority_item(raw) for raw in candidates]
-
-    return {"items": items}
+    return {"items": [i.dict() for i in items]}
 
 
 # ================================================================
@@ -665,12 +679,6 @@ async def ceo_weekly_priority_memory():
 # ================================================================
 @app.get("/ceo/agents")
 async def ceo_agents():
-    """
-    Read-only lista agenata dostupnih CEO-u.
-
-    Za sada statična (bez side-effects), može se proširiti da čita
-    iz ExecutionRegistry / agent registrija kada bude spremno.
-    """
     agents = [
         {
             "id": "notion_ops_agent",
@@ -699,19 +707,11 @@ async def ceo_agents():
 # ================================================================
 @app.get("/ceo-console/snapshot", include_in_schema=False)
 async def legacy_ceo_console_snapshot():
-    """
-    Legacy ruta za stari frontend.
-    Proksira na kanonski /api/ceo/console/snapshot da ne baca 500.
-    """
     return await ceo_console_snapshot()
 
 
 @app.get("/ceo-console/weekly-memory", include_in_schema=False)
 async def legacy_ceo_weekly_memory():
-    """
-    Legacy ruta za stari frontend.
-    Proksira na kanonski /api/ceo/console/weekly-memory.
-    """
     return await ceo_weekly_memory()
 
 
@@ -758,9 +758,10 @@ async def startup_event():
     bootstrap_application()
 
     from services.notion_service import get_notion_service
+
     notion_service = get_notion_service()
 
-    # READ-ONLY sync znanja iz Notiona (goals/tasks agregati)
+    # READ-ONLY sync znanja iz Notiona (AI summary i sl.)
     await notion_service.sync_knowledge_snapshot()
 
     _BOOT_READY = True

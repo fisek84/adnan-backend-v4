@@ -1,599 +1,350 @@
-// ====================================================================
-// CEO DASHBOARD FRONTEND SCRIPT (V1.1 — SNAPSHOT AGGREGATES)
-// ====================================================================
+// gateway/frontend/script.js
 
-const API_BASE = "";
+let lastApprovalId = null;
 
-// --- DOM ELEMENTI ---------------------------------------------------
-const els = {};
-
-function q(id) {
+// --------------------------------------------------
+// UTILS
+// --------------------------------------------------
+function $(id) {
   return document.getElementById(id);
 }
 
-function initDomRefs() {
-  els.commandInput = q("ceo-command-input");
-  els.sendCommandBtn = q("send-command-btn");
-  els.approveLatestBtn = q("approve-latest-btn");
-  els.refreshSnapshotBtn = q("refresh-snapshot-btn");
-  els.toggleDebugBtn = q("toggle-debug-btn");
+function setCommandStatus(chipText, text, variant) {
+  const chip = $("command-status-chip");
+  const label = $("command-status-text");
 
-  els.voiceToggleBtn = q("voice-toggle-btn");
-  els.voiceStatus = q("voice-status");
+  chip.textContent = chipText || "";
+  label.textContent = text || "";
 
-  els.lastExecutionState = q("last-execution-state");
-  els.lastApprovalId = q("last-approval-id");
-
-  els.debugOutput = q("debug-output");
-
-  els.goalsTableBody = q("goals-table-body");
-  els.goalsTotalPill = q("goals-total-pill");
-  els.goalsActivePill = q("goals-active-pill");
-
-  els.tasksTableBody = q("tasks-table-body");
-  els.tasksTotalPill = q("tasks-total-pill");
-  els.tasksActivePill = q("tasks-active-pill");
-
-  els.pendingCount = q("pending-count");
-  els.approvedTodayCount = q("approved-today-count");
-  els.executedTotalCount = q("executed-total-count");
-  els.errorsTotalCount = q("errors-total-count");
-  els.pendingLabel = q("pending-label");
-  els.pendingApprovalsList = q("pending-approvals-list");
-
-  els.weeklyMemory = q("weekly-memory");
-  els.footerStatus = q("footer-status");
-}
-
-// zadnji approval_id koji je CEO dobio
-let lastApprovalId = null;
-
-// --- UTIL -----------------------------------------------------------
-function setFooterStatus(text) {
-  if (els.footerStatus) {
-    els.footerStatus.textContent = text || "";
+  chip.classList.remove("status-chip-error");
+  if (variant === "error") {
+    chip.style.background = "rgba(127,29,29,0.5)";
+    chip.style.borderColor = "rgba(248,113,113,0.9)";
+  } else {
+    chip.style.background = "";
+    chip.style.borderColor = "";
   }
 }
 
-function setDebug(obj) {
-  if (!els.debugOutput) return;
-  if (!obj) {
-    els.debugOutput.textContent = "";
-    return;
-  }
-  els.debugOutput.textContent = JSON.stringify(obj, null, 2);
-}
-
-function showError(message) {
-  console.error(message);
-  setFooterStatus(message);
-}
-
-// --- CEO COMMAND: SEND ----------------------------------------------
-async function sendCommand() {
-  const text = (els.commandInput?.value || "").trim();
-  if (!text) {
-    showError("Unesi naredbu.");
-    return;
-  }
-
+// --------------------------------------------------
+// SNAPSHOT LOADING
+// --------------------------------------------------
+async function loadSnapshot() {
   try {
-    setFooterStatus("Slanje naredbe...");
-
-    const res = await fetch(`${API_BASE}/api/execute`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text }),
-    });
-
-    const data = await res.json().catch(() => ({}));
-
+    const res = await fetch("/ceo/console/snapshot");
     if (!res.ok) {
-      showError(`Greška pri slanju naredbe: ${data.detail || res.status}`);
-      setDebug(data);
-      return;
+      throw new Error(`Snapshot HTTP ${res.status}`);
+    }
+    const data = await res.json();
+
+    // OS ONLINE/OFFLINE
+    const osPill = $("os-status-pill");
+    const bootReady = data.system?.boot_ready;
+    const osEnabled = data.system?.os_enabled;
+    if (osEnabled && bootReady) {
+      osPill.textContent = "OS ONLINE";
+      osPill.classList.add("status-pill-online");
+    } else {
+      osPill.textContent = "OS OFFLINE";
+      osPill.classList.remove("status-pill-online");
     }
 
-    lastApprovalId = data.approval_id || null;
+    // PIPELINE HEADER
+    const approvals = data.approvals || {};
+    $("pending-count-pill").textContent = approvals.pending_count ?? 0;
+    $("approved-today-pill").textContent = approvals.approved_count ?? 0;
+    $("executed-total-pill").textContent = approvals.completed_count ?? 0;
+    $("errors-total-pill").textContent =
+      (approvals.failed_count ?? 0) + (approvals.rejected_count ?? 0);
 
-    if (els.lastExecutionState) {
-      els.lastExecutionState.textContent =
-        data.execution_state || data.status || "UNKNOWN";
-    }
-    if (els.lastApprovalId) {
-      els.lastApprovalId.textContent = lastApprovalId || "–";
-    }
+    // GOALS
+    renderGoals(data.goals_summary);
 
-    setDebug(data);
-    setFooterStatus("Naredba registrirana (BLOCKED). Čeka odobrenje.");
+    // TASKS
+    renderTasks(data.tasks_summary);
 
-    // osvježi pipeline i snapshot
-    await refreshSnapshot();
+    // footer info
+    const lastSync = data.knowledge_snapshot?.last_sync || "n/a";
+    $("footer-status").textContent = `Last sync: ${lastSync}`;
   } catch (err) {
-    console.error(err);
-    showError("Neuspješno slanje naredbe (network error).");
+    console.error("Failed to load snapshot", err);
+    renderGoals(null, "Greška pri učitavanju ciljeva.");
+    renderTasks(null, "Greška pri učitavanju taskova.");
   }
 }
 
-// --- CEO COMMAND: APPROVE LATEST ------------------------------------
-async function approveLatest() {
-  try {
-    setFooterStatus("Tražim zadnji pending zahtjev...");
+function renderGoals(goals, errorMsg) {
+  const tbody = $("goals-table-body");
+  tbody.innerHTML = "";
 
-    // 1) ako imamo zadnji approval_id iz sendCommand, probaj prvo to
-    let approvalIdToUse = lastApprovalId;
+  if (errorMsg) {
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.colSpan = 4;
+    td.className = "placeholder-text";
+    td.textContent = errorMsg;
+    tr.appendChild(td);
+    tbody.appendChild(tr);
+    return;
+  }
 
-    // 2) ako nemamo, fallback: uzmi zadnji iz pending liste
-    if (!approvalIdToUse) {
-      const pendingRes = await fetch(`${API_BASE}/api/ai-ops/approval/pending`);
-      const pendingData = await pendingRes.json().catch(() => ({}));
+  if (!goals || !goals.length) {
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.colSpan = 4;
+    td.className = "placeholder-text";
+    td.textContent = "Nema ciljeva u snapshotu.";
+    tr.appendChild(td);
+    tbody.appendChild(tr);
+    return;
+  }
 
-      const list =
-        pendingData.pending ||
-        pendingData.approvals ||
-        pendingData ||
-        [];
+  $("goals-total-pill").textContent = `Ukupno: ${goals.length}`;
+  $("goals-active-pill").textContent = `Aktivni: ${
+    goals.filter((g) =>
+      String(g.status || "").toLowerCase().includes("aktiv")
+    ).length
+  }`;
 
-      if (!Array.isArray(list) || list.length === 0) {
-        showError("Nema pending zahtjeva za odobravanje.");
-        return;
-      }
-
-      const last = list[list.length - 1];
-      approvalIdToUse = last.approval_id || last.id;
-
-      if (!approvalIdToUse) {
-        showError("Ne mogu pronaći approval_id za zadnji zahtjev.");
-        return;
-      }
+  for (const g of goals) {
+    const tr = document.createElement("tr");
+    const cols = [
+      g.name ?? g.title ?? "(bez naziva)",
+      g.status ?? "-",
+      g.priority ?? "-",
+      g.due_date ?? g.deadline ?? "-",
+    ];
+    for (const c of cols) {
+      const td = document.createElement("td");
+      td.textContent = c;
+      tr.appendChild(td);
     }
+    tbody.appendChild(tr);
+  }
+}
 
-    setFooterStatus(`Odobravam zahtjev ${approvalIdToUse}...`);
+function renderTasks(tasks, errorMsg) {
+  const tbody = $("tasks-table-body");
+  tbody.innerHTML = "";
 
-    const res = await fetch(`${API_BASE}/api/ai-ops/approval/approve`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ approval_id: approvalIdToUse }),
-    });
+  if (errorMsg) {
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.colSpan = 4;
+    td.className = "placeholder-text";
+    td.textContent = errorMsg;
+    tr.appendChild(td);
+    tbody.appendChild(tr);
+    return;
+  }
 
-    const data = await res.json().catch(() => ({}));
+  if (!tasks || !tasks.length) {
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.colSpan = 4;
+    td.className = "placeholder-text";
+    td.textContent = "Nema taskova u snapshotu.";
+    tr.appendChild(td);
+    tbody.appendChild(tr);
+    return;
+  }
 
+  $("tasks-total-pill").textContent = `Ukupno: ${tasks.length}`;
+  $("tasks-active-pill").textContent = `Aktivni: ${
+    tasks.filter((t) =>
+      String(t.status || "").toLowerCase().includes("aktiv")
+    ).length
+  }`;
+
+  for (const t of tasks) {
+    const tr = document.createElement("tr");
+    const cols = [
+      t.title ?? t.name ?? "(bez naziva)",
+      t.status ?? "-",
+      t.priority ?? "-",
+      t.due_date ?? t.deadline ?? "-",
+    ];
+    for (const c of cols) {
+      const td = document.createElement("td");
+      td.textContent = c;
+      tr.appendChild(td);
+    }
+    tbody.appendChild(tr);
+  }
+}
+
+// --------------------------------------------------
+// WEEKLY PRIORITY
+// --------------------------------------------------
+async function loadWeeklyPriority() {
+  const tbody = $("weekly-priority-body");
+  tbody.innerHTML = `
+    <tr><td colspan="5" class="placeholder-text">
+      Učitavanje weekly priority liste...
+    </td></tr>
+  `;
+
+  try {
+    const res = await fetch("/ceo/weekly-priority-memory");
     if (!res.ok) {
-      showError(
-        `Greška pri odobravanju: ${data.detail || data.message || res.status}`
-      );
-      setDebug(data);
+      throw new Error(`Weekly HTTP ${res.status}`);
+    }
+    const data = await res.json();
+    const items = data.items || [];
+
+    tbody.innerHTML = "";
+
+    if (!items.length) {
+      const tr = document.createElement("tr");
+      const td = document.createElement("td");
+      td.colSpan = 5;
+      td.className = "placeholder-text";
+      td.textContent = "Nema podataka za ovu sedmicu.";
+      tr.appendChild(td);
+      tbody.appendChild(tr);
       return;
     }
 
-    if (els.lastExecutionState) {
-      els.lastExecutionState.textContent =
-        data.execution_state || data.status || "APPROVED";
+    for (const i of items) {
+      const tr = document.createElement("tr");
+      const cols = [
+        i.type || "-",
+        i.name || "-",
+        i.status || "-",
+        i.priority || "-",
+        i.period || i.week || "-",
+      ];
+      for (const c of cols) {
+        const td = document.createElement("td");
+        td.textContent = c;
+        tr.appendChild(td);
+      }
+      tbody.appendChild(tr);
+    }
+  } catch (err) {
+    console.error("Failed to load weekly priority", err);
+    tbody.innerHTML = `
+      <tr><td colspan="5" class="placeholder-text">
+        Greška pri učitavanju weekly priority liste.
+      </td></tr>
+    `;
+  }
+}
+
+// --------------------------------------------------
+// CEO COMMAND
+// --------------------------------------------------
+async function sendCeoCommand() {
+  const inputEl = $("ceo-command-input");
+  const text = inputEl.value.trim();
+  if (!text) {
+    return;
+  }
+
+  setCommandStatus("PENDING", "Naredba poslana, čekam COO prevod...");
+  $("last-approval-id").textContent = "–";
+
+  try {
+    const res = await fetch("/ceo/command", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        input_text: text,
+        smart_context: null,
+        source: "ceo_dashboard",
+      }),
+    });
+
+    if (!res.ok) {
+      const detail = await res.text();
+      setCommandStatus(
+        "ERROR",
+        `Greška: ${res.status} — ${detail || "COO nije uspio prevesti naredbu."}`,
+        "error"
+      );
+      return;
     }
 
-    setDebug(data);
-    setFooterStatus(
-      `Zahtjev ${approvalIdToUse} odobren. Stanje: ${
-        data.execution_state || data.status || "N/A"
-      }`
+    const data = await res.json();
+    lastApprovalId = data.approval_id;
+    $("last-approval-id").textContent = lastApprovalId || "–";
+    setCommandStatus(
+      "BLOCKED",
+      "Naredba je BLOCKED. Odobri zahtjev da bi se izvršila."
+    );
+  } catch (err) {
+    console.error("ceo/command failed", err);
+    setCommandStatus("ERROR", "Greška pri slanju naredbe.", "error");
+  }
+}
+
+async function approveLatest() {
+  const idFromStatus = lastApprovalId;
+  if (!idFromStatus) {
+    setCommandStatus(
+      "INFO",
+      "Nema pending zahtjeva iz ove sesije.",
+      "error"
+    );
+    return;
+  }
+
+  try {
+    const res = await fetch("/api/ai-ops/approval/approve", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ approval_id: idFromStatus }),
+    });
+
+    if (!res.ok) {
+      const detail = await res.text();
+      setCommandStatus(
+        "ERROR",
+        `Greška pri odobravanju: ${res.status} — ${detail || ""}`,
+        "error"
+      );
+      return;
+    }
+
+    setCommandStatus(
+      "EXECUTED",
+      "Zahtjev odobren. Execution će biti vidljiv u metrikama.",
     );
 
-    // nakon odobrenja osvježi snapshot (goals/tasks/pipeline)
-    await refreshSnapshot();
+    // nakon odobrenja osvježi snapshot
+    await loadSnapshot();
   } catch (err) {
-    console.error(err);
-    showError("Neuspješno odobravanje (network error).");
+    console.error("approveLatest failed", err);
+    setCommandStatus(
+      "ERROR",
+      "Greška pri odobravanju zahtjeva.",
+      "error"
+    );
   }
 }
 
-// --- SNAPSHOT RENDER ------------------------------------------------
-function renderGoals(summary) {
-  if (!els.goalsTableBody) return;
-
-  const tbody = els.goalsTableBody;
-  tbody.innerHTML = "";
-
-  if (!summary) {
-    tbody.innerHTML =
-      '<tr><td colspan="4" class="placeholder-text">Nema ciljeva u snapshotu.</td></tr>';
-    if (els.goalsTotalPill) els.goalsTotalPill.textContent = "Ukupno: 0";
-    if (els.goalsActivePill) els.goalsActivePill.textContent = "Aktivni: 0";
-    return;
-  }
-
-  const items =
-    summary.items ||
-    summary.rows ||
-    summary.goals ||
-    [];
-
-  const hasAggregates = summary.by_status || summary.by_priority;
-
-  if (Array.isArray(items) && items.length > 0) {
-    // Detaljan mod (ako ikad bude vraćan)
-    for (const g of items) {
-      const tr = document.createElement("tr");
-      tr.innerHTML = `
-        <td>${g.name || g.title || "—"}</td>
-        <td>${g.status || "—"}</td>
-        <td>${g.priority || "—"}</td>
-        <td>${g.deadline || g.due_date || "—"}</td>
-      `;
-      tbody.appendChild(tr);
-    }
-  } else if (hasAggregates) {
-    // Kanonski mod: agregati iz NotionService._build_status_priority_summary
-    const byStatus = summary.by_status || {};
-    const byPriority = summary.by_priority || {};
-
-    const statusParts =
-      Object.keys(byStatus).length > 0
-        ? Object.entries(byStatus)
-            .map(([k, v]) => `${k}: ${v}`)
-            .join(" · ")
-        : "N/A";
-
-    const priorityParts =
-      Object.keys(byPriority).length > 0
-        ? Object.entries(byPriority)
-            .map(([k, v]) => `${k}: ${v}`)
-            .join(" · ")
-        : "N/A";
-
-    const tr = document.createElement("tr");
-    tr.innerHTML = `
-      <td colspan="4">
-        <div class="agg-section">
-          <div class="agg-label">Statusi</div>
-          <div class="agg-values">${statusParts}</div>
-        </div>
-        <div class="agg-section">
-          <div class="agg-label">Prioriteti</div>
-          <div class="agg-values">${priorityParts}</div>
-        </div>
-      </td>
-    `;
-    tbody.appendChild(tr);
+// --------------------------------------------------
+// DEBUG TOGGLE
+// --------------------------------------------------
+function toggleDebug() {
+  const el = $("debug-output");
+  if (el.classList.contains("hidden")) {
+    el.classList.remove("hidden");
   } else {
-    tbody.innerHTML =
-      '<tr><td colspan="4" class="placeholder-text">Nema ciljeva u snapshotu.</td></tr>';
-  }
-
-  const total =
-    typeof summary.total === "number"
-      ? summary.total
-      : Array.isArray(items)
-      ? items.length
-      : 0;
-
-  if (els.goalsTotalPill) {
-    els.goalsTotalPill.textContent = `Ukupno: ${total}`;
-  }
-
-  if (els.goalsActivePill) {
-    const byStatus = summary.by_status || {};
-    const activeGuess =
-      byStatus["Active"] ??
-      byStatus["Aktivni"] ??
-      byStatus["In Progress"] ??
-      byStatus["In progress"] ??
-      0;
-    els.goalsActivePill.textContent = `Aktivni: ${activeGuess}`;
+    el.classList.add("hidden");
   }
 }
 
-function renderTasks(summary) {
-  if (!els.tasksTableBody) return;
-
-  const tbody = els.tasksTableBody;
-  tbody.innerHTML = "";
-
-  if (!summary) {
-    tbody.innerHTML =
-      '<tr><td colspan="4" class="placeholder-text">Nema taskova u snapshotu.</td></tr>';
-    if (els.tasksTotalPill) els.tasksTotalPill.textContent = "Ukupno: 0";
-    if (els.tasksActivePill) els.tasksActivePill.textContent = "Aktivni: 0";
-    return;
-  }
-
-  const items =
-    summary.items ||
-    summary.rows ||
-    summary.tasks ||
-    [];
-
-  const hasAggregates = summary.by_status || summary.by_priority;
-
-  if (Array.isArray(items) && items.length > 0) {
-    // Detaljan mod (ako ikad bude vraćan)
-    for (const t of items) {
-      const tr = document.createElement("tr");
-      tr.innerHTML = `
-        <td>${t.name || t.title || "—"}</td>
-        <td>${t.status || "—"}</td>
-        <td>${t.priority || "—"}</td>
-        <td>${t.due_date || t.deadline || "—"}</td>
-      `;
-      tbody.appendChild(tr);
-    }
-  } else if (hasAggregates) {
-    // Kanonski mod: agregati iz NotionService._build_status_priority_summary
-    const byStatus = summary.by_status || {};
-    const byPriority = summary.by_priority || {};
-
-    const statusParts =
-      Object.keys(byStatus).length > 0
-        ? Object.entries(byStatus)
-            .map(([k, v]) => `${k}: ${v}`)
-            .join(" · ")
-        : "N/A";
-
-    const priorityParts =
-      Object.keys(byPriority).length > 0
-        ? Object.entries(byPriority)
-            .map(([k, v]) => `${k}: ${v}`)
-            .join(" · ")
-        : "N/A";
-
-    const tr = document.createElement("tr");
-    tr.innerHTML = `
-      <td colspan="4">
-        <div class="agg-section">
-          <div class="agg-label">Statusi</div>
-          <div class="agg-values">${statusParts}</div>
-        </div>
-        <div class="agg-section">
-          <div class="agg-label">Prioriteti</div>
-          <div class="agg-values">${priorityParts}</div>
-        </div>
-      </td>
-    `;
-    tbody.appendChild(tr);
-  } else {
-    tbody.innerHTML =
-      '<tr><td colspan="4" class="placeholder-text">Nema taskova u snapshotu.</td></tr>';
-  }
-
-  const total =
-    typeof summary.total === "number"
-      ? summary.total
-      : Array.isArray(items)
-      ? items.length
-      : 0;
-
-  if (els.tasksTotalPill) {
-    els.tasksTotalPill.textContent = `Ukupno: ${total}`;
-  }
-
-  if (els.tasksActivePill) {
-    const byStatus = summary.by_status || {};
-    const activeGuess =
-      byStatus["Active"] ??
-      byStatus["Aktivni"] ??
-      byStatus["In Progress"] ??
-      byStatus["In progress"] ??
-      0;
-    els.tasksActivePill.textContent = `Aktivni: ${activeGuess}`;
-  }
-}
-
-function renderApprovals(approvals) {
-  if (!approvals || !els.pendingCount) return;
-
-  const pendingCount = approvals.pending_count ?? 0;
-  const completedCount = approvals.completed_count ?? 0;
-  const approvedCount = approvals.approved_count ?? 0;
-  const failedCount =
-    approvals.failed_count ?? approvals.rejected_count ?? 0;
-  const pendingList = approvals.pending || [];
-
-  els.pendingCount.textContent = pendingCount;
-  els.executedTotalCount.textContent = completedCount;
-  els.approvedTodayCount.textContent = approvedCount;
-  els.errorsTotalCount.textContent = failedCount;
-
-  if (els.pendingLabel) {
-    els.pendingLabel.textContent =
-      pendingCount > 0 ? `${pendingCount} pending` : "Nema pending zahtjeva";
-  }
-
-  if (!els.pendingApprovalsList) return;
-
-  const ul = els.pendingApprovalsList;
-  ul.innerHTML = "";
-
-  if (!Array.isArray(pendingList) || pendingList.length === 0) {
-    ul.innerHTML =
-      '<li class="placeholder-text">Trenutno nema zahtjeva na čekanju.</li>';
-    return;
-  }
-
-  for (const a of pendingList) {
-    const li = document.createElement("li");
-    const cmd = a.command || {};
-    const cmdName = cmd.command || "cmd";
-    const intent = cmd.intent || "intent";
-
-    li.innerHTML = `
-      <div class="pipeline-item-title">${cmdName}</div>
-      <div class="pipeline-item-meta">
-        <span>ID: ${a.approval_id || "?"}</span>
-        <span>Intent: ${intent}</span>
-      </div>
-    `;
-    ul.appendChild(li);
-  }
-}
-
-// Weekly memory – sada vezan na weekly_memory.latest_ai_summary iz snapshot-a
-function renderWeeklyMemory(snapshot) {
-  if (!els.weeklyMemory) return;
-
-  const container = els.weeklyMemory;
-
-  if (!snapshot || typeof snapshot !== "object") {
-    container.innerHTML =
-      '<p class="placeholder-text">Nema AI sedmičnog sažetka u snapshotu.</p>';
-    return;
-  }
-
-  const weekly = snapshot.weekly_memory || null;
-  const latest =
-    weekly && typeof weekly === "object"
-      ? weekly.latest_ai_summary || null
-      : null;
-
-  if (!latest || typeof latest !== "object") {
-    container.innerHTML =
-      '<p class="placeholder-text">Nema AI sedmičnog sažetka u snapshotu.</p>';
-    return;
-  }
-
-  const title = latest.title || "AI Weekly Summary";
-  const weekRange = latest.week_range || "";
-  const shortSummary =
-    latest.short_summary || "Nema kratkog sažetka za ovu sedmicu.";
-  const notionUrl = latest.notion_url || null;
-  const notionPageId = latest.notion_page_id || null;
-
-  let linkHtml = "";
-  if (notionUrl) {
-    linkHtml = `<a href="${notionUrl}" target="_blank" rel="noopener noreferrer" class="link-small">Otvori puni sažetak u Notionu</a>`;
-  } else if (notionPageId) {
-    linkHtml = `<span class="muted-text">Notion page ID: ${notionPageId}</span>`;
-  }
-
-  container.innerHTML = `
-    <div class="weekly-memory-card">
-      <div class="weekly-memory-header">
-        <h3>${title}</h3>
-        ${
-          weekRange
-            ? `<span class="weekly-memory-period">${weekRange}</span>`
-            : ""
-        }
-      </div>
-      <p class="weekly-memory-summary">
-        ${shortSummary}
-      </p>
-      <div class="weekly-memory-footer">
-        ${linkHtml}
-      </div>
-    </div>
-  `;
-}
-
-// --- SNAPSHOT FETCH -------------------------------------------------
-async function refreshSnapshot() {
-  try {
-    const res = await fetch(`${API_BASE}/api/ceo/console/snapshot`);
-    const data = await res.json().catch(() => ({}));
-
-    if (!res.ok) {
-      showError(`Greška pri snapshotu: ${data.detail || res.status}`);
-      return;
-    }
-
-    renderGoals(data.goals_summary || null);
-    renderTasks(data.tasks_summary || null);
-    renderApprovals(data.approvals || null);
-    renderWeeklyMemory(data);
-
-    if (data.system && data.system.version) {
-      setFooterStatus(
-        `Snapshot OK · Verzija: ${data.system.version} · Last sync: ${
-          data.knowledge_snapshot?.last_sync || "n/a"
-        }`
-      );
-    } else {
-      setFooterStatus("Snapshot OK.");
-    }
-  } catch (err) {
-    console.error(err);
-    showError("Neuspješno učitavanje snapshota (network error).");
-  }
-}
-
-// --- VOICE ----------------------------------------------------------
-let recognition = null;
-let isListening = false;
-
-function setupVoice() {
-  const SpeechRecognition =
-    window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SpeechRecognition) {
-    if (els.voiceStatus) {
-      els.voiceStatus.textContent = "Browser ne podržava voice.";
-    }
-    return;
-  }
-
-  recognition = new SpeechRecognition();
-  recognition.lang = "bs-BA";
-  recognition.continuous = false;
-  recognition.interimResults = false;
-
-  recognition.onstart = () => {
-    isListening = true;
-    if (els.voiceStatus) els.voiceStatus.textContent = "Slušam...";
-  };
-
-  recognition.onend = () => {
-    isListening = false;
-    if (els.voiceStatus) els.voiceStatus.textContent = "Glasovno upravljanje spremno.";
-  };
-
-  recognition.onerror = () => {
-    isListening = false;
-    if (els.voiceStatus) els.voiceStatus.textContent = "Greška u voice modu.";
-  };
-
-  recognition.onresult = (event) => {
-    const text = event.results[0][0].transcript;
-    if (els.commandInput) {
-      els.commandInput.value = text;
-      els.commandInput.focus();
-    }
-  };
-}
-
-function toggleVoice() {
-  if (!recognition) return;
-  if (isListening) {
-    recognition.stop();
-  } else {
-    recognition.start();
-  }
-}
-
-// --- INIT -----------------------------------------------------------
-function initEvents() {
-  if (els.sendCommandBtn) {
-    els.sendCommandBtn.addEventListener("click", sendCommand);
-  }
-  if (els.approveLatestBtn) {
-    els.approveLatestBtn.addEventListener("click", approveLatest);
-  }
-  if (els.refreshSnapshotBtn) {
-    els.refreshSnapshotBtn.addEventListener("click", refreshSnapshot);
-  }
-  if (els.toggleDebugBtn) {
-    els.toggleDebugBtn.addEventListener("click", () => {
-      if (!els.debugOutput) return;
-      els.debugOutput.classList.toggle("hidden");
-    });
-  }
-  if (els.voiceToggleBtn) {
-    els.voiceToggleBtn.addEventListener("click", toggleVoice);
-  }
-}
-
+// --------------------------------------------------
+// INIT
+// --------------------------------------------------
 document.addEventListener("DOMContentLoaded", () => {
-  initDomRefs();
-  initEvents();
-  setupVoice();
-  refreshSnapshot();
+  $("send-command-btn").addEventListener("click", sendCeoCommand);
+  $("approve-latest-btn").addEventListener("click", approveLatest);
+  $("refresh-snapshot-btn").addEventListener("click", loadSnapshot);
+  $("refresh-weekly-btn").addEventListener("click", loadWeeklyPriority);
+  $("toggle-debug-btn").addEventListener("click", toggleDebug);
 
-  // periodično osvježavanje cjevovoda/snapshot-a
-  setInterval(refreshSnapshot, 15000);
+  loadSnapshot();
+  loadWeeklyPriority();
 });

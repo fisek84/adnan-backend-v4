@@ -8,24 +8,55 @@
 </head>
 <body>
   <div class="app-shell">
+    <!-- TOP BAR -->
     <header class="top-bar">
-      <div class="brand">
-        <div class="brand-orb"></div>
-        <div>
-          <div class="brand-title">Adnan.AI / Evolia OS</div>
-          <div class="brand-subtitle">CEO Control Center</div>
+      <div class="top-bar-main">
+        <div class="brand">
+          <div class="brand-orb"></div>
+          <div>
+            <div class="brand-title">Adnan.AI / Evolia OS</div>
+            <div class="brand-subtitle">CEO Control Center</div>
+          </div>
+        </div>
+
+        <div class="top-status">
+          <span class="status-pill status-pill-online" id="os-status-pill">
+            OS ONLINE
+          </span>
+          <span class="status-pill status-pill-safe">
+            GOVERNANCE: WHOLE → BLOCKED → APPROVAL → EXECUTED
+          </span>
         </div>
       </div>
-      <div class="top-status">
-        <span class="status-pill status-pill-online">OS ONLINE</span>
-        <span class="status-pill status-pill-safe">GOVERNANCE: WHOLE → BLOCKED → APPROVAL → EXECUTED</span>
+
+      <!-- PIPELINE U ZAGLAVLJU -->
+      <div class="top-bar-pipeline">
+        <div class="pipeline-label">Odobrenje cjevovoda</div>
+        <div class="pipeline-header-row">
+          <div class="pipeline-header-stage">
+            <span class="stage-label">Pending</span>
+            <span class="stage-value" id="pending-count-pill">0</span>
+          </div>
+          <div class="pipeline-header-stage">
+            <span class="stage-label">Odobreno danas</span>
+            <span class="stage-value" id="approved-today-pill">0</span>
+          </div>
+          <div class="pipeline-header-stage">
+            <span class="stage-label">Ukupno izvršeno</span>
+            <span class="stage-value" id="executed-total-pill">0</span>
+          </div>
+          <div class="pipeline-header-stage">
+            <span class="stage-label">Greške</span>
+            <span class="stage-value" id="errors-total-pill">0</span>
+          </div>
+        </div>
       </div>
     </header>
 
+    <!-- MAIN LAYOUT -->
     <main class="layout">
-      <!-- LEFT COLUMN: CEO COMMAND + MEMORY -->
+      <!-- LIJEVA STRANA: CEO COMMAND FULL SCREEN -->
       <section class="column column-left">
-        <!-- CEO COMMAND -->
         <section class="card card-command">
           <div class="card-header">
             <div>
@@ -41,6 +72,8 @@
               <label for="ceo-command-input" class="label-inline">
                 Naredba
               </label>
+
+              <!-- OVA TEXTAREA IDE PREKO CIJELE LIJEVE KOLONE -->
               <textarea
                 id="ceo-command-input"
                 class="command-input"
@@ -55,7 +88,7 @@
                   Odobri zadnji zahtjev
                 </button>
                 <button id="refresh-snapshot-btn" class="btn btn-ghost">
-                  Osvježi prikaz
+                  Osvježi snapshot
                 </button>
                 <button id="toggle-debug-btn" class="btn btn-ghost">
                   Prikaži tehničke detalje
@@ -72,12 +105,16 @@
               </div>
 
               <div class="command-status">
-                <div>
-                  <span class="status-label">Zadnje stanje:</span>
-                  <span id="last-execution-state" class="status-value">–</span>
+                <div class="command-status-main">
+                  <span id="command-status-chip" class="status-chip">
+                    BLOCKED
+                  </span>
+                  <span id="command-status-text" class="status-text">
+                    BLOCKED naredba još nije poslana.
+                  </span>
                 </div>
-                <div>
-                  <span class="status-label">approval_id:</span>
+                <div class="command-status-meta">
+                  <span class="status-label">approval_id: </span>
                   <span id="last-approval-id" class="status-value">–</span>
                 </div>
               </div>
@@ -86,26 +123,9 @@
 
           <pre id="debug-output" class="debug-output hidden"></pre>
         </section>
-
-        <!-- WEEKLY PRIORITY MEMORY -->
-        <section class="card card-memory">
-          <div class="card-header">
-            <div>
-              <h2>Weekly Priority Memory</h2>
-              <p class="card-subtitle">
-                Najvažniji ciljevi i taskovi koje sistem smatra ključnim za ovu sedmicu.
-              </p>
-            </div>
-          </div>
-          <div id="weekly-memory" class="memory-content">
-            <p class="placeholder-text">
-              Nema još podataka. Pokreni nekoliko ciljeva / taskova sa visokim prioritetom.
-            </p>
-          </div>
-        </section>
       </section>
 
-      <!-- RIGHT COLUMN: GOALS / TASKS / PIPELINE -->
+      <!-- DESNA STRANA: CILJEVI, TASKOVI, WEEKLY PRIORITY -->
       <section class="column column-right">
         <div class="cards-grid">
           <!-- GOALS -->
@@ -175,46 +195,39 @@
           </section>
         </div>
 
-        <!-- APPROVAL PIPELINE -->
+        <!-- WEEKLY PRIORITY (AI SUMMARY DB) -->
         <section class="card">
           <div class="card-header card-header-compact">
             <div>
-              <h3>Odobrenje cjevovoda</h3>
+              <h3>Weekly Priority</h3>
               <p class="card-subtitle">
-                WHOLE → BLOCKED → APPROVAL → EXECUTED
+                Lista iz AI Summary DB – ciljevi / taskovi za ovu sedmicu.
               </p>
             </div>
+            <button id="refresh-weekly-btn" class="btn btn-xs btn-ghost">
+              Osvježi listu
+            </button>
           </div>
 
-          <div class="pipeline-row">
-            <div class="pipeline-stage">
-              <span class="stage-label">Pending</span>
-              <div class="stage-value" id="pending-count">0</div>
-            </div>
-            <div class="pipeline-stage">
-              <span class="stage-label">Odobreno danas</span>
-              <div class="stage-value" id="approved-today-count">0</div>
-            </div>
-            <div class="pipeline-stage">
-              <span class="stage-label">Ukupno izvršeno</span>
-              <div class="stage-value" id="executed-total-count">0</div>
-            </div>
-            <div class="pipeline-stage">
-              <span class="stage-label">Greške</span>
-              <div class="stage-value" id="errors-total-count">0</div>
-            </div>
-          </div>
-
-          <div class="pipeline-list-wrapper">
-            <div class="pipeline-list-header">
-              <span>Pending zahtjevi</span>
-              <span id="pending-label" class="small-muted">–</span>
-            </div>
-            <ul id="pending-approvals-list" class="pipeline-list">
-              <li class="placeholder-text">
-                Trenutno nema zahtjeva na čekanju.
-              </li>
-            </ul>
+          <div class="table-wrapper">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Tip</th>
+                  <th>Naziv</th>
+                  <th>Status</th>
+                  <th>Prioritet</th>
+                  <th>Period</th>
+                </tr>
+              </thead>
+              <tbody id="weekly-priority-body">
+                <tr>
+                  <td colspan="5" class="placeholder-text">
+                    Učitavanje weekly priority liste...
+                  </td>
+                </tr>
+              </tbody>
+            </table>
           </div>
         </section>
       </section>

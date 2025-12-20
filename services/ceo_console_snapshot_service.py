@@ -8,7 +8,6 @@ from typing import Any, Dict, List, Optional
 import requests
 from pydantic import BaseModel, Field
 
-
 NOTION_API_URL = "https://api.notion.com/v1"
 DEFAULT_NOTION_VERSION = "2022-06-28"
 
@@ -84,7 +83,7 @@ class _NotionConfig:
     approval_last_change_prop: str = "Last change"
 
     priority_window_days: int = 7
-    priority_high_values: List[str] = None
+    priority_high_values: Optional[List[str]] = None
 
     def __post_init__(self) -> None:
         if self.priority_high_values is None:
@@ -93,7 +92,7 @@ class _NotionConfig:
 
 
 class _NotionClient:
-    """Minimal, read‑only Notion client (poštuje CANON – READ path only)."""
+    """Minimal, read-only Notion client (poštuje CANON – READ path only)."""
 
     def __init__(self, config: _NotionConfig) -> None:
         self._config = config
@@ -145,7 +144,7 @@ class _NotionClient:
 class CeoConsoleSnapshotService:
     """
     Servis koji čita iz Notiona i vraća jedan snapshot
-    za CEO dashboard (bez ikakvih write/side‑effect akcija).
+    za CEO dashboard (bez ikakvih write/side-effect akcija).
     """
 
     def __init__(self, notion_client: _NotionClient, config: _NotionConfig) -> None:
@@ -171,9 +170,7 @@ class CeoConsoleSnapshotService:
         """
         token = os.getenv("NOTION_TOKEN") or os.getenv("NOTION_API_KEY")
         if not token:
-            raise ConfigurationError(
-                "Missing NOTION_TOKEN or NOTION_API_KEY environment variable."
-            )
+            raise ConfigurationError("NOTION_TOKEN or NOTION_API_KEY must be set.")
 
         goals_db_id = os.getenv("NOTION_GOALS_DATABASE_ID")
         tasks_db_id = os.getenv("NOTION_TASKS_DATABASE_ID")
@@ -205,9 +202,7 @@ class CeoConsoleSnapshotService:
             approval_last_change_prop=os.getenv(
                 "NOTION_APPROVAL_LAST_CHANGE_PROP", "Last change"
             ),
-            priority_window_days=int(
-                os.getenv("CEO_PRIORITY_WINDOW_DAYS", "7")
-            ),
+            priority_window_days=int(os.getenv("CEO_PRIORITY_WINDOW_DAYS", "7")),
         )
 
         high_values_env = os.getenv("CEO_PRIORITY_HIGH_VALUES")
@@ -251,7 +246,6 @@ class CeoConsoleSnapshotService:
     def _load_goals(self) -> List[CeoGoal]:
         rows = self._notion.query_database(
             self._cfg.goals_db_id,
-            # samo READ – filteri su opcionalni
             filter_=None,
             sorts=[
                 {"property": self._cfg.goal_deadline_prop, "direction": "ascending"}
@@ -361,7 +355,7 @@ class CeoConsoleSnapshotService:
                     )
                 )
 
-        # Sortiraj po datumu pa po prioritetu
+        # Sortiraj po datumu pa po nazivu
         items.sort(key=lambda i: (i.due_date or dt.date.max, i.title.lower()))
         return items
 
@@ -392,7 +386,7 @@ class CeoConsoleSnapshotService:
                 props.get(self._cfg.approval_last_change_prop)
             )
 
-            if status is None:
+            if not status:
                 continue
 
             normalized = status.lower()
@@ -402,7 +396,11 @@ class CeoConsoleSnapshotService:
                 completed += 1
                 if last_change_date and last_change_date == today:
                     approved_today += 1
-            elif "executed" in normalized or "done" in normalized or "completed" in normalized:
+            elif (
+                "executed" in normalized
+                or "done" in normalized
+                or "completed" in normalized
+            ):
                 completed += 1
             elif "error" in normalized or "failed" in normalized:
                 errors += 1

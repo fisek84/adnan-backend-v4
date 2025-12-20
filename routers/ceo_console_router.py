@@ -1,10 +1,14 @@
 # routers/ceo_console_router.py
+from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
 from typing import Optional
 import logging
 
-from services.ceo_console_snapshot_service import CeoConsoleSnapshotService
+from services.ceo_console_snapshot_service import (
+    CeoConsoleSnapshotService,
+    CeoDashboardSnapshot,
+)
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -18,10 +22,7 @@ router = APIRouter(
 _ceo_snapshot_service: Optional[CeoConsoleSnapshotService] = None
 
 
-def set_ceo_console_services(
-    *,
-    snapshot_service: CeoConsoleSnapshotService,
-) -> None:
+def set_ceo_console_services(*, snapshot_service: CeoConsoleSnapshotService) -> None:
     """
     CANON: DI iz bootstrap sloja.
     Ovaj modul NE kreira svoje servise, samo ih prima.
@@ -32,7 +33,7 @@ def set_ceo_console_services(
 
 
 @router.get("/snapshot")
-def get_ceo_console_snapshot():
+def get_ceo_console_snapshot() -> dict:
     """
     CEO Dashboard READ-only snapshot.
 
@@ -51,7 +52,7 @@ def get_ceo_console_snapshot():
         )
 
     logger.info("[CEO CONSOLE] Snapshot requested via API")
-    snapshot = _ceo_snapshot_service.build_snapshot()
+    snapshot: CeoDashboardSnapshot = _ceo_snapshot_service.build_snapshot()
     return {
         "snapshot": snapshot,
         "read_only": True,

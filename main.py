@@ -89,7 +89,7 @@ set_adnan_ai_services(
 logger.info("🔌 AI services injected.")
 
 # ============================================================
-# CEO CONSOLE ROUTER MOUNT (READ‑ONLY DASHBOARD)
+# CEO CONSOLE ROUTER MOUNT (READ-ONLY DASHBOARD)
 # ============================================================
 
 # CEO dashboard je čist READ layer: prikazuje stanje (snapshot), ne izvršava ništa.
