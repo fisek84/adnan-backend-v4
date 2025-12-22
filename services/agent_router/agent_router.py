@@ -13,10 +13,11 @@ Uloga:
 - NEMA UX semantike
 """
 
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional
 import os
 import asyncio
 import uuid
+import json
 
 from openai import OpenAI
 
@@ -34,9 +35,10 @@ class AgentRouter:
         health_service: Optional[AgentHealthService] = None,
         isolation_service: Optional[AgentIsolationService] = None,
     ):
+        # OpenAI klijent – koristi OPENAI_API_KEY iz okoline
         self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-        # SOURCES OF TRUTH
+        # SINGLE SOURCE OF TRUTH za sve agent info
         self._registry = registry or AgentRegistryService()
         self._load = load_balancer or AgentLoadBalancerService()
         self._health = health_service or AgentHealthService()
@@ -46,17 +48,26 @@ class AgentRouter:
     # AGENT SELECTION (DETERMINISTIC, SCALABLE)
     # =====================================================
     def _select_agent(self, command: str) -> Optional[Dict[str, Any]]:
+        """
+        Deterministički odabir agenta:
+        - radi isključivo na podacima iz registry-ja
+        - poštuje isolation, health i load
+        - NEMA side efekata
+        """
         agents = self._registry.get_agents_with_capability(command)
 
         for agent in agents:
             name = agent["agent_name"]
 
+            # 1) izolovan agent se preskače
             if self._isolation.is_isolated(name):
                 continue
 
+            # 2) ne-zdrav agent se preskače
             if not self._health.is_healthy(name):
                 continue
 
+            # 3) agent pod backpressure-om se preskače
             if not self._load.can_accept(name):
                 continue
 
@@ -69,6 +80,12 @@ class AgentRouter:
     # ROUTE (NO EXECUTION, NO SIDE EFFECTS)
     # =====================================================
     def route(self, command: Dict[str, str]) -> Dict[str, Optional[str]]:
+        """
+        Čisti routing:
+        - Ulaz: {"command": "..."}
+        - Izlaz: {"agent": <agent_name> | None}
+        - NEMA IO, NEMA poziva prema OpenAI-u
+        """
         cmd = command.get("command")
         if not cmd:
             return {"agent": None}
@@ -84,11 +101,19 @@ class AgentRouter:
     # =====================================================
     async def execute(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """
-        payload MUST contain:
-        - command
-        - payload (business data)
-        """
+        Controlled execution:
 
+        payload MORA sadržavati:
+        - "command": str
+        - "payload": Dict[str, Any] (business data)
+
+        Ovdje:
+        - radimo rezervaciju kapaciteta (backpressure)
+        - izvršavamo agenta preko OpenAI Assistants API-ja
+        - parsiramo JSON odgovor (response_format = json_object)
+        - bilježimo health/load signale
+        - containment u slučaju grešaka (izolacija agenta)
+        """
         command = payload.get("command")
         if not command:
             return {"success": False, "reason": "missing_command"}
@@ -125,18 +150,25 @@ class AgentRouter:
             }
 
         try:
+            # 1) Kreiramo thread
             thread = self.client.beta.threads.create()
+
+            # 2) User poruka – JSON kao string, response_format = json_object
+            user_content = json.dumps(
+                {
+                    "execution_id": execution_id,
+                    "command": command,
+                    "payload": payload.get("payload", {}),
+                }
+            )
 
             self.client.beta.threads.messages.create(
                 thread_id=thread.id,
                 role="user",
-                content={
-                    "execution_id": execution_id,
-                    "command": command,
-                    "payload": payload.get("payload", {}),
-                },
+                content=user_content,
             )
 
+            # 3) Pokrećemo run
             run = self.client.beta.threads.runs.create(
                 thread_id=thread.id,
                 assistant_id=assistant_id,
@@ -144,6 +176,7 @@ class AgentRouter:
                 response_format={"type": "json_object"},
             )
 
+            # 4) Polling dok ne bude gotovo
             while run.status not in {"completed", "failed", "cancelled"}:
                 await asyncio.sleep(0.3)
                 run = self.client.beta.threads.runs.retrieve(
@@ -154,14 +187,35 @@ class AgentRouter:
             if run.status != "completed":
                 raise RuntimeError(f"agent_run_status={run.status}")
 
+            # 5) Uzimamo zadnju poruku i parsiramo JSON
             messages = self.client.beta.threads.messages.list(
                 thread_id=thread.id,
                 limit=1,
             )
 
-            content = messages.data[0].content[0]
-            if content["type"] != "output_json":
-                raise RuntimeError("invalid_agent_response")
+            if not messages.data:
+                raise RuntimeError("no_agent_messages")
+
+            message = messages.data[0]
+            if not message.content:
+                raise RuntimeError("empty_agent_message_content")
+
+            content_block = message.content[0]
+
+            if getattr(content_block, "type", None) != "text":
+                raise RuntimeError("invalid_agent_response_type")
+
+            # assistants v2: text value je u content_block.text.value
+            try:
+                text_value = content_block.text.value
+            except AttributeError:
+                # fallback ako SDK vrati dict-like strukturu
+                text_value = content_block["text"]["value"]  # type: ignore[index]
+
+            try:
+                result_json = json.loads(text_value)
+            except json.JSONDecodeError:
+                raise RuntimeError("invalid_json_response")
 
             # ---------------------------------------------
             # SUCCESS SIGNALS
@@ -173,8 +227,8 @@ class AgentRouter:
                 "success": True,
                 "execution_id": execution_id,
                 "agent": agent_name,
-                "agent_id": agent["agent_id"],
-                "result": content["json"],
+                "agent_id": agent.get("agent_id"),
+                "result": result_json,
             }
 
         except Exception as e:
@@ -194,4 +248,5 @@ class AgentRouter:
             }
 
         finally:
+            # release backpressure slot
             self._load.release(agent_name)

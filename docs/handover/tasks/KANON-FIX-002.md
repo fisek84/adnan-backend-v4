@@ -181,6 +181,8 @@ Ovaj task treba da uvede centralnu tačku (SSOT) za routing, bez promjene spoljn
 ## Progress / Handover
 
 - 2025-12-22 – [Ad] – Task definisan i kreiran. `STATUS: IN_PROGRESS`. Sljedeći korak: analizirati postojeću routing logiku (gateway + adnan_ai) i zabilježiti gdje se sada donose odluke o izboru agenta/pipeline-a.
+- 2025-12-22 – [Ad] – Zapocet rad na implementaciji Single Source of Truth za agent_router na grani `canon/agent-router-ssot`.
+
 
 ## Ideas / Backlog
 
