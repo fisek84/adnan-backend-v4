@@ -1,6 +1,6 @@
 # TASK: KANON-FIX-006_TASK_SPEC_AND_ARCHITECTURE
 
-STATUS: IN_PROGRESS
+STATUS: DONE
 
 ## Goal
 
@@ -148,6 +148,8 @@ Za ovaj task testovi su više sanity check (dokumentacijske promjene ne smiju ni
 ## Progress / Handover
 
 - 2025-12-22 – [Ad] – Task definisan i kreiran. `STATUS: IN_PROGRESS`. Sljedeći korak: kreirati `docs/product/ARCHITECTURE_OVERVIEW.md` i `docs/product/TASK_SPEC_CANON.md` prema ovom planu (bez promjena koda).
+- 2025-12-22 – [Ad] – Kreirani `docs/product/ARCHITECTURE_OVERVIEW.md` i `docs/product/TASK_SPEC_CANON.md`, definisana Level 1 arhitektura i TASK SPEC CANON (uključujući 2–3 konkretna task primjera) i povezani sa CANON pravilima i HAPPY testovima. `.\test_runner.ps1` prolazi; nema promjena izvan `docs/*`.
+- 2025-12-22 – [Ad] – Task formalno zatvoren. `STATUS: DONE` u ovom fajlu, Faza 3 u `MASTER_PLAN` postavljena na `STATUS: DONE`, dodat zapis za KANON-FIX-006 u `CHANGELOG_FIXPACK.md`.
 
 ## Ideas / Backlog
 
