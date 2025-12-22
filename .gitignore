@@ -1,5 +1,46 @@
-﻿.env
+﻿# Environment files
+.env
+.env.*
+
+# Python cache i build artefakti
 __pycache__/
+**/__pycache__/
 *.pyc
+*.pyo
+*.pyd
+*.py[cod]
+
+# Python virtual env
+.venv/
+venv/
+env/
+ENV/
+
+# Runtime memorija (ne ide u git)
 adnan_ai/memory/
+
+# Log fajlovi
+*.log
+adnan_ai/memory/*.log
+
+# Output artefakti
+output.json
+
+# Node / frontend
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+dist/
+build/
+
+# OS / editor fajlovi
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.lnk
+
+# Ostalo što je već bilo ignorisano
 uvicorn
