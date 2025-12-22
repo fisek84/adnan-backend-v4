@@ -1,191 +1,191 @@
-# TASK: KANON-FIX-002_AGENT_ROUTER_SINGLE_SOURCE_OF_TRUTH
+# TASK: KANON-FIX-002_AGENT_ROUTER_SSOT
 
-STATUS: IN_PROGRESS
+STATUS: DONE
 
 ## Goal
 
-Uvesti JEDNU centralnu definiciju (Single Source of Truth – SSOT) za routing AI zadataka / razgovora na odgovarajuće agente / pipelines, tako da:
+Uvesti **Single Source of Truth (SSOT)** za `AgentRouter` tako da:
 
-- više ne postoji duplirana ili “rasuta” logika routinga po raznim fajlovima,
-- svaki novi TASK SPEC ima jasno mjesto gdje se mapira na odgovarajući agent / workflow,
-- HAPPY path testovi i dalje prolaze bez izmjena u ponašanju (sem što je routing čišći i pregledniji).
+- postoji **jedan** kanonski `AgentRouter` u backendu,
+- svi tokovi (chat, voice, decision engine) koriste isti router,
+- router radi **deterministički routing + kontrolisanu egzekuciju**,
+- router **nema governance / approvals / UX semantiku** – to živi iznad njega.
 
-Cilj: `agent_router` (ili ekvivalentni modul) postaje formalni, jedini izvor istine za:
-- koji “agent” / pipeline se koristi za dati tip zadatka / konverzacije,
-- kako se mapira TASK_ID / context na taj agent,
-- kako se to povezuje sa CANON pravilima (Chat/UX, Governance, Execution).
+Cilj: da se odluke o delegaciji i egzekuciji drže u jednom, jasno definisanom servisu, spremnom za kasnije skaliranje (health, load, isolation, backpressure).
 
 ## Context
 
-Trenutno sistem već ima više tokova i taskova (CEO GOAL PLAN, KPI WEEKLY SUMMARY, goal+task, basic chat, itd.), a arhitektura je dokumentovana na Level 1 u:
+Prije ovog taska:
 
-- `docs/product/ARCHITECTURE_OVERVIEW.md`
-- `docs/product/TASK_SPEC_CANON.md`
-- `docs/handover/MASTER_PLAN.md`
+- routing logika je bila razvučena po više mjesta (routeri, eksterni servisi),
+- nije postojalo jasno definisano **kanonsko** mjesto gdje se odlučuje:
+  - koji agent dobija komandu,
+  - kako se radi backpressure,
+  - kako se hendla health / failure / isolation,
+- KANON Level 1 je već definisao:
+  - Chat/UX ≠ Governance ≠ Execution,
+  - Write je blokiran bez validnog approvala,
+  - Chat endpoint nikad direktno ne piše.
 
-Routing logika (“koji agent / pipeline se koristi za koji kontekst”) je vjerovatno:
-
-- djelimično u gateway sloju (`gateway/gateway_server.py`, možda neki helperi),
-- djelimično u core AI sloju (`adnan_ai/*` – npr. agent router, orchestrator, decision logika),
-- implicitno u testovima (`tests/*` – HAPPY path skripte),
-- potencijalno u konfiguraciji (npr. `config` / `settings` fajlovi).
-
-Problem koji rješavamo:
-
-- nema jednog jasnog mjesta gdje se vidi: “za TASK_SPEC X koristi se agent/pipeline Y”,
-- routing može biti “raširen” po više fajlova,
-- otežava održavanje i dodavanje novih taskova po CANON standardu.
-
-Ovaj task treba da uvede centralnu tačku (SSOT) za routing, bez promjene spoljnog ponašanja sistema.
+Ovaj task uvodi **kanonski** `AgentRouter` u `services/agent_router/agent_router.py` kao SSOT za delegaciju i egzekuciju agenata.
 
 ## Scope
 
 **In scope:**
 
-- Analiza gdje se danas dešava routing / odabir agenta ili pipeline-a (kod i testovi).
-- Dizajn i uvođenje jednog centralnog modula / konfiguracije za `agent_router` SSOT (npr. Python modul, konfiguracioni fajl, ili kombinacija).
-- Refaktor postojećeg koda tako da:
-  - koristi ovaj SSOT umjesto lokalne, duplirane logike,
-  - zadrži postojeće ponašanje HAPPY path tokova.
-- Minimalno proširenje dokumentacije:
-  - kratka dopuna `ARCHITECTURE_OVERVIEW.md` (kako SSOT za routing izgleda),
-  - eventualni dodatak u `TASK_SPEC_CANON.md` (kako TASK SPEC referencira routing / agenta).
-- Ažuriranje ovog task fajla (`KANON-FIX-002`) i `CHANGELOG_FIXPACK.md` kada task bude DONE.
+- Definisati i implementirati `services/agent_router/agent_router.py` kao:
+  - jedini entrypoint za agent delegaciju + egzekuciju,
+  - sloj bez governance/UX semantike (čista egzekucija).
+- Napraviti jasan API:
+  - `route(command: Dict[str, str]) -> Dict[str, Optional[str]]` (bez side-effekata),
+  - `execute(payload: Dict[str, Any]) -> Dict[str, Any]` (kontrolisana egzekucija).
+- Uvezati postojeće tokove (chat, voice, decision engine) preko ovog SSOT-a (bez mijenjanja business logike).
+- Osigurati da svi **HAPPY path** testovi i dalje prolaze.
 
 **Out of scope:**
 
-- Dodavanje novih taskova ili novih agenata (fokus je na konsolidaciji postojećih).
-- Promjene u UX sloju (`gateway/frontend/*`) osim ako nije apsolutno nužno radi kompatibilnosti interfejsa, i to minimalno.
-- Promjene u CANON pravilima (Chat/UX ≠ Governance ≠ Execution, Write blokiran bez approvala, itd.).
-- Promjene u DB šemi, vanjskim integracijama ili sigurnosnim mehanizmima.
-- Redizajn cijele arhitekture – fokus je na jednom jasno definisanom SSOT sloju za routing.
+- Bilo kakve promjene u governance / approval pipeline-u.
+- Bilo kakve promjene u Chat/UX sloju (frontend, chat endpoint).
+- Dodavanje novih agenata ili novih business tokova.
+- Promjene u DB šemi, integracijama ili configu (osim onog što je nužno da router radi kao sada).
 
 ## CANON Constraints
 
-- Chat/UX sloj ne smije sadržavati core routing logiku – ona mora živjeti u centralnom `agent_router` SSOT sloju (ili njegovom ekvivalentu).
-- Governance (approvals, security, policies) mora ostati odvojeno od čistog rutiranja taskova.
-- Execution sloj (workers, services) treba da dobija već odlučen “koji agent / pipeline”, a ne da sam donosi routing odluke.
-- NEMA novih write putanja osim onih koje već postoje – ne mijenjamo načelno Write Gateway.
-- Sve promjene moraju proći kroz postojeće HAPPY path testove:
-  - `.\test_runner.ps1`
-  - pojedinačne `test_happy_path_*.ps1` skripte.
-- Refaktor ne smije promijeniti business ponašanje – samo centralizuje odluke.
+- `AgentRouter` je **execution** komponenta:
+  - NEMA governance,
+  - NEMA approvals,
+  - NEMA UX semantiku.
+- Chat/UX, Governance i Execution ostaju jasno odvojeni.
+- Router:
+  - ne radi nikakav direktan write u DB ili vanjske sisteme izvan definisanog agent interface-a,
+  - ne donosi business odluke koje pripadaju governance sloju.
+- Sve promjene moraju biti pokrivene postojećim HAPPY path testovima.
 
 ## Files to touch
 
-(precizno popuniti nakon pregleda repozitorija – ovdje su TIPIČNI kandidati)
+- `services/agent_router/agent_router.py`  (kanonska implementacija SSOT)
+- (indirektno – bez promjene semantike):
+  - `ext/agents/router.py`
+  - `routers/voice_router.py`
+  - `services/decision_engine/context_orchestrator.py`
 
-- `adnan_ai/...` – postojeći ili novi modul za `agent_router` SSOT (npr. `adnan_ai/agent_router.py` ili sl.).
-- `gateway/gateway_server.py` – da koristi SSOT umjesto lokalne logike (ako trenutno ima routing odluke).
-- `tests/...` – eventualno prilagoditi testove ako direktno referenciraju staru logiku (ali idealno da je refaktor transparentan).
-- `docs/product/ARCHITECTURE_OVERVIEW.md` – kratka dopuna dijela koji opisuje routing / agent sloj.
-- `docs/product/TASK_SPEC_CANON.md` – dopuna da TASK SPEC jasno kaže kako se mapira na `agent_router`.
-- `docs/handover/CHANGELOG_FIXPACK.md` – kada task bude DONE.
-- `docs/handover/MASTER_PLAN.md` – kada Faza 4 bude `STATUS: DONE` (Level 1).
+> Napomena: ovaj task je fokusiran na **kanonsku implementaciju** `AgentRouter` servisa. Ostali fajlovi ga koriste, ali njihova business logika nije mijenjana.
 
 ## Step-by-step plan
 
-1. **Inventura trenutnog routinga**
-   - Pregledati:
-     - `gateway/gateway_server.py`
-     - `adnan_ai/*` (posebno fajlove koji u nazivu ili sadržaju imaju “router”, “agent”, “orchestrator”, “route”, “dispatch”).
-     - relevantne testove u `tests/*` koji koriste različite tokove (basic chat, goal+task, CEO, KPI).
-   - Zabilježiti:
-     - gdje se donosi odluka “koji agent / pipeline se koristi”,
-     - koje ulazne informacije utiču na tu odluku (npr. TASK_ID, tip zahtjeva, metadata, user role, itd.),
-     - da li postoji već neki centralni modul koji to radi, ali je nepotpuno.
+1. **Definisati SSOT klasu `AgentRouter`**
+   - Lokacija: `services/agent_router/agent_router.py`.
+   - Uvesti zavisnosti:
+     - `AgentRegistryService` – zna koji agenti postoje i šta znaju,
+     - `AgentLoadBalancerService` – backpressure i kapacitet,
+     - `AgentHealthService` – health / heartbeat / failure signali,
+     - `AgentIsolationService` – izolacija problematičnih agenata.
 
-2. **Dizajn SSOT za `agent_router`**
-   - Definisati kako izgleda Single Source of Truth:
-     - da li je to:
-       - 1) Python modul sa jasnim API-em (npr. `route(request_context) -> AgentRouteDecision`),
-       - i/ili 2) konfiguracioni mapping (npr. dict ili YAML/JSON) koji se učitava.
-   - Definisati minimalni, stabilni interfejs:
-     - ulazi (npr. TASK_ID, conversation type, user role, context),
-     - izlazi (`agent_id`, pipeline, flags, da li je potreban approval, itd. – u okviru onog što već postoji).
-   - U dokumentaciju (komentar ili docstring) zapisati da je to jedini izvor istine za routing.
+2. **Agent selection (deterministički)**
+   - Implementirati privatnu metodu `_select_agent(command: str) -> Optional[Dict[str, Any]]`:
+     - koristi registry da nađe agente sa datom capability,
+     - filtrira:
+       - izolovane agente,
+       - ne-zdrave agente,
+       - agente koji nemaju slobodan kapacitet (`load.can_accept`),
+     - vraća prvog validnog agenta (deterministički redoslijed po registry-ju).
 
-3. **Implementacija SSOT sloja**
-   - Napraviti ili proširiti centralni modul (npr. `adnan_ai/agent_router.py`):
-     - implementirati `route(...)` funkciju / klasu,
-     - preseliti postojeću logiku koja je sada rasuta u razne fajlove,
-     - ukloniti duplirane odluke iz `gateway` / drugih mjesta i zamijeniti pozivima na SSOT.
-   - Paziti da:
-     - nema promjene u eksternom API-ju (`gateway` endpoints ostaju isti),
-     - samo se unutrašnje odluke konsoliduju.
+3. **Route (bez egzekucije, bez side-effekata)**
+   - `route(self, command: Dict[str, str]) -> Dict[str, Optional[str]]`:
+     - očekuje `{"command": "<COMMAND_NAME>"}`,
+     - ako nema komande → `{"agent": None}`,
+     - koristi `_select_agent` i vraća samo `{"agent": "<agent_name>"}` ili `{"agent": None}`.
 
-4. **Povezivanje sa TASK SPEC CANON-om**
-   - U `docs/product/TASK_SPEC_CANON.md`:
-     - dodati dio koji kaže kako TASK SPEC referencira `agent_router`,
-     - npr. polje `ROUTING` ili `AGENT_ID` u TASK SPEC-u.
-   - U `ARCHITECTURE_OVERVIEW.md`:
-     - opisati kako Chat/UX → Gateway → `agent_router` → Execution tok izgleda,
-     - naglasiti da je `agent_router` SSOT sloj.
+4. **Execute (kontrolisana egzekucija)**
+   - `async def execute(self, payload: Dict[str, Any]) -> Dict[str, Any]`:
+     - očekuje:
+       - `command` – naziv komande,
+       - `payload` – business data.
+     - koraci:
+       1. `_select_agent(command)` → ako nema agenta, vrati:
+          - `{"success": False, "reason": "no_available_agent_or_backpressure"}`
+       2. iz `agent["metadata"]` čita `assistant_id` (binding na OpenAI Assistant),
+       3. generiše `execution_id`,
+       4. preko `AgentLoadBalancerService` radi **reserve / release** pattern:
+          - `reserve` prije egzekucije,
+          - `release` u `finally` bloku.
+       5. kreira `thread` i `run` prema OpenAI Assistants API-ju:
+          - šalje:
+            - `execution_id`,
+            - `command`,
+            - `payload`.
+       6. pool-a status `run` dok ne bude u stanju `completed`, `failed` ili `cancelled`.
+       7. ako nije `completed` → tretira se kao failure.
+       8. čita zadnju poruku, očekuje `output_json`:
+          - u slučaju uspjeha:
+            - `load.record_success`,
+            - `health.mark_heartbeat`.
+       9. u slučaju exception-a:
+          - `load.record_failure`,
+          - `health.mark_unhealthy`,
+          - `isolation.isolate(agent_name)`.
 
-5. **Testovi i verifikacija**
-   - Pokrenuti:
-     - `.\test_runner.ps1`
-     - (po potrebi) pojedinačne `test_happy_path_*.ps1` ako se žele dodatno provjeriti kritični tokovi.
-   - Verifikovati:
-     - da svi dosadašnji HAPPY path tokovi prolaze,
-     - da nije uveden novi behaviour (taskovi rade isto, samo je logika organizovanija).
+5. **Failure containment**
+   - Sve greške u egzekuciji ostaju lokalizovane na:
+     - konkretnog agenta (`agent_name`),
+     - konkretan `execution_id`.
+   - Router vraća jasan odgovor:
+     - `success: False`,
+     - `reason: "agent_execution_failed"`,
+     - `error: <string>`.
 
-6. **Handover i formalno zatvaranje**
-   - U ovom fajlu (`docs/handover/tasks/KANON-FIX-002.md`) ažurirati sekciju **Progress / Handover**:
-     - zabilježiti gdje je SSOT implementiran,
-     - koji fajlovi su refaktorisani,
-     - rezultati testova.
-   - Kada su Acceptance criteria ispunjeni:
-     - promijeniti `STATUS` u `DONE` na vrhu fajla,
-     - u `docs/handover/MASTER_PLAN.md` promijeniti Faza 4 na `STATUS: DONE`,
-     - u `docs/handover/CHANGELOG_FIXPACK.md` dodati novi zapis za KANON-FIX-002.
+6. **Integracija sa postojećim tokovima**
+   - Osigurati da svi postojeći entrypointi (chat, voice, decision engine) koriste baš ovaj `AgentRouter`:
+     - `ext/agents/router.py`,
+     - `routers/voice_router.py`,
+     - `services/decision_engine/context_orchestrator.py`.
+   - Nema promjene business logike – samo se centralizuje delegacija.
 
 ## Tests to run
 
-- `.\test_runner.ps1`
-- (opciono) dodatni `test_happy_path_*.ps1` po izboru, npr:
-  - `test_happy_path_goal_and_task.ps1`
-  - `test_happy_path_ceo_goal_plan_7day.ps1`
-  - `test_happy_path_kpi_weekly_summary.ps1`
-- (opciono) `pytest -q` ako je već dio redovnog lokalnog workflow-a.
+- `.\test_happy_path.ps1`
+- `.\test_happy_path_goal_and_task.ps1`
+- `.\test_happy_path_ceo_goal_plan_7day.ps1`
+- `.\test_happy_path_ceo_goal_plan_14day.ps1`
+- `.\test_happy_path_kpi_weekly_summary.ps1`
+- opcionalno: `.\test_runner.ps1` (svi zajedno)
+
+Acceptance signal: **svi HAPPY path testovi moraju proći** bez promjena u očekivanim rezultatima.
 
 ## Acceptance criteria
 
-- Postoji JEDAN centralni `agent_router` SSOT sloj (modul / konfiguracija) koji:
-  - je jasno definisan i dokumentovan (API, ulazi/izlazi),
-  - se koristi na svim mjestima gdje se odlučuje koji agent / pipeline se koristi,
-  - eliminiše dupliranu / kontradiktornu routing logiku.
-- `gateway/gateway_server.py` i ostali dijelovi sistema:
-  - više ne sadrže lokalne “if/else” odluke za odabir agenta koje su u konfliktu sa SSOT,
-  - umjesto toga koriste centralni `agent_router`.
-- `docs/product/ARCHITECTURE_OVERVIEW.md` i `docs/product/TASK_SPEC_CANON.md` reflektuju postojanje SSOT za routing.
-- Nema regresija:
-  - `.\test_runner.ps1` prolazi,
-  - happy-path tokovi (chat, goal+task, CEO plan, KPI summary) rade kao i prije.
-- `MASTER_PLAN` i `CHANGELOG_FIXPACK` ažurirani kada je task formalno zatvoren.
+- `services/agent_router/agent_router.py` postoji i:
+  - implementira `_select_agent`, `route` i `execute` kako je gore opisano,
+  - koristi `AgentRegistryService`, `AgentLoadBalancerService`, `AgentHealthService`, `AgentIsolationService`.
+- Svi entrypointi koriste ovaj SSOT `AgentRouter` (nema druge verzije routera sa drugačijom logikom).
+- Nema governance / UX logike unutar `AgentRouter` servisa.
+- Svi navedeni HAPPY path testovi prolaze.
+- Handover dokument i MASTER_PLAN jasno označavaju KANON-FIX-002 kao `DONE`.
 
 ## Rollback plan
 
-- Ako nešto pođe po zlu:
-  - koristiti `git status` da se vidi šta je promijenjeno,
-  - `git diff` da se vidi šta je tačno izmijenjeno u routing logici,
-  - `git restore` za pojedinačne fajlove (`gateway/gateway_server.py`, `adnan_ai/*`, itd.) ako je potrebno,
-  - po potrebi `git restore` za dokumentaciju:
-    - `docs/product/ARCHITECTURE_OVERVIEW.md`
-    - `docs/product/TASK_SPEC_CANON.md`
-    - `docs/handover/MASTER_PLAN.md`
-    - `docs/handover/CHANGELOG_FIXPACK.md`
+- Ako novi `AgentRouter` uzrokuje probleme:
+  - `git status` za provjeru promjena,
+  - `git log` za identifikaciju relevantnog commita,
+  - `git revert <commit_sha>` za vraćanje na staru verziju routera,
   - u krajnjem slučaju:
-    - `git reset --hard` da se vrati stanje grane na početak ovog taska.
+    - `git reset --hard <sha_prije_promjena>` da se repo vrati na stabilno stanje.
+- U dev okruženju je dozvoljeno:
+  - privremeno izolovati problematične agente preko `AgentIsolationService`
+  - dok se ne uradi trajni fix.
 
 ## Progress / Handover
 
-- 2025-12-22 – [Ad] – Task definisan i kreiran. `STATUS: IN_PROGRESS`. Sljedeći korak: analizirati postojeću routing logiku (gateway + adnan_ai) i zabilježiti gdje se sada donose odluke o izboru agenta/pipeline-a.
-- 2025-12-22 – [Ad] – Zapocet rad na implementaciji Single Source of Truth za agent_router na grani `canon/agent-router-ssot`.
-
+- 2025-12-22 – [Ad] – Task definisan i dokumentovan (handover/spec). STATUS: IN_PROGRESS.
+- 2025-12-22 – [Ad] – Implementiran kanonski `AgentRouter` u `services/agent_router/agent_router.py` (SSOT za delegaciju i egzekuciju). Svi HAPPY path testovi prolaze. STATUS: DONE.
 
 ## Ideas / Backlog
 
-- Uvesti formalni tip / klasu `AgentRouteDecision` sa strukturisanim poljima (agent_id, pipeline_id, requires_approval, tracing_id, itd.).
-- Omogućiti konfigurabilan routing preko konfiguracionih fajlova (npr. per-tenant / per-env mapping), uz i dalje jasan SSOT koncept.
-- Dodati vizuelni dijagram (sequence diagram) za tok: Chat/UX → Gateway → agent_router → Execution → Integracije.
+- Uvesti metrike i observability za:
+  - broj egzekucija po agentu,
+  - error rate po agentu,
+  - vrijeme egzekucije.
+- Napraviti admin/Governance UI za:
+  - ručno izolovanje/rehabilitaciju agenata,
+  - pregled health statusa i backpressure signala.
+- Dodati dodatne policy slojeve (npr. limits per tenant) iznad `AgentRouter` servisa, ali bez miješanja u SSOT logiku.
