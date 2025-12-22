@@ -15,7 +15,7 @@ Ovaj dokument opisuje kako se razvija i održava AI sistem.
 ## Faze (Level 1 – temelj sistema)
 
 - Faza 1: Baseline + handover okvir  (**STATUS: DONE**)
-- Faza 2: Repo hygiene (KANON-FIX-001)  (**STATUS: TODO**)
+- Faza 2: Repo hygiene (KANON-FIX-001)  (**STATUS: DONE**)
 - Faza 3: Task spec + arhitektura (KANON-FIX-006)  (**STATUS: TODO**)
 - Faza 4: Single Source of Truth za agent_router (KANON-FIX-002)  (**STATUS: TODO**)
 - Faza 5: Single Write Gateway (KANON-FIX-003)  (**STATUS: TODO**)
