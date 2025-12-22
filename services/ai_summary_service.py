@@ -88,37 +88,54 @@ class AISummaryService:
 
     def get_this_week_priorities(self, limit: int = 20) -> List[WeeklyPriorityItem]:
         """
-        Vraća listu Weekly priority stavki za ovu sedmicu iz AI SUMMARY DB.
+        Vraća listu Weekly priority stavki iz AI SUMMARY DB.
 
+        Primarno:
         - filtrira po last_edited_time = this_week (Notion timestamp filter)
-        - sortira najnovije prve
+
+        Fallback:
+        - ako nema ničega za ovu sedmicu, uzima zadnjih N zapisa bez filtera,
+          sortiranih po last_edited_time desc.
         """
+        if not self._db_id:
+            return []
+
+        sorts = [
+            {
+                "timestamp": "last_edited_time",
+                "direction": "descending",
+            }
+        ]
+
         try:
+            # Primarni upit – samo zapisi uređeni ove sedmice
             response = self._client.databases.query(
-                **{
-                    "database_id": self._db_id,
-                    "page_size": limit,
-                    "sorts": [
-                        {
-                            "timestamp": "last_edited_time",
-                            "direction": "descending",
-                        }
-                    ],
-                    "filter": {
-                        "timestamp": "last_edited_time",
-                        "last_edited_time": {
-                            "this_week": {}
-                        },
-                    },
-                }
+                database_id=self._db_id,
+                page_size=limit,
+                filter={
+                    "timestamp": "last_edited_time",
+                    "last_edited_time": {"this_week": {}},
+                },
+                sorts=sorts,
             )
+            pages = response.get("results", [])
+
+            # Fallback – nema ništa “this_week”: uzmi zadnje zapise bez datumske restrikcije
+            if not pages:
+                response = self._client.databases.query(
+                    database_id=self._db_id,
+                    page_size=limit,
+                    sorts=sorts,
+                )
+                pages = response.get("results", [])
+
         except Exception as exc:
-            logger.exception("Failed querying AI SUMMARY DB")
-            raise
+            logger.exception("Failed querying AI SUMMARY DB: %s", exc)
+            return []
 
-        results = []
+        results: List[WeeklyPriorityItem] = []
 
-        for page in response.get("results", []):
+        for page in pages:
             if not isinstance(page, dict):
                 continue
 
@@ -126,7 +143,7 @@ class AISummaryService:
 
             # Name = prvi title property
             name: Optional[str] = None
-            for prop_name, prop_val in props.items():
+            for _, prop_val in props.items():
                 if isinstance(prop_val, dict) and prop_val.get("type") == "title":
                     name = self._extract_text(prop_val)
                     if name:
@@ -137,16 +154,17 @@ class AISummaryService:
             priority = self._pick_first(props, ["Prioritet", "Priority"])
             period = self._pick_first(props, ["Period", "Due", "Due / Period", "Week"])
 
-            item = WeeklyPriorityItem(
-                type=type_val,
-                name=name,
-                status=status,
-                priority=priority,
-                period=period,
-                notion_page_id=page.get("id"),
-                notion_url=page.get("url"),
+            results.append(
+                WeeklyPriorityItem(
+                    type=type_val or "-",
+                    name=name or "-",
+                    status=status or "-",
+                    priority=priority or "-",
+                    period=period or "-",
+                    notion_page_id=page.get("id"),
+                    notion_url=page.get("url"),
+                )
             )
-            results.append(item)
 
         return results
 
@@ -165,5 +183,8 @@ def get_ai_summary_service() -> AISummaryService:
     api_key = os.getenv("NOTION_API_KEY")
     db_id = os.getenv("NOTION_AI_SUMMARY_DB_ID")
 
-    _ai_summary_service = AISummaryService(api_key=api_key, db_id=db_id)  # type: ignore[arg-type]
+    _ai_summary_service = AISummaryService(
+        api_key=api_key,  # type: ignore[arg-type]
+        db_id=db_id,      # type: ignore[arg-type]
+    )
     return _ai_summary_service
