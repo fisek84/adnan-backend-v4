@@ -8,3 +8,4 @@ Format svakog zapisa:
 - 2025-12-22 – KANON-FIX-000_BASELINE – Inicijalni baseline testovi i postavljanje handover okvira – (testovi: vidi `baseline_test_output.txt`)
 - 2025-12-22 – KANON-FIX-001_REPO_HYGIENE – Repo hygiene (.gitignore, `scripts/clean_repo.ps1`, node_modules izbačen iz git trackinga) – (testovi: `.\test_runner.ps1` – ALL HAPPY PATH TESTS PASSED)
 - 2025-12-22 – KANON-FIX-006_TASK_SPEC_AND_ARCHITECTURE – TASK SPEC CANON + Level 1 arhitektura (`ARCHITECTURE_OVERVIEW.md`, `TASK_SPEC_CANON.md`) – (testovi: `.\test_runner.ps1` – ALL HAPPY PATH TESTS PASSED)
+- 2025-12-22 – KANON-FIX-002_AGENT_ROUTER_SSOT – canonical AgentRouter SSOT u `services/agent_router/agent_router.py` (deterministički routing, backpressure, health, isolation) – (testovi: `.\test_runner.ps1` – ALL HAPPY PATH TESTS PASSED)
