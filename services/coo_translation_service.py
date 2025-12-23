@@ -10,8 +10,9 @@ from models.ai_command import AICommand
 from services.intent_classifier import IntentClassifier
 from services.intent_contract import Intent, IntentType
 from services.action_dictionary import is_valid_command
-from services.goal_nl_parser import parse_ceo_goal_plan  # trenutno se ne koristi, ali ostaje za kompatibilnost
-
+from services.goal_nl_parser import (
+    parse_ceo_goal_plan,  # noqa: F401  # trenutno se ne koristi, ali ostaje za kompatibilnost
+)
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +62,7 @@ class COOTranslationService:
         Uzmemo sve nakon prefiksa, do prvog stop tokena (priority, status, due date, ...).
         """
         stop_tokens = stop_tokens or []
-        text_after = raw_input[len(prefix):].strip()
+        text_after = raw_input[len(prefix) :].strip()
 
         lowered_after = text_after.lower()
         cut_pos = len(text_after)
@@ -311,11 +312,9 @@ class COOTranslationService:
                 prefix="kreiraj task ",
                 stop_tokens=stop_tokens,
             )
-            lowered = canonical.lower()
             src_for_segments = canonical
         else:
             name = raw
-            lowered = raw.lower()
             src_for_segments = raw
 
         status = COOTranslationService._extract_segment(
@@ -579,7 +578,6 @@ class COOTranslationService:
         source: str,
         context: Dict[str, Any],
     ) -> Optional[AICommand]:
-
         text = (raw_input or "").strip()
         lowered = text.lower()
         context = context or {}
@@ -675,7 +673,7 @@ class COOTranslationService:
                 return None
 
             prefix = "kreiraj 7 day plan za cilj "
-            goal_tail = text[len(prefix):].strip()
+            goal_tail = text[len(prefix) :].strip()
 
             synthetic_goal_sentence = "kreiraj cilj " + goal_tail
             goal_specs = self._build_goal_property_specs_from_text(
@@ -718,7 +716,7 @@ class COOTranslationService:
                 return None
 
             prefix = "kreiraj flp manager plan za cilj "
-            goal_tail = text[len(prefix):].strip()
+            goal_tail = text[len(prefix) :].strip()
 
             synthetic_goal_sentence = "kreiraj cilj " + goal_tail
             goal_specs = self._build_goal_property_specs_from_text(
@@ -794,7 +792,10 @@ class COOTranslationService:
         # -----------------------------------------------------
         # 0.2.a) CEO NL → TASK STATUS SUMMARY (REPORT)
         # -----------------------------------------------------
-        if "sažetak taskova po statusu" in lowered or "sazetak taskova po statusu" in lowered:
+        if (
+            "sažetak taskova po statusu" in lowered
+            or "sazetak taskova po statusu" in lowered
+        ):
             logger.info("COO TRANSLATE: matched TASK STATUS SUMMARY REPORT")
 
             if not is_valid_command("notion_write"):
@@ -819,7 +820,10 @@ class COOTranslationService:
         # -----------------------------------------------------
         # 0.2.b) CEO NL → GOAL STATUS SUMMARY (REPORT)
         # -----------------------------------------------------
-        if "sažetak ciljeva po statusu" in lowered or "sazetak ciljeva po statusu" in lowered:
+        if (
+            "sažetak ciljeva po statusu" in lowered
+            or "sazetak ciljeva po statusu" in lowered
+        ):
             logger.info("COO TRANSLATE: matched GOAL STATUS SUMMARY REPORT")
 
             if not is_valid_command("notion_write"):
@@ -884,9 +888,11 @@ class COOTranslationService:
         # -----------------------------------------------------
         # 0.2.d) CEO NL → KPI PERIOD SUMMARY (Qx YYYY)
         # -----------------------------------------------------
-        if "kpi" in lowered and (
-            "rezime" in lowered or "sažetak" in lowered or "sazetak" in lowered
-        ) and "weekly kpi" not in lowered:
+        if (
+            "kpi" in lowered
+            and ("rezime" in lowered or "sažetak" in lowered or "sazetak" in lowered)
+            and "weekly kpi" not in lowered
+        ):
             m_period = re.search(r"\bq([1-4])\s*(20\d{2})", lowered)
             if m_period:
                 logger.info("COO TRANSLATE: matched KPI PERIOD SUMMARY")
@@ -925,8 +931,10 @@ class COOTranslationService:
         # -----------------------------------------------------
         # 0.2.e) CEO NL → KPI TOP N BY STATUS
         # -----------------------------------------------------
-        if "kpi" in lowered and "top" in lowered and (
-            "statusom" in lowered or "status" in lowered
+        if (
+            "kpi" in lowered
+            and "top" in lowered
+            and ("statusom" in lowered or "status" in lowered)
         ):
             logger.info("COO TRANSLATE: matched KPI TOP N BY STATUS")
 
@@ -1009,9 +1017,9 @@ class COOTranslationService:
         # -----------------------------------------------------
         # 0.2.g) CEO NL → AGENT EXCHANGE OPEN REQUESTS (READ-ONLY)
         # -----------------------------------------------------
-        if ("agent exchange" in lowered or ("zahtjev" in lowered and "agent" in lowered)) and (
-            "otvorene" in lowered or "otvoreni" in lowered or "open" in lowered
-        ):
+        if (
+            "agent exchange" in lowered or ("zahtjev" in lowered and "agent" in lowered)
+        ) and ("otvorene" in lowered or "otvoreni" in lowered or "open" in lowered):
             logger.info("COO TRANSLATE: matched AGENT EXCHANGE OPEN REQUESTS")
 
             if not is_valid_command("notion_write"):
@@ -1052,9 +1060,7 @@ class COOTranslationService:
             status_value = self._extract_segment(
                 r"statusom\s+(.+?)(?=\s+i\s+prioritetom\b|$)", text
             )
-            priority_value = self._extract_segment(
-                r"prioritetom\s+(\w+)", text
-            )
+            priority_value = self._extract_segment(r"prioritetom\s+(\w+)", text)
             date_range = self._extract_date_range(text)
 
             property_specs: Dict[str, Any] = {}
@@ -1095,7 +1101,9 @@ class COOTranslationService:
             text.strip(),
         )
         if m_new_goal:
-            logger.info("COO TRANSLATE: matched BOSNIAN GOAL CREATE (NAPRAVI NOVI CILJ)")
+            logger.info(
+                "COO TRANSLATE: matched BOSNIAN GOAL CREATE (NAPRAVI NOVI CILJ)"
+            )
 
             if not is_valid_command("notion_write"):
                 return None
@@ -1182,9 +1190,7 @@ class COOTranslationService:
             status_value = self._extract_segment(
                 r"statusom\s+(.+?)(?=\s+i\s+prioritetom\b|$)", text
             )
-            priority_value = self._extract_segment(
-                r"prioritetom\s+(\w+)", text
-            )
+            priority_value = self._extract_segment(r"prioritetom\s+(\w+)", text)
             date_range = self._extract_date_range(text)
             if not date_range:
                 date_range = self._extract_quarter_range(text)
@@ -1223,9 +1229,11 @@ class COOTranslationService:
         # 0.4.a) CEO NL → PROJECT QUERY BY STATUS (READ)
         # -----------------------------------------------------
         if (
-            ("projekat" in lowered or "projekti" in lowered or "projekte" in lowered or "projekt" in lowered)
-            and "statusu" in lowered
-        ):
+            "projekat" in lowered
+            or "projekti" in lowered
+            or "projekte" in lowered
+            or "projekt" in lowered
+        ) and "statusu" in lowered:
             logger.info("COO TRANSLATE: matched PROJECT QUERY BY STATUS")
 
             if not is_valid_command("notion_write"):
@@ -1468,9 +1476,7 @@ class COOTranslationService:
         # -----------------------------------------------------
         # 1) INTENT CLASSIFICATION (SVE OSTALO)
         # -----------------------------------------------------
-        intent: Intent = self.intent_classifier.classify(
-            raw_input, source=source
-        )
+        intent: Intent = self.intent_classifier.classify(raw_input, source=source)
 
         if intent.confidence < self.intent_classifier.DEFAULT_CONFIDENCE_THRESHOLD:
             return None
@@ -1512,9 +1518,7 @@ class COOTranslationService:
         # 4) GOAL CREATE (WRITE — HAPPY PATH V1, ENGLISH)
         # -----------------------------------------------------
         if intent.type == IntentType.GOAL_CREATE:
-            params: Dict[str, Any] = {
-                "name": raw_input
-            }
+            params: Dict[str, Any] = {"name": raw_input}
 
             m_q = re.search(r"\bq([1-4])\b", lowered)
             if m_q:

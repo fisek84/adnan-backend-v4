@@ -8,12 +8,14 @@ from services.conversation_state_service import CSIState
 # LOOP DECISION (DATA ONLY)
 # ============================================================
 
+
 @dataclass
 class LoopResult:
     """
     Result of a single loop governance evaluation.
     Data-only, no side effects.
     """
+
     allow: bool
     decision: str
     reason: Optional[str] = None
@@ -23,6 +25,7 @@ class LoopResult:
 # ============================================================
 # LOOP CONTROLLER (KANONSKI)
 # ============================================================
+
 
 class LoopController:
     """
@@ -55,7 +58,6 @@ class LoopController:
         csi_state: str,
         last_result: Optional[Dict[str, Any]] = None,
     ) -> LoopResult:
-
         # -------------------------------
         # HARD CSI GUARD
         # -------------------------------

@@ -7,6 +7,7 @@ import logging  # Dodajemo logovanje
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
+
 class ProjectModel(BaseModel):
     id: str
     notion_id: Optional[str]
@@ -47,9 +48,7 @@ class ProjectModel(BaseModel):
         orm_mode = True
         validate_assignment = True
         extra = "forbid"
-        json_encoders = {
-            datetime: lambda v: v.isoformat()
-        }
+        json_encoders = {datetime: lambda v: v.isoformat()}
 
     @classmethod
     def log_project_creation(cls, project: "ProjectModel"):

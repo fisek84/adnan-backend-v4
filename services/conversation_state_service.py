@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 # CSI STATE ENUM (KANONSKI)
 # ============================================================
 
+
 class CSIState(Enum):
     IDLE = "IDLE"
 
@@ -61,7 +62,6 @@ ALLOWED_TRANSITIONS = {
         CSIState.TASK_CREATE.value,
         CSIState.AUTONOMOUS_LOOP.value,
     },
-
     # -------- PLAN (FAZA 4) --------
     CSIState.PLAN_CREATE.value: {
         CSIState.PLAN_DRAFT.value,
@@ -74,7 +74,6 @@ ALLOWED_TRANSITIONS = {
     CSIState.PLAN_CONFIRM.value: {
         CSIState.IDLE.value,
     },
-
     # -------- TASK (FAZA 5) --------
     CSIState.TASK_CREATE.value: {
         CSIState.TASK_DRAFT.value,
@@ -98,7 +97,6 @@ ALLOWED_TRANSITIONS = {
     CSIState.TASK_FAILED.value: {
         CSIState.IDLE.value,
     },
-
     # -------- SOP / EXECUTION --------
     CSIState.SOP_LIST.value: {
         CSIState.SOP_ACTIVE.value,
@@ -124,7 +122,6 @@ ALLOWED_TRANSITIONS = {
         CSIState.IDLE.value,
         CSIState.AUTONOMOUS_LOOP.value,
     },
-
     # -------- AUTONOMY --------
     CSIState.AUTONOMOUS_LOOP.value: {
         CSIState.IDLE.value,
@@ -146,6 +143,7 @@ AUDIT_FILE = BASE_PATH / "csi_audit.log"
 # ============================================================
 # DATA MODEL
 # ============================================================
+
 
 @dataclass
 class ConversationState:
@@ -196,6 +194,7 @@ class ConversationState:
 # SERVICE — CSI FINAL AUTHORITY
 # ============================================================
 
+
 class ConversationStateService:
     """
     CSI — FINAL STATE AUTHORITY (HARD LOCK)
@@ -226,14 +225,19 @@ class ConversationStateService:
     def _audit(self, prev, curr, reason, illegal=False):
         try:
             with open(AUDIT_FILE, "a", encoding="utf-8") as f:
-                f.write(json.dumps({
-                    "ts": datetime.utcnow().isoformat(),
-                    "from": prev.state if prev else None,
-                    "to": curr.state,
-                    "reason": reason,
-                    "illegal": illegal,
-                    "request_id": curr.request_id,
-                }) + "\n")
+                f.write(
+                    json.dumps(
+                        {
+                            "ts": datetime.utcnow().isoformat(),
+                            "from": prev.state if prev else None,
+                            "to": curr.state,
+                            "reason": reason,
+                            "illegal": illegal,
+                            "request_id": curr.request_id,
+                        }
+                    )
+                    + "\n"
+                )
         except Exception:
             pass
 
@@ -247,7 +251,9 @@ class ConversationStateService:
     def _transition(self, new_state, *, reason, request_id):
         current = self._state.state
         if self.LOCKED and new_state not in ALLOWED_TRANSITIONS.get(current, set()):
-            self._persist(self._state, reason=f"illegal_transition:{reason}", illegal=True)
+            self._persist(
+                self._state, reason=f"illegal_transition:{reason}", illegal=True
+            )
             return
 
         self._state.state = new_state

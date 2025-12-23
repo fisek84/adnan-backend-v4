@@ -1,6 +1,7 @@
 from ext.notion.writer import create_page, append_text
 from ext.notion.linker import link_to_relation
 
+
 def orchestrate_document(payload: dict):
     """
     payload expected:

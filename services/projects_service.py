@@ -78,10 +78,16 @@ class ProjectsService:
             "command": "projects_create",
             "actor_id": str(payload.get("actor_id") or "system"),
             "resource": "projects",
-            "payload": {"data": payload, "forced_id": forced_id, "notion_id": notion_id},
+            "payload": {
+                "data": payload,
+                "forced_id": forced_id,
+                "notion_id": notion_id,
+            },
             "task_id": "PROJECTS_CREATE",
             "execution_id": self._wg_execution_id(payload),
-            "metadata": payload.get("metadata") if isinstance(payload.get("metadata"), dict) else None,
+            "metadata": payload.get("metadata")
+            if isinstance(payload.get("metadata"), dict)
+            else None,
             "approval_id": payload.get("approval_id"),
         }
         return await self.write_gateway.write(envelope)
@@ -89,8 +95,12 @@ class ProjectsService:
     # ------------------------------------------------------
     # UPDATE (WRITE via gateway)
     # ------------------------------------------------------
-    async def update_project(self, project_id: str, updates: ProjectUpdate) -> Dict[str, Any]:
-        payload = updates.model_dump() if hasattr(updates, "model_dump") else dict(updates)
+    async def update_project(
+        self, project_id: str, updates: ProjectUpdate
+    ) -> Dict[str, Any]:
+        payload = (
+            updates.model_dump() if hasattr(updates, "model_dump") else dict(updates)
+        )
         envelope = {
             "command": "projects_update",
             "actor_id": str(payload.get("actor_id") or "system"),
@@ -98,7 +108,9 @@ class ProjectsService:
             "payload": {"project_id": project_id, "updates": payload},
             "task_id": "PROJECTS_UPDATE",
             "execution_id": self._wg_execution_id(payload),
-            "metadata": payload.get("metadata") if isinstance(payload.get("metadata"), dict) else None,
+            "metadata": payload.get("metadata")
+            if isinstance(payload.get("metadata"), dict)
+            else None,
             "approval_id": payload.get("approval_id"),
         }
         return await self.write_gateway.write(envelope)
@@ -177,13 +189,28 @@ class ProjectsService:
         if not project:
             raise ValueError("Project not found")
 
-        updates = ProjectUpdate(**updates_dict) if isinstance(updates_dict, dict) else updates_dict
+        updates = (
+            ProjectUpdate(**updates_dict)
+            if isinstance(updates_dict, dict)
+            else updates_dict
+        )
 
         for field in [
-            "title", "description", "status", "category", "priority",
-            "start_date", "deadline", "project_type", "summary",
-            "next_step", "goal_id", "parent_id", "agents",
-            "tasks", "handled_by",
+            "title",
+            "description",
+            "status",
+            "category",
+            "priority",
+            "start_date",
+            "deadline",
+            "project_type",
+            "summary",
+            "next_step",
+            "goal_id",
+            "parent_id",
+            "agents",
+            "tasks",
+            "handled_by",
         ]:
             val = getattr(updates, field, None)
             if val is not None:
@@ -205,7 +232,11 @@ class ProjectsService:
         self.projects.pop(project_id)
         self._trigger_sync()
 
-        return {"project_id": project_id, "deleted": True, "notion_id": getattr(proj, "notion_id", None)}
+        return {
+            "project_id": project_id,
+            "deleted": True,
+            "notion_id": getattr(proj, "notion_id", None),
+        }
 
     # ------------------------------------------------------
     # MAPPERS

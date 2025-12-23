@@ -121,10 +121,11 @@ except Exception as e:
     logger.warning("ℹ️ dependencies init/orchestrator not available: %s", e)
 
 # ============================================================
-# CEO CONSOLE ROUTER MOUNT (READ-ONLY DASHBOARD)
+# CEO CONSOLE + NOTION OPS ROUTERS
 # ============================================================
 
 from routers import ceo_console_router  # noqa: E402
+from routers import notion_ops_router  # noqa: E402
 
 
 def ensure_ceo_console_router_mounted() -> None:
@@ -143,6 +144,10 @@ def ensure_ceo_console_router_mounted() -> None:
 
 
 ensure_ceo_console_router_mounted()
+
+# Notion bulk ops router (bulk create/update/query za goals/tasks)
+app.include_router(notion_ops_router.router)
+logger.info("✅ Notion bulk ops router mounted at /notion-ops")
 
 # ============================================================
 # FRONTEND STATIC MOUNT

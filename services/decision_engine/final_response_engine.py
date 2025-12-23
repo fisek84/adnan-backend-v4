@@ -23,7 +23,6 @@ class FinalResponseEngine:
         classification: Dict[str, Any],
         result: Dict[str, Any],
     ) -> Dict[str, Any]:
-
         context_type = classification.get("context_type")
 
         if context_type == "knowledge":
@@ -54,7 +53,6 @@ class FinalResponseEngine:
         self,
         context_type: str,
     ) -> Dict[str, Any]:
-
         return {
             "context_type": context_type,
             "reasoning": [
@@ -100,11 +98,7 @@ class FinalResponseEngine:
         if not items:
             return "Nema zapisa."
 
-        topic = (
-            response.get("topic")
-            or result.get("type")
-            or "informacije"
-        )
+        topic = response.get("topic") or result.get("type") or "informacije"
 
         lines = [f"{str(topic).upper()}:"]
 

@@ -48,9 +48,7 @@ async def create_goal(
             notion_payload = {
                 "parent": {"database_id": notion_db_id},
                 "properties": {
-                    "Name": {
-                        "title": [{"text": {"content": data.get("title")}}]
-                    }
+                    "Name": {"title": [{"text": {"content": data.get("title")}}]}
                 },
             }
 
@@ -70,7 +68,9 @@ async def create_goal(
             }
 
         # override handler to ensure Notion write happens inside gateway commit
-        goals_service.write_gateway.register_handler("goals_create", _wg_create_with_notion)
+        goals_service.write_gateway.register_handler(
+            "goals_create", _wg_create_with_notion
+        )
 
         envelope = {
             "command": "goals_create",
@@ -126,7 +126,10 @@ async def update_goal(
         res = await goals_service.update_goal(goal_id, payload.model_dump())
 
         if isinstance(res, dict) and res.get("success") is not None:
-            if res.get("success") is True and res.get("status") in ("applied", "replayed"):
+            if res.get("success") is True and res.get("status") in (
+                "applied",
+                "replayed",
+            ):
                 updated_goal: GoalModel = goals_service.goals.get(goal_id)
                 if not updated_goal:
                     raise HTTPException(404, "Updated goal not found")
@@ -166,6 +169,7 @@ async def delete_goal(
     notion=Depends(get_notion_service),
 ):
     try:
+
         async def _wg_delete_with_notion(env):
             notion_id = None
 
@@ -181,7 +185,9 @@ async def delete_goal(
 
             return {"notion_id": notion_id, "deleted": True}
 
-        goals_service.write_gateway.register_handler("goals_delete", _wg_delete_with_notion)
+        goals_service.write_gateway.register_handler(
+            "goals_delete", _wg_delete_with_notion
+        )
 
         envelope = {
             "command": "goals_delete",

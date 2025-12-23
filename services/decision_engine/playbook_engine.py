@@ -28,7 +28,6 @@ class PlaybookEngine:
         identity_reasoning: Dict[str, Any],
         context: Dict[str, Any],
     ) -> Dict[str, Any]:
-
         context_type = context.get("context_type")
         text = user_input.lower()
 
@@ -56,9 +55,9 @@ class PlaybookEngine:
                 "type": "sop_execution",
                 "sop": sop_name,
                 "execution_plan": base_plan,
-                "execution_plan_preview": self.preview_execution_plan({
-                    "steps": base_plan
-                }),
+                "execution_plan_preview": self.preview_execution_plan(
+                    {"steps": base_plan}
+                ),
                 "variants": self._build_variants(sop_name, base_plan),
                 "sop_bias": sop_bias,
                 "sop_success_rate": sop_success_rate,
@@ -100,11 +99,7 @@ class PlaybookEngine:
                     "payload": {
                         "database_key": "tasks",
                         "properties": {
-                            "Name": {
-                                "title": [
-                                    {"text": {"content": "Kickoff call"}}
-                                ]
-                            }
+                            "Name": {"title": [{"text": {"content": "Kickoff call"}}]}
                         },
                     },
                 },
@@ -130,13 +125,15 @@ class PlaybookEngine:
         preview: List[Dict[str, Any]] = []
 
         for index, step in enumerate(steps):
-            preview.append({
-                "order": index + 1,
-                "step": step.get("step"),
-                "agent": step.get("agent"),
-                "command": step.get("command"),
-                "critical": step.get("critical", False),
-            })
+            preview.append(
+                {
+                    "order": index + 1,
+                    "step": step.get("step"),
+                    "agent": step.get("agent"),
+                    "command": step.get("command"),
+                    "critical": step.get("critical", False),
+                }
+            )
 
         return {
             "type": "execution_plan_preview",
@@ -153,15 +150,13 @@ class PlaybookEngine:
         sop_name: str,
         base_plan: List[Dict[str, Any]],
     ) -> Dict[str, List[Dict[str, Any]]]:
-
         variants: Dict[str, List[Dict[str, Any]]] = {
             "default": base_plan,
         }
 
         if sop_name == "customer onboarding sop":
             variants["fast"] = [
-                step for step in base_plan
-                if step.get("step") == "create_project"
+                step for step in base_plan if step.get("step") == "create_project"
             ]
             variants["full"] = list(base_plan)
 
@@ -175,7 +170,6 @@ class PlaybookEngine:
         current_sop: str,
         bias: List[Dict[str, Any]],
     ) -> Optional[Dict[str, Any]]:
-
         if not bias:
             return None
 

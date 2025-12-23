@@ -89,8 +89,7 @@ class AgentHealthRegistry:
     def get_all_health(self) -> Dict[str, Dict[str, Any]]:
         with self._lock:
             return {
-                agent_id: deepcopy(data)
-                for agent_id, data in self._registry.items()
+                agent_id: deepcopy(data) for agent_id, data in self._registry.items()
             }
 
     # -------------------------------------------------

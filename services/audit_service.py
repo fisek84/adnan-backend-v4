@@ -28,7 +28,6 @@ class AuditService:
         limit: int = 100,
         decision_type: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-
         records = list(self.memory.memory.get("decision_outcomes", []))
 
         if decision_type:
@@ -115,7 +114,8 @@ class AuditService:
         relations = self.memory.memory.get("cross_sop_relations", {}) or {}
 
         related = {
-            k: v for k, v in relations.items()
+            k: v
+            for k, v in relations.items()
             if k.endswith(f"->{sop_key}") or k.startswith(f"{sop_key}->")
         }
 
@@ -144,7 +144,8 @@ class AuditService:
         """
 
         incidents = [
-            r for r in self.memory.memory.get("decision_outcomes", [])
+            r
+            for r in self.memory.memory.get("decision_outcomes", [])
             if r.get("success") is False
         ]
 

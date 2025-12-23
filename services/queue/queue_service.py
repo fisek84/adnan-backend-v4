@@ -133,7 +133,7 @@ class QueueService:
 
     async def snapshot(self, limit: int = 200) -> List[Dict[str, Any]]:
         async with self._lock:
-            jobs = list(self._jobs.values())[-max(1, int(limit)):]
+            jobs = list(self._jobs.values())[-max(1, int(limit)) :]
             return [
                 {
                     "job_id": j.job_id,

@@ -21,6 +21,7 @@ notion = Client(auth=NOTION_API_KEY)
 # LOW-LEVEL WORKERS (NO LOGIC, HARD VALIDATION)
 # ============================================================
 
+
 def create_page(database_id: str, properties: Dict[str, Any]):
     try:
         page = notion.pages.create(
@@ -62,14 +63,16 @@ def delete_page(page_id: str):
             "error": str(e),
         }
 
+
 # ============================================================
 # CANONICAL DISPATCHER (KANON)
 # ============================================================
 
+
 def perform_notion_action(
     *,
     operation: str,
-    database: str = None,   # db_key, npr. "goals"
+    database: str = None,  # db_key, npr. "goals"
     payload: dict = None,
     **_,
 ):

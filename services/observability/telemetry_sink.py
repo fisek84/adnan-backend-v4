@@ -6,8 +6,7 @@ from services.observability.telemetry_event import TelemetryEvent
 
 
 class TelemetrySink(Protocol):
-    def emit(self, event: TelemetryEvent) -> None:
-        ...
+    def emit(self, event: TelemetryEvent) -> None: ...
 
 
 class StdoutTelemetrySink:

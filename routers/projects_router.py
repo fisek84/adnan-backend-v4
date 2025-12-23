@@ -1,7 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from typing import List
 import logging
-from uuid import uuid4
 
 from models.project_create import ProjectCreate
 from models.project_update import ProjectUpdate
@@ -31,7 +30,9 @@ def get_all_projects(projects_service: ProjectsService = Depends(get_projects_se
 # GET SINGLE PROJECT
 # ============================================================
 @router.get("/{project_id}", response_model=ProjectModel)
-def get_project(project_id: str, projects_service: ProjectsService = Depends(get_projects_service)):
+def get_project(
+    project_id: str, projects_service: ProjectsService = Depends(get_projects_service)
+):
     logger.info(f"Fetching project with ID: {project_id}")
     projects = projects_service.get_all()
     for p in projects:
@@ -49,7 +50,7 @@ def get_project(project_id: str, projects_service: ProjectsService = Depends(get
 @router.post("/", response_model=ProjectModel)
 async def create_project(
     payload: ProjectCreate,
-    projects_service: ProjectsService = Depends(get_projects_service)
+    projects_service: ProjectsService = Depends(get_projects_service),
 ):
     logger.info(f"Creating project with title: {payload.title}")
 
@@ -59,7 +60,9 @@ async def create_project(
         project_id = (res.get("data") or {}).get("project_id")
         proj = projects_service.get(project_id) if project_id else None
         if not proj:
-            raise HTTPException(status_code=500, detail="Project created but not found locally")
+            raise HTTPException(
+                status_code=500, detail="Project created but not found locally"
+            )
         logger.info(f"Project {proj.id} created successfully.")
         return proj
 
@@ -83,7 +86,7 @@ async def create_project(
 async def update_project(
     project_id: str,
     payload: ProjectUpdate,
-    projects_service: ProjectsService = Depends(get_projects_service)
+    projects_service: ProjectsService = Depends(get_projects_service),
 ):
     logger.info(f"Updating project with ID: {project_id}")
 
@@ -106,7 +109,9 @@ async def update_project(
             },
         )
 
-    raise HTTPException(status_code=404, detail=res.get("reason") or "Project not found")
+    raise HTTPException(
+        status_code=404, detail=res.get("reason") or "Project not found"
+    )
 
 
 # ============================================================
@@ -114,8 +119,7 @@ async def update_project(
 # ============================================================
 @router.delete("/{project_id}")
 async def delete_project(
-    project_id: str,
-    projects_service: ProjectsService = Depends(get_projects_service)
+    project_id: str, projects_service: ProjectsService = Depends(get_projects_service)
 ):
     logger.info(f"Deleting project with ID: {project_id}")
 
@@ -135,4 +139,6 @@ async def delete_project(
             },
         )
 
-    raise HTTPException(status_code=404, detail=res.get("reason") or "Project not found")
+    raise HTTPException(
+        status_code=404, detail=res.get("reason") or "Project not found"
+    )

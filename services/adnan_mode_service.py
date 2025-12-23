@@ -6,6 +6,7 @@ from typing import Dict, Any
 # INTERNAL HELPERS
 # ================================================================
 
+
 def load_json_file(path: str):
     if not os.path.exists(path):
         raise FileNotFoundError(f"Mode file not found: {path}")
@@ -45,6 +46,7 @@ def resolve_path(filename: str) -> str:
 # CANONICAL MODE LOAD / SAVE
 # ================================================================
 
+
 def load_mode() -> Dict[str, Any]:
     """
     Loads persisted Adnan.AI operating mode.
@@ -69,6 +71,7 @@ def save_mode(mode: Dict[str, Any]) -> None:
 # LEGACY / BACKWARD COMPATIBILITY
 # ================================================================
 
+
 def get_adnan_mode() -> Dict[str, Any]:
     """
     Legacy compatibility accessor.
@@ -79,10 +82,7 @@ def get_adnan_mode() -> Dict[str, Any]:
         mode = load_mode()
         return {
             "active_mode": mode.get("current_mode", "operational"),
-            "description": mode.get(
-                "description",
-                "Evolia Operational Mode"
-            ),
+            "description": mode.get("description", "Evolia Operational Mode"),
         }
     except Exception:
         return {

@@ -1,7 +1,10 @@
 from typing import Dict, Any, Optional
 
 from services.conversation_state_service import ConversationStateService, CSIState
-from services.autonomy.autonomy_coordinator import AutonomyCoordinator, AutonomyCycleResult
+from services.autonomy.autonomy_coordinator import (
+    AutonomyCoordinator,
+    AutonomyCycleResult,
+)
 from services.autonomy.policy_layer import AutonomyPolicy, PolicyDecision
 from services.autonomy.loop_controller import LoopController
 from services.autonomy.kill_switch import AutonomyKillSwitch
@@ -88,7 +91,6 @@ class AutonomyEntryPoint:
         retry_count: int = 0,
         last_error: Optional[str] = None,
     ) -> Optional[AutonomyCycleResult]:
-
         # ---- ELIGIBILITY GATE
         if not self.can_enter():
             return None

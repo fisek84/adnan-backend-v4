@@ -3,6 +3,7 @@
 import re
 from difflib import SequenceMatcher
 
+
 class CrossDatabaseReasoningEngine:
     def __init__(self, database_map):
         self.database_map = database_map
@@ -46,5 +47,5 @@ class CrossDatabaseReasoningEngine:
 
         return {
             "cross_related_goals": related_goals,
-            "cross_related_projects": related_projects
+            "cross_related_projects": related_projects,
         }

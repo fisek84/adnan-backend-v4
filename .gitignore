@@ -44,3 +44,5 @@ Thumbs.db
 
 # Ostalo što je već bilo ignorisano
 uvicorn
+
+goals.db

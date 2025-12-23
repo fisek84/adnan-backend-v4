@@ -1,5 +1,6 @@
 # services/decision_engine/test_execution_engine.py
 
+
 class TestExecutionEngine:
     def __init__(self, decision_service):
         self.svc = decision_service
@@ -7,17 +8,9 @@ class TestExecutionEngine:
     def _run_single(self, text: str) -> dict:
         try:
             result = self.svc.process_ceo_instruction(text)
-            return {
-                "input": text,
-                "success": True,
-                "output": result
-            }
+            return {"input": text, "success": True, "output": result}
         except Exception as e:
-            return {
-                "input": text,
-                "success": False,
-                "error": str(e)
-            }
+            return {"input": text, "success": False, "error": str(e)}
 
     def run_batch(self, tests: list) -> dict:
         results = []
@@ -31,5 +24,5 @@ class TestExecutionEngine:
             "total": len(results),
             "passed": passed,
             "failed": failed,
-            "results": results
+            "results": results,
         }

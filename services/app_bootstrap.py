@@ -46,9 +46,7 @@ def bootstrap_application() -> None:
     # ARCHITECTURE LOCK ENFORCEMENT
     # ---------------------------------------------------------
     if ARCH_LOCK is not True:
-        raise RuntimeError(
-            "ARCH_LOCK must be True in production bootstrap"
-        )
+        raise RuntimeError("ARCH_LOCK must be True in production bootstrap")
 
     # ---------------------------------------------------------
     # Instantiate canonical services
@@ -61,7 +59,7 @@ def bootstrap_application() -> None:
     # READ-ONLY Scheduler (CAPABILITY ONLY — NO JOBS)
     # ---------------------------------------------------------
     cron_service = CronService()
-    knowledge_snapshot_service = KnowledgeSnapshotService()
+    KnowledgeSnapshotService()
 
     # ❌ NAMJERNO NEMA cron job registracije
     # READ-ONLY snapshot se poziva ISKLJUČIVO na zahtjev

@@ -82,9 +82,7 @@ async def approve(body: Dict[str, Any]):
 
     execution_id = result.get("execution_id")
     if not execution_id:
-        raise HTTPException(
-            500, detail="Approved approval has no execution_id"
-        )
+        raise HTTPException(500, detail="Approved approval has no execution_id")
 
     # 🔑 RESUME REGISTERED EXECUTION
     return await _orchestrator.resume(execution_id)

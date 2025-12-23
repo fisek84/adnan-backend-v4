@@ -159,17 +159,21 @@ class ContextOrchestrator:
             if result.get("success"):
                 self.conversation_state.complete_task(request_id=request_id)
                 self.conversation_state.set_idle(request_id=request_id)
-                return self._final({
-                    "type": "task_done",
-                    "agent_result": result,
-                })
+                return self._final(
+                    {
+                        "type": "task_done",
+                        "agent_result": result,
+                    }
+                )
 
             self.conversation_state.fail_task(request_id=request_id)
             self.conversation_state.set_idle(request_id=request_id)
-            return self._final({
-                "type": "task_failed",
-                "agent_result": result,
-            })
+            return self._final(
+                {
+                    "type": "task_failed",
+                    "agent_result": result,
+                }
+            )
 
         return self._fallback()
 

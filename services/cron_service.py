@@ -7,6 +7,7 @@ import threading
 
 class CronJobError(Exception):
     """Raised when a cron job fails."""
+
     pass
 
 

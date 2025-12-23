@@ -1,4 +1,4 @@
-from typing import Dict, Any, List
+from typing import Dict, Any
 from datetime import datetime
 import os
 import logging
@@ -62,22 +62,10 @@ class AlertForwardingService:
                     parent={"database_id": self.db_id},
                     properties={
                         "Name": {
-                            "title": [
-                                {
-                                    "text": {
-                                        "content": f"ALERT: {v['type']}"
-                                    }
-                                }
-                            ]
+                            "title": [{"text": {"content": f"ALERT: {v['type']}"}}]
                         },
-                        "Command": {
-                            "rich_text": [
-                                {"text": {"content": "alerting"}}
-                            ]
-                        },
-                        "Status": {
-                            "select": {"name": "FAILED"}
-                        },
+                        "Command": {"rich_text": [{"text": {"content": "alerting"}}]},
+                        "Status": {"select": {"name": "FAILED"}},
                         "Summary": {
                             "rich_text": [
                                 {
@@ -95,17 +83,21 @@ class AlertForwardingService:
                     },
                 )
 
-                forwarded.append({
-                    "type": v["type"],
-                    "page_id": page.get("id"),
-                })
+                forwarded.append(
+                    {
+                        "type": v["type"],
+                        "page_id": page.get("id"),
+                    }
+                )
 
             except Exception as e:
                 logger.exception("Failed to forward alert %s", v["type"])
-                forwarded.append({
-                    "type": v["type"],
-                    "error": str(e),
-                })
+                forwarded.append(
+                    {
+                        "type": v["type"],
+                        "error": str(e),
+                    }
+                )
 
         return {
             "forwarded": True,

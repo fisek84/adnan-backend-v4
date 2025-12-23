@@ -25,9 +25,8 @@ class AwarenessService:
         decision: Optional[Dict[str, Any]] = None,
         execution_result: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-
         safe_csi_state = copy.deepcopy(csi_state)
-        safe_decision = copy.deepcopy(decision)
+        # decision nam ne treba u snapshotu trenutno, pa ga ne kopiramo
         safe_execution = copy.deepcopy(execution_result)
 
         snapshot: Dict[str, Any] = {
@@ -40,9 +39,7 @@ class AwarenessService:
             "what_is_happening": self._describe_activity(
                 safe_csi_state, safe_execution
             ),
-            "next_expected_step": self._next_step_hint(
-                safe_csi_state, safe_execution
-            ),
+            "next_expected_step": self._next_step_hint(safe_csi_state, safe_execution),
         }
 
         return snapshot

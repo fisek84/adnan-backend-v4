@@ -8,10 +8,7 @@ from models.task_update import TaskUpdate
 from models.task_model import TaskModel
 from services.tasks_service import TasksService
 
-from dependencies import (
-    get_tasks_service,
-    get_notion_service
-)
+from dependencies import get_tasks_service, get_notion_service
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -34,10 +31,12 @@ def _task_to_dict(task: TaskModel) -> dict:
 async def create_task(
     payload: TaskCreate,
     tasks_service: TasksService = Depends(get_tasks_service),
-    notion=Depends(get_notion_service)
+    notion=Depends(get_notion_service),
 ):
     if not payload.title or not payload.description:
-        raise HTTPException(status_code=400, detail="Title and description are required.")
+        raise HTTPException(
+            status_code=400, detail="Title and description are required."
+        )
 
     logger.info(f"Creating task with title: {payload.title}")
 
@@ -46,7 +45,9 @@ async def create_task(
         if not db_id:
             raise HTTPException(status_code=500, detail="NOTION_TASKS_DB_ID not set")
 
-        payload_dict = payload.model_dump() if hasattr(payload, "model_dump") else dict(payload)
+        payload_dict = (
+            payload.model_dump() if hasattr(payload, "model_dump") else dict(payload)
+        )
 
         async def _wg_create_with_notion(env):
             # 1) local domain create (inside commit)
@@ -64,23 +65,37 @@ async def create_task(
             notion_payload = {
                 "parent": {"database_id": db_id},
                 "properties": {
-                    "Name": {"title": [{"text": {"content": payload_dict.get("title")}}]},
-                    "Description": {"rich_text": [{"text": {"content": payload_dict.get("description")}}]},
-                }
+                    "Name": {
+                        "title": [{"text": {"content": payload_dict.get("title")}}]
+                    },
+                    "Description": {
+                        "rich_text": [
+                            {"text": {"content": payload_dict.get("description")}}
+                        ]
+                    },
+                },
             }
 
             if payload_dict.get("deadline"):
-                notion_payload["properties"]["Deadline"] = {"date": {"start": payload_dict.get("deadline")}}
+                notion_payload["properties"]["Deadline"] = {
+                    "date": {"start": payload_dict.get("deadline")}
+                }
 
             if payload_dict.get("priority"):
-                notion_payload["properties"]["Priority"] = {"select": {"name": payload_dict.get("priority")}}
+                notion_payload["properties"]["Priority"] = {
+                    "select": {"name": payload_dict.get("priority")}
+                }
 
             if goal_id_str:
-                notion_payload["properties"]["Goal"] = {"relation": [{"id": goal_id_str}]}
+                notion_payload["properties"]["Goal"] = {
+                    "relation": [{"id": goal_id_str}]
+                }
 
             notion_res = await notion.create_page(notion_payload)
             if not notion_res.get("ok"):
-                raise RuntimeError(f"Notion page creation failed: {notion_res.get('error')}")
+                raise RuntimeError(
+                    f"Notion page creation failed: {notion_res.get('error')}"
+                )
 
             notion_id = notion_res["data"]["id"]
             notion_url = notion_res["data"].get("url")
@@ -102,7 +117,9 @@ async def create_task(
             }
 
         # Override handler so Notion I/O happens INSIDE WriteGateway commit
-        tasks_service.write_gateway.register_handler("tasks_create", _wg_create_with_notion)
+        tasks_service.write_gateway.register_handler(
+            "tasks_create", _wg_create_with_notion
+        )
 
         envelope = {
             "command": "tasks_create",
@@ -148,7 +165,7 @@ async def create_task(
 async def update_task(
     task_id: str,
     payload: TaskUpdate,
-    tasks_service: TasksService = Depends(get_tasks_service)
+    tasks_service: TasksService = Depends(get_tasks_service),
 ):
     logger.info(f"Updating task ID: {task_id}")
     try:
@@ -186,11 +203,12 @@ async def update_task(
 async def delete_task(
     task_id: str,
     tasks_service: TasksService = Depends(get_tasks_service),
-    notion=Depends(get_notion_service)
+    notion=Depends(get_notion_service),
 ):
     logger.info(f"Deleting task ID: {task_id}")
 
     try:
+
         async def _wg_delete_with_notion(env):
             # capture notion_id before delete
             t = tasks_service.tasks.get(task_id)
@@ -201,11 +219,15 @@ async def delete_task(
             if notion_id:
                 notion_res = await notion.delete_page(notion_id)
                 if not notion_res.get("ok"):
-                    raise RuntimeError(f"Notion deletion failed: {notion_res.get('error')}")
+                    raise RuntimeError(
+                        f"Notion deletion failed: {notion_res.get('error')}"
+                    )
 
             return {"deleted": True, "notion_id": notion_id, "domain": out}
 
-        tasks_service.write_gateway.register_handler("tasks_delete", _wg_delete_with_notion)
+        tasks_service.write_gateway.register_handler(
+            "tasks_delete", _wg_delete_with_notion
+        )
 
         envelope = {
             "command": "tasks_delete",
@@ -257,26 +279,30 @@ async def list_tasks(tasks_service: TasksService = Depends(get_tasks_service)):
 # FAZA 9 — PLAN → TASK → EXECUTION VIEW (READ-ONLY)
 # ============================================================
 @router.get("/overview")
-async def task_execution_overview(tasks_service: TasksService = Depends(get_tasks_service)):
+async def task_execution_overview(
+    tasks_service: TasksService = Depends(get_tasks_service),
+):
     tasks = tasks_service.get_all()
 
     overview = []
     for t in tasks:
         d = _task_to_dict(t)
-        overview.append({
-            "task_id": d.get("id"),
-            "title": d.get("title"),
-            "goal_id": d.get("goal_id"),
-            "status": d.get("status"),
-            "priority": d.get("priority"),
-            "deadline": d.get("deadline"),
-            "notion_url": d.get("notion_url"),
-            "execution": {
-                "assigned": bool(d.get("assigned_agent")),
-                "agent_id": d.get("assigned_agent"),
-                "last_error": d.get("last_error"),
-            },
-        })
+        overview.append(
+            {
+                "task_id": d.get("id"),
+                "title": d.get("title"),
+                "goal_id": d.get("goal_id"),
+                "status": d.get("status"),
+                "priority": d.get("priority"),
+                "deadline": d.get("deadline"),
+                "notion_url": d.get("notion_url"),
+                "execution": {
+                    "assigned": bool(d.get("assigned_agent")),
+                    "agent_id": d.get("assigned_agent"),
+                    "last_error": d.get("last_error"),
+                },
+            }
+        )
 
     return {
         "tasks": overview,

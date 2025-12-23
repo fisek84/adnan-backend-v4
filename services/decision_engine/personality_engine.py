@@ -18,7 +18,7 @@ DEFAULT_PERSONALITY = {
     "communication_style": [],
     "decision_frameworks": [],
     "emotional_profile": [],
-    "personal_rules": []
+    "personal_rules": [],
 }
 
 
@@ -26,7 +26,6 @@ DEFAULT_PERSONALITY = {
 # PERSONALITY ENGINE (Adnan Clone)
 # ==============================
 class PersonalityEngine:
-
     def __init__(self):
         self.file_path = PERSONALITY_FILE
         self.personality = self._load_or_initialize()
@@ -81,61 +80,128 @@ class PersonalityEngine:
         t = text.lower()
 
         # philosophy
-        if any(k in t for k in [
-            "život", "zivot", "svijeta", "svijet", "smisao",
-            "filozof", "filozofija"
-        ]):
+        if any(
+            k in t
+            for k in [
+                "život",
+                "zivot",
+                "svijeta",
+                "svijet",
+                "smisao",
+                "filozof",
+                "filozofija",
+            ]
+        ):
             return "philosophy"
 
         # values / principles
-        if any(k in t for k in [
-            "vrijednost", "vrijednosti", "princip", "principi",
-            "integritet", "poštenje", "postenje"
-        ]):
+        if any(
+            k in t
+            for k in [
+                "vrijednost",
+                "vrijednosti",
+                "princip",
+                "principi",
+                "integritet",
+                "poštenje",
+                "postenje",
+            ]
+        ):
             return "values"
 
         # psychology / mindset
-        if any(k in t for k in [
-            "mindset", "psiholog", "psihologija",
-            "podsvjes", "podsvijest", "ego"
-        ]):
+        if any(
+            k in t
+            for k in [
+                "mindset",
+                "psiholog",
+                "psihologija",
+                "podsvjes",
+                "podsvijest",
+                "ego",
+            ]
+        ):
             return "psychology"
 
         # business mind
-        if any(k in t for k in [
-            "biznis", "posao", "strategija", "strategiju",
-            "rast", "skaliranje", "prodaja", "kpi",
-            "leadership", "vođenje", "vodjenje"
-        ]):
+        if any(
+            k in t
+            for k in [
+                "biznis",
+                "posao",
+                "strategija",
+                "strategiju",
+                "rast",
+                "skaliranje",
+                "prodaja",
+                "kpi",
+                "leadership",
+                "vođenje",
+                "vodjenje",
+            ]
+        ):
             return "business_mind"
 
         # communication style
-        if any(k in t for k in [
-            "komuniciram", "kako pričam", "kako pricam",
-            "govorim", "pišem", "pisem", "stil komunikacije"
-        ]):
+        if any(
+            k in t
+            for k in [
+                "komuniciram",
+                "kako pričam",
+                "kako pricam",
+                "govorim",
+                "pišem",
+                "pisem",
+                "stil komunikacije",
+            ]
+        ):
             return "communication_style"
 
         # decision frameworks
-        if any(k in t for k in [
-            "odluku", "odluke", "odlučujem", "odlucujem",
-            "decision", "framework", "pravilo odlučivanja",
-            "pravilo odlucivanja"
-        ]):
+        if any(
+            k in t
+            for k in [
+                "odluku",
+                "odluke",
+                "odlučujem",
+                "odlucujem",
+                "decision",
+                "framework",
+                "pravilo odlučivanja",
+                "pravilo odlucivanja",
+            ]
+        ):
             return "decision_frameworks"
 
         # emotions
-        if any(k in t for k in [
-            "emocija", "emocije", "osjećam", "osjecam",
-            "reakcija", "reagujem", "strah", "tuga", "ljutnja"
-        ]):
+        if any(
+            k in t
+            for k in [
+                "emocija",
+                "emocije",
+                "osjećam",
+                "osjecam",
+                "reakcija",
+                "reagujem",
+                "strah",
+                "tuga",
+                "ljutnja",
+            ]
+        ):
             return "emotional_profile"
 
         # personal rules
-        if any(k in t for k in [
-            "pravilo", "pravila", "nikad", "uvijek",
-            "za mene važi", "za mene vazi"
-        ]):
+        if any(
+            k in t
+            for k in [
+                "pravilo",
+                "pravila",
+                "nikad",
+                "uvijek",
+                "za mene važi",
+                "za mene vazi",
+            ]
+        ):
             return "personal_rules"
 
         # default fallback
@@ -152,11 +218,7 @@ class PersonalityEngine:
         entry = text.strip()
 
         if not entry:
-            return {
-                "stored": False,
-                "reason": "empty_text",
-                "category": None
-            }
+            return {"stored": False, "reason": "empty_text", "category": None}
 
         if entry not in self.personality[category]:
             self.personality[category].append(entry)
@@ -165,11 +227,7 @@ class PersonalityEngine:
         else:
             stored = False
 
-        return {
-            "stored": stored,
-            "category": category,
-            "text": entry
-        }
+        return {"stored": stored, "category": category, "text": entry}
 
     # ---------------------------------------------------------------
     # MANUAL ADD TRAIT (used by /ops/teach_personality)

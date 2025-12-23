@@ -2,6 +2,7 @@ import os
 import sys
 import unittest
 
+
 def add_project_root_to_path():
     """
     Adds the project root directory to Python path
@@ -10,6 +11,7 @@ def add_project_root_to_path():
     root = os.path.abspath(os.path.join(os.path.dirname(__file__), "."))
     if root not in sys.path:
         sys.path.insert(0, root)
+
 
 def run_tests(test_dir: str = "tests"):
     """

@@ -1,5 +1,3 @@
-import difflib
-
 class AutocorrectEngine:
     def __init__(self):
         # canonical mapping of all valid database names
@@ -16,7 +14,7 @@ class AutocorrectEngine:
             "sales sop": "sales sop",
             "onboarding sop": "onboarding sop",
             "execution sop": "execution sop",
-            "reporting sop": "reporting sop"
+            "reporting sop": "reporting sop",
         }
 
     def levenshtein(self, s1, s2):
@@ -47,7 +45,7 @@ class AutocorrectEngine:
                 "corrected": self.known_databases[raw],
                 "autocorrected": False,
                 "distance": 0,
-                "raw": raw
+                "raw": raw,
             }
 
         # fuzzy match candidates
@@ -67,7 +65,7 @@ class AutocorrectEngine:
                 "corrected": self.known_databases[best_match],
                 "autocorrected": True,
                 "distance": best_score,
-                "raw": raw
+                "raw": raw,
             }
 
         # no correction
@@ -75,5 +73,5 @@ class AutocorrectEngine:
             "corrected": raw,
             "autocorrected": False,
             "distance": best_score,
-            "raw": raw
+            "raw": raw,
         }

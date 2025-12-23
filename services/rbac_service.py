@@ -33,7 +33,6 @@ class RBACService:
                     "system_inbox_delegation_preview",
                 },
             },
-
             # ----------------------------------
             # CEO (HUMAN DECISION MAKER)
             # ----------------------------------
@@ -48,7 +47,6 @@ class RBACService:
                     "query_database",
                 },
             },
-
             # ----------------------------------
             # MANAGER
             # ----------------------------------
@@ -61,7 +59,6 @@ class RBACService:
                     "update_database_entry",
                 },
             },
-
             # ----------------------------------
             # ADMIN
             # ----------------------------------

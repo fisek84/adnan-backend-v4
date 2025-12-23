@@ -6,6 +6,7 @@ from services.notion_service import NotionService
 # READ-ONLY SYSTEM HANDLERS
 # ------------------------------------------
 
+
 def action_system_identity(payload: Dict[str, Any]):
     return {
         "action": "system_identity",
@@ -54,10 +55,7 @@ def action_system_notion_inbox(payload: Dict[str, Any]):
         for t in tasks
         if isinstance(t, dict)
         and isinstance(t.get("name"), str)
-        and (
-            "adnan.ai" in t["name"].lower()
-            or "adnan ai" in t["name"].lower()
-        )
+        and ("adnan.ai" in t["name"].lower() or "adnan ai" in t["name"].lower())
     ]
 
     return {
@@ -95,10 +93,7 @@ def action_system_inbox_delegation_preview(payload: Dict[str, Any]):
         for t in tasks
         if isinstance(t, dict)
         and isinstance(t.get("name"), str)
-        and (
-            "adnan.ai" in t["name"].lower()
-            or "adnan ai" in t["name"].lower()
-        )
+        and ("adnan.ai" in t["name"].lower() or "adnan ai" in t["name"].lower())
     ]
 
     return {
@@ -142,10 +137,9 @@ ACTION_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "category": "read",
         "allowed_owners": ["system"],
     },
-
     # WRITE (DELEGATED TO AGENTS)
     "goal_write": {
-        "handler": None,              # ❗️NAMJERNO — delegira se NotionOpsAgent-u
+        "handler": None,  # ❗️NAMJERNO — delegira se NotionOpsAgent-u
         "category": "write",
         "allowed_owners": ["system"],
     },
@@ -154,14 +148,12 @@ ACTION_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "category": "write",
         "allowed_owners": ["system"],
     },
-
     # GENERIC NOTION WRITE/READ (create_page / update_page / query_database)
     "notion_write": {
-        "handler": None,              # sve ide kroz NotionOpsAgent + NotionService
+        "handler": None,  # sve ide kroz NotionOpsAgent + NotionService
         "category": "write",
         "allowed_owners": ["system"],
     },
-
     # WORKFLOW (goal + taskovi) — KROZ AGENTA, NE DIREKTNO
     "goal_task_workflow": {
         "handler": None,

@@ -27,6 +27,7 @@ class COOConversationResult:
     """
     Canonical UX contract between Conversation layer and Router.
     """
+
     type: str  # "message" | "question" | "ready_for_translation"
     text: str
     next_actions: Optional[List[Dict[str, Any]]] = None
@@ -55,7 +56,6 @@ class COOConversationService:
         source: str,
         context: Dict[str, Any],
     ) -> COOConversationResult:
-
         user_text = (raw_input or "").strip()
         if not user_text:
             return COOConversationResult(

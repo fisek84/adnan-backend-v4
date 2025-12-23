@@ -6,6 +6,7 @@ import logging  # Dodajemo logovanje
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
+
 class AIResponse(BaseModel):
     """
     Standardized response wrapper for all AI operations.
@@ -17,23 +18,18 @@ class AIResponse(BaseModel):
         ..., description="True if the AI operation completed successfully"
     )
 
-    result: Optional[Any] = Field(
-        None, description="Main output of the AI operation"
-    )
+    result: Optional[Any] = Field(None, description="Main output of the AI operation")
 
     message: Optional[str] = Field(
-        None,
-        description="Human-readable message or explanation of the result"
+        None, description="Human-readable message or explanation of the result"
     )
 
     metadata: Optional[Dict[str, Any]] = Field(
         default_factory=dict,
-        description="Additional AI-generated metadata (tokens, time, routing, etc.)"
+        description="Additional AI-generated metadata (tokens, time, routing, etc.)",
     )
 
-    error: Optional[str] = Field(
-        None, description="Error message if operation failed"
-    )
+    error: Optional[str] = Field(None, description="Error message if operation failed")
 
     class Config:
         extra = "forbid"

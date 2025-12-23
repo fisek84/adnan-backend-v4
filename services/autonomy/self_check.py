@@ -9,6 +9,7 @@ from typing import Optional, Dict, Any
 # SELF-CHECK STATUS (KANONSKI)
 # ============================================================
 
+
 class SelfCheckStatus(Enum):
     SUCCESS = "success"
     FAILURE = "failure"
@@ -19,12 +20,14 @@ class SelfCheckStatus(Enum):
 # SELF-CHECK RESULT (DATA ONLY)
 # ============================================================
 
+
 @dataclass
 class SelfCheckResult:
     """
     Result of a self-check evaluation.
     Data-only, no side effects.
     """
+
     status: SelfCheckStatus
     reason: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
@@ -33,6 +36,7 @@ class SelfCheckResult:
 # ============================================================
 # SELF-CHECK EVALUATOR (KANONSKI)
 # ============================================================
+
 
 class SelfCheckEvaluator:
     """

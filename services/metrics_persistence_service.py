@@ -55,9 +55,9 @@ class MetricsPersistenceService:
         if not isinstance(events, dict):
             events = {}
 
-        summary_lines = [
-            f"{k}: {v}" for k, v in counters.items()
-        ][:self.MAX_SUMMARY_LINES]
+        summary_lines = [f"{k}: {v}" for k, v in counters.items()][
+            : self.MAX_SUMMARY_LINES
+        ]
 
         try:
             page = self.notion.pages.create(
@@ -73,21 +73,11 @@ class MetricsPersistenceService:
                         ]
                     },
                     "Command": {
-                        "rich_text": [
-                            {"text": {"content": "metrics_snapshot"}}
-                        ]
+                        "rich_text": [{"text": {"content": "metrics_snapshot"}}]
                     },
-                    "Status": {
-                        "select": {"name": "SUCCESS"}
-                    },
+                    "Status": {"select": {"name": "SUCCESS"}},
                     "Summary": {
-                        "rich_text": [
-                            {
-                                "text": {
-                                    "content": "\n".join(summary_lines)
-                                }
-                            }
-                        ]
+                        "rich_text": [{"text": {"content": "\n".join(summary_lines)}}]
                     },
                 },
             )

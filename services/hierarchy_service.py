@@ -1,9 +1,10 @@
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Any, Dict, List
 
 
 class HierarchyError(Exception):
     """Error related to invalid hierarchy operations."""
+
     pass
 
 
@@ -20,7 +21,7 @@ class HierarchyService:
 
     def __init__(self):
         self.relations: Dict[str, List[str]] = {}  # parent_id → [child_ids]
-        self.timestamps: Dict[str, str] = {}       # entity_id → updated
+        self.timestamps: Dict[str, str] = {}  # entity_id → updated
 
     # ---------------------------------------------------------
     # UTILITIES
@@ -80,11 +81,7 @@ class HierarchyService:
         self.timestamps[parent_id] = self._now()
         self.timestamps[child_id] = self._now()
 
-        return {
-            "status": "linked",
-            "parent": parent_id,
-            "child": child_id
-        }
+        return {"status": "linked", "parent": parent_id, "child": child_id}
 
     def unlink(self, parent_id: str, child_id: str):
         """
@@ -97,11 +94,7 @@ class HierarchyService:
         self.timestamps[parent_id] = self._now()
         self.timestamps[child_id] = self._now()
 
-        return {
-            "status": "unlinked",
-            "parent": parent_id,
-            "child": child_id
-        }
+        return {"status": "unlinked", "parent": parent_id, "child": child_id}
 
     # ---------------------------------------------------------
     # BULK OPERATIONS
@@ -121,7 +114,7 @@ class HierarchyService:
         return {
             "status": "replaced_children",
             "parent": parent_id,
-            "children": new_children
+            "children": new_children,
         }
 
     # ---------------------------------------------------------
@@ -132,7 +125,7 @@ class HierarchyService:
             "entity": entity_id,
             "parents": self.get_parents(entity_id),
             "children": self.get_children(entity_id),
-            "updated_at": self.timestamps.get(entity_id)
+            "updated_at": self.timestamps.get(entity_id),
         }
 
     def update(self):
@@ -142,5 +135,5 @@ class HierarchyService:
         return {
             "status": "hierarchy_engine_active",
             "entities_tracked": len(self.timestamps),
-            "relations_count": len(self.relations)
+            "relations_count": len(self.relations),
         }

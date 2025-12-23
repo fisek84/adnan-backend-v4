@@ -1,14 +1,13 @@
 import asyncio
 from uuid import uuid4
 from datetime import datetime, timezone
-from typing import Dict, Optional, List
+from typing import Any, Dict, Optional, List
 import logging
 import json
 import sqlite3
 
 from models.base_model import GoalModel
 from models.goal_create import GoalCreate
-from models.goal_update import GoalUpdate
 
 from services.write_gateway.write_gateway import WriteGateway, WriteEnvelope
 
@@ -28,7 +27,9 @@ class GoalsService:
     tasks_service = None
     sync_service = None
 
-    def __init__(self, db_conn: sqlite3.Connection, write_gateway: Optional[WriteGateway] = None):
+    def __init__(
+        self, db_conn: sqlite3.Connection, write_gateway: Optional[WriteGateway] = None
+    ):
         self.db = db_conn
         self.goals: Dict[str, GoalModel] = {}
 
@@ -111,10 +112,10 @@ class GoalsService:
     # INTERNAL HELPERS
     # ---------------------------------------------------------
 
-    def _now(self):
+    def _now(self) -> datetime:
         return datetime.now(timezone.utc)
 
-    def _trigger_sync(self):
+    def _trigger_sync(self) -> None:
         if not self.sync_service:
             return
 
@@ -122,9 +123,11 @@ class GoalsService:
             loop = asyncio.get_running_loop()
             loop.create_task(self.sync_service.debounce_goals_sync())
         except RuntimeError:
-            asyncio.get_event_loop().create_task(self.sync_service.debounce_goals_sync())
+            asyncio.get_event_loop().create_task(
+                self.sync_service.debounce_goals_sync()
+            )
 
-    def _save_goal_to_db(self, goal: GoalModel):
+    def _save_goal_to_db(self, goal: GoalModel) -> None:
         query = """
         INSERT OR REPLACE INTO goals (
             id, notion_id, title, description, deadline,
@@ -153,7 +156,7 @@ class GoalsService:
 
         self.db.commit()
 
-    def _delete_goal_from_db(self, goal_id: str):
+    def _delete_goal_from_db(self, goal_id: str) -> None:
         self.db.execute("DELETE FROM goals WHERE id = ?", (goal_id,))
         self.db.commit()
 
@@ -169,7 +172,7 @@ class GoalsService:
 
     def create_goal(
         self,
-        data: GoalCreate,
+        data: GoalCreate | Dict[str, Any],
         forced_id: Optional[str] = None,
         notion_id: Optional[str] = None,
     ) -> GoalModel:
@@ -186,7 +189,7 @@ class GoalsService:
             parent_id = data.parent_id
             priority = data.priority
 
-        logger.info(f"[GOALS] Creating goal: {title}")
+        logger.info("[GOALS] Creating goal: %s", title)
 
         now = self._now()
         goal_id = forced_id or uuid4().hex
@@ -225,7 +228,7 @@ class GoalsService:
     # UPDATE GOAL (WRITE VIA GATEWAY)
     # ---------------------------------------------------------
 
-    async def update_goal(self, goal_id: str, data: dict):
+    async def update_goal(self, goal_id: str, data: dict) -> Dict[str, Any]:
         envelope = {
             "command": "goals_update",
             "actor_id": str((data or {}).get("actor_id") or "system"),
@@ -233,7 +236,9 @@ class GoalsService:
             "payload": {"goal_id": goal_id, "data": dict(data or {})},
             "task_id": "GOALS_UPDATE",
             "execution_id": self._wg_execution_id(data or {}),
-            "metadata": (data or {}).get("metadata") if isinstance((data or {}).get("metadata"), dict) else None,
+            "metadata": (data or {}).get("metadata")
+            if isinstance((data or {}).get("metadata"), dict)
+            else None,
             "approval_id": (data or {}).get("approval_id"),
         }
         return await self.write_gateway.write(envelope)
@@ -242,7 +247,7 @@ class GoalsService:
     # DELETE GOAL (WRITE VIA GATEWAY)
     # ---------------------------------------------------------
 
-    async def delete_goal(self, goal_id: str) -> dict:
+    async def delete_goal(self, goal_id: str) -> Dict[str, Any]:
         envelope = {
             "command": "goals_delete",
             "actor_id": "system",
@@ -272,7 +277,7 @@ class GoalsService:
         goal_id = str(payload.get("goal_id") or "").strip()
         data = payload.get("data") or {}
 
-        logger.info(f"[GOALS] Updating goal {goal_id}")
+        logger.info("[GOALS] Updating goal %s", goal_id)
 
         goal = self.goals.get(goal_id)
         if not goal:
@@ -334,7 +339,7 @@ class GoalsService:
         del self.goals[goal_id]
         self._delete_goal_from_db(goal_id)
 
-        logger.info(f"[GOALS] Deleted goal {goal_id} (notion_id={notion_id})")
+        logger.info("[GOALS] Deleted goal %s (notion_id=%s)", goal_id, notion_id)
 
         self._trigger_sync()
 

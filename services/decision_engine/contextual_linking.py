@@ -3,6 +3,7 @@
 import re
 from difflib import SequenceMatcher
 
+
 class ContextualLinkingEngine:
     def __init__(self, database_map):
         self.database_map = database_map
@@ -18,10 +19,7 @@ class ContextualLinkingEngine:
 
     def find_related_entities(self, task_text):
         keywords = self._extract_keywords(task_text)
-        related = {
-            "goals": [],
-            "projects": []
-        }
+        related = {"goals": [], "projects": []}
 
         for kw in keywords:
             for goal in self.goals:

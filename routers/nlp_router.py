@@ -8,10 +8,12 @@ from typing import Optional
 # Global AI service instance (injected at startup)
 _ai_service_global: Optional[object] = None
 
+
 # Setter for main.py
 def set_ai_service(service):
     global _ai_service_global
     _ai_service_global = service
+
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)

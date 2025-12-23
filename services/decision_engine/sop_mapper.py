@@ -15,17 +15,14 @@ class SOPMapper:
     def __init__(self):
         self.sop_map = {
             "customer_onboarding_sop": [
-                r"onboarding", r"onboard", r"uvođenje", r"novog klijenta"
+                r"onboarding",
+                r"onboard",
+                r"uvođenje",
+                r"novog klijenta",
             ],
-            "qualification_sop": [
-                r"kvalifik", r"qualification", r"qualify"
-            ],
-            "outreach_sop": [
-                r"outreach", r"prvi kontakt"
-            ],
-            "follow_up_sop": [
-                r"follow", r"follow[- ]?up", r"prati dalje"
-            ],
+            "qualification_sop": [r"kvalifik", r"qualification", r"qualify"],
+            "outreach_sop": [r"outreach", r"prvi kontakt"],
+            "follow_up_sop": [r"follow", r"follow[- ]?up", r"prati dalje"],
         }
 
         # FAZA 5/6 — canonical aliasing (NON-BREAKING)

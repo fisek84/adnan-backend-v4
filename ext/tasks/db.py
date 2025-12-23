@@ -37,7 +37,8 @@ def save_task(task_id, payload, metadata=None):
     conn = get_connection()
     cursor = conn.cursor()
 
-    cursor.execute("""
+    cursor.execute(
+        """
         INSERT INTO tasks (
             id,
             status,
@@ -47,14 +48,16 @@ def save_task(task_id, payload, metadata=None):
             updated_at
         )
         VALUES (?, ?, ?, ?, ?, ?)
-    """, (
-        task_id,
-        "queued",
-        payload,
-        json.dumps(metadata or {}),
-        datetime.utcnow().isoformat(),
-        datetime.utcnow().isoformat(),
-    ))
+    """,
+        (
+            task_id,
+            "queued",
+            payload,
+            json.dumps(metadata or {}),
+            datetime.utcnow().isoformat(),
+            datetime.utcnow().isoformat(),
+        ),
+    )
 
     conn.commit()
     conn.close()
@@ -64,7 +67,8 @@ def update_task(task_id, status, result=None, error=None):
     conn = get_connection()
     cursor = conn.cursor()
 
-    cursor.execute("""
+    cursor.execute(
+        """
         UPDATE tasks
         SET
             status = ?,
@@ -72,13 +76,15 @@ def update_task(task_id, status, result=None, error=None):
             error = ?,
             updated_at = ?
         WHERE id = ?
-    """, (
-        status,
-        result,
-        error,
-        datetime.utcnow().isoformat(),
-        task_id,
-    ))
+    """,
+        (
+            status,
+            result,
+            error,
+            datetime.utcnow().isoformat(),
+            task_id,
+        ),
+    )
 
     conn.commit()
     conn.close()

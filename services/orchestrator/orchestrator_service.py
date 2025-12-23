@@ -37,7 +37,9 @@ class OrchestratorService:
         if self._worker_task and not self._worker_task.done():
             return
         self._stop.clear()
-        self._worker_task = asyncio.create_task(self._worker_loop(), name="orchestrator_worker")
+        self._worker_task = asyncio.create_task(
+            self._worker_loop(), name="orchestrator_worker"
+        )
 
     async def stop(self) -> None:
         self._stop.set()

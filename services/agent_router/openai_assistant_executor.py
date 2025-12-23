@@ -66,11 +66,7 @@ class OpenAIAssistantExecutor:
             )
 
             if run_status.status == "requires_action":
-                tool_calls = (
-                    run_status.required_action
-                    .submit_tool_outputs
-                    .tool_calls
-                )
+                tool_calls = run_status.required_action.submit_tool_outputs.tool_calls
 
                 tool_outputs = []
 
@@ -106,13 +102,9 @@ class OpenAIAssistantExecutor:
 
             await asyncio.sleep(0.5)
 
-        messages = self.client.beta.threads.messages.list(
-            thread_id=thread.id
-        )
+        messages = self.client.beta.threads.messages.list(thread_id=thread.id)
 
-        assistant_messages = [
-            m for m in messages.data if m.role == "assistant"
-        ]
+        assistant_messages = [m for m in messages.data if m.role == "assistant"]
 
         if not assistant_messages:
             raise RuntimeError("Assistant produced no response")

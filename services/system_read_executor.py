@@ -29,7 +29,6 @@ class SystemReadExecutor:
         command: AICommand,
         execution_contract: Dict[str, Any],
     ) -> Dict[str, Any]:
-
         execution_id = execution_contract["execution_id"]
         started_at = execution_contract["started_at"]
         finished_at = datetime.utcnow().isoformat()
@@ -59,11 +58,7 @@ class SystemReadExecutor:
                 "read_only": True,
             }
 
-        response = (
-            result.get("response")
-            if isinstance(result, dict)
-            else None
-        )
+        response = result.get("response") if isinstance(result, dict) else None
 
         return {
             "execution_id": execution_id,

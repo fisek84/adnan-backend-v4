@@ -43,11 +43,13 @@ class AlertingService:
         if decision_created > 0:
             success_rate = decision_confirmed / decision_created
             if success_rate < self.DECISION_SUCCESS_MIN:
-                violations.append({
-                    "type": "decision_success_rate",
-                    "value": round(success_rate, 2),
-                    "threshold": self.DECISION_SUCCESS_MIN,
-                })
+                violations.append(
+                    {
+                        "type": "decision_success_rate",
+                        "value": round(success_rate, 2),
+                        "threshold": self.DECISION_SUCCESS_MIN,
+                    }
+                )
 
         # ----------------------------------------------
         # EXECUTION FAILURE RATE
@@ -58,11 +60,13 @@ class AlertingService:
         if execution_total > 0:
             failure_rate = execution_failed / execution_total
             if failure_rate > self.EXECUTION_FAILURE_MAX:
-                violations.append({
-                    "type": "execution_failure_rate",
-                    "value": round(failure_rate, 2),
-                    "threshold": self.EXECUTION_FAILURE_MAX,
-                })
+                violations.append(
+                    {
+                        "type": "execution_failure_rate",
+                        "value": round(failure_rate, 2),
+                        "threshold": self.EXECUTION_FAILURE_MAX,
+                    }
+                )
 
         # ----------------------------------------------
         # GOVERNANCE BLOCK RATE
@@ -73,11 +77,13 @@ class AlertingService:
         if governance_checks > 0:
             block_rate = governance_blocked / governance_checks
             if block_rate > self.GOVERNANCE_BLOCK_MAX:
-                violations.append({
-                    "type": "governance_block_rate",
-                    "value": round(block_rate, 2),
-                    "threshold": self.GOVERNANCE_BLOCK_MAX,
-                })
+                violations.append(
+                    {
+                        "type": "governance_block_rate",
+                        "value": round(block_rate, 2),
+                        "threshold": self.GOVERNANCE_BLOCK_MAX,
+                    }
+                )
 
         return {
             "ok": len(violations) == 0,

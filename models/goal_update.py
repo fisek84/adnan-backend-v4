@@ -7,45 +7,33 @@ import logging  # Dodajemo logovanje
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
+
 class GoalUpdate(BaseModel):
     """
     Update model for Goal objects.
     All fields are optional — only provided ones will be updated.
     """
 
-    title: Optional[str] = Field(
-        None, description="Updated goal title"
-    )
+    title: Optional[str] = Field(None, description="Updated goal title")
 
-    description: Optional[str] = Field(
-        None, description="Updated goal description"
-    )
+    description: Optional[str] = Field(None, description="Updated goal description")
 
     deadline: Optional[str] = Field(
-        None,
-        description="Updated deadline in ISO8601 format (YYYY-MM-DD)"
+        None, description="Updated deadline in ISO8601 format (YYYY-MM-DD)"
     )
 
-    parent_id: Optional[str] = Field(
-        None,
-        description="New parent goal relationship"
-    )
+    parent_id: Optional[str] = Field(None, description="New parent goal relationship")
 
     priority: Optional[str] = Field(
-        None,
-        description="Updated priority (low, medium, high)"
+        None, description="Updated priority (low, medium, high)"
     )
 
     status: Optional[str] = Field(
-        None,
-        description="Updated status: pending, in_progress, completed"
+        None, description="Updated status: pending, in_progress, completed"
     )
 
     progress: Optional[int] = Field(
-        None,
-        ge=0,
-        le=100,
-        description="Progress percentage (0–100)"
+        None, ge=0, le=100, description="Progress percentage (0–100)"
     )
 
     # -------------------------------------------

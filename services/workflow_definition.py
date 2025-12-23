@@ -19,11 +19,13 @@ from dataclasses import dataclass, field
 # WORKFLOW STEP
 # ============================================================
 
+
 @dataclass(frozen=True)
 class WorkflowStep:
     """
     Jedan korak u workflow-u.
     """
+
     step_id: str
     command: str
     payload: Dict[str, Any] = field(default_factory=dict)
@@ -33,6 +35,7 @@ class WorkflowStep:
 # ============================================================
 # WORKFLOW DEFINITION
 # ============================================================
+
 
 @dataclass(frozen=True)
 class WorkflowDefinition:

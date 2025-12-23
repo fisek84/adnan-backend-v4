@@ -1,5 +1,6 @@
 # services/autonomy/safe_mode.py
 
+
 class AutonomySafeMode:
     """
     Read-only / safe mode.
@@ -20,4 +21,3 @@ class AutonomySafeMode:
 
     def disable(self):
         self._enabled = False
-    

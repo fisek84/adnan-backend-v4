@@ -43,3 +43,10 @@ python-multipart==0.0.9
 # FUZZY MATCHING
 # ===========================
 rapidfuzz==3.6.1
+
+# ===========================
+# DEV / QUALITY TOOLS (KANON-FIX-008)
+# ===========================
+ruff==0.6.4
+mypy==1.13.0
+pre-commit==4.0.1

@@ -185,6 +185,6 @@ def get_ai_summary_service() -> AISummaryService:
 
     _ai_summary_service = AISummaryService(
         api_key=api_key,  # type: ignore[arg-type]
-        db_id=db_id,      # type: ignore[arg-type]
+        db_id=db_id,  # type: ignore[arg-type]
     )
     return _ai_summary_service

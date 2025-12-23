@@ -7,40 +7,30 @@ import logging
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
+
 class GoalCreate(BaseModel):
-    title: str = Field(
-        ...,
-        description="Short title of the goal"
-    )
+    title: str = Field(..., description="Short title of the goal")
 
     description: Optional[str] = Field(
-        "",
-        description="Optional long description of the goal"
+        "", description="Optional long description of the goal"
     )
 
     deadline: Optional[str] = Field(
-        None,
-        description="Deadline in ISO8601 format (YYYY-MM-DD)"
+        None, description="Deadline in ISO8601 format (YYYY-MM-DD)"
     )
 
-    why: Optional[str] = Field(
-        None,
-        description="Reason or purpose behind this goal"
-    )
+    why: Optional[str] = Field(None, description="Reason or purpose behind this goal")
 
     context: Optional[str] = Field(
-        None,
-        description="Context or category (e.g. health, business, personal)"
+        None, description="Context or category (e.g. health, business, personal)"
     )
 
     priority: Optional[str] = Field(
-        None,
-        description="Priority level: low, medium, high"
+        None, description="Priority level: low, medium, high"
     )
 
     parent_id: Optional[str] = Field(
-        None,
-        description="Optional parent goal reference (UUID or Notion ID)"
+        None, description="Optional parent goal reference (UUID or Notion ID)"
     )
 
     # ============================================================

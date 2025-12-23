@@ -41,12 +41,14 @@ class SOPKnowledgeRegistry:
                 with open(path, "r", encoding="utf-8") as f:
                     data = json.load(f)
 
-                sops.append({
-                    "id": sop_id,
-                    "name": data.get("name", sop_id),
-                    "version": data.get("version", "1.0"),
-                    "description": data.get("description", ""),
-                })
+                sops.append(
+                    {
+                        "id": sop_id,
+                        "name": data.get("name", sop_id),
+                        "version": data.get("version", "1.0"),
+                        "description": data.get("description", ""),
+                    }
+                )
             except Exception:
                 continue
 
@@ -122,15 +124,17 @@ class SOPKnowledgeRegistry:
         tasks: List[Dict[str, Any]] = []
 
         for idx, step in enumerate(steps, start=1):
-            tasks.append({
-                "task_id": f"{sop_id}_step_{idx}",
-                "sop_id": sop_id,
-                "step": step.get("step", idx),
-                "title": step.get("title"),
-                "description": step.get("description"),
-                "action": step.get("action"),
-                "parameters": step.get("parameters", {}),
-                "order": idx,
-            })
+            tasks.append(
+                {
+                    "task_id": f"{sop_id}_step_{idx}",
+                    "sop_id": sop_id,
+                    "step": step.get("step", idx),
+                    "title": step.get("title"),
+                    "description": step.get("description"),
+                    "action": step.get("action"),
+                    "parameters": step.get("parameters", {}),
+                    "order": idx,
+                }
+            )
 
         return tasks

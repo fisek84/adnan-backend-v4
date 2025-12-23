@@ -1,4 +1,4 @@
-﻿import os
+import os
 import json
 from fastapi import APIRouter, HTTPException, Header
 from pydantic import BaseModel
@@ -33,8 +33,7 @@ def load_json(name: str):
 
 @router.post("/query")
 async def adnan_ai_query(
-    request: QueryRequest,
-    x_conversation_id: str = Header(default="default")
+    request: QueryRequest, x_conversation_id: str = Header(default="default")
 ):
     OPENAI_KEY = os.getenv("OPENAI_API_KEY")
     if not OPENAI_KEY:
@@ -52,15 +51,9 @@ async def adnan_ai_query(
     # =====================================================
     decision_service = AdnanAIDecisionService()
 
-    decision_context = decision_service.align(
-        request.text,
-        csi_snapshot=csi_snapshot
-    )
+    decision_context = decision_service.align(request.text, csi_snapshot=csi_snapshot)
 
-    decision_process = decision_service.process(
-        request.text,
-        csi_snapshot=csi_snapshot
-    )
+    decision_process = decision_service.process(request.text, csi_snapshot=csi_snapshot)
 
     memory_context = decision_service.get_memory_context()
 
@@ -113,5 +106,5 @@ async def adnan_ai_query(
         "decision_context": decision_context,
         "decision_process": decision_process,
         "memory_context": memory_context,
-        "csi_state": csi_snapshot
+        "csi_state": csi_snapshot,
     }

@@ -81,20 +81,20 @@ class ActionWorkflowService:
                 params = step.get("params", {})
 
                 if not directive:
-                    step_results.append(
-                        self._step_fail(index, "missing_directive")
-                    )
+                    step_results.append(self._step_fail(index, "missing_directive"))
                     break
 
                 result = self._action_executor.execute(directive, params)
 
-                step_results.append({
-                    "step": index,
-                    "directive": directive,
-                    "executed": bool(result.get("executed")),
-                    "confirmed": bool(result.get("confirmed")),
-                    "result": result,
-                })
+                step_results.append(
+                    {
+                        "step": index,
+                        "directive": directive,
+                        "executed": bool(result.get("executed")),
+                        "confirmed": bool(result.get("confirmed")),
+                        "result": result,
+                    }
+                )
 
                 if not result.get("confirmed"):
                     break

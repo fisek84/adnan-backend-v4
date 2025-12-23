@@ -57,14 +57,10 @@ class GovernanceService:
         # --------------------------------------------------
         if command in self.WRITE_COMMANDS:
             if not self.GLOBAL_WRITE_ENABLED:
-                return self._deny(
-                    "Global WRITE je onemogućen (safety lock)."
-                )
+                return self._deny("Global WRITE je onemogućen (safety lock).")
 
             if decision.get("write_intent") is not True:
-                return self._deny(
-                    "WRITE operacija zahtijeva eksplicitni write_intent."
-                )
+                return self._deny("WRITE operacija zahtijeva eksplicitni write_intent.")
 
         # --------------------------------------------------
         # TIME-BASED SAFETY RULE (DETERMINISTIC)
@@ -80,9 +76,7 @@ class GovernanceService:
         # --------------------------------------------------
         if executor == "sop_execution_manager":
             if decision.get("confirmed") is not True:
-                return self._deny(
-                    "SOP nije eksplicitno potvrđen."
-                )
+                return self._deny("SOP nije eksplicitno potvrđen.")
 
         # --------------------------------------------------
         # DEFAULT ALLOW

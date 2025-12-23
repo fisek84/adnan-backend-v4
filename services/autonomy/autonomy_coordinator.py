@@ -10,6 +10,7 @@ class AutonomyCycleResult:
     Aggregated result of a single autonomy evaluation cycle.
     Data-only, no side effects.
     """
+
     loop: Optional[str]
     self_check: Optional[str]
     recovery: Optional[str]

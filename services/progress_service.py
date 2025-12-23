@@ -1,5 +1,4 @@
 from datetime import datetime, timezone
-from typing import Optional
 
 
 class ProgressService:
@@ -30,11 +29,9 @@ class ProgressService:
         self.total_operations += 1
         self.success_count += 1
 
-        self.events.append({
-            "timestamp": self._now(),
-            "status": "success",
-            "message": message
-        })
+        self.events.append(
+            {"timestamp": self._now(), "status": "success", "message": message}
+        )
 
     def record_failure(self, message: str):
         """
@@ -43,11 +40,9 @@ class ProgressService:
         self.total_operations += 1
         self.failure_count += 1
 
-        self.events.append({
-            "timestamp": self._now(),
-            "status": "failure",
-            "message": message
-        })
+        self.events.append(
+            {"timestamp": self._now(), "status": "failure", "message": message}
+        )
 
     # ---------------------------------------------------------
     # COMPUTE PROGRESS SNAPSHOT
@@ -72,7 +67,7 @@ class ProgressService:
             "success_count": self.success_count,
             "failure_count": self.failure_count,
             "success_rate": score,
-            "recent_events": self.events[-10:]
+            "recent_events": self.events[-10:],
         }
 
     # ---------------------------------------------------------
@@ -87,10 +82,7 @@ class ProgressService:
         self.failure_count = 0
         self.events.clear()
 
-        return {
-            "status": "reset",
-            "timestamp": self._now()
-        }
+        return {"status": "reset", "timestamp": self._now()}
 
     # ---------------------------------------------------------
     # INTERNAL

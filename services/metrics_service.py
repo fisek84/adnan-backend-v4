@@ -56,7 +56,9 @@ class MetricsService:
             cls._events[event_type].append(event)
 
             if len(cls._events[event_type]) > cls.MAX_EVENTS_PER_TYPE:
-                cls._events[event_type] = cls._events[event_type][-cls.MAX_EVENTS_PER_TYPE:]
+                cls._events[event_type] = cls._events[event_type][
+                    -cls.MAX_EVENTS_PER_TYPE :
+                ]
 
     # --------------------------------------------------
     # SNAPSHOT (READ-ONLY)

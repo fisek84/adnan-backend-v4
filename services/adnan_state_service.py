@@ -58,5 +58,5 @@ def get_adnan_state():
     return {
         "status": "online",
         "timestamp": datetime.utcnow().isoformat(),
-        "identity": load_adnan_identity()
+        "identity": load_adnan_identity(),
     }

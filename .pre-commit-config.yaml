@@ -1,0 +1,26 @@
+repos:
+  # Ruff: lint + format
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.4
+    hooks:
+      - id: ruff
+        name: ruff (lint)
+        args:
+          - --exit-non-zero-on-fix
+      - id: ruff-format
+        name: ruff (format)
+
+  # Mypy: minimalni scope za KANON-FIX-008
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy (services/orchestrator, services/queue, dependencies.py)
+        entry: python -m mypy
+        language: system
+        pass_filenames: false
+        args:
+          - --config-file
+          - mypy_local.ini
+          - services/orchestrator
+          - services/queue
+          - dependencies.py

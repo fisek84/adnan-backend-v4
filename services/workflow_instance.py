@@ -35,6 +35,7 @@ STATE_COMPLETED = "COMPLETED"
 # WORKFLOW INSTANCE
 # ============================================================
 
+
 @dataclass
 class WorkflowInstance:
     """
@@ -105,9 +106,7 @@ class WorkflowInstance:
             "state": self.state,
             "current_step_index": self.current_step_index,
             "current_step": (
-                self.get_current_step().step_id
-                if self.get_current_step()
-                else None
+                self.get_current_step().step_id if self.get_current_step() else None
             ),
             "created_at": self.created_at,
             "updated_at": self.updated_at,
