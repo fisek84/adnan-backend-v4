@@ -3,10 +3,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
 
-from services.ai_summary_service import (
-    get_ai_summary_service,
-    WeeklyPriorityItem,
-)
+from services.ai_summary_service import get_ai_summary_service
+
 
 router = APIRouter(
     prefix="/ceo",

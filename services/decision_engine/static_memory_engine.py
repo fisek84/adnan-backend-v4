@@ -1,7 +1,7 @@
 import difflib
 
-class StaticMemoryEngine:
 
+class StaticMemoryEngine:
     def __init__(self, memory: dict):
         self.memory = memory
         self.rules = memory.get("rules", [])
@@ -40,11 +40,7 @@ class StaticMemoryEngine:
         text_lower = text.lower()
 
         triggered = []
-        total_impact = {
-            "alignment_bonus": 0,
-            "trust_bonus": 0,
-            "priority_bonus": 0
-        }
+        total_impact = {"alignment_bonus": 0, "trust_bonus": 0, "priority_bonus": 0}
 
         for rule in self.rules:
             rule_id = rule.get("id")
@@ -53,7 +49,6 @@ class StaticMemoryEngine:
 
             for kw in keywords:
                 if self._fuzzy_match(text_lower, kw):
-
                     triggered.append(rule_id)
 
                     total_impact["alignment_bonus"] += impact.get("alignment_bonus", 0)
@@ -62,7 +57,4 @@ class StaticMemoryEngine:
 
                     break  # one rule triggered once
 
-        return {
-            "rules_triggered": triggered,
-            "impact": total_impact
-        }
+        return {"rules_triggered": triggered, "impact": total_impact}

@@ -12,6 +12,7 @@ router = APIRouter(
 _registry = SOPKnowledgeRegistry()
 _csi = ConversationStateService()
 
+
 # ============================================================
 # LIST SOPs (READ-ONLY)
 # ============================================================
@@ -30,6 +31,7 @@ async def list_sops():
         "success": True,
         "sops": sops,
     }
+
 
 # ============================================================
 # GET SOP (READ-ONLY)

@@ -13,9 +13,7 @@ class TaskCompensationContract(BaseModel):
     FAZA 6 — KORAK 3
     """
 
-    enabled: bool = Field(
-        False, description="Is compensation supported for this task"
-    )
+    enabled: bool = Field(False, description="Is compensation supported for this task")
 
     compensation_type: Optional[str] = Field(
         None, description="Type of compensation (rollback, revert, cleanup, etc.)"
@@ -35,15 +33,11 @@ class TaskExecutionContract(BaseModel):
     FAZA 6 — KORAK 1
     """
 
-    agent_id: Optional[str] = Field(
-        None, description="Assigned agent ID"
-    )
+    agent_id: Optional[str] = Field(None, description="Assigned agent ID")
     agent_type: Optional[str] = Field(
         None, description="Agent type (notion, email, human, etc.)"
     )
-    capability: Optional[str] = Field(
-        None, description="Capability used for execution"
-    )
+    capability: Optional[str] = Field(None, description="Capability used for execution")
 
     execution_status: str = Field(
         "not_started",
@@ -57,16 +51,14 @@ class TaskExecutionContract(BaseModel):
         None, description="Execution finish timestamp"
     )
 
-    error: Optional[str] = Field(
-        None, description="Execution error if failed"
-    )
+    error: Optional[str] = Field(None, description="Execution error if failed")
 
     # =========================
     # COMPENSATION (FAZA 6)
     # =========================
     compensation: TaskCompensationContract = Field(
         default_factory=TaskCompensationContract,
-        description="Compensation / rollback declaration"
+        description="Compensation / rollback declaration",
     )
 
     @validator("execution_status")
@@ -78,9 +70,7 @@ class TaskExecutionContract(BaseModel):
 
     class Config:
         extra = "forbid"
-        json_encoders = {
-            datetime: lambda v: v.isoformat()
-        }
+        json_encoders = {datetime: lambda v: v.isoformat()}
 
 
 class TaskModel(BaseModel):
@@ -90,55 +80,36 @@ class TaskModel(BaseModel):
 
     # Core identity
     id: str = Field(..., description="Unique Task ID")
-    notion_id: Optional[str] = Field(
-        None, description="Notion page ID"
-    )
-    notion_url: Optional[str] = Field(
-        None, description="Public Notion URL of the task"
-    )
+    notion_id: Optional[str] = Field(None, description="Notion page ID")
+    notion_url: Optional[str] = Field(None, description="Public Notion URL of the task")
 
     # Main fields
     title: str = Field(..., description="Task title")
-    description: Optional[str] = Field(
-        "", description="Optional task description"
-    )
+    description: Optional[str] = Field("", description="Optional task description")
 
-    goal_id: Optional[str] = Field(
-        None, description="Linked goal ID"
-    )
+    goal_id: Optional[str] = Field(None, description="Linked goal ID")
 
-    project_id: Optional[str] = Field(
-        None, description="Linked project ID"
-    )
+    project_id: Optional[str] = Field(None, description="Linked project ID")
 
-    deadline: Optional[str] = Field(
-        None, description="Deadline (ISO8601 YYYY-MM-DD)"
-    )
+    deadline: Optional[str] = Field(None, description="Deadline (ISO8601 YYYY-MM-DD)")
     priority: Optional[str] = Field(
         None, description="Task priority: low, medium, high"
     )
     status: str = Field(
-        "pending",
-        description="Task status: pending, in_progress, completed"
+        "pending", description="Task status: pending, in_progress, completed"
     )
-    order: int = Field(
-        0, description="Sort order for tasks"
-    )
+    order: int = Field(0, description="Sort order for tasks")
 
     # =========================
     # EXECUTION CONTRACT (FAZA 6)
     # =========================
     execution: TaskExecutionContract = Field(
         default_factory=TaskExecutionContract,
-        description="Execution contract and accountability data"
+        description="Execution contract and accountability data",
     )
 
-    created_at: datetime = Field(
-        ..., description="Task creation timestamp"
-    )
-    updated_at: datetime = Field(
-        ..., description="Last update timestamp"
-    )
+    created_at: datetime = Field(..., description="Task creation timestamp")
+    updated_at: datetime = Field(..., description="Last update timestamp")
 
     @validator("deadline")
     def validate_deadline(cls, v):
@@ -171,6 +142,4 @@ class TaskModel(BaseModel):
         from_attributes = True
         validate_assignment = True
         extra = "forbid"
-        json_encoders = {
-            datetime: lambda v: v.isoformat()
-        }
+        json_encoders = {datetime: lambda v: v.isoformat()}

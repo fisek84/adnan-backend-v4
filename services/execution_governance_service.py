@@ -31,14 +31,13 @@ class ExecutionGovernanceService:
     def evaluate(
         self,
         *,
-        initiator: str,              # CEO
+        initiator: str,  # CEO
         context_type: str,
         directive: str,
         params: Dict[str, Any],
         execution_id: str,
         approval_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-
         ts = datetime.utcnow().isoformat()
 
         initiator = str(initiator or "").strip()
@@ -116,7 +115,6 @@ class ExecutionGovernanceService:
         ts: str,
         approval_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-
         resp = {
             "allowed": False,
             "reason": reason,

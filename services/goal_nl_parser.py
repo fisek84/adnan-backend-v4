@@ -53,8 +53,8 @@ def parse_ceo_goal_plan(text: str) -> Dict[str, Any]:
     # ------------------------------------------------------------
     m = re.search(
         r'Kreiraj centralni cilj\s+"(?P<name>.+?)"\s+sa due date\s+'
-        r'(?P<date>\d{2}\.\d{2}\.\d{4}),\s*prioritet\s+'
-        r'(?P<priority>\w+),\s*status\s+(?P<status>[^.\n]+)',
+        r"(?P<date>\d{2}\.\d{2}\.\d{4}),\s*prioritet\s+"
+        r"(?P<priority>\w+),\s*status\s+(?P<status>[^.\n]+)",
         text_norm,
         flags=re.IGNORECASE | re.MULTILINE,
     )
@@ -82,7 +82,7 @@ def parse_ceo_goal_plan(text: str) -> Dict[str, Any]:
     # ------------------------------------------------------------
     subgoals: List[Dict[str, Any]] = []
     sub_section_match = re.search(
-        r'Kreiraj tri podcilja:(?P<body>.+?)Kreiraj 7-dnevni plan taskova',
+        r"Kreiraj tri podcilja:(?P<body>.+?)Kreiraj 7-dnevni plan taskova",
         text_norm,
         flags=re.IGNORECASE | re.DOTALL,
     )
@@ -95,7 +95,7 @@ def parse_ceo_goal_plan(text: str) -> Dict[str, Any]:
                 continue
 
             mm = re.search(
-                r'^(?P<name>.+?)\s*\(prioritet\s+(?P<priority>[^)]+)\)',
+                r"^(?P<name>.+?)\s*\(prioritet\s+(?P<priority>[^)]+)\)",
                 line,
                 flags=re.IGNORECASE,
             )
@@ -117,7 +117,7 @@ def parse_ceo_goal_plan(text: str) -> Dict[str, Any]:
     # ------------------------------------------------------------
     tasks: List[Dict[str, Any]] = []
     tasks_section = re.search(
-        r'Kreiraj 7-dnevni plan taskova.+?:\s*(?P<body>.+)',
+        r"Kreiraj 7-dnevni plan taskova.+?:\s*(?P<body>.+)",
         text_norm,
         flags=re.IGNORECASE | re.DOTALL,
     )
@@ -130,7 +130,7 @@ def parse_ceo_goal_plan(text: str) -> Dict[str, Any]:
                 continue
 
             mm = re.search(
-                r'^Dan\s+(?P<day>\d+):\s*(?P<name>.+?)\s*\((?P<priority>[^)]+)\)',
+                r"^Dan\s+(?P<day>\d+):\s*(?P<name>.+?)\s*\((?P<priority>[^)]+)\)",
                 line,
                 flags=re.IGNORECASE,
             )

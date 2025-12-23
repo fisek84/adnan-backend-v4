@@ -1,6 +1,6 @@
 # routers/adnan_ai_action_router.py
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from pydantic import BaseModel
 
 from services.adnan_ai_decision_service import AdnanAIDecisionService
@@ -46,7 +46,7 @@ async def ai_action_endpoint(request: ActionRequest):
             "ok": True,
             "action_executed": False,
             "reason": "no_action_detected",
-            "decision": decision
+            "decision": decision,
         }
 
     # ---------------------------------------
@@ -63,7 +63,7 @@ async def ai_action_endpoint(request: ActionRequest):
                 "ok": False,
                 "workflow_executed": False,
                 "reason": safety["reason"],
-                "decision": decision
+                "decision": decision,
             }
 
         # EXECUTE WORKFLOW
@@ -73,13 +73,13 @@ async def ai_action_endpoint(request: ActionRequest):
             "ok": True,
             "workflow_executed": True,
             "result": result,
-            "decision": decision
+            "decision": decision,
         }
 
     # ---------------------------------------
     # 3. Jednostruka akcija
     # ---------------------------------------
-    directive = directives[0]   # uzimamo primarni directive
+    directive = directives[0]  # uzimamo primarni directive
 
     params = {
         "input": decision.get("input"),
@@ -95,7 +95,7 @@ async def ai_action_endpoint(request: ActionRequest):
             "ok": False,
             "action_executed": False,
             "reason": safety["reason"],
-            "decision": decision
+            "decision": decision,
         }
 
     # ---------------------------------------
@@ -108,5 +108,5 @@ async def ai_action_endpoint(request: ActionRequest):
         "action_executed": exec_result.get("executed", False),
         "directive": directive,
         "result": exec_result,
-        "decision": decision
+        "decision": decision,
     }

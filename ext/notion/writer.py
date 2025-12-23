@@ -7,8 +7,10 @@ from ext.notion.chunker import chunk_text
 
 logger = logging.getLogger(__name__)
 
+
 def normalize_id(id: str) -> str:
     return id.replace("-", "")
+
 
 # -------------------------------------------------
 #  CREATE PAGE IN DATABASE
@@ -18,13 +20,7 @@ def create_page(title: str, parent_db_id: str):
 
     return notion.pages.create(
         parent={"database_id": parent_db_id},
-        properties={
-            "Name": {
-                "title": [
-                    {"text": {"content": title}}
-                ]
-            }
-        }
+        properties={"Name": {"title": [{"text": {"content": title}}]}},
     )
 
 
@@ -46,12 +42,8 @@ def get_or_create_root_block(page_id: str) -> str:
     res = notion.blocks.children.append(
         block_id=page_id,
         children=[
-            {
-                "object": "block",
-                "type": "paragraph",
-                "paragraph": {"rich_text": []}
-            }
-        ]
+            {"object": "block", "type": "paragraph", "paragraph": {"rich_text": []}}
+        ],
     )
 
     block_id = res["results"][0]["id"]
@@ -89,15 +81,10 @@ def append_text(page_id: str, text: str):
                         "object": "block",
                         "type": "paragraph",
                         "paragraph": {
-                            "rich_text": [
-                                {
-                                    "type": "text",
-                                    "text": {"content": chunk}
-                                }
-                            ]
-                        }
+                            "rich_text": [{"type": "text", "text": {"content": chunk}}]
+                        },
                     }
-                ]
+                ],
             )
 
             print("✅ NOTION RESPONSE:", res)
@@ -121,18 +108,18 @@ async def delete_page(page_id: str):
     """
     try:
         logger.info(f"Brisanje stranice sa Notion ID: {page_id}")
-        
+
         # Poziv za brisanje stranice
         res = await notion.delete_page(page_id)
-        
+
         if res.get("ok"):
             logger.info(f"Stranica sa ID: {page_id} uspješno obrisana.")
         else:
             logger.error(f"Greška pri brisanju stranice sa Notion ID: {page_id}.")
             return {"ok": False, "error": res.get("error")}
-        
+
         return {"ok": True, "message": f"Page {page_id} deleted successfully"}
-    
+
     except Exception as e:
         logger.error(f"Greška prilikom brisanja stranice {page_id}: {str(e)}")
         return {"ok": False, "error": str(e)}

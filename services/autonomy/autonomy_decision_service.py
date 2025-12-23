@@ -13,8 +13,6 @@ NAPOMENA:
 - Kasnije se zamjenjuje pravim policy engine-om
 """
 
-from typing import Dict, Any
-
 from models.ai_command import AICommand
 
 
@@ -37,11 +35,11 @@ class AutonomyDecisionService:
         return AICommand(
             command=requested_command,
             intent=command.intent,
-            source="system",                 # 🔐 KLJUČNO
+            source="system",  # 🔐 KLJUČNO
             input={},
             params={},
             metadata={
-                "executor": "system",        # 🔐 KLJUČNO
+                "executor": "system",  # 🔐 KLJUČNO
                 "approved_by": "autonomy",
             },
             validated=True,

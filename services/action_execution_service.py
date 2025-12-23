@@ -103,7 +103,6 @@ class ActionExecutionService:
         intent: str,
         payload: Dict[str, Any],
     ) -> Dict[str, Any]:
-
         # =====================================================
         # TASKS
         # =====================================================

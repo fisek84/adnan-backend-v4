@@ -10,6 +10,7 @@ from typing import Dict, Any, Optional
 # REPLAY RECORDER (KANONSKI, READ-ONLY)
 # ============================================================
 
+
 class ReplayRecorder:
     """
     Records decision-relevant snapshots for replay & simulation.
@@ -46,7 +47,9 @@ class ReplayRecorder:
         with open(self.LOG_FILE, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
-    def _serialize_autonomy(self, autonomy_signal: Optional[Any]) -> Optional[Dict[str, Any]]:
+    def _serialize_autonomy(
+        self, autonomy_signal: Optional[Any]
+    ) -> Optional[Dict[str, Any]]:
         if autonomy_signal is None:
             return None
 

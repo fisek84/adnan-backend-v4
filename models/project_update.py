@@ -1,3 +1,4 @@
+from datetime import datetime
 from pydantic import BaseModel
 from typing import Optional, List
 import logging  # Dodajemo logovanje
@@ -5,6 +6,7 @@ import logging  # Dodajemo logovanje
 # Inicijalizujemo logger
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+
 
 class ProjectUpdate(BaseModel):
     title: Optional[str] = None

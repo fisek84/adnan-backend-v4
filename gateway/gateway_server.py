@@ -1,3 +1,4 @@
+# ruff: noqa: E402
 # gateway/gateway_server.py
 # FULL FILE — zamijeni cijeli gateway_server.py ovim.
 # (Ispravka: _preprocess_ceo_nl_input re.sub bug + zadržano sve ostalo)
@@ -11,7 +12,7 @@ import uuid
 import re
 from typing import Dict, Any, Optional, List
 
-import httpx  # <-- novo
+import httpx
 
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse, FileResponse
@@ -265,7 +266,6 @@ def _preprocess_ceo_nl_input(
                 parts.append(f"projekt {project}")
             return ", ".join(parts)
 
-    # FIX: obavezan zarez nakon pattern stringa (da se ne “zalijepi” sa replacement stringom)
     cleaned = re.sub(
         r"^(kreiraj|napravi|create)\s+cilj[a]?\s*[:\-]?\s*",
         "",
@@ -282,7 +282,9 @@ def _preprocess_ceo_nl_input(
 NOTION_VERSION = "2022-06-28"
 
 
-async def _query_notion_db(db_id: Optional[str], page_size: int = 20) -> List[Dict[str, Any]]:
+async def _query_notion_db(
+    db_id: Optional[str], page_size: int = 20
+) -> List[Dict[str, Any]]:
     if not NOTION_API_KEY or not db_id:
         return []
 
@@ -612,7 +614,9 @@ async def ceo_console_snapshot():
             "ready": ks.get("ready"),
             "last_sync": ks.get("last_sync"),
         },
-        "weekly_memory": _to_serializable(weekly_memory) if weekly_memory is not None else None,
+        "weekly_memory": _to_serializable(weekly_memory)
+        if weekly_memory is not None
+        else None,
         "goals_summary": goals_summary,
         "tasks_summary": tasks_summary,
     }
@@ -650,9 +654,24 @@ async def ceo_weekly_priority_memory():
 @app.get("/ceo/agents")
 async def ceo_agents():
     agents = [
-        {"id": "notion_ops_agent", "name": "Notion Ops Agent", "role": "executor", "status": "idle"},
-        {"id": "ai_command_service", "name": "AI Command Service", "role": "system", "status": "ready"},
-        {"id": "coo_translation_service", "name": "COO Translation Service", "role": "translation", "status": "ready"},
+        {
+            "id": "notion_ops_agent",
+            "name": "Notion Ops Agent",
+            "role": "executor",
+            "status": "idle",
+        },
+        {
+            "id": "ai_command_service",
+            "name": "AI Command Service",
+            "role": "system",
+            "status": "ready",
+        },
+        {
+            "id": "coo_translation_service",
+            "name": "COO Translation Service",
+            "role": "translation",
+            "status": "ready",
+        },
     ]
     return agents
 
@@ -698,6 +717,7 @@ async def startup_event():
     bootstrap_application()
 
     from services.notion_service import get_notion_service
+
     notion_service = get_notion_service()
 
     await notion_service.sync_knowledge_snapshot()

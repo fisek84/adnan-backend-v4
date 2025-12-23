@@ -38,13 +38,9 @@ class SOPKnowledgeIntelligence:
 
         steps = sop.get("steps", [])
 
-        critical_steps = [
-            s for s in steps if s.get("critical") is True
-        ]
+        critical_steps = [s for s in steps if s.get("critical") is True]
 
-        parallel_steps = [
-            s for s in steps if s.get("parallel") is True
-        ]
+        parallel_steps = [s for s in steps if s.get("parallel") is True]
 
         return {
             "sop_id": sop_id,

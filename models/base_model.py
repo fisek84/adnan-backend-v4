@@ -6,6 +6,7 @@ import logging
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
+
 # ============================================================
 # GOAL MODEL (Final, FIXED)
 # ============================================================
@@ -17,13 +18,13 @@ class GoalModel(BaseModel):
     description: Optional[str] = None
     deadline: Optional[str] = None
 
-    parent_id: Optional[str] = None        # OBAVEZNO
+    parent_id: Optional[str] = None  # OBAVEZNO
     priority: Optional[str] = None
 
     status: str
     progress: int = 0
 
-    children: List[str] = []               # OBAVEZNO
+    children: List[str] = []  # OBAVEZNO
 
     created_at: datetime
     updated_at: datetime
@@ -37,9 +38,7 @@ class GoalModel(BaseModel):
 # ============================================================
 class TaskModel(BaseModel):
     id: str
-    notion_id: Optional[str] = Field(
-        None, description="Notion page ID for sync/delete"
-    )
+    notion_id: Optional[str] = Field(None, description="Notion page ID for sync/delete")
 
     # Basic fields
     title: str

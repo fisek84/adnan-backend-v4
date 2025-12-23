@@ -7,10 +7,10 @@ from pydantic import BaseModel, Field
 
 class WebhookPayload(BaseModel):
     """Generic webhook payload (can be extended)."""
+
     event: str = Field(..., description="Event type name")
     data: Optional[Dict[str, Any]] = Field(
-        default_factory=dict,
-        description="Webhook payload content"
+        default_factory=dict, description="Webhook payload content"
     )
 
 
@@ -24,7 +24,7 @@ class WebhookResponse(BaseModel):
 class WebhookHandler:
     """
     Enterprise-grade webhook handler.
-    
+
     Features:
     - HMAC signature verification
     - Safe JSON parsing
@@ -45,9 +45,7 @@ class WebhookHandler:
             return True  # verification disabled
 
         expected = hmac.new(
-            key=self.secret.encode(),
-            msg=raw_body,
-            digestmod=hashlib.sha256
+            key=self.secret.encode(), msg=raw_body, digestmod=hashlib.sha256
         ).hexdigest()
 
         return hmac.compare_digest(expected, signature)
@@ -55,7 +53,9 @@ class WebhookHandler:
     # -----------------------------------------------------
     # MAIN ENTRYPOINT
     # -----------------------------------------------------
-    def handle(self, raw_body: bytes, signature: Optional[str] = None) -> WebhookResponse:
+    def handle(
+        self, raw_body: bytes, signature: Optional[str] = None
+    ) -> WebhookResponse:
         """
         Main handler entrypoint.
         Accepts raw body (bytes) and validates + routes it.
@@ -67,7 +67,7 @@ class WebhookHandler:
                 success=False,
                 event="unknown",
                 message="Invalid signature",
-                error="Signature verification failed"
+                error="Signature verification failed",
             )
 
         # 2. Parse JSON
@@ -78,7 +78,7 @@ class WebhookHandler:
                 success=False,
                 event="unknown",
                 message="Invalid JSON payload",
-                error="JSON parse failure"
+                error="JSON parse failure",
             )
 
         # 3. Validate model
@@ -89,7 +89,7 @@ class WebhookHandler:
                 success=False,
                 event="unknown",
                 message="Invalid webhook schema",
-                error=str(e)
+                error=str(e),
             )
 
         # 4. Dispatch event
@@ -111,22 +111,18 @@ class WebhookHandler:
             return WebhookResponse(
                 success=True,
                 event=payload.event,
-                message="Webhook received (no specific handler)"
+                message="Webhook received (no specific handler)",
             )
 
         try:
             msg = handlers[event](payload.data)
-            return WebhookResponse(
-                success=True,
-                event=payload.event,
-                message=msg
-            )
+            return WebhookResponse(success=True, event=payload.event, message=msg)
         except Exception as e:
             return WebhookResponse(
                 success=False,
                 event=payload.event,
                 message="Webhook handler error",
-                error=str(e)
+                error=str(e),
             )
 
     # -----------------------------------------------------

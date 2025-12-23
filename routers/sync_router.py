@@ -32,6 +32,7 @@ def require_sync():
 # STATUS ENDPOINT (ADDED)
 # ============================================================
 
+
 @router.get("/status")
 async def sync_status():
     """
@@ -63,6 +64,7 @@ async def sync_status():
 # ============================================================
 # FRIENDLY SYNC ENDPOINTS
 # ============================================================
+
 
 @router.post("/goals")
 async def sync_goals():
@@ -101,6 +103,7 @@ async def sync_full():
 # ============================================================
 # RAW UPLOAD ENDPOINTS (KEEP)
 # ============================================================
+
 
 @router.post("/goals/up")
 async def sync_goals_up():

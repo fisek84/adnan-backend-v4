@@ -37,17 +37,13 @@ class ObservabilityService:
         decision_type: Optional[str] = None,
         key: Optional[str] = None,
     ) -> Dict[str, Any]:
-
         stats = self.memory.memory.get("execution_stats", {})
 
         if decision_type and key:
             return stats.get(f"{decision_type}:{key}", {})
 
         if decision_type:
-            return {
-                k: v for k, v in stats.items()
-                if k.startswith(f"{decision_type}:")
-            }
+            return {k: v for k, v in stats.items() if k.startswith(f"{decision_type}:")}
 
         return stats
 
@@ -59,14 +55,10 @@ class ObservabilityService:
         limit: int = 50,
         decision_type: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-
         outcomes = self.memory.memory.get("decision_outcomes", [])
 
         if decision_type:
-            outcomes = [
-                o for o in outcomes
-                if o.get("decision_type") == decision_type
-            ]
+            outcomes = [o for o in outcomes if o.get("decision_type") == decision_type]
 
         return outcomes[-limit:]
 
@@ -76,7 +68,8 @@ class ObservabilityService:
     def get_sop_performance(self, sop_key: str) -> Dict[str, Any]:
         relations = self.memory.memory.get("cross_sop_relations", {})
         related = {
-            k: v for k, v in relations.items()
+            k: v
+            for k, v in relations.items()
             if k.endswith(f"->{sop_key}") or k.startswith(f"{sop_key}->")
         }
 

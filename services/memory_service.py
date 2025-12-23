@@ -105,7 +105,9 @@ class MemoryService:
         weight = 0.5 ** (age / self.DECAY_HALF_LIFE_SECONDS)
         return max(self.MIN_WEIGHT, round(weight, 4))
 
-    def _validate_scope(self, scope_type: str, scope_id: str) -> Optional[tuple[ScopeType, str]]:
+    def _validate_scope(
+        self, scope_type: str, scope_id: str
+    ) -> Optional[tuple[ScopeType, str]]:
         if scope_type not in ("user", "session", "task", "execution"):
             return None
         if not isinstance(scope_id, str) or not scope_id.strip():
@@ -248,13 +250,15 @@ class MemoryService:
         if not isinstance(user_input, str) or not user_input.strip():
             return {"stored": False, "count": len(self.memory["entries"])}
 
-        self.memory["entries"].append({
-            "text": user_input,
-            "ts": self._now(),
-        })
+        self.memory["entries"].append(
+            {
+                "text": user_input,
+                "ts": self._now(),
+            }
+        )
 
         if len(self.memory["entries"]) > self.MAX_ENTRIES:
-            self.memory["entries"] = self.memory["entries"][-self.MAX_ENTRIES:]
+            self.memory["entries"] = self.memory["entries"][-self.MAX_ENTRIES :]
 
         self._save()
         return {"stored": True, "count": len(self.memory["entries"])}
@@ -271,10 +275,12 @@ class MemoryService:
         if not isinstance(goal, dict):
             return
 
-        self.memory["goals"].append({
-            **goal,
-            "confirmed_at": self._now(),
-        })
+        self.memory["goals"].append(
+            {
+                **goal,
+                "confirmed_at": self._now(),
+            }
+        )
         self._save()
 
     # ============================================================
@@ -284,10 +290,12 @@ class MemoryService:
         if not isinstance(plan, dict):
             return
 
-        self.memory["plans"].append({
-            **plan,
-            "confirmed_at": self._now(),
-        })
+        self.memory["plans"].append(
+            {
+                **plan,
+                "confirmed_at": self._now(),
+            }
+        )
         self._save()
 
     # ============================================================
@@ -333,7 +341,9 @@ class MemoryService:
 
         self.memory["decision_outcomes"].append(record)
         if len(self.memory["decision_outcomes"]) > self.MAX_DECISION_OUTCOMES:
-            self.memory["decision_outcomes"] = self.memory["decision_outcomes"][-self.MAX_DECISION_OUTCOMES:]
+            self.memory["decision_outcomes"] = self.memory["decision_outcomes"][
+                -self.MAX_DECISION_OUTCOMES :
+            ]
 
         if decision_type == "sop" and target:
             prev_sop = record["metadata"].get("previous_sop")
@@ -349,13 +359,15 @@ class MemoryService:
                 if success:
                     rel["success"] += 1
 
-                rel["history"].append({
-                    "success": success,
-                    "ts": record["ts"],
-                })
+                rel["history"].append(
+                    {
+                        "success": success,
+                        "ts": record["ts"],
+                    }
+                )
 
                 if len(rel["history"]) > self.MAX_REL_HISTORY:
-                    rel["history"] = rel["history"][-self.MAX_REL_HISTORY:]
+                    rel["history"] = rel["history"][-self.MAX_REL_HISTORY :]
 
         self._save()
 
@@ -370,7 +382,9 @@ class MemoryService:
         self.memory["write_audit_events"].append({**event, "ts": self._now()})
 
         if len(self.memory["write_audit_events"]) > self.MAX_WRITE_AUDIT_EVENTS:
-            self.memory["write_audit_events"] = self.memory["write_audit_events"][-self.MAX_WRITE_AUDIT_EVENTS:]
+            self.memory["write_audit_events"] = self.memory["write_audit_events"][
+                -self.MAX_WRITE_AUDIT_EVENTS :
+            ]
 
         self._save()
 
@@ -379,9 +393,9 @@ class MemoryService:
     # ============================================================
     def sop_success_rate(self, sop_key: str) -> float:
         outcomes = [
-            o for o in self.memory.get("decision_outcomes", [])
-            if o.get("decision_type") == "sop"
-            and o.get("target") == sop_key
+            o
+            for o in self.memory.get("decision_outcomes", [])
+            if o.get("decision_type") == "sop" and o.get("target") == sop_key
         ]
 
         if not outcomes:

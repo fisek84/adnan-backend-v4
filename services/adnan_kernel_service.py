@@ -1,5 +1,6 @@
 from services.identity_loader import load_adnan_identity
 
+
 def get_adnan_kernel():
     """
     Vraća 'core' identitet Adnan.AI klona.
@@ -11,5 +12,5 @@ def get_adnan_kernel():
         "version": identity.get("version"),
         "name": identity.get("name"),
         "description": identity.get("description"),
-        "created_at": identity.get("created_at")
+        "created_at": identity.get("created_at"),
     }

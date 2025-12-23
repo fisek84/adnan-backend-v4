@@ -15,6 +15,7 @@ class AutonomyProposal:
     - No confidence scoring
     - Decision Engine is the sole authority
     """
+
     proposal_type: str
     rationale: str
     signals: Optional[Dict[str, Any]] = None

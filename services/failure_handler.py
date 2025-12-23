@@ -95,9 +95,7 @@ class FailureHandler:
                 "category": category,
                 "reason": reason or "Unknown failure",
                 "source": source or "unknown",
-                "recovery_options": list(
-                    self.RECOVERY_OPTIONS.get(category, [])
-                ),
+                "recovery_options": list(self.RECOVERY_OPTIONS.get(category, [])),
             },
             "timestamp": datetime.utcnow().isoformat(),
             "read_only": True,
@@ -123,7 +121,6 @@ class FailureHandler:
         source: Optional[str],
         reason: Optional[str],
     ) -> str:
-
         if source == "policy":
             return self.CATEGORY_POLICY
         if source == "safety":

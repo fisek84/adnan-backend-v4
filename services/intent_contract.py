@@ -61,7 +61,6 @@ INTENT_DEFINITIONS: Dict[IntentType, Dict[str, Any]] = {
         "allowed_commands": [],
         "description": "Execution request wrapper (internal)",
     },
-
     # -------------------------
     # READ-ONLY (SAFE)
     # -------------------------
@@ -85,7 +84,6 @@ INTENT_DEFINITIONS: Dict[IntentType, Dict[str, Any]] = {
         "allowed_commands": ["view_sop"],
         "description": "View SOP content (read-only)",
     },
-
     # -------------------------
     # WRITE (GOVERNED)
     # -------------------------
@@ -124,7 +122,6 @@ INTENT_DEFINITIONS: Dict[IntentType, Dict[str, Any]] = {
         "allowed_commands": ["update_state"],
         "description": "Mark task as failed",
     },
-
     # -------------------------
     # UX FLOW CONFIRMATIONS
     # -------------------------

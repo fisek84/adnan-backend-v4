@@ -28,7 +28,6 @@ class ApprovalUXService:
         approved_by: str,
         note: Optional[str] = None,
     ) -> Dict[str, Any]:
-
         approval = self.approvals.approve(approval_id)
         execution_id = approval.get("execution_id")
 
@@ -57,7 +56,6 @@ class ApprovalUXService:
         rejected_by: str,
         note: Optional[str] = None,
     ) -> Dict[str, Any]:
-
         approval = self.approvals.reject(approval_id)
 
         return {

@@ -34,9 +34,7 @@ class AICommandService:
             raise RuntimeError("Invalid AICommand object.")
 
         if not command.validated:
-            raise RuntimeError(
-                "AICommand is not validated by COOTranslationService."
-            )
+            raise RuntimeError("AICommand is not validated by COOTranslationService.")
 
         try:
             # ==================================================
@@ -44,9 +42,7 @@ class AICommandService:
             # ==================================================
             if command.read_only:
                 if not is_valid_command(command.command):
-                    raise ValueError(
-                        f"Invalid system command: {command.command}"
-                    )
+                    raise ValueError(f"Invalid system command: {command.command}")
 
                 self.safety.check(command)
                 return await self.orchestrator.execute(command)

@@ -19,9 +19,7 @@ class AgentsService:
     """
 
     def __init__(self):
-        logger.warning(
-            "[AgentsService] INITIALIZED — DEPRECATED / NO-OP"
-        )
+        logger.warning("[AgentsService] INITIALIZED — DEPRECATED / NO-OP")
 
     # ============================================================
     # PUBLIC ASYNC ENTRYPOINT (EXPLICITLY BLOCKED)

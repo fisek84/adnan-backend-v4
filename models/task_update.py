@@ -7,18 +7,15 @@ import logging  # Dodajemo logovanje
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
+
 class TaskUpdate(BaseModel):
     """
     Update model for Task objects.
     All fields optional — only provided ones will be updated.
     """
 
-    title: Optional[str] = Field(
-        None, description="Updated title of the task"
-    )
-    description: Optional[str] = Field(
-        None, description="Updated task description"
-    )
+    title: Optional[str] = Field(None, description="Updated title of the task")
+    description: Optional[str] = Field(None, description="Updated task description")
 
     goal_id: Optional[str] = Field(
         None, description="Updated goal ID the task is linked to"
@@ -30,8 +27,7 @@ class TaskUpdate(BaseModel):
     )
 
     deadline: Optional[str] = Field(
-        None,
-        description="Updated deadline (ISO8601 YYYY-MM-DD)"
+        None, description="Updated deadline (ISO8601 YYYY-MM-DD)"
     )
     priority: Optional[str] = Field(
         None,
@@ -43,9 +39,7 @@ class TaskUpdate(BaseModel):
     )
 
     # 🔥 Needed for sortable task lists
-    order: Optional[int] = Field(
-        None, description="Updated task sort order"
-    )
+    order: Optional[int] = Field(None, description="Updated task sort order")
 
     handled_by: Optional[str] = Field(
         None, description="Updated responsible person (optional)"

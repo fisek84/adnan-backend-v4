@@ -2,8 +2,8 @@
 
 import unicodedata
 
-class DynamicMemoryEngine:
 
+class DynamicMemoryEngine:
     def __init__(self, session_memory: dict):
         """
         session_memory dolazi iz AdnanAIDecisionService.
@@ -50,9 +50,7 @@ class DynamicMemoryEngine:
             for j in range(1, len_b + 1):
                 cost = 0 if a[i - 1] == b[j - 1] else 1
                 dp[i][j] = min(
-                    dp[i - 1][j] + 1,
-                    dp[i][j - 1] + 1,
-                    dp[i - 1][j - 1] + cost
+                    dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + cost
                 )
 
         dist = dp[len_a][len_b]
@@ -81,10 +79,7 @@ class DynamicMemoryEngine:
 
         duplicates = self.check_duplicates(title)
 
-        return {
-            "duplicates_found": duplicates,
-            "duplicate_exists": len(duplicates) > 0
-        }
+        return {"duplicates_found": duplicates, "duplicate_exists": len(duplicates) > 0}
 
     # ---------------------------------------------
     # Dodavanje novog taska u memoriju (persistencija)

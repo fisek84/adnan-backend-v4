@@ -2,14 +2,13 @@ from fastapi import APIRouter, UploadFile, File, HTTPException
 from services.adnan_ai_decision_service import AdnanAIDecisionService
 from integrations.voice_service import VoiceService
 from services.agent_router.agent_router import AgentRouter
-import json
 
 router = APIRouter(prefix="/voice", tags=["Voice Input"])
 
 # Instances
 decision_engine = AdnanAIDecisionService()
 voice_service = VoiceService()
-agent_router = AgentRouter()    # <<< NOVO — mozak delegacije
+agent_router = AgentRouter()  # <<< NOVO — mozak delegacije
 
 
 @router.post("/exec")
@@ -36,7 +35,7 @@ async def voice_exec(audio: UploadFile = File(...)):
                 "success": False,
                 "transcribed_text": text,
                 "reason": "Adnan.ai did not produce a Notion command.",
-                "engine_output": decision
+                "engine_output": decision,
             }
 
         # ===========================================
@@ -51,7 +50,7 @@ async def voice_exec(audio: UploadFile = File(...)):
             "delegation": {
                 "agent": agent_result.get("agent"),
                 "agent_response": agent_result.get("agent_response"),
-            }
+            },
         }
 
     except Exception as e:

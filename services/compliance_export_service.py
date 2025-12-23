@@ -26,7 +26,9 @@ from services.rbac_service import RBACService
 from services.approval_state_service import ApprovalStateService
 
 
-EXPORT_BASE_PATH = Path(__file__).resolve().parent.parent / "adnan_ai" / "compliance_exports"
+EXPORT_BASE_PATH = (
+    Path(__file__).resolve().parent.parent / "adnan_ai" / "compliance_exports"
+)
 
 
 class ComplianceExportService:

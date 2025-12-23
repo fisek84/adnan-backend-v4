@@ -6,17 +6,30 @@ import logging
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
+
 class TaskCreate(BaseModel):
     title: str = Field(..., description="Title of the new task")
-    description: Optional[str] = Field("", description="Optional description for the task")
+    description: Optional[str] = Field(
+        "", description="Optional description for the task"
+    )
 
     # NOW STRING, NOT UUID
-    goal_id: Optional[str] = Field(None, description="Goal ID this task is associated with")
+    goal_id: Optional[str] = Field(
+        None, description="Goal ID this task is associated with"
+    )
 
-    project_id: Optional[str] = Field(None, description="Project ID this task belongs to")
-    deadline: Optional[str] = Field(None, description="Deadline in ISO8601 format (YYYY-MM-DD)")
-    priority: Optional[str] = Field(None, description="Task priority: low, medium, high")
-    status: Optional[str] = Field(None, description="Task status (optional; backend sets default)")
+    project_id: Optional[str] = Field(
+        None, description="Project ID this task belongs to"
+    )
+    deadline: Optional[str] = Field(
+        None, description="Deadline in ISO8601 format (YYYY-MM-DD)"
+    )
+    priority: Optional[str] = Field(
+        None, description="Task priority: low, medium, high"
+    )
+    status: Optional[str] = Field(
+        None, description="Task status (optional; backend sets default)"
+    )
 
     @validator("deadline")
     def validate_deadline(cls, v):

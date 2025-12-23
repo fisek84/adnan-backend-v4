@@ -201,11 +201,7 @@ class AdnanAIDecisionService:
                 "command": "create_database_entry",
                 "payload": {
                     "database_key": db_key,
-                    "properties": {
-                        "Name": {
-                            "title": [{"text": {"content": title}}]
-                        }
-                    },
+                    "properties": {"Name": {"title": [{"text": {"content": title}}]}},
                 },
             }
 
@@ -230,7 +226,6 @@ class AdnanAIDecisionService:
         confidence: float,
         csi_state: Dict[str, Any],
     ) -> Dict[str, Any]:
-
         if not action:
             return {
                 "decision_candidate": False,

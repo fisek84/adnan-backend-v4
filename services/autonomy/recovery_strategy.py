@@ -1,5 +1,3 @@
-# services/autonomy/recovery_strategy.py
-
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional, Dict, Any
@@ -12,6 +10,7 @@ from services.autonomy.self_check import SelfCheckStatus
 # RECOVERY ACTION (KANONSKI)
 # ============================================================
 
+
 class RecoveryAction(Enum):
     ABORT = "abort"
     FALLBACK = "fallback"
@@ -22,12 +21,14 @@ class RecoveryAction(Enum):
 # RECOVERY RESULT (DATA ONLY)
 # ============================================================
 
+
 @dataclass
 class RecoveryResult:
     """
     Result of a recovery evaluation.
     Data-only, no side effects.
     """
+
     action: RecoveryAction
     reason: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
@@ -36,6 +37,7 @@ class RecoveryResult:
 # ============================================================
 # RECOVERY STRATEGY (FAZA 5 – DATA ONLY)
 # ============================================================
+
 
 class RecoveryStrategy:
     """
@@ -62,12 +64,14 @@ class RecoveryStrategy:
         Determines a recovery advisory signal.
         """
 
+        # Validate CSI state; if nevažeći → safe ABORT
         try:
-            state = CSIState(csi_state)
+            CSIState(csi_state)
         except Exception:
             return RecoveryResult(
                 action=RecoveryAction.ABORT,
                 reason="invalid_csi_state",
+                metadata={"raw_csi_state": csi_state},
             )
 
         # -------------------------------

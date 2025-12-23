@@ -10,7 +10,7 @@ def ping() -> dict:
     return {
         "status": "helpers active",
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "module": "helpers"
+        "module": "helpers",
     }
 
 

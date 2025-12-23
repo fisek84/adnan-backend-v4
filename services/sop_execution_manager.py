@@ -23,9 +23,7 @@ class SOPExecutionManager:
 
     def __init__(self):
         self.csi = ConversationStateService()
-        logger.info(
-            "[SOPExecutionManager] INITIALIZED — SEQUENTIAL EXECUTION ENABLED"
-        )
+        logger.info("[SOPExecutionManager] INITIALIZED — SEQUENTIAL EXECUTION ENABLED")
 
     # ============================================================
     # PUBLIC ENTRYPOINT — SOP EXECUTION
@@ -37,7 +35,6 @@ class SOPExecutionManager:
         *,
         request_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-
         if not self.EXECUTION_ENABLED:
             logger.warning(
                 "[SOPExecutionManager] EXECUTION BLOCKED | sop_id=%s request_id=%s",
@@ -89,10 +86,12 @@ class SOPExecutionManager:
 
                 self.csi.complete_task(request_id=request_id)
 
-                results.append({
-                    "task_id": task_id,
-                    "status": "DONE",
-                })
+                results.append(
+                    {
+                        "task_id": task_id,
+                        "status": "DONE",
+                    }
+                )
 
             except Exception as e:
                 logger.error(
@@ -134,6 +133,4 @@ class SOPExecutionManager:
     # INTERNAL — PARALLEL EXECUTION (STILL FORBIDDEN)
     # ============================================================
     async def _execute_parallel(self, *args, **kwargs):
-        raise RuntimeError(
-            "Parallel SOP execution is forbidden by system policy."
-        )
+        raise RuntimeError("Parallel SOP execution is forbidden by system policy.")

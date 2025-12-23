@@ -47,14 +47,10 @@ class ResponseFormatter:
         request_id: Optional[str] = None,
         awareness: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-
         try:
             state = csi_state.get("state", "IDLE")
 
-            awareness_level = (
-                awareness.get("awareness_level")
-                if awareness else "idle"
-            )
+            awareness_level = awareness.get("awareness_level") if awareness else "idle"
             if awareness_level not in ALLOWED_AWARENESS_LEVELS:
                 awareness_level = "idle"
 
@@ -93,9 +89,9 @@ class ResponseFormatter:
                         {
                             "type": "execution",
                             "status": "failed",
-                            "message": execution_result
-                                .get("failure", {})
-                                .get("reason", "Izvršenje nije uspjelo."),
+                            "message": execution_result.get("failure", {}).get(
+                                "reason", "Izvršenje nije uspjelo."
+                            ),
                             "read_only": False,
                         }
                     )

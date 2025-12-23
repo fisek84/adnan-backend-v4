@@ -17,7 +17,6 @@ from models.ai_command import AICommand
 
 
 class ActionSafetyService:
-
     # ------------------------------------------
     # Blokirane radnje — sistem ih nikada ne smije izvršiti
     # ------------------------------------------

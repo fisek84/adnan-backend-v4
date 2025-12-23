@@ -33,13 +33,16 @@ def metrics_snapshot():
         if not agent_id:
             continue
 
-        agent = agents.setdefault(agent_id, {
-            "agent_id": agent_id,
-            "executions": 0,
-            "failures": 0,
-            "last_status": None,
-            "last_seen": None,
-        })
+        agent = agents.setdefault(
+            agent_id,
+            {
+                "agent_id": agent_id,
+                "executions": 0,
+                "failures": 0,
+                "last_status": None,
+                "last_seen": None,
+            },
+        )
 
         if e.get("event_type") in {"agent_execution"}:
             phase = payload.get("phase")

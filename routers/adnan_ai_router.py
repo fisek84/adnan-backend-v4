@@ -1,4 +1,4 @@
-﻿# routers/adnan_ai_router.py
+# routers/adnan_ai_router.py
 # KANONSKA VERZIJA — ČIST ENTRYPOINT, BEZ INTERPRETACIJE EXECUTIONA
 
 from fastapi import APIRouter, HTTPException
@@ -38,7 +38,11 @@ class AdnanAIInput(BaseModel):
 
 @router.post("/input")
 async def adnan_ai_input(payload: AdnanAIInput):
-    if not ai_command_service or not coo_translation_service or not coo_conversation_service:
+    if (
+        not ai_command_service
+        or not coo_translation_service
+        or not coo_conversation_service
+    ):
         raise HTTPException(500, "AI services not initialized")
 
     user_text = (payload.text or "").strip()

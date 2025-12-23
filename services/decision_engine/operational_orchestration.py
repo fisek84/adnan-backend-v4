@@ -1,5 +1,6 @@
 # services/decision_engine/operational_orchestration.py
 
+
 class OperationalOrchestrationEngine:
     def __init__(self):
         pass
@@ -29,7 +30,7 @@ class OperationalOrchestrationEngine:
             "related_goals": command.get("related_goals", []),
             "related_projects": command.get("related_projects", []),
             "cross_related_goals": command.get("cross_related_goals", []),
-            "cross_related_projects": command.get("cross_related_projects", [])
+            "cross_related_projects": command.get("cross_related_projects", []),
         }
 
         return {
@@ -39,10 +40,7 @@ class OperationalOrchestrationEngine:
             "database_id": payload.get("database_id"),
             "entry": entry,
             "relations": relations,
-            "options": {
-                "upsert": False,
-                "dry_run": False
-            }
+            "options": {"upsert": False, "dry_run": False},
         }
 
     def _prepare_metadata(self, command: dict) -> dict:
@@ -64,22 +62,25 @@ class OperationalOrchestrationEngine:
             "contextual_links": command.get("contextual_links", {}),
             "cross_links": {
                 "goals": command.get("cross_related_goals", []),
-                "projects": command.get("cross_related_projects", [])
+                "projects": command.get("cross_related_projects", []),
             },
             "expansion": command.get("expansion", {}),
             "autocorrect": command.get("autocorrect", {}),
             "sop_detected": command.get("sop_detected", None),
-            "error_engine": error_engine
+            "error_engine": error_engine,
         }
 
     def orchestrate(self, command: dict) -> dict:
         notion_part = self._prepare_notion_payload(command)
         metadata_part = self._prepare_metadata(command)
 
-        notion_ready = metadata_part["execution_validated"] and metadata_part["required_fields_confirmed"]
+        notion_ready = (
+            metadata_part["execution_validated"]
+            and metadata_part["required_fields_confirmed"]
+        )
 
         return {
             "notion_ready": notion_ready,
             "notion_command": notion_part,
-            "metadata": metadata_part
+            "metadata": metadata_part,
         }

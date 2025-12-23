@@ -1,7 +1,7 @@
 import re
 
-class TrustLayer:
 
+class TrustLayer:
     def __init__(self):
         # fuzzy patterns for detecting ambiguity
         self.vague_phrases = [
@@ -13,7 +13,7 @@ class TrustLayer:
             r"\bnekako\b",
             r"\bpo mogućnosti\b",
             r"\bmožda\b",
-            r"\bako stigneš\b"
+            r"\bako stigneš\b",
         ]
 
         self.missing_action_patterns = [
@@ -34,7 +34,9 @@ class TrustLayer:
                 break
 
         # 2 — missing target
-        if re.search(r"\bdodaj\b", text, re.IGNORECASE) and not re.search(r"bazi", text, re.IGNORECASE):
+        if re.search(r"\bdodaj\b", text, re.IGNORECASE) and not re.search(
+            r"bazi", text, re.IGNORECASE
+        ):
             flags.append("missing_target")
 
         # 3 — missing actionable components
@@ -49,7 +51,4 @@ class TrustLayer:
         deduction = len(flags) * 0.15
         trust_score = max(0.0, round(base_score - deduction, 2))
 
-        return {
-            "score": trust_score,
-            "flags": flags
-        }
+        return {"score": trust_score, "flags": flags}

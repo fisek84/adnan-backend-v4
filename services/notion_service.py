@@ -97,9 +97,13 @@ class NotionService:
 
         # Config za agregaciju (respektuje stvarna imena property-ja u DB)
         self.goals_status_prop = os.getenv("NOTION_GOALS_STATUS_PROP_NAME", "Status")
-        self.goals_priority_prop = os.getenv("NOTION_GOALS_PRIORITY_PROP_NAME", "Priority")
+        self.goals_priority_prop = os.getenv(
+            "NOTION_GOALS_PRIORITY_PROP_NAME", "Priority"
+        )
         self.tasks_status_prop = os.getenv("NOTION_TASKS_STATUS_PROP_NAME", "Status")
-        self.tasks_priority_prop = os.getenv("NOTION_TASKS_PRIORITY_PROP_NAME", "Priority")
+        self.tasks_priority_prop = os.getenv(
+            "NOTION_TASKS_PRIORITY_PROP_NAME", "Priority"
+        )
 
         self.session: Optional[aiohttp.ClientSession] = None
         self.logger = logging.getLogger(__name__)
@@ -155,7 +159,9 @@ class NotionService:
         if database_id:
             return database_id
         if not db_key:
-            raise RuntimeError("Database not specified (db_key or database_id required).")
+            raise RuntimeError(
+                "Database not specified (db_key or database_id required)."
+            )
         if db_key not in self.db_ids:
             raise RuntimeError(f"Unknown db_key '{db_key}' for NotionService.")
         return self.db_ids[db_key]
@@ -214,45 +220,25 @@ class NotionService:
 
             if spec_type == "title":
                 text = spec.get("text") or ""
-                props[prop_name] = {
-                    "title": [
-                        {
-                            "text": {"content": text}
-                        }
-                    ]
-                }
+                props[prop_name] = {"title": [{"text": {"content": text}}]}
 
             elif spec_type == "rich_text":
                 text = spec.get("text") or ""
-                props[prop_name] = {
-                    "rich_text": [
-                        {
-                            "text": {"content": text}
-                        }
-                    ]
-                }
+                props[prop_name] = {"rich_text": [{"text": {"content": text}}]}
 
             elif spec_type == "select":
                 name = spec.get("name")
                 if name:
-                    props[prop_name] = {
-                        "select": {"name": name}
-                    }
+                    props[prop_name] = {"select": {"name": name}}
 
             elif spec_type == "status":
                 name = spec.get("name")
                 if name:
-                    props[prop_name] = {
-                        "status": {"name": name}
-                    }
+                    props[prop_name] = {"status": {"name": name}}
 
             elif spec_type == "multi_select":
                 names = spec.get("names") or []
-                props[prop_name] = {
-                    "multi_select": [
-                        {"name": n} for n in names if n
-                    ]
-                }
+                props[prop_name] = {"multi_select": [{"name": n} for n in names if n]}
 
             elif spec_type == "relation":
                 page_ids = spec.get("page_ids") or []
@@ -452,39 +438,23 @@ class NotionService:
             if not raw_name:
                 raise RuntimeError("Missing goal name")
 
-            goal_name, status, priority, description = self._parse_goal_command_text(raw_name)
+            goal_name, status, priority, description = self._parse_goal_command_text(
+                raw_name
+            )
 
             properties: Dict[str, Any] = {
-                "Name": {
-                    "title": [
-                        {
-                            "text": {
-                                "content": goal_name or raw_name
-                            }
-                        }
-                    ]
-                }
+                "Name": {"title": [{"text": {"content": goal_name or raw_name}}]}
             }
 
             if status:
-                properties[self.goals_status_prop] = {
-                    "status": {"name": status}
-                }
+                properties[self.goals_status_prop] = {"status": {"name": status}}
 
             if priority:
-                properties[self.goals_priority_prop] = {
-                    "select": {"name": priority}
-                }
+                properties[self.goals_priority_prop] = {"select": {"name": priority}}
 
             if description:
                 properties["Description"] = {
-                    "rich_text": [
-                        {
-                            "text": {
-                                "content": description
-                            }
-                        }
-                    ]
+                    "rich_text": [{"text": {"content": description}}]
                 }
 
             payload = {
@@ -768,9 +738,7 @@ class NotionService:
                     priority_prop_name="Priority",  # fallback ako nema Priority
                 )
             except Exception as exc:
-                self.logger.warning(
-                    "Failed to sync KPI snapshot from Notion: %s", exc
-                )
+                self.logger.warning("Failed to sync KPI snapshot from Notion: %s", exc)
                 snapshot["kpi_error"] = str(exc)
 
         # --- LEADS (može biti page / ne-DB → non-fatal) ---
@@ -806,10 +774,12 @@ class NotionService:
                 )
                 agent_exchange_results = ae_resp.get("results", []) or []
                 snapshot["agent_exchange"] = agent_exchange_results
-                snapshot["agent_exchange_summary"] = self._build_status_priority_summary(
-                    agent_exchange_results,
-                    status_prop_name="Status",
-                    priority_prop_name="Priority",
+                snapshot["agent_exchange_summary"] = (
+                    self._build_status_priority_summary(
+                        agent_exchange_results,
+                        status_prop_name="Status",
+                        priority_prop_name="Priority",
+                    )
                 )
             except Exception as exc:
                 self.logger.warning(
@@ -818,7 +788,9 @@ class NotionService:
                 snapshot["agent_exchange_error"] = str(exc)
 
         # --- AI SUMMARY (AI SUMMARY DB ili AI WEEKLY SUMMARY view) ---
-        ai_summary_db_id = self.db_ids.get("ai_summary") or self.db_ids.get("ai_weekly_summary")
+        ai_summary_db_id = self.db_ids.get("ai_summary") or self.db_ids.get(
+            "ai_weekly_summary"
+        )
         if ai_summary_db_id:
             try:
                 ai_resp = await self._safe_request(
@@ -831,7 +803,8 @@ class NotionService:
                 # Nema klasičan Status/Priority – summary nije potreban
             except Exception as exc:
                 self.logger.warning(
-                    "Failed to sync ai_summary snapshot from Notion (non-fatal): %s", exc
+                    "Failed to sync ai_summary snapshot from Notion (non-fatal): %s",
+                    exc,
                 )
                 snapshot["ai_summary_error"] = str(exc)
 

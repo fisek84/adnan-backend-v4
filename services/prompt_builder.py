@@ -3,7 +3,6 @@ from services.action_dictionary import ACTION_DEFINITIONS
 
 
 class PromptBuilder:
-
     def __init__(self):
         self.identity = load_adnan_identity()
 

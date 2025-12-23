@@ -29,7 +29,6 @@ class ApprovalDelegationService:
         approval_id: str,
         executor: str,
     ) -> Dict[str, Any]:
-
         if not approval_id or not executor:
             return {
                 "success": False,

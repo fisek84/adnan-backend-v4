@@ -1,11 +1,12 @@
-import json
-import httpx
 from typing import Optional, Dict, Any
+
+import httpx
 from pydantic import BaseModel, Field
 
 
 class GoogleAuthError(Exception):
     """Raised for all Google authentication errors."""
+
     pass
 
 
@@ -25,7 +26,7 @@ class GoogleClient:
     and safe HTTP calls to Google endpoints.
     """
 
-    def __init__(self, config: GoogleClientConfig):
+    def __init__(self, config: GoogleClientConfig) -> None:
         self.config = config
         self.access_token: Optional[str] = None
         self.refresh_token: Optional[str] = None
@@ -44,13 +45,13 @@ class GoogleClient:
             "response_type": "code",
             "scope": self.config.scope,
             "access_type": "offline",
-            "prompt": "consent"
+            "prompt": "consent",
         }
 
         if state:
             params["state"] = state
 
-        query = "&".join([f"{k}={v}" for k, v in params.items()])
+        query = "&".join(f"{k}={v}" for k, v in params.items())
         return f"{self.config.auth_url}?{query}"
 
     # ----------------------------------------------------------------------
@@ -62,7 +63,7 @@ class GoogleClient:
             "client_id": self.config.client_id,
             "client_secret": self.config.client_secret,
             "redirect_uri": self.config.redirect_uri,
-            "grant_type": "authorization_code"
+            "grant_type": "authorization_code",
         }
 
         async with httpx.AsyncClient(timeout=20) as client:
@@ -71,7 +72,7 @@ class GoogleClient:
         if not response.is_success:
             raise GoogleAuthError(f"Token exchange failed: {response.text}")
 
-        data = response.json()
+        data: Dict[str, Any] = response.json()
         self.access_token = data.get("access_token")
         self.refresh_token = data.get("refresh_token")
 
@@ -88,7 +89,7 @@ class GoogleClient:
             "client_id": self.config.client_id,
             "client_secret": self.config.client_secret,
             "refresh_token": self.refresh_token,
-            "grant_type": "refresh_token"
+            "grant_type": "refresh_token",
         }
 
         async with httpx.AsyncClient(timeout=20) as client:
@@ -97,31 +98,44 @@ class GoogleClient:
         if not response.is_success:
             raise GoogleAuthError(f"Token refresh failed: {response.text}")
 
-        data = response.json()
+        data: Dict[str, Any] = response.json()
         self.access_token = data["access_token"]
         return self.access_token
 
     # ----------------------------------------------------------------------
     # STEP 4 — Authorized Google API request
     # ----------------------------------------------------------------------
-    async def request(self, method: str, url: str, json: Optional[Dict] = None) -> Dict[str, Any]:
+    async def request(
+        self,
+        method: str,
+        url: str,
+        json_body: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         if not self.access_token:
             raise GoogleAuthError("Google API call attempted without access token")
 
         headers = {
             "Authorization": f"Bearer {self.access_token}",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
         }
 
         async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.request(method, url, headers=headers, json=json)
+            response = await client.request(
+                method,
+                url,
+                headers=headers,
+                json=json_body,
+            )
 
         if response.status_code == 401:
             # Auto refresh token and retry once
             await self.refresh_access_token()
-            return await self.request(method, url, json=json)
+            return await self.request(method, url, json_body=json_body)
 
         if not response.is_success:
-            raise GoogleAuthError(f"Google API Error {response.status_code}: {response.text}")
+            raise GoogleAuthError(
+                f"Google API Error {response.status_code}: {response.text}"
+            )
 
-        return response.json()
+        data: Dict[str, Any] = response.json()
+        return data

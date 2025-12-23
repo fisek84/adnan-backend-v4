@@ -13,7 +13,7 @@ class NotionSyncService:
         projects_service,
         goals_db_id,
         tasks_db_id,
-        projects_db_id
+        projects_db_id,
     ):
         self.notion = notion_service
         self.goals = goals_service
@@ -67,9 +67,7 @@ class NotionSyncService:
         if self._goal_sync_task and not self._goal_sync_task.done():
             self._goal_sync_task.cancel()
 
-        self._goal_sync_task = loop.create_task(
-            self._debounce(self.sync_goals_up)
-        )
+        self._goal_sync_task = loop.create_task(self._debounce(self.sync_goals_up))
 
     # ------------------------------------------------------
     # TASKS SYNC DEBOUNCE
@@ -80,9 +78,7 @@ class NotionSyncService:
         if self._task_sync_task and not self._task_sync_task.done():
             self._task_sync_task.cancel()
 
-        self._task_sync_task = loop.create_task(
-            self._debounce(self.sync_tasks_up)
-        )
+        self._task_sync_task = loop.create_task(self._debounce(self.sync_tasks_up))
 
     # ------------------------------------------------------
     # SYNC METHODS (REQUIRED BY ROUTERS)
@@ -140,7 +136,7 @@ class NotionSyncService:
             self.projects.create_project(
                 data=self.projects.to_create_model(mapped),
                 forced_id=project_id,
-                notion_id=mapped["notion_id"]
+                notion_id=mapped["notion_id"],
             )
 
         self.logger.info(f"📁 Loaded {len(pages)} projects from Notion → backend OK")
@@ -160,7 +156,9 @@ class NotionSyncService:
                 if kind == "title":
                     return prop["title"][0]["plain_text"] if prop["title"] else ""
                 if kind == "text":
-                    return prop["rich_text"][0]["plain_text"] if prop["rich_text"] else ""
+                    return (
+                        prop["rich_text"][0]["plain_text"] if prop["rich_text"] else ""
+                    )
                 if kind == "select":
                     return prop["select"]["name"] if prop["select"] else None
                 if kind == "date":
@@ -192,11 +190,13 @@ class NotionSyncService:
             "next_step": safe("Next Step", "text"),
             "primary_goal_id": (
                 safe("Primary Goal", "relation")[0]
-                if safe("Primary Goal", "relation") else None
+                if safe("Primary Goal", "relation")
+                else None
             ),
             "parent_id": (
                 safe("Parent Project", "relation")[0]
-                if safe("Parent Project", "relation") else None
+                if safe("Parent Project", "relation")
+                else None
             ),
             "agents": safe("Agent Exchange DB", "relation") or [],
             "tasks": safe("Tasks DB", "relation") or [],

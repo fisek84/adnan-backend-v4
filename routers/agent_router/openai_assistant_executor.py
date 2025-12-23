@@ -72,11 +72,7 @@ class OpenAIAssistantExecutor:
             )
 
             if run_status.status == "requires_action":
-                tool_calls = (
-                    run_status.required_action
-                    .submit_tool_outputs
-                    .tool_calls
-                )
+                tool_calls = run_status.required_action.submit_tool_outputs.tool_calls
 
                 tool_outputs = []
 
@@ -89,7 +85,10 @@ class OpenAIAssistantExecutor:
                     args = json.loads(call.function.arguments)
 
                     # 🔎 DEBUG — KLJUČNA ISTINA SISTEMA
-                    print("DEBUG TOOL CALL ARGS =", json.dumps(args, indent=2, ensure_ascii=False))
+                    print(
+                        "DEBUG TOOL CALL ARGS =",
+                        json.dumps(args, indent=2, ensure_ascii=False),
+                    )
 
                     result = perform_notion_action(**args)
 
@@ -118,13 +117,9 @@ class OpenAIAssistantExecutor:
                 "status": run_status.status,
             }
 
-        messages = self.client.beta.threads.messages.list(
-            thread_id=thread.id
-        )
+        messages = self.client.beta.threads.messages.list(thread_id=thread.id)
 
-        assistant_messages = [
-            m for m in messages.data if m.role == "assistant"
-        ]
+        assistant_messages = [m for m in messages.data if m.role == "assistant"]
 
         if not assistant_messages:
             return {

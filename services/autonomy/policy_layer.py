@@ -11,6 +11,7 @@ from services.conversation_state_service import CSIState
 # POLICY DECISION (KANONSKI)
 # ============================================================
 
+
 class PolicyDecision(Enum):
     ALLOW = "allow"
     DENY = "deny"
@@ -20,12 +21,14 @@ class PolicyDecision(Enum):
 # POLICY RESULT (DATA ONLY)
 # ============================================================
 
+
 @dataclass
 class PolicyResult:
     """
     Result of a policy evaluation.
     Data-only, no side effects.
     """
+
     decision: PolicyDecision
     reason: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
@@ -34,6 +37,7 @@ class PolicyResult:
 # ============================================================
 # AUTONOMY POLICY LAYER (KANONSKI)
 # ============================================================
+
 
 class AutonomyPolicy:
     """

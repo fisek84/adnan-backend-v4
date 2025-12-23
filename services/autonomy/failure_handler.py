@@ -12,6 +12,7 @@ from services.autonomy.self_check import SelfCheckResult, SelfCheckStatus
 # FAILURE OUTCOME (KANONSKI)
 # ============================================================
 
+
 class FailureOutcome(Enum):
     CONTINUE = "continue"
     FALLBACK = "fallback"
@@ -23,12 +24,14 @@ class FailureOutcome(Enum):
 # FAILURE HANDLING RESULT (DATA ONLY)
 # ============================================================
 
+
 @dataclass
 class FailureHandlingResult:
     """
     Result of failure handling evaluation.
     Data-only, no side effects.
     """
+
     outcome: FailureOutcome
     reason: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
@@ -37,6 +40,7 @@ class FailureHandlingResult:
 # ============================================================
 # FAILURE HANDLER (KANONSKI)
 # ============================================================
+
 
 class FailureHandler:
     """

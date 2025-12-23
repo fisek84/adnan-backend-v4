@@ -11,13 +11,13 @@ from services.memory_service import MemoryService
 
 
 WriteStatus = Literal[
-    "accepted",          # request_write ok (token izdan)
-    "requires_approval", # governance traži approval
-    "rejected",          # governance deny
-    "applied",           # commit_write izvršen
-    "replayed",          # idempotency replay
-    "failed",            # commit_write failed
-    "invalid_token",     # commit token ne postoji/istekao
+    "accepted",  # request_write ok (token izdan)
+    "requires_approval",  # governance traži approval
+    "rejected",  # governance deny
+    "applied",  # commit_write izvršen
+    "replayed",  # idempotency replay
+    "failed",  # commit_write failed
+    "invalid_token",  # commit token ne postoji/istekao
 ]
 
 
@@ -75,6 +75,7 @@ class InMemoryIdempotencyStore:
     """
     Level 1 idempotency: in-memory. Determinističan replay.
     """
+
     def __init__(self) -> None:
         self._records: Dict[str, _IdempotencyRecord] = {}
         self._lock = asyncio.Lock()
@@ -117,9 +118,15 @@ class WriteGateway:
         *,
         idempotency_store: Optional[InMemoryIdempotencyStore] = None,
         token_ttl_seconds: int = 300,
-        policy_evaluator: Optional[Callable[[WriteEnvelope], Awaitable[PolicyDecision]]] = None,
-        audit_emitter: Optional[Callable[[str, WriteEnvelope, Dict[str, Any]], Awaitable[Optional[str]]]] = None,
-        approval_creator: Optional[Callable[[WriteEnvelope, Dict[str, Any]], Awaitable[Optional[str]]]] = None,
+        policy_evaluator: Optional[
+            Callable[[WriteEnvelope], Awaitable[PolicyDecision]]
+        ] = None,
+        audit_emitter: Optional[
+            Callable[[str, WriteEnvelope, Dict[str, Any]], Awaitable[Optional[str]]]
+        ] = None,
+        approval_creator: Optional[
+            Callable[[WriteEnvelope, Dict[str, Any]], Awaitable[Optional[str]]]
+        ] = None,
         governance_service: Optional[ExecutionGovernanceService] = None,
         memory_service: Optional[MemoryService] = None,
     ) -> None:
@@ -151,8 +158,12 @@ class WriteGateway:
 
         # KANON: execution_id required
         if not env.execution_id:
-            audit_id = await self._emit_audit("WRITE_RECEIVED", env, {"status": "received"})
-            await self._emit_audit("WRITE_REJECTED", env, {"reason": "missing_execution_id"})
+            audit_id = await self._emit_audit(
+                "WRITE_RECEIVED", env, {"status": "received"}
+            )
+            await self._emit_audit(
+                "WRITE_REJECTED", env, {"reason": "missing_execution_id"}
+            )
             return WriteResult(
                 success=False,
                 status="rejected",
@@ -175,7 +186,11 @@ class WriteGateway:
         await self._emit_audit(
             "WRITE_POLICY_EVAL",
             env,
-            {"decision": decision.decision, "reason": decision.reason, "approval_id": decision.approval_id},
+            {
+                "decision": decision.decision,
+                "reason": decision.reason,
+                "approval_id": decision.approval_id,
+            },
         )
 
         if decision.decision == "deny":
@@ -194,7 +209,9 @@ class WriteGateway:
         if decision.decision == "requires_approval":
             approval_id = decision.approval_id
             if approval_id is None and self._approval_creator is not None:
-                approval_id = await self._approval_creator(env, decision.approval_payload or {})
+                approval_id = await self._approval_creator(
+                    env, decision.approval_payload or {}
+                )
             await self._emit_audit(
                 "WRITE_APPROVAL_REQUIRED",
                 env,
@@ -308,8 +325,12 @@ class WriteGateway:
                 execution_id=env.execution_id,
                 approval_id=env.approval_id,
             )
-            await self._idempotency.set_result(env.idempotency_key, res, succeeded=False)
-            await self._emit_audit("WRITE_FAILED", env, {"success": False, "error": str(e)})
+            await self._idempotency.set_result(
+                env.idempotency_key, res, succeeded=False
+            )
+            await self._emit_audit(
+                "WRITE_FAILED", env, {"success": False, "error": str(e)}
+            )
             return res.__dict__
 
     async def write(self, command: Dict[str, Any]) -> Dict[str, Any]:
@@ -375,7 +396,11 @@ class WriteGateway:
         )
 
         if resp.get("allowed") is True:
-            return PolicyDecision(decision="allow", reason="governance_allowed", approval_id=resp.get("approval_id"))
+            return PolicyDecision(
+                decision="allow",
+                reason="governance_allowed",
+                approval_id=resp.get("approval_id"),
+            )
 
         appr = resp.get("approval_id")
         if appr:
@@ -385,7 +410,9 @@ class WriteGateway:
                 approval_id=appr,
             )
 
-        return PolicyDecision(decision="deny", reason=resp.get("reason", "policy_denied"))
+        return PolicyDecision(
+            decision="deny", reason=resp.get("reason", "policy_denied")
+        )
 
     def _derive_context_type(self, env: WriteEnvelope) -> str:
         if env.scope and isinstance(env.scope, dict):
@@ -398,7 +425,9 @@ class WriteGateway:
                 return ct.strip()
         return "system"
 
-    async def _emit_audit(self, event_type: str, env: WriteEnvelope, data: Dict[str, Any]) -> Optional[str]:
+    async def _emit_audit(
+        self, event_type: str, env: WriteEnvelope, data: Dict[str, Any]
+    ) -> Optional[str]:
         audit_id = str(uuid.uuid4())
         record = {
             "audit_id": audit_id,

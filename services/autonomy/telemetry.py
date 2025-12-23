@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 # TELEMETRY EVENT TYPE (KANONSKI)
 # ============================================================
 
+
 class TelemetryEventType(Enum):
     LOOP_EVALUATED = "loop_evaluated"
     POLICY_EVALUATED = "policy_evaluated"
@@ -22,12 +23,14 @@ class TelemetryEventType(Enum):
 # TELEMETRY EVENT (DATA ONLY)
 # ============================================================
 
+
 @dataclass
 class TelemetryEvent:
     """
     Structured telemetry event.
     Data-only, no side effects.
     """
+
     event_type: TelemetryEventType
     ts: str
     payload: Optional[Dict[str, Any]] = None
@@ -36,6 +39,7 @@ class TelemetryEvent:
 # ============================================================
 # AUTONOMY TELEMETRY (KANONSKI)
 # ============================================================
+
 
 class AutonomyTelemetry:
     """
