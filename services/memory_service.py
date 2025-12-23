@@ -1,23 +1,36 @@
 # services/memory_service.py
 
+from __future__ import annotations
+
 import json
-import time
 import os
 import threading
+import time
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Any, Dict, List, Optional, Literal
 
 
 BASE_PATH = Path(__file__).resolve().parent.parent / "adnan_ai" / "memory"
 
+ScopeType = Literal["user", "session", "task", "execution"]
+
 
 class MemoryService:
+    """
+    CANON (Phase 6): State/Memory SSOT API (scope-based) + backward compatible legacy API.
+
+    - Level 1 backend: in-memory dict (persisted to disk for current repo compatibility).
+    - Scopes: user/session/task/execution
+    - Canonical ops: get/set/delete (+ internal TTL)
+    """
+
     SCHEMA_VERSION = "1.0.0"  # 🔒 LOCKED
     DECAY_HALF_LIFE_SECONDS = 60 * 60 * 24 * 30
     MIN_WEIGHT = 0.2
     MAX_ENTRIES = 100
     MAX_DECISION_OUTCOMES = 100
     MAX_REL_HISTORY = 200
+    MAX_WRITE_AUDIT_EVENTS = 500
 
     def __init__(self):
         BASE_PATH.mkdir(parents=True, exist_ok=True)
@@ -28,7 +41,10 @@ class MemoryService:
 
         self.memory = self._load()
 
+        # ---- root keys ----
         self.memory.setdefault("schema_version", self.SCHEMA_VERSION)
+
+        # Legacy keys (kept)
         self.memory.setdefault("entries", [])
         self.memory.setdefault("decision_outcomes", [])
         self.memory.setdefault("execution_stats", {})
@@ -36,6 +52,21 @@ class MemoryService:
         self.memory.setdefault("goals", [])
         self.memory.setdefault("plans", [])
         self.memory.setdefault("active_decision", None)
+
+        # Phase 5/6 keys
+        self.memory.setdefault("write_audit_events", [])
+
+        # Phase 6 canonical scoped state
+        self.memory.setdefault("scopes", {})
+        scopes = self.memory["scopes"]
+        if not isinstance(scopes, dict):
+            scopes = {}
+            self.memory["scopes"] = scopes
+
+        for st in ("user", "session", "task", "execution"):
+            scopes.setdefault(st, {})
+            if not isinstance(scopes[st], dict):
+                scopes[st] = {}
 
         self._save()
 
@@ -74,8 +105,144 @@ class MemoryService:
         weight = 0.5 ** (age / self.DECAY_HALF_LIFE_SECONDS)
         return max(self.MIN_WEIGHT, round(weight, 4))
 
+    def _validate_scope(self, scope_type: str, scope_id: str) -> Optional[tuple[ScopeType, str]]:
+        if scope_type not in ("user", "session", "task", "execution"):
+            return None
+        if not isinstance(scope_id, str) or not scope_id.strip():
+            return None
+        return scope_type, scope_id.strip()
+
+    def _purge_expired_locked(self, scope_type: ScopeType, scope_id: str) -> None:
+        scopes = self.memory.get("scopes", {})
+        bucket = scopes.get(scope_type, {})
+        state = bucket.get(scope_id)
+        if not isinstance(state, dict):
+            return
+
+        now = self._now()
+        expired_keys: List[str] = []
+        for k, v in state.items():
+            if not isinstance(v, dict):
+                continue
+            exp = v.get("exp")
+            if isinstance(exp, (int, float)) and exp <= now:
+                expired_keys.append(k)
+
+        for k in expired_keys:
+            state.pop(k, None)
+
+        if expired_keys:
+            self._save()
+
     # ============================================================
-    # STM
+    # CANONICAL SCOPE API (Phase 6)
+    # ============================================================
+    def get(
+        self,
+        *,
+        scope_type: str,
+        scope_id: str,
+        key: str,
+        default: Any = None,
+    ) -> Any:
+        norm = self._validate_scope(scope_type, scope_id)
+        if norm is None:
+            return default
+        st, sid = norm
+
+        if not isinstance(key, str) or not key:
+            return default
+
+        with self._lock:
+            self._purge_expired_locked(st, sid)
+            scopes = self.memory["scopes"]
+            bucket = scopes[st]
+            state = bucket.get(sid)
+            if not isinstance(state, dict):
+                return default
+            rec = state.get(key)
+            if not isinstance(rec, dict):
+                return default
+            return rec.get("value", default)
+
+    def set(
+        self,
+        *,
+        scope_type: str,
+        scope_id: str,
+        key: str,
+        value: Any,
+        ttl_seconds: Optional[int] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        norm = self._validate_scope(scope_type, scope_id)
+        if norm is None:
+            return False
+        st, sid = norm
+
+        if not isinstance(key, str) or not key:
+            return False
+
+        exp: Optional[float] = None
+        if isinstance(ttl_seconds, int) and ttl_seconds > 0:
+            exp = self._now() + float(ttl_seconds)
+
+        rec = {
+            "value": value,
+            "ts": self._now(),
+            "exp": exp,
+            "meta": metadata or {},
+        }
+
+        with self._lock:
+            scopes = self.memory["scopes"]
+            bucket = scopes[st]
+            state = bucket.get(sid)
+            if not isinstance(state, dict):
+                state = {}
+                bucket[sid] = state
+            state[key] = rec
+            self._save()
+        return True
+
+    def delete(self, *, scope_type: str, scope_id: str, key: str) -> bool:
+        norm = self._validate_scope(scope_type, scope_id)
+        if norm is None:
+            return False
+        st, sid = norm
+
+        if not isinstance(key, str) or not key:
+            return False
+
+        with self._lock:
+            scopes = self.memory["scopes"]
+            bucket = scopes[st]
+            state = bucket.get(sid)
+            if not isinstance(state, dict):
+                return False
+            existed = key in state
+            state.pop(key, None)
+            if existed:
+                self._save()
+            return existed
+
+    def clear_scope(self, *, scope_type: str, scope_id: str) -> bool:
+        norm = self._validate_scope(scope_type, scope_id)
+        if norm is None:
+            return False
+        st, sid = norm
+
+        with self._lock:
+            scopes = self.memory["scopes"]
+            bucket = scopes[st]
+            existed = sid in bucket
+            bucket.pop(sid, None)
+            if existed:
+                self._save()
+            return existed
+
+    # ============================================================
+    # STM (legacy)
     # ============================================================
     def process(self, user_input: str) -> Dict[str, Any]:
         if not isinstance(user_input, str) or not user_input.strip():
@@ -98,7 +265,7 @@ class MemoryService:
         return self.memory["entries"][-limit:]
 
     # ============================================================
-    # FAZA 3 — GOALS
+    # GOALS (legacy)
     # ============================================================
     def store_goal(self, goal: Dict[str, Any]):
         if not isinstance(goal, dict):
@@ -111,7 +278,7 @@ class MemoryService:
         self._save()
 
     # ============================================================
-    # FAZA 4 — PLANS
+    # PLANS (legacy)
     # ============================================================
     def store_plan(self, plan: Dict[str, Any]):
         if not isinstance(plan, dict):
@@ -124,7 +291,7 @@ class MemoryService:
         self._save()
 
     # ============================================================
-    # FAZA 8 — ACTIVE DECISION
+    # ACTIVE DECISION (legacy)
     # ============================================================
     def set_active_decision(self, decision: Dict[str, Any]):
         if not isinstance(decision, dict):
@@ -144,7 +311,7 @@ class MemoryService:
         return self.memory.get("active_decision")
 
     # ============================================================
-    # FAZA 5 — DECISION OUTCOMES (APPEND-ONLY)
+    # DECISION OUTCOMES (legacy)
     # ============================================================
     def store_decision_outcome(
         self,
@@ -193,7 +360,22 @@ class MemoryService:
         self._save()
 
     # ============================================================
-    # FAZA 6–12 — READ-ONLY ANALYTICS
+    # WRITE AUDIT (Phase 5+)
+    # ============================================================
+    def append_write_audit_event(self, event: Dict[str, Any]) -> None:
+        if not isinstance(event, dict):
+            return
+
+        self.memory.setdefault("write_audit_events", [])
+        self.memory["write_audit_events"].append({**event, "ts": self._now()})
+
+        if len(self.memory["write_audit_events"]) > self.MAX_WRITE_AUDIT_EVENTS:
+            self.memory["write_audit_events"] = self.memory["write_audit_events"][-self.MAX_WRITE_AUDIT_EVENTS:]
+
+        self._save()
+
+    # ============================================================
+    # READ-ONLY ANALYTICS (legacy)
     # ============================================================
     def sop_success_rate(self, sop_key: str) -> float:
         outcomes = [

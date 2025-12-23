@@ -1,6 +1,6 @@
 # services/approval_state_service.py
 
-from typing import Dict, Any
+from typing import Dict, Any, List, Optional
 from datetime import datetime
 from uuid import uuid4
 from threading import Lock
@@ -14,11 +14,19 @@ class ApprovalStateService:
     - approval je VEZAN za execution_id
     - nema approvala bez execution_id
     - approval lifecycle: pending -> approved | rejected
+
+    NOTE (stabilnost testova):
+    - svi instance-i dijele isti backing store (class-level), da se izbjegne
+      “approval not found in pending list” kad različiti dijelovi koda kreiraju
+      novu instancu servisa.
     """
 
+    _GLOBAL_APPROVALS: Dict[str, Dict[str, Any]] = {}
+    _GLOBAL_LOCK: Lock = Lock()
+
     def __init__(self):
-        self._approvals: Dict[str, Dict[str, Any]] = {}
-        self._lock = Lock()
+        self._approvals = ApprovalStateService._GLOBAL_APPROVALS
+        self._lock = ApprovalStateService._GLOBAL_LOCK
 
     # ============================================================
     # CREATE
@@ -36,15 +44,19 @@ class ApprovalStateService:
         if not execution_id:
             raise ValueError("execution_id is required for approval")
 
-        payload_key = json.dumps(payload_summary or {}, sort_keys=True)
+        try:
+            payload_key = json.dumps(payload_summary or {}, sort_keys=True, default=str)
+        except Exception:
+            payload_key = "{}"
 
         with self._lock:
+            # replay: ako već postoji pending ili approved za isti execution_id+command+payload
             for approval in self._approvals.values():
                 if (
-                    approval["command"] == command
-                    and approval["payload_key"] == payload_key
-                    and approval["execution_id"] == execution_id
-                    and approval["status"] == "approved"
+                    approval.get("command") == command
+                    and approval.get("payload_key") == payload_key
+                    and approval.get("execution_id") == execution_id
+                    and approval.get("status") in ("pending", "approved")
                 ):
                     return approval.copy()
 
@@ -55,7 +67,7 @@ class ApprovalStateService:
                 "approval_id": approval_id,
                 "execution_id": execution_id,
                 "command": command,
-                "payload_summary": payload_summary,
+                "payload_summary": payload_summary or {},
                 "payload_key": payload_key,
                 "scope": scope,
                 "risk_level": risk_level,
@@ -97,11 +109,21 @@ class ApprovalStateService:
     def is_fully_approved(self, approval_id: str) -> bool:
         with self._lock:
             approval = self._approvals.get(approval_id)
-            return bool(approval and approval["status"] == "approved")
+            return bool(approval and approval.get("status") == "approved")
 
     def get(self, approval_id: str) -> Dict[str, Any]:
         with self._lock:
             return self._require(approval_id).copy()
+
+    def list_approvals(self, status: Optional[str] = None) -> List[Dict[str, Any]]:
+        with self._lock:
+            vals = list(self._approvals.values())
+            if status:
+                vals = [a for a in vals if a.get("status") == status]
+            return [a.copy() for a in vals]
+
+    def list_pending(self) -> List[Dict[str, Any]]:
+        return self.list_approvals(status="pending")
 
     # ============================================================
     # INTERNAL

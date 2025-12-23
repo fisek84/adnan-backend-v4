@@ -16,8 +16,9 @@ from services.memory_service import MemoryService
 
 
 class AuditService:
-    def __init__(self):
-        self.memory = MemoryService()  # READ-ONLY
+    def __init__(self, memory_service: Optional[MemoryService] = None):
+        # READ-ONLY
+        self.memory = memory_service or MemoryService()
 
     # ============================================================
     # GENERAL AUDIT LOG
@@ -31,10 +32,7 @@ class AuditService:
         records = list(self.memory.memory.get("decision_outcomes", []))
 
         if decision_type:
-            records = [
-                r for r in records
-                if r.get("decision_type") == decision_type
-            ]
+            records = [r for r in records if r.get("decision_type") == decision_type]
 
         if limit <= 0:
             return []
@@ -42,24 +40,18 @@ class AuditService:
         return records[-limit:]
 
     # ============================================================
-    # WRITE AUDIT LOG (READ-ONLY)
+    # WRITE AUDIT (PHASE 5+)
     # ============================================================
-    def get_write_audit_log(
+    def get_write_audit_events(
         self,
         limit: int = 100,
         event_type: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        records = list(self.memory.memory.get("write_audit_events", []))
-
+        records = list(self.memory.memory.get("write_audit_events", []) or [])
         if event_type:
-            records = [
-                r for r in records
-                if r.get("event_type") == event_type
-            ]
-
+            records = [r for r in records if r.get("event_type") == event_type]
         if limit <= 0:
             return []
-
         return records[-limit:]
 
     # ============================================================
@@ -77,14 +69,11 @@ class AuditService:
         stats = self.memory.memory.get("execution_stats", {}) or {}
 
         if context_type and directive:
-            return stats.get(f"{context_type}:{directive}", {})
+            return stats.get(f"{context_type}:{directive}", {}) or {}
 
         if context_type:
             prefix = f"{context_type}:"
-            return {
-                k: v for k, v in stats.items()
-                if k.startswith(prefix)
-            }
+            return {k: v for k, v in stats.items() if k.startswith(prefix)}
 
         return stats
 
@@ -175,7 +164,7 @@ class AuditService:
         return {
             "active_decision": self.get_active_decision(),
             "decision_outcomes": self.get_audit_log(limit=50),
-            "write_audit_events": self.get_write_audit_log(limit=50),
+            "write_audit_events": self.get_write_audit_events(limit=50),
             "incidents": self.get_incidents(limit=20),
             "execution_stats": self.get_execution_audit(),
             "execution_kpis": self.get_execution_kpis(),
