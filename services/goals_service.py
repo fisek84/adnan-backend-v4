@@ -10,6 +10,8 @@ from models.base_model import GoalModel
 from models.goal_create import GoalCreate
 from models.goal_update import GoalUpdate
 
+from services.write_gateway.write_gateway import WriteGateway, WriteEnvelope
+
 logger = logging.getLogger(__name__)
 
 
@@ -26,9 +28,16 @@ class GoalsService:
     tasks_service = None
     sync_service = None
 
-    def __init__(self, db_conn: sqlite3.Connection):
+    def __init__(self, db_conn: sqlite3.Connection, write_gateway: Optional[WriteGateway] = None):
         self.db = db_conn
         self.goals: Dict[str, GoalModel] = {}
+
+        self.write_gateway = write_gateway or WriteGateway()
+
+        # handlers (SSOT enforcement)
+        self.write_gateway.register_handler("goals_create", self._wg_create_goal)
+        self.write_gateway.register_handler("goals_update", self._wg_update_goal)
+        self.write_gateway.register_handler("goals_delete", self._wg_delete_goal)
 
         self._create_table()
 
@@ -113,9 +122,7 @@ class GoalsService:
             loop = asyncio.get_running_loop()
             loop.create_task(self.sync_service.debounce_goals_sync())
         except RuntimeError:
-            asyncio.get_event_loop().create_task(
-                self.sync_service.debounce_goals_sync()
-            )
+            asyncio.get_event_loop().create_task(self.sync_service.debounce_goals_sync())
 
     def _save_goal_to_db(self, goal: GoalModel):
         query = """
@@ -150,8 +157,14 @@ class GoalsService:
         self.db.execute("DELETE FROM goals WHERE id = ?", (goal_id,))
         self.db.commit()
 
+    def _wg_execution_id(self, payload: dict) -> str:
+        exec_id = payload.get("execution_id") or payload.get("idempotency_key")
+        if isinstance(exec_id, str) and exec_id.strip():
+            return exec_id.strip()
+        return f"exec_{uuid4().hex}"
+
     # ---------------------------------------------------------
-    # CREATE GOAL
+    # CREATE GOAL (LEGACY DIRECT WRITE)
     # ---------------------------------------------------------
 
     def create_goal(
@@ -199,23 +212,66 @@ class GoalsService:
         return new_goal
 
     # ---------------------------------------------------------
-    # GET ALL (FIX REQUIRED BY ROUTER)
+    # GET ALL
     # ---------------------------------------------------------
 
     def get_all(self) -> List[GoalModel]:
-        """
-        Required by /goals/all router.
-        """
         return list(self.goals.values())
 
     def get_all_goals(self) -> List[GoalModel]:
         return list(self.goals.values())
 
     # ---------------------------------------------------------
-    # UPDATE GOAL
+    # UPDATE GOAL (WRITE VIA GATEWAY)
     # ---------------------------------------------------------
 
     async def update_goal(self, goal_id: str, data: dict):
+        envelope = {
+            "command": "goals_update",
+            "actor_id": str((data or {}).get("actor_id") or "system"),
+            "resource": f"goal:{goal_id}",
+            "payload": {"goal_id": goal_id, "data": dict(data or {})},
+            "task_id": "GOALS_UPDATE",
+            "execution_id": self._wg_execution_id(data or {}),
+            "metadata": (data or {}).get("metadata") if isinstance((data or {}).get("metadata"), dict) else None,
+            "approval_id": (data or {}).get("approval_id"),
+        }
+        return await self.write_gateway.write(envelope)
+
+    # ---------------------------------------------------------
+    # DELETE GOAL (WRITE VIA GATEWAY)
+    # ---------------------------------------------------------
+
+    async def delete_goal(self, goal_id: str) -> dict:
+        envelope = {
+            "command": "goals_delete",
+            "actor_id": "system",
+            "resource": f"goal:{goal_id}",
+            "payload": {"goal_id": goal_id},
+            "task_id": "GOALS_DELETE",
+            "execution_id": f"exec_{uuid4().hex}",
+        }
+        return await self.write_gateway.write(envelope)
+
+    # ---------------------------------------------------------
+    # WRITE GATEWAY HANDLERS (REAL SIDE EFFECTS)
+    # ---------------------------------------------------------
+
+    async def _wg_create_goal(self, env: WriteEnvelope) -> Dict[str, Any]:
+        payload = env.payload or {}
+        data = payload.get("data") or {}
+        forced_id = payload.get("forced_id")
+        notion_id = payload.get("notion_id")
+
+        created = self.create_goal(data, forced_id=forced_id, notion_id=notion_id)
+        self._trigger_sync()
+        return {"goal_id": created.id, "notion_id": created.notion_id}
+
+    async def _wg_update_goal(self, env: WriteEnvelope) -> Dict[str, Any]:
+        payload = env.payload or {}
+        goal_id = str(payload.get("goal_id") or "").strip()
+        data = payload.get("data") or {}
+
         logger.info(f"[GOALS] Updating goal {goal_id}")
 
         goal = self.goals.get(goal_id)
@@ -228,7 +284,6 @@ class GoalsService:
         if new_parent_id is None:
             raise ValueError("Every goal except root must have a parent")
 
-        # SIMPLE FIELDS
         if data.get("title") is not None:
             goal.title = data["title"]
         if data.get("description") is not None:
@@ -242,7 +297,6 @@ class GoalsService:
         if data.get("progress") is not None:
             goal.progress = data["progress"]
 
-        # PARENT-CHILD LOGIC
         if old_parent_id != new_parent_id:
             if old_parent_id and old_parent_id in self.goals:
                 old_parent = self.goals[old_parent_id]
@@ -265,16 +319,15 @@ class GoalsService:
 
         self._trigger_sync()
 
-        return data
+        return {"goal_id": goal_id, "updated": True, "data": data}
 
-    # ---------------------------------------------------------
-    # DELETE GOAL
-    # ---------------------------------------------------------
+    async def _wg_delete_goal(self, env: WriteEnvelope) -> Dict[str, Any]:
+        payload = env.payload or {}
+        goal_id = str(payload.get("goal_id") or "").strip()
 
-    async def delete_goal(self, goal_id: str) -> dict:
         goal = self.goals.get(goal_id)
         if not goal:
-            return {"notion_id": None}
+            return {"notion_id": None, "deleted": False}
 
         notion_id = goal.notion_id
 
@@ -283,4 +336,18 @@ class GoalsService:
 
         logger.info(f"[GOALS] Deleted goal {goal_id} (notion_id={notion_id})")
 
-        return {"notion_id": notion_id}
+        self._trigger_sync()
+
+        return {"notion_id": notion_id, "deleted": True}
+
+    # ---------------------------------------------------------
+    # DEFAULT HANDLER (DEMO)
+    # ---------------------------------------------------------
+
+    async def _demo_handler(self, env: WriteEnvelope) -> Dict[str, Any]:
+        return {
+            "noop": True,
+            "command": env.command,
+            "resource": env.resource,
+            "actor_id": env.actor_id,
+        }

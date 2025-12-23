@@ -41,11 +41,27 @@ class ExecutionGovernanceService:
 
         ts = datetime.utcnow().isoformat()
 
+        initiator = str(initiator or "").strip()
+        context_type = str(context_type or "").strip()
+        directive = str(directive or "").strip()
+        params = params if isinstance(params, dict) else {}
+        execution_id = str(execution_id or "").strip()
+        approval_id = str(approval_id).strip() if approval_id else None
+
         # --------------------------------------------------------
         # BASIC VALIDATION
         # --------------------------------------------------------
         if not execution_id:
             return self._block("Missing execution_id.", ts)
+
+        if not initiator:
+            return self._block("Missing initiator.", ts)
+
+        if not directive:
+            return self._block("Missing directive.", ts)
+
+        if not context_type:
+            return self._block("Missing context_type.", ts)
 
         # --------------------------------------------------------
         # POLICY (INITIATOR-AWARE)
@@ -70,7 +86,7 @@ class ExecutionGovernanceService:
             return self._block(
                 "Approval required.",
                 ts,
-                approval_id=approval["approval_id"],
+                approval_id=approval.get("approval_id"),
             )
 
         if not self.approvals.is_fully_approved(approval_id):
@@ -86,6 +102,9 @@ class ExecutionGovernanceService:
         return {
             "allowed": True,
             "execution_id": execution_id,
+            "approval_id": approval_id,
+            "context_type": context_type,
+            "directive": directive,
             "read_only": False,
             "governance": self._governance_limits,
             "timestamp": ts,
