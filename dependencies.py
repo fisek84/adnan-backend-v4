@@ -161,7 +161,7 @@ def init_services() -> None:
     # 5) Local backend services (wired to WriteGateway)
     # ----------------------------------------
     _goals = GoalsService(_db_conn, write_gateway=_write_gateway)
-    _tasks = TasksService(write_gateway=_write_gateway)
+    _tasks = TasksService(_db_conn, write_gateway=_write_gateway)
     _projects = ProjectsService(write_gateway=_write_gateway)
     logger.info("📌 GoalsService, TasksService, ProjectsService initialized.")
 

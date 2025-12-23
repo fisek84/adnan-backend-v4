@@ -1,6 +1,6 @@
 # KANON-FIX-008 — Code Quality Layer
 
-Status: IN PROGRESS  
+Status: DONE (2025-12-23)  
 Owner: Backend / Infrastructure  
 Related canon: READ/WRITE separation, Governance, Happy Path immutability
 
