@@ -42,6 +42,27 @@ class AuditService:
         return records[-limit:]
 
     # ============================================================
+    # WRITE AUDIT LOG (READ-ONLY)
+    # ============================================================
+    def get_write_audit_log(
+        self,
+        limit: int = 100,
+        event_type: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        records = list(self.memory.memory.get("write_audit_events", []))
+
+        if event_type:
+            records = [
+                r for r in records
+                if r.get("event_type") == event_type
+            ]
+
+        if limit <= 0:
+            return []
+
+        return records[-limit:]
+
+    # ============================================================
     # EXECUTION AUDIT (RAW)
     # ============================================================
     def get_execution_audit(
@@ -154,6 +175,7 @@ class AuditService:
         return {
             "active_decision": self.get_active_decision(),
             "decision_outcomes": self.get_audit_log(limit=50),
+            "write_audit_events": self.get_write_audit_log(limit=50),
             "incidents": self.get_incidents(limit=20),
             "execution_stats": self.get_execution_audit(),
             "execution_kpis": self.get_execution_kpis(),

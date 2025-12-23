@@ -1,17 +1,27 @@
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone
+from uuid import uuid4
 
 from models.project_model import ProjectModel
 from models.project_create import ProjectCreate
 from models.project_update import ProjectUpdate
 
+from services.write_gateway.write_gateway import WriteGateway, WriteEnvelope
+
 
 class ProjectsService:
-    def __init__(self):
+    def __init__(self, write_gateway: Optional[WriteGateway] = None):
         self.projects: Dict[str, ProjectModel] = {}
         self.goals_service = None
         self.tasks_service = None
         self.sync_service = None
+
+        self.write_gateway = write_gateway or WriteGateway()
+
+        # SSOT enforcement handlers
+        self.write_gateway.register_handler("projects_create", self._wg_create_project)
+        self.write_gateway.register_handler("projects_update", self._wg_update_project)
+        self.write_gateway.register_handler("projects_delete", self._wg_delete_project)
 
     # ------------------------------------------------------
     # BINDINGS
@@ -31,6 +41,19 @@ class ProjectsService:
     def _now(self):
         return datetime.now(timezone.utc)
 
+    def _trigger_sync(self):
+        if self.sync_service:
+            try:
+                self.sync_service.debounce_projects_sync()
+            except Exception:
+                pass
+
+    def _wg_execution_id(self, payload: dict) -> str:
+        exec_id = payload.get("execution_id") or payload.get("idempotency_key")
+        if isinstance(exec_id, str) and exec_id.strip():
+            return exec_id.strip()
+        return f"exec_{uuid4().hex}"
+
     def _replace_id(self, old_id: str, new_notion_id: str):
         if old_id not in self.projects:
             return
@@ -42,14 +65,77 @@ class ProjectsService:
         self.projects[clean_id] = project
 
     # ------------------------------------------------------
-    # CREATE
+    # CREATE (WRITE via gateway)
     # ------------------------------------------------------
-    def create_project(
+    async def create_project(
         self,
         data: ProjectCreate,
         forced_id: Optional[str] = None,
         notion_id: Optional[str] = None,
-    ) -> ProjectModel:
+    ) -> Dict[str, Any]:
+        payload = data.model_dump() if hasattr(data, "model_dump") else dict(data)
+        envelope = {
+            "command": "projects_create",
+            "actor_id": str(payload.get("actor_id") or "system"),
+            "resource": "projects",
+            "payload": {"data": payload, "forced_id": forced_id, "notion_id": notion_id},
+            "task_id": "PROJECTS_CREATE",
+            "execution_id": self._wg_execution_id(payload),
+            "metadata": payload.get("metadata") if isinstance(payload.get("metadata"), dict) else None,
+            "approval_id": payload.get("approval_id"),
+        }
+        return await self.write_gateway.write(envelope)
+
+    # ------------------------------------------------------
+    # UPDATE (WRITE via gateway)
+    # ------------------------------------------------------
+    async def update_project(self, project_id: str, updates: ProjectUpdate) -> Dict[str, Any]:
+        payload = updates.model_dump() if hasattr(updates, "model_dump") else dict(updates)
+        envelope = {
+            "command": "projects_update",
+            "actor_id": str(payload.get("actor_id") or "system"),
+            "resource": f"project:{project_id}",
+            "payload": {"project_id": project_id, "updates": payload},
+            "task_id": "PROJECTS_UPDATE",
+            "execution_id": self._wg_execution_id(payload),
+            "metadata": payload.get("metadata") if isinstance(payload.get("metadata"), dict) else None,
+            "approval_id": payload.get("approval_id"),
+        }
+        return await self.write_gateway.write(envelope)
+
+    # ------------------------------------------------------
+    # DELETE (WRITE via gateway)
+    # ------------------------------------------------------
+    async def delete_project(self, project_id: str) -> Dict[str, Any]:
+        envelope = {
+            "command": "projects_delete",
+            "actor_id": "system",
+            "resource": f"project:{project_id}",
+            "payload": {"project_id": project_id},
+            "task_id": "PROJECTS_DELETE",
+            "execution_id": f"exec_{uuid4().hex}",
+        }
+        return await self.write_gateway.write(envelope)
+
+    # ------------------------------------------------------
+    # GETTERS
+    # ------------------------------------------------------
+    def get_all(self) -> List[ProjectModel]:
+        return list(self.projects.values())
+
+    def get(self, project_id: str) -> Optional[ProjectModel]:
+        return self.projects.get(project_id)
+
+    # ------------------------------------------------------
+    # WRITE GATEWAY HANDLERS (REAL DOMAIN SIDE EFFECTS)
+    # ------------------------------------------------------
+    async def _wg_create_project(self, env: WriteEnvelope) -> Dict[str, Any]:
+        payload = env.payload or {}
+        data_dict = payload.get("data") or {}
+        forced_id = payload.get("forced_id")
+        notion_id = payload.get("notion_id")
+
+        data = ProjectCreate(**data_dict) if isinstance(data_dict, dict) else data_dict
 
         now = self._now()
         project_id = forced_id or now.strftime("%Y%m%d%H%M%S%f")
@@ -78,23 +164,20 @@ class ProjectsService:
         )
 
         self.projects[project_id] = project
+        self._trigger_sync()
 
-        # 🔥 FIXED — only valid sync trigger
-        if self.sync_service:
-            try:
-                self.sync_service.debounce_projects_sync()
-            except Exception:
-                pass
+        return {"project_id": project_id, "notion_id": notion_id}
 
-        return project
+    async def _wg_update_project(self, env: WriteEnvelope) -> Dict[str, Any]:
+        payload = env.payload or {}
+        project_id = str(payload.get("project_id") or "").strip()
+        updates_dict = payload.get("updates") or {}
 
-    # ------------------------------------------------------
-    # UPDATE
-    # ------------------------------------------------------
-    def update_project(self, project_id: str, updates: ProjectUpdate) -> ProjectModel:
         project = self.projects.get(project_id)
         if not project:
             raise ValueError("Project not found")
+
+        updates = ProjectUpdate(**updates_dict) if isinstance(updates_dict, dict) else updates_dict
 
         for field in [
             "title", "description", "status", "category", "priority",
@@ -107,43 +190,22 @@ class ProjectsService:
                 setattr(project, field, val)
 
         project.updated_at = self._now()
+        self._trigger_sync()
 
-        # 🔥 FIXED — only valid sync trigger
-        if self.sync_service:
-            try:
-                self.sync_service.debounce_projects_sync()
-            except Exception:
-                pass
+        return {"project_id": project_id, "updated": True}
 
-        return project
+    async def _wg_delete_project(self, env: WriteEnvelope) -> Dict[str, Any]:
+        payload = env.payload or {}
+        project_id = str(payload.get("project_id") or "").strip()
 
-    # ------------------------------------------------------
-    # DELETE
-    # ------------------------------------------------------
-    def delete_project(self, project_id: str):
         proj = self.projects.get(project_id)
         if not proj:
             raise ValueError("Project not found")
 
-        removed = self.projects.pop(project_id)
+        self.projects.pop(project_id)
+        self._trigger_sync()
 
-        # 🔥 FIXED — only valid sync trigger
-        if self.sync_service:
-            try:
-                self.sync_service.debounce_projects_sync()
-            except Exception:
-                pass
-
-        return removed
-
-    # ------------------------------------------------------
-    # GETTERS
-    # ------------------------------------------------------
-    def get_all(self) -> List[ProjectModel]:
-        return list(self.projects.values())
-
-    def get(self, project_id: str) -> Optional[ProjectModel]:
-        return self.projects.get(project_id)
+        return {"project_id": project_id, "deleted": True, "notion_id": getattr(proj, "notion_id", None)}
 
     # ------------------------------------------------------
     # MAPPERS

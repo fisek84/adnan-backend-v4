@@ -12,6 +12,7 @@ from services.tasks_service import TasksService
 from services.notion_service import NotionService
 from services.projects_service import ProjectsService
 from services.notion_sync_service import NotionSyncService
+from services.write_gateway.write_gateway import WriteGateway
 
 
 # Logger
@@ -26,6 +27,7 @@ _goals: GoalsService | None = None
 _tasks: TasksService | None = None
 _projects: ProjectsService | None = None
 _sync: NotionSyncService | None = None
+_write_gateway: WriteGateway | None = None
 
 # SQLite connection
 _db_conn: sqlite3.Connection | None = None
@@ -49,12 +51,15 @@ def get_projects_service():
 def get_sync_service():
     return _sync
 
+def get_write_gateway():
+    return _write_gateway
+
 
 # -------------------------------------------------------
 # INIT SERVICES — Called ONCE from main.py
 # -------------------------------------------------------
 def init_services():
-    global _notion, _goals, _tasks, _projects, _sync, _db_conn
+    global _notion, _goals, _tasks, _projects, _sync, _db_conn, _write_gateway
 
     logger.info("🔧 Initializing all backend services (dependencies.py)…")
 
@@ -78,19 +83,24 @@ def init_services():
     )
 
     # ----------------------------------------
-    # 3) Local backend services
+    # 3) WriteGateway (SSOT)
     # ----------------------------------------
-    _goals = GoalsService(_db_conn)
-    _tasks = TasksService(_notion)
-    _projects = ProjectsService()
+    _write_gateway = WriteGateway()
+
+    # ----------------------------------------
+    # 4) Local backend services
+    # ----------------------------------------
+    _goals = GoalsService(_db_conn, write_gateway=_write_gateway)
+    _tasks = TasksService(write_gateway=_write_gateway)
+    _projects = ProjectsService(write_gateway=_write_gateway)
 
     # Bind services
     _goals.bind_tasks_service(_tasks)
-    _tasks.bind_goals_service(_goals)
+    _tasks.bind_sync_service(None)  # will bind below
     _projects.bind_goals_service(_goals)
 
     # ----------------------------------------
-    # 4) Sync Service
+    # 5) Sync Service
     # ----------------------------------------
     _sync = NotionSyncService(
         _notion,
@@ -108,7 +118,7 @@ def init_services():
     _projects.bind_sync_service(_sync)
 
     # ----------------------------------------
-    # 5) Load goals from DB
+    # 6) Load goals from DB
     # ----------------------------------------
     _goals.load_from_db()
 
