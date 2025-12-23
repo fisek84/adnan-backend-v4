@@ -133,7 +133,14 @@ async def create_task(
         res = await tasks_service.write_gateway.write(envelope)
 
         if res.get("success") is True and res.get("status") in ("applied", "replayed"):
-            task_id = (res.get("data") or {}).get("task_id")
+            data = res.get("data") or {}
+            task_id_val = data.get("task_id")
+            if task_id_val is None:
+                raise HTTPException(
+                    500, "Write applied but missing task_id in response"
+                )
+
+            task_id = str(task_id_val)  # normalize for dict key
             task = tasks_service.tasks.get(task_id)
             if not task:
                 raise HTTPException(500, "Task created but not found locally")
