@@ -10,17 +10,14 @@ repos:
       - id: ruff-format
         name: ruff (format)
 
-  # Mypy: minimalni scope za KANON-FIX-008
+  # Mypy: local gate via mypy_local.ini
   - repo: local
     hooks:
       - id: mypy
-        name: mypy (services/orchestrator, services/queue, dependencies.py)
+        name: mypy (local gate via mypy_local.ini)
         entry: python -m mypy
         language: system
         pass_filenames: false
         args:
           - --config-file
           - mypy_local.ini
-          - services/orchestrator
-          - services/queue
-          - dependencies.py

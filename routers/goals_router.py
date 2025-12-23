@@ -148,10 +148,10 @@ async def update_goal(
             raise HTTPException(403, res.get("reason") or "write_rejected")
 
         # fallback legacy behavior
-        updated_goal: GoalModel = goals_service.goals.get(goal_id)
-        if not updated_goal:
+        fallback_goal: GoalModel = goals_service.goals.get(goal_id)
+        if not fallback_goal:
             raise HTTPException(404, "Updated goal not found")
-        return updated_goal.model_dump()
+        return fallback_goal.model_dump()
 
     except HTTPException:
         raise
