@@ -1,10 +1,10 @@
 """
-ACTION EXECUTION SERVICE — KANONSKI (FAZA 3.5)
+ACTION EXECUTION SERVICE — KANONSKI (EXECUTION ADAPTER)
 
-- jedino mjesto gdje se WRITE izvršava
-- agent je GLUP izvršilac
-- Backend Mozak je vlasnik znanja
-- NEMA raw failure return-a
+- izvršava DOMAIN intent preko "glupog" agenta (OpenAI Assistant)
+- ne radi governance/approval
+- ne radi UX semantiku
+- write side-effects moraju ići kroz WriteGateway (SSOT), ovaj servis je adapter
 """
 
 from typing import Dict, Any
@@ -16,7 +16,7 @@ from services.failure_handler import FailureHandler
 
 class ActionExecutionService:
     """
-    System Write Executor (Agent-only).
+    Agent-backed executor for mapped actions (e.g. Notion).
     """
 
     AGENT_COMMAND = "perform_notion_action"
@@ -26,7 +26,7 @@ class ActionExecutionService:
         self.failure_handler = FailureHandler()
 
     # ============================================================
-    # EXECUTE WRITE (KANONSKI)
+    # EXECUTE (INTENT → AGENT ACTION)
     # ============================================================
     async def execute(
         self,

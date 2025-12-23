@@ -89,11 +89,40 @@ set_adnan_ai_services(
 logger.info("🔌 AI services injected.")
 
 # ============================================================
-# CEO CONSOLE ROUTER MOUNT (READ-ONLY DASHBOARD)
+# PHASE 5/6/7 SERVICES INIT (DEPENDENCIES SINGLETONS)
 # ============================================================
 
-# CEO dashboard je čist READ layer: prikazuje stanje (snapshot), ne izvršava ništa.
-# Da ne bismo duplo registrovali rute, prvo provjeravamo da li već postoje /ceo-console putevi.
+try:
+    from dependencies import init_services, get_orchestrator_service  # noqa: E402
+
+    init_services()
+
+    @app.on_event("startup")
+    async def _startup_orchestrator_worker() -> None:
+        try:
+            orch = get_orchestrator_service()
+            if orch:
+                await orch.start()
+                logger.info("✅ Orchestrator worker started.")
+        except Exception as e:
+            logger.error("❌ Orchestrator startup failed: %s", e)
+
+    @app.on_event("shutdown")
+    async def _shutdown_orchestrator_worker() -> None:
+        try:
+            orch = get_orchestrator_service()
+            if orch:
+                await orch.stop()
+                logger.info("✅ Orchestrator worker stopped.")
+        except Exception as e:
+            logger.error("❌ Orchestrator shutdown failed: %s", e)
+
+except Exception as e:
+    logger.warning("ℹ️ dependencies init/orchestrator not available: %s", e)
+
+# ============================================================
+# CEO CONSOLE ROUTER MOUNT (READ-ONLY DASHBOARD)
+# ============================================================
 
 from routers import ceo_console_router  # noqa: E402
 
@@ -105,7 +134,6 @@ def ensure_ceo_console_router_mounted() -> None:
         if isinstance(route, APIRoute):
             existing_paths.add(route.path)
 
-    # Ako već postoji bilo koja ruta pod /ceo-console, ne mountamo ponovo.
     if any(path.startswith("/ceo-console") for path in existing_paths):
         logger.info("ℹ️ CEO console router already mounted; skipping include_router.")
         return
@@ -120,7 +148,6 @@ ensure_ceo_console_router_mounted()
 # FRONTEND STATIC MOUNT
 # ============================================================
 
-# UX je čisto čitanje kroz static files; sve operativno stanje dolazi iz backend API-ja.
 app.mount(
     "/",
     StaticFiles(directory="gateway/frontend", html=True),
