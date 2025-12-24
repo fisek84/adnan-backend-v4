@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Body, HTTPException
 
 from services.agent_health_service import AgentHealthService
 from services.approval_state_service import get_approval_state
@@ -39,26 +39,40 @@ def set_cron_service(cron_service: CronService) -> None:
 
 
 # ============================================================
-# CRON OPS (READ-ONLY)
+# CRON OPS
 # ============================================================
 
 
 @router.post("/cron/run")
 def cron_run() -> Dict[str, Any]:
+    """
+    Side effects possible (cron routines).
+    """
     if _cron_service is None:
         raise HTTPException(500, detail="CronService not initialized")
-    return _cron_service.run()
+
+    result = _cron_service.run()
+    return {
+        "ok": True,
+        "result": result,
+        "read_only": False,
+    }
 
 
 @router.get("/cron/status")
 def cron_status() -> Dict[str, Any]:
     if _cron_service is None:
         raise HTTPException(500, detail="CronService not initialized")
-    return _cron_service.status()
+    return {
+        "ok": True,
+        "status": _cron_service.status(),
+        "read_only": True,
+    }
 
 
 # ============================================================
 # APPROVAL OPS (UX ONLY)
+# NOTE: Happy Path test is immutable and calls these endpoints.
 # ============================================================
 
 
@@ -72,14 +86,25 @@ def list_pending() -> Dict[str, Any]:
 
 
 @router.post("/approval/approve")
-async def approve(body: Dict[str, Any]) -> Dict[str, Any]:
-    if "approval_id" not in body:
+async def approve(body: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """
+    Approve + resume execution.
+
+    Canon: This is a WRITE path.
+    Compatibility: Happy Path sends only approval_id, so approved_by is OPTIONAL here.
+    """
+    approval_id = body.get("approval_id")
+    if not isinstance(approval_id, str) or not approval_id.strip():
         raise HTTPException(400, detail="approval_id is required")
 
+    approved_by = body.get("approved_by", "unknown")
+    note = body.get("note")
+
+    # Mark approval as approved (governance write)
     result = _approval_ux.approve(
-        approval_id=body["approval_id"],
-        approved_by=body.get("approved_by", "unknown"),
-        note=body.get("note"),
+        approval_id=approval_id.strip(),
+        approved_by=approved_by if isinstance(approved_by, str) else "unknown",
+        note=note,
     )
 
     execution_id = result.get("execution_id")
@@ -87,19 +112,53 @@ async def approve(body: Dict[str, Any]) -> Dict[str, Any]:
         raise HTTPException(500, detail="Approved approval has no execution_id")
 
     # RESUME REGISTERED EXECUTION
-    return await _orchestrator.resume(execution_id)
+    execution_result = await _orchestrator.resume(execution_id)
+
+    # IMPORTANT: keep execution_state at top-level (tests expect it).
+    if isinstance(execution_result, dict):
+        execution_result.setdefault("read_only", False)
+        execution_result.setdefault("approval", result)
+        return execution_result
+
+    # Fallback (should not happen): wrap, but still mark as write
+    return {
+        "ok": True,
+        "execution": execution_result,
+        "approval": result,
+        "read_only": False,
+    }
 
 
 @router.post("/approval/reject")
-def reject(body: Dict[str, Any]) -> Dict[str, Any]:
-    if "approval_id" not in body:
+def reject(body: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """
+    Reject approval (no resume).
+
+    Canon: This is a WRITE path.
+    Compatibility: rejected_by is OPTIONAL (fallback unknown).
+    """
+    approval_id = body.get("approval_id")
+    if not isinstance(approval_id, str) or not approval_id.strip():
         raise HTTPException(400, detail="approval_id is required")
 
-    return _approval_ux.reject(
-        approval_id=body["approval_id"],
-        rejected_by=body.get("rejected_by", "unknown"),
-        note=body.get("note"),
+    rejected_by = body.get("rejected_by", "unknown")
+    note = body.get("note")
+
+    result = _approval_ux.reject(
+        approval_id=approval_id.strip(),
+        rejected_by=rejected_by if isinstance(rejected_by, str) else "unknown",
+        note=note,
     )
+
+    if isinstance(result, dict):
+        result.setdefault("read_only", False)
+        return result
+
+    return {
+        "ok": True,
+        "approval": result,
+        "read_only": False,
+    }
 
 
 # ============================================================
@@ -123,12 +182,14 @@ def agents_health() -> Dict[str, Any]:
 @router.post("/metrics/persist")
 def persist_metrics_snapshot() -> Dict[str, Any]:
     """
-    OPS trigger: persist current metrics snapshot to Notion.
-
-    Side-effect:
-    - creates a Notion page (if configured)
+    Side-effect: persists metrics snapshot to Notion (if configured).
     """
-    return _metrics_persistence.persist_snapshot()
+    result = _metrics_persistence.persist_snapshot()
+    return {
+        "ok": True,
+        "result": result,
+        "read_only": False,
+    }
 
 
 # ============================================================
@@ -139,12 +200,14 @@ def persist_metrics_snapshot() -> Dict[str, Any]:
 @router.post("/alerts/forward")
 def forward_alerts() -> Dict[str, Any]:
     """
-    OPS trigger: forward active alerts to Notion (if configured).
-
-    Side-effect:
-    - creates Notion pages (if configured) when violations exist
+    Side-effect: forwards alerts to Notion (if configured).
     """
-    return _alert_forwarder.forward_alerts()
+    result = _alert_forwarder.forward_alerts()
+    return {
+        "ok": True,
+        "result": result,
+        "read_only": False,
+    }
 
 
 # ============================================================

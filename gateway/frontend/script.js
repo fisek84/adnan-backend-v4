@@ -1,6 +1,7 @@
 // gateway/frontend/script.js
 
 let lastApprovalId = null;
+let lastProposedExecuteText = null;
 
 function $(id) {
   return document.getElementById(id);
@@ -94,6 +95,68 @@ function clearHistory() {
   empty.className = "ceo-chat-empty";
   empty.textContent = "History je očišćen. Unesi novu CEO komandu.";
   history.appendChild(empty);
+}
+
+function formatAdviceFromCeoConsole(data) {
+  const lines = [];
+  const summary = (data && data.summary) || "";
+  const questions = Array.isArray(data?.questions) ? data.questions : [];
+  const plan = Array.isArray(data?.plan) ? data.plan : [];
+  const options = Array.isArray(data?.options) ? data.options : [];
+
+  if (summary) {
+    lines.push(summary.trim());
+  } else {
+    lines.push("CEO Command je vratio savjet (READ-only).");
+  }
+
+  if (questions.length) {
+    lines.push("");
+    lines.push("Pitanja za razjašnjenje:");
+    for (const q of questions) lines.push(`- ${q}`);
+  }
+
+  if (plan.length) {
+    lines.push("");
+    lines.push("Predloženi plan:");
+    for (const p of plan) lines.push(`- ${p}`);
+  }
+
+  if (options.length) {
+    lines.push("");
+    lines.push("Opcije:");
+    for (const o of options) lines.push(`- ${o}`);
+  }
+
+  return lines.join("\n");
+}
+
+function attachInlineActionsToSystemMessage(msgEl, { canExecute }) {
+  if (!msgEl) return;
+
+  const bubble = msgEl.querySelector(".ceo-chat-bubble");
+  if (!bubble) return;
+
+  const meta = bubble.querySelector(".meta");
+  if (!meta) return;
+
+  const actions = document.createElement("div");
+  actions.style.display = "inline-flex";
+  actions.style.gap = "8px";
+  actions.style.marginLeft = "12px";
+
+  if (canExecute) {
+    const execBtn = document.createElement("button");
+    execBtn.type = "button";
+    execBtn.textContent = "EXECUTE";
+    execBtn.className = "btn btn-primary";
+    execBtn.style.padding = "6px 10px";
+    execBtn.style.fontSize = "12px";
+    execBtn.addEventListener("click", executeLatest);
+    actions.appendChild(execBtn);
+  }
+
+  meta.appendChild(actions);
 }
 
 // --------------------------------------------------
@@ -317,7 +380,7 @@ async function loadWeeklyPriority() {
 }
 
 // --------------------------------------------------
-// CEO COMMAND / APPROVAL
+// CEO COMMAND (READ-ONLY) + EXECUTION (EXPLICIT)
 // --------------------------------------------------
 async function sendCeoCommand() {
   const inputEl = $("ceo-command-input");
@@ -326,21 +389,30 @@ async function sendCeoCommand() {
   const text = inputEl.value.trim();
   if (!text) return;
 
-  const msgEl = appendHistoryMessage("user", text);
+  appendHistoryMessage("user", text);
 
-  setCommandStatus("PENDING", "Naredba poslana, čekam COO prevod...");
+  // Reset state for a new advisory cycle
+  lastApprovalId = null;
+  lastProposedExecuteText = text;
 
   const lastIdEl = $("last-approval-id");
   if (lastIdEl) lastIdEl.textContent = "–";
 
+  const approveBtn = $("approve-latest-btn");
+  if (approveBtn) approveBtn.disabled = true;
+
+  setCommandStatus("PENDING", "CEO Command (READ-only): generišem savjet i plan...");
+
   try {
-    const res = await fetch("/ceo/command", {
+    // CANON: advisory endpoint (no execution, no approvals)
+    const res = await fetch("/api/ceo-console/command", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        input_text: text,
-        smart_context: null,
-        source: "ceo_dashboard",
+        text: text,
+        initiator: "ceo_dashboard",
+        session_id: null,
+        context_hint: null,
       }),
     });
 
@@ -348,39 +420,82 @@ async function sendCeoCommand() {
       const detailText = await res.text();
       setCommandStatus(
         "ERROR",
-        `Greška: ${res.status} — ${
-          detailText || "COO nije uspio prevesti naredbu."
-        }`,
+        `Greška: ${res.status} — ${detailText || "CEO Command nije uspio."}`,
         "error"
       );
-      if (msgEl) msgEl.classList.add("conv-error");
+      return;
+    }
+
+    const data = await res.json();
+    const adviceText = formatAdviceFromCeoConsole(data);
+
+    const sysMsgEl = appendHistoryMessage("system", adviceText);
+    attachInlineActionsToSystemMessage(sysMsgEl, { canExecute: true });
+
+    setCommandStatus(
+      "ADVICE",
+      "Savjet je spreman. Ako želiš izvršenje, klikni EXECUTE (onda ide u BLOCKED → APPROVE)."
+    );
+
+    inputEl.value = "";
+    autoResizeTextarea(inputEl);
+  } catch (err) {
+    console.error("ceo-console/command failed", err);
+    setCommandStatus("ERROR", "Greška pri slanju CEO komande.", "error");
+  }
+}
+
+async function executeLatest() {
+  if (!lastProposedExecuteText) {
+    setCommandStatus("INFO", "Nema komande spremne za EXECUTE.", "error");
+    return;
+  }
+
+  setCommandStatus("PENDING", "Pokrećem EXECUTION (kreiram approval)...");
+
+  try {
+    // CANON: execution path (creates approval, then human must approve)
+    const res = await fetch("/api/execute", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: lastProposedExecuteText }),
+    });
+
+    if (!res.ok) {
+      const detail = await res.text();
+      setCommandStatus(
+        "ERROR",
+        `Greška pri EXECUTE: ${res.status} — ${detail || ""}`,
+        "error"
+      );
       return;
     }
 
     const data = await res.json();
     lastApprovalId = data.approval_id || null;
 
-    const lastIdEl2 = $("last-approval-id");
-    if (lastIdEl2) lastIdEl2.textContent = lastApprovalId || "–";
+    const lastIdEl = $("last-approval-id");
+    if (lastIdEl) lastIdEl.textContent = lastApprovalId || "–";
 
     const approveBtn = $("approve-latest-btn");
     if (approveBtn) approveBtn.disabled = !lastApprovalId;
 
-    if (data && data.system_message) {
-      appendHistoryMessage("system", data.system_message);
-    }
+    appendHistoryMessage(
+      "system",
+      lastApprovalId
+        ? `Execution je BLOCKED. Approval ID: ${lastApprovalId}. Klikni APPROVE da se izvrši.`
+        : "Execution je pokrenut, ali approval_id nije vraćen (neočekivano)."
+    );
 
     setCommandStatus(
       "BLOCKED",
-      "Naredba je BLOCKED. Odobri zahtjev da bi se izvršila."
+      "Execution je BLOCKED. Odobri zahtjev da bi se izvršio."
     );
 
-    inputEl.value = "";
-    autoResizeTextarea(inputEl);
+    await loadSnapshot();
   } catch (err) {
-    console.error("ceo/command failed", err);
-    setCommandStatus("ERROR", "Greška pri slanju naredbe.", "error");
-    if (msgEl) msgEl.classList.add("conv-error");
+    console.error("executeLatest failed", err);
+    setCommandStatus("ERROR", "Greška pri pokretanju EXECUTE.", "error");
   }
 }
 

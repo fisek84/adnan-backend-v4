@@ -81,7 +81,7 @@ logger.info("🧠 Core AI services initialized.")
 from routers.adnan_ai_router import set_adnan_ai_services  # noqa: E402
 from routers.ai_router import set_ai_services  # noqa: E402
 
-# --- PRIMARY /ai ROUTER (UX → SYSTEM → EXECUTION) ---
+# --- PRIMARY /ai ROUTER (UX ENTRYPOINT) ---
 set_ai_services(
     command_service=ai_command_service,
     conversation_service=coo_conversation_service,
@@ -147,13 +147,19 @@ from routers import notion_ops_router  # noqa: E402
 
 
 def ensure_ceo_console_router_mounted() -> None:
+    """
+    Mount CEO console router only once.
+
+    Note: Some deployments mount API routers under /api, so we detect any existing
+    path that contains "ceo-console" (e.g. /ceo-console/* or /api/ceo-console/*).
+    """
     existing_paths = set()
 
     for route in app.routes:
         if isinstance(route, APIRoute):
             existing_paths.add(route.path)
 
-    if any(path.startswith("/ceo-console") for path in existing_paths):
+    if any("ceo-console" in path for path in existing_paths):
         logger.info("ℹ️ CEO console router already mounted; skipping include_router.")
         return
 
