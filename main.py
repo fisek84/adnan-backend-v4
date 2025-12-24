@@ -174,6 +174,54 @@ app.include_router(notion_ops_router.router)
 logger.info("✅ Notion bulk ops router mounted at /notion-ops")
 
 # ============================================================
+# IMPORTANT: Ensure /api prefix routers are mounted (fix /api/ai/run mismatch)
+# ============================================================
+
+def ensure_api_router_prefixes_present() -> None:
+    """
+    Many callers expect API routes under /api/*.
+    If gateway_server mounts routers without /api prefix, endpoints like /api/ai/run will 404.
+
+    This function mounts compatibility prefixes only if they are missing,
+    without duplicating routes if already present.
+    """
+    existing_paths = {r.path for r in app.routes if isinstance(r, APIRoute)}
+
+    # Detect if any /api/* routes already exist
+    has_api_prefix = any(p.startswith("/api/") for p in existing_paths)
+
+    # If /api exists already, do nothing.
+    if has_api_prefix:
+        logger.info("ℹ️ /api prefix routes already present; skipping compatibility mount.")
+        return
+
+    # Best-effort: include primary routers with /api prefix if available.
+    # We import locally to avoid startup crashes if modules move.
+    try:
+        from routers.ai_router import router as ai_router  # type: ignore
+        app.include_router(ai_router, prefix="/api")
+        logger.info("✅ Mounted ai_router under /api")
+    except Exception as e:
+        logger.warning("ℹ️ Could not mount ai_router under /api: %s", e)
+
+    try:
+        from routers.ceo_console_router import router as ceo_router  # type: ignore
+        app.include_router(ceo_router, prefix="/api")
+        logger.info("✅ Mounted ceo_console_router under /api")
+    except Exception as e:
+        logger.warning("ℹ️ Could not mount ceo_console_router under /api: %s", e)
+
+    try:
+        from routers.notion_ops_router import router as notion_router  # type: ignore
+        app.include_router(notion_router, prefix="/api")
+        logger.info("✅ Mounted notion_ops_router under /api")
+    except Exception as e:
+        logger.warning("ℹ️ Could not mount notion_ops_router under /api: %s", e)
+
+
+ensure_api_router_prefixes_present()
+
+# ============================================================
 # FRONTEND STATIC MOUNT
 # ============================================================
 

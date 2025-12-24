@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 from typing import Any, Dict, Optional
 
@@ -67,6 +68,14 @@ class OpenAIAssistantExecutor:
             return assistant_id
         return os.getenv(self._execution_assistant_id_env)
 
+    async def _cancel_run_best_effort(self, *, thread_id: str, run_id: str) -> None:
+        try:
+            await self._to_thread(
+                self.client.beta.threads.runs.cancel, thread_id=thread_id, run_id=run_id
+            )
+        except Exception:
+            return
+
     async def _wait_for_run_completion(
         self,
         *,
@@ -79,14 +88,7 @@ class OpenAIAssistantExecutor:
         while True:
             if time.monotonic() - start > self._max_wait_s:
                 # Best-effort cancel (ne smijemo visiti beskonačno)
-                try:
-                    await self._to_thread(
-                        self.client.beta.threads.runs.cancel,
-                        thread_id=thread_id,
-                        run_id=run_id,
-                    )
-                except Exception:
-                    pass
+                await self._cancel_run_best_effort(thread_id=thread_id, run_id=run_id)
                 raise RuntimeError("Assistant run timed out")
 
             run_status = await self._to_thread(
@@ -100,6 +102,7 @@ class OpenAIAssistantExecutor:
             if status == "requires_action":
                 if not allow_tools:
                     # CEO advisory path: tool calls are forbidden
+                    await self._cancel_run_best_effort(thread_id=thread_id, run_id=run_id)
                     raise RuntimeError(
                         "Tool calls are not allowed for CEO advisory (read-only)"
                     )
@@ -113,9 +116,7 @@ class OpenAIAssistantExecutor:
                 tool_calls = getattr(submit, "tool_calls", None) if submit else None
 
                 if not tool_calls:
-                    raise RuntimeError(
-                        "Assistant requires_action but has no tool calls"
-                    )
+                    raise RuntimeError("Assistant requires_action but has no tool calls")
 
                 tool_outputs = []
 
@@ -161,35 +162,61 @@ class OpenAIAssistantExecutor:
         messages = await self._to_thread(
             self.client.beta.threads.messages.list, thread_id=thread_id
         )
-        assistant_messages = [
-            m for m in messages.data if getattr(m, "role", None) == "assistant"
-        ]
+        data = getattr(messages, "data", None) or []
+        assistant_messages = [m for m in data if getattr(m, "role", None) == "assistant"]
 
         if not assistant_messages:
             raise RuntimeError("Assistant produced no response")
 
-        # The SDK represents content as an array; we use first text chunk.
-        content = assistant_messages[-1].content
+        # Be deterministic: pick newest assistant message by created_at if present.
+        def _created_at(msg: Any) -> int:
+            ca = getattr(msg, "created_at", None)
+            return int(ca) if isinstance(ca, int) else 0
+
+        msg = max(assistant_messages, key=_created_at)
+
+        content = getattr(msg, "content", None)
         if not content:
             raise RuntimeError("Assistant response has empty content")
 
-        first = content[0]
-        text_obj = getattr(first, "text", None)
-        value = getattr(text_obj, "value", None) if text_obj else None
+        # SDK content is a list; concatenate all text chunks for robustness.
+        chunks: list[str] = []
+        for part in content:
+            text_obj = getattr(part, "text", None)
+            value = getattr(text_obj, "value", None) if text_obj else None
+            if isinstance(value, str) and value.strip():
+                chunks.append(value)
 
-        if not isinstance(value, str) or not value.strip():
+        value = "\n".join(chunks).strip()
+        if not value:
             raise RuntimeError("Assistant produced empty text response")
 
         return value
 
+    def _strip_code_fences(self, text: str) -> str:
+        """
+        Assistants sometimes wrap JSON in ```json ... ``` fences.
+        We strip one outer fence layer if present.
+        """
+        t = (text or "").strip()
+        if not t:
+            return t
+
+        # Match ```json\n...\n``` OR ```\n...\n```
+        m = re.match(r"^```(?:json)?\s*(.*?)\s*```$", t, flags=re.DOTALL | re.IGNORECASE)
+        if m:
+            return (m.group(1) or "").strip()
+        return t
+
     def _safe_json_parse(self, text: str) -> Dict[str, Any]:
+        cleaned = self._strip_code_fences(text)
         try:
-            parsed = json.loads(text)
+            parsed = json.loads(cleaned)
             if isinstance(parsed, dict):
                 return parsed
             return {"raw": parsed}
         except Exception:
-            return {"raw": text}
+            return {"raw": cleaned}
 
     def _normalize_ceo_advisory_payload(self, parsed: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -197,8 +224,9 @@ class OpenAIAssistantExecutor:
         - If assistant returns plain text (or non-schema JSON), map it into the expected schema.
         - Always return: summary/questions/plan/options/proposed_commands/trace as stable types.
         """
-        # 1) If assistant returned plain text under "raw" -> map to summary
         raw = parsed.get("raw")
+
+        # 1) Plain text -> summary
         if isinstance(raw, str) and raw.strip():
             parsed = {
                 "summary": raw.strip(),
@@ -209,7 +237,7 @@ class OpenAIAssistantExecutor:
                 "trace": {"llm": "raw_text_mapped"},
             }
 
-        # 2) If summary missing but raw is some other type, stringify it
+        # 2) Ensure summary exists
         if "summary" not in parsed:
             if raw is not None:
                 parsed["summary"] = str(raw)
@@ -298,15 +326,14 @@ class OpenAIAssistantExecutor:
         return {
             "agent": assistant_id,
             "result": parsed,
+            "trace": {"thread_id": thread.id, "run_id": run.id},
         }
 
     # ============================================================
     # CEO ADVISORY (READ-ONLY) — used by CEO Console
     # ============================================================
 
-    async def ceo_command(
-        self, *, text: str, context: Dict[str, Any]
-    ) -> Dict[str, Any]:
+    async def ceo_command(self, *, text: str, context: Dict[str, Any]) -> Dict[str, Any]:
         """
         READ-ONLY advisory path.
         - No tools / no side-effects.
@@ -345,10 +372,18 @@ class OpenAIAssistantExecutor:
 
         thread = await self._to_thread(self.client.beta.threads.create)
 
+        # Force canon constraints into contract, regardless of caller input
+        safe_context = dict(context)
+        canon = dict(safe_context.get("canon") or {})
+        canon["read_only"] = True
+        canon["no_tools"] = True
+        canon["no_side_effects"] = True
+        safe_context["canon"] = canon
+
         advisory_contract = {
             "type": "ceo_advice",
             "text": t,
-            "context": context,
+            "context": safe_context,
             "constraints": {
                 "read_only": True,
                 "no_tools": True,
@@ -378,22 +413,28 @@ class OpenAIAssistantExecutor:
             assistant_id=assistant_id,
         )
 
+        t0 = time.monotonic()
         await self._wait_for_run_completion(
             thread_id=thread.id,
             run_id=run.id,
             allow_tools=False,
         )
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
 
         final_text = await self._get_final_assistant_message_text(thread_id=thread.id)
         parsed = self._safe_json_parse(final_text)
 
-        # NEW: normalize plain text / non-schema to expected schema
+        # Normalize plain text / non-schema to expected schema
         parsed = self._normalize_ceo_advisory_payload(parsed)
 
         # Ensure minimum stable fields + trace guard
         trace = parsed.get("trace") if isinstance(parsed.get("trace"), dict) else {}
         trace["assistant_id"] = assistant_id
+        trace["thread_id"] = thread.id
+        trace["run_id"] = run.id
         trace["read_only_guard"] = True
+        trace["no_tools_guard"] = True
+        trace["elapsed_ms"] = elapsed_ms
         parsed["trace"] = trace
 
         return parsed

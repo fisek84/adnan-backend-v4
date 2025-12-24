@@ -19,10 +19,6 @@ class CEOCommandRequest(BaseModel):
     """
     CEO Command request (READ-only).
     This endpoint MUST NOT perform any WRITE / side effects.
-    It may only:
-      - read system context (identity/memory/SOP/state)
-      - propose AICommands (BLOCKED)
-      - ask clarification questions if intent is unclear
     """
 
     text: str = Field(..., min_length=1, description="Natural language input from CEO.")
@@ -41,51 +37,27 @@ class CEOCommandRequest(BaseModel):
 
 
 class ProposedAICommand(BaseModel):
-    """
-    A proposed command that is NOT executed here.
-    Status is always BLOCKED; execution requires explicit approval elsewhere.
-    """
-
     command_type: str = Field(..., description="Type/name of the proposed command.")
-    payload: Dict[str, Any] = Field(
-        default_factory=dict,
-        description="Command payload.",
-    )
-    status: str = Field(
-        default="BLOCKED",
-        description="Always BLOCKED at proposal time.",
-    )
-    required_approval: bool = Field(
-        default=True,
-        description="Always true for any command with side-effects.",
-    )
-    cost_hint: Optional[str] = Field(
-        default=None,
-        description="Human-readable estimate (time/resources/authority).",
-    )
-    risk_hint: Optional[str] = Field(
-        default=None,
-        description="Human-readable risks/side effects if executed.",
-    )
+    payload: Dict[str, Any] = Field(default_factory=dict, description="Command payload.")
+    status: str = Field(default="BLOCKED", description="Always BLOCKED at proposal time.")
+    required_approval: bool = Field(default=True, description="Always true for side-effects.")
+    cost_hint: Optional[str] = Field(default=None, description="Human-readable estimate.")
+    risk_hint: Optional[str] = Field(default=None, description="Human-readable risks.")
 
 
 class CEOCommandResponse(BaseModel):
     ok: bool = True
     read_only: bool = True
 
-    # What the system used (READ)
     context: Dict[str, Any] = Field(default_factory=dict)
 
-    # What the system says (ADVICE)
     summary: str = ""
     questions: List[str] = Field(default_factory=list)
     plan: List[str] = Field(default_factory=list)
     options: List[str] = Field(default_factory=list)
 
-    # What the system proposes (BLOCKED commands; no execution)
     proposed_commands: List[ProposedAICommand] = Field(default_factory=list)
 
-    # Debug/trace (safe to show)
     trace: Dict[str, Any] = Field(default_factory=dict)
 
 
@@ -102,9 +74,20 @@ async def _maybe_await(value: Any) -> Any:
 
 def _safe_import_snapshotter() -> Any:
     """
-    Returns an object that can build a READ-only context snapshot.
-    This is intentionally dynamic to avoid hard crashes if internals move.
+    Priority order:
+      1) services.ceo_console_snapshot_service.CEOConsoleSnapshotService
+      2) services.system_read_executor.SystemReadExecutor (legacy)
+      3) None (fallback)
     """
+    try:
+        from services.ceo_console_snapshot_service import (  # type: ignore
+            CEOConsoleSnapshotService,
+        )
+
+        return CEOConsoleSnapshotService()
+    except Exception:
+        pass
+
     try:
         from services.system_read_executor import SystemReadExecutor  # type: ignore
 
@@ -114,13 +97,8 @@ def _safe_import_snapshotter() -> Any:
 
 
 def _try_load_core_snapshot_fallback() -> Dict[str, Any]:
-    """
-    Best-effort READ-only fallback snapshot if SystemReadExecutor doesn't exist.
-    Must not write or persist anything.
-    """
-    snap: Dict[str, Any] = {"available": True, "source": "fallback"}
+    snap: Dict[str, Any] = {"available": False, "source": "fallback"}
 
-    # Identity / mode / state (pure reads)
     try:
         from services.adnan_mode_service import load_mode  # type: ignore
         from services.adnan_state_service import load_state  # type: ignore
@@ -134,7 +112,6 @@ def _try_load_core_snapshot_fallback() -> Dict[str, Any]:
         snap["mode"] = {"available": False, "error": str(e)}
         snap["state"] = {"available": False, "error": str(e)}
 
-    # Knowledge snapshot (cached READ)
     try:
         from services.knowledge_snapshot_service import (  # type: ignore
             KnowledgeSnapshotService,
@@ -147,21 +124,32 @@ def _try_load_core_snapshot_fallback() -> Dict[str, Any]:
     return snap
 
 
+def _as_list_of_str(value: Any) -> List[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [x for x in value if isinstance(x, str) and x.strip()]
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return []
+        if "\n" in stripped:
+            return [ln.strip() for ln in stripped.splitlines() if ln.strip()]
+        return [stripped]
+    return []
+
+
 async def _build_context(req: CEOCommandRequest) -> Dict[str, Any]:
-    """
-    Build context snapshot (READ-only).
-    Must not persist anything.
-    """
     ctx: Dict[str, Any] = {
         "canon": {
             "read_only": True,
             "chat_is_read_only": True,
             "write_requires_approval": True,
             "no_side_effects": True,
+            "no_tools": True,
         }
     }
 
-    # Lightweight request metadata (safe)
     if req.initiator:
         ctx["initiator"] = req.initiator
     if req.session_id:
@@ -172,14 +160,18 @@ async def _build_context(req: CEOCommandRequest) -> Dict[str, Any]:
     snapshotter = _safe_import_snapshotter()
     if snapshotter is None:
         fallback = _try_load_core_snapshot_fallback()
-        fallback["available"] = False
-        fallback["reason"] = (
-            "SystemReadExecutor not available; using best-effort fallback snapshot."
-        )
+        fallback["reason"] = "No snapshotter available; using fallback snapshot (READ-only)."
         ctx["snapshot"] = fallback
+        ctx["snapshot_meta"] = {"snapshotter": None, "available": False, "source": "fallback"}
         return ctx
 
-    # Try common snapshot APIs without assuming exact signature
+    meta = {
+        "snapshotter": snapshotter.__class__.__name__,
+        "available": None,
+        "source": None,
+        "error": None,
+    }
+
     try:
         if hasattr(snapshotter, "snapshot"):
             snap = snapshotter.snapshot()  # type: ignore[misc]
@@ -188,24 +180,42 @@ async def _build_context(req: CEOCommandRequest) -> Dict[str, Any]:
         elif hasattr(snapshotter, "get_snapshot"):
             snap = snapshotter.get_snapshot()  # type: ignore[misc]
         else:
-            snap = {"available": False, "reason": "No snapshot method found."}
+            snap = {"available": False, "source": meta["snapshotter"], "error": "No snapshot method found."}
 
         snap = await _maybe_await(snap)
-        ctx["snapshot"] = snap if isinstance(snap, dict) else {"snapshot": snap}
-    except Exception as e:
-        ctx["snapshot"] = {"available": False, "error": str(e)}
 
+        if isinstance(snap, dict):
+            # Ensure canonical fields are visible to UX
+            if "available" not in snap:
+                snap["available"] = True
+            if "source" not in snap:
+                snap["source"] = meta["snapshotter"]
+
+            meta["available"] = snap.get("available")
+            meta["source"] = snap.get("source")
+            meta["error"] = snap.get("error")
+
+            ctx["snapshot"] = snap
+        else:
+            meta["available"] = True
+            meta["source"] = meta["snapshotter"]
+            ctx["snapshot"] = {"available": True, "source": meta["snapshotter"], "snapshot": snap}
+
+    except Exception as e:
+        meta["available"] = False
+        meta["source"] = "exception"
+        meta["error"] = str(e)
+        ctx["snapshot"] = {"available": False, "source": "exception", "error": str(e)}
+
+    ctx["snapshot_meta"] = meta
     return ctx
 
 
 async def _llm_advice(text: str, context: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Produce advisory output + proposed commands.
-
-    CANON:
-    - READ-ONLY: MUST NOT execute writes / tools / side effects.
-    - Uses services-layer SSOT executor (if available): ceo_command(...)
-    - If executor is unavailable or errors, returns deterministic fallback.
+    READ-ONLY advisory:
+    - No tools / no side effects.
+    - Uses OpenAIAssistantExecutor.ceo_command if available.
     """
     try:
         from services.agent_router.openai_assistant_executor import (  # type: ignore
@@ -214,7 +224,6 @@ async def _llm_advice(text: str, context: Dict[str, Any]) -> Dict[str, Any]:
 
         execr = OpenAIAssistantExecutor()
 
-        # Force READ-only guard in context, even if caller forgot
         safe_context = dict(context)
         canon = dict(safe_context.get("canon") or {})
         canon["read_only"] = True
@@ -227,45 +236,62 @@ async def _llm_advice(text: str, context: Dict[str, Any]) -> Dict[str, Any]:
 
         result = await execr.ceo_command(text=text, context=safe_context)  # type: ignore[misc]
 
-        if isinstance(result, dict) and result:
-            trace = result.get("trace") if isinstance(result.get("trace"), dict) else {}
-            trace["canon_read_only_guard"] = True
-            result["trace"] = trace
-            return result
+        if not isinstance(result, dict) or not result:
+            raise RuntimeError("CEO advisory returned empty/invalid payload")
 
-    except Exception:
-        pass
+        # Hard guard: forbid tool/action fields
+        if any(
+            k in result
+            for k in (
+                "tool_calls",
+                "required_action",
+                "tool_outputs",
+                "actions",
+                "executed_commands",
+            )
+        ):
+            raise RuntimeError("READ-ONLY violation: tool/action fields present in result")
 
-    return {
-        "summary": (
-            "Primio sam CEO zahtjev i pripremio okvir za planiranje na osnovu dostupnog "
-            "READ konteksta. Za punu dubinu, LLM executor treba biti aktivan i povezan na "
-            "snapshot (identity/memory/SOP/state)."
-        ),
-        "questions": [
-            "Koji je tačan rok (do kojeg dana u sedmici) i da li 1k BAM znači prihod ili profit?",
-            "Koji je trenutno najbliži izvor prihoda (usluga/proizvod) koji možemo skalirati ove sedmice?",
-        ],
-        "plan": [
-            "Definiši cilj (prihod vs profit), rok i minimalne ulaze (ponuda, cijena, kanal).",
-            "Izvuci iz SOP/memorije: šta je ranije radilo, koje su aktivne prilike i ograničenja.",
-            "Razbij cilj na dnevne targete i konkretne taskove (prodaja, isporuka, marketing).",
-            "Predloži 2–3 opcije (konzervativno / agresivno) i odaberi jednu za potencijalno izvršenje.",
-        ],
-        "options": [
-            "Opcija A: Fokus na postojeće klijente (brža prodaja, manji trošak).",
-            "Opcija B: Brzi outreach + jednostavna ponuda (više volumena, veći rizik).",
-            "Opcija C: Partnerstvo/affiliate (sporije startuje, ali može skalirati).",
-        ],
-        "proposed_commands": [],
-        "trace": {"llm": "fallback"},
-    }
+        trace = result.get("trace") if isinstance(result.get("trace"), dict) else {}
+        trace["read_only_guard"] = True
+        trace["canon_read_only_guard"] = True
+
+        # Carry snapshot meta into trace so UX always sees provenance
+        snap_meta = context.get("snapshot_meta") if isinstance(context.get("snapshot_meta"), dict) else {}
+        if snap_meta:
+            trace["snapshot_meta"] = snap_meta
+
+        result["trace"] = trace
+        return result
+
+    except Exception as e:
+        return {
+            "summary": (
+                "CEO zahtjev je primljen. Sistem radi u READ-only modu i priprema okvir "
+                "za planiranje na osnovu dostupnog snapshot konteksta. Za punu dubinu, "
+                "LLM executor mora biti aktivan i povezan."
+            ),
+            "questions": [
+                "Koji je tačan cilj i rok (datum) i šta je definicija uspjeha (prihod/profit)?",
+                "Koji kanal je prioritet (postojeći klijenti, outreach, partneri) i koji je budžet/limit?",
+            ],
+            "plan": [
+                "Validirati cilj/rok i postojeće konverzije (ponuda, cijena, kanal).",
+                "Izvući relevantno iz SOP/Plans/Time management izvora (READ).",
+                "Razbiti cilj na dnevne targete i taskove (prodaja/operacije/marketing).",
+                "Predložiti 2–3 opcije i jasno označiti rizike/pretpostavke.",
+            ],
+            "options": [
+                "Opcija A: Fokus na postojeće klijente (brže, niži rizik).",
+                "Opcija B: Brzi outreach sa jednostavnom ponudom (više volumena, veći rizik).",
+                "Opcija C: Partner kanal (sporiji start, potencijalno skalabilno).",
+            ],
+            "proposed_commands": [],
+            "trace": {"llm": "fallback", "error": str(e), "read_only_guard": True},
+        }
 
 
 def _normalize_proposed_commands(raw: Any) -> List[ProposedAICommand]:
-    """
-    Normalize proposed commands to strict BLOCKED proposals.
-    """
     cmds: List[ProposedAICommand] = []
 
     if not raw:
@@ -296,16 +322,8 @@ def _normalize_proposed_commands(raw: Any) -> List[ProposedAICommand]:
                 payload=payload,
                 status="BLOCKED",
                 required_approval=True,
-                cost_hint=(
-                    it.get("cost_hint")
-                    if isinstance(it.get("cost_hint"), str)
-                    else None
-                ),
-                risk_hint=(
-                    it.get("risk_hint")
-                    if isinstance(it.get("risk_hint"), str)
-                    else None
-                ),
+                cost_hint=(it.get("cost_hint") if isinstance(it.get("cost_hint"), str) else None),
+                risk_hint=(it.get("risk_hint") if isinstance(it.get("risk_hint"), str) else None),
             )
         )
 
@@ -319,9 +337,6 @@ def _normalize_proposed_commands(raw: Any) -> List[ProposedAICommand]:
 
 @router.get("/status")
 def status() -> Dict[str, Any]:
-    """
-    READ-only status endpoint for the CEO Console.
-    """
     return {
         "ok": True,
         "read_only": True,
@@ -330,18 +345,14 @@ def status() -> Dict[str, Any]:
             "chat_is_read_only": True,
             "write_requires_approval": True,
             "commands_are_proposals": True,
+            "no_side_effects": True,
+            "no_tools": True,
         },
     }
 
 
 @router.post("/command", response_model=CEOCommandResponse)
 async def ceo_command(req: CEOCommandRequest = Body(...)) -> CEOCommandResponse:
-    """
-    CEO Command (READ-only):
-    - Builds READ snapshot context (identity/memory/SOP/state)
-    - Produces advice + proposed BLOCKED AICommands
-    - NEVER executes, NEVER writes, NEVER performs side effects
-    """
     text = (req.text or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="text is required")
@@ -349,18 +360,18 @@ async def ceo_command(req: CEOCommandRequest = Body(...)) -> CEOCommandResponse:
     context = await _build_context(req)
     result = await _llm_advice(text=text, context=context)
 
-    summary = result.get("summary") if isinstance(result.get("summary"), str) else ""
-    questions = (
-        result.get("questions") if isinstance(result.get("questions"), list) else []
-    )
-    plan = result.get("plan") if isinstance(result.get("plan"), list) else []
-    options = result.get("options") if isinstance(result.get("options"), list) else []
+    summary_val = result.get("summary")
+    if isinstance(summary_val, str):
+        summary = summary_val
+    else:
+        summary_list = _as_list_of_str(summary_val)
+        summary = "\n".join(summary_list) if summary_list else ""
+
+    questions_s = _as_list_of_str(result.get("questions"))
+    plan_s = _as_list_of_str(result.get("plan"))
+    options_s = _as_list_of_str(result.get("options"))
+
     trace = result.get("trace") if isinstance(result.get("trace"), dict) else {}
-
-    questions_s = [q for q in questions if isinstance(q, str)]
-    plan_s = [p for p in plan if isinstance(p, str)]
-    options_s = [o for o in options if isinstance(o, str)]
-
     proposed = _normalize_proposed_commands(result)
 
     return CEOCommandResponse(
