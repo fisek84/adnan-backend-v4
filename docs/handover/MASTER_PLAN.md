@@ -45,6 +45,69 @@ Ovaj dokument opisuje kako se razvija i održava AI sistem.
   - Gate dokaz: pre-commit PASS, pytest PASS, `test_happy_path.ps1` PASS  
   (**STATUS: DONE**)
 
+## Šta je urađeno (2025-12-24 – Adnan.AI agent + CEO/Notion canon)
+
+- Uveden **kanonski AI UX endpoint** `/api/ai/run` u `routers/ai_router.py`:
+  - UX endpoint je striktno **READ-ONLY** → nikad direktan write, samo predlaže `AICommand`.
+  - `set_ai_services(...)` dobija i injektuje `AICommandService`, `COOConversationService`, `COOTranslationService`.
+  - Konverzacijski gating (`coo_conversation_service`) određuje da li je input spreman za prevođenje u komandu.
+  - Dodan heuristički **gating override** za strukturirane task/goal naredbe (dodaj/napravi/kreiraj + cilj/zadatak + status/prioritet) da chat ne “proguta” validne komande.
+  - Output shape je kanonski: `ok`, `read_only`, `type`, `text`, `next_actions`, `proposed_commands` (BLOCKED, requires approval).
+
+- **Gateway bootstrap** (`gateway/gateway_server.py`, `main.py`):
+  - App bootstrap sada inicijalizuje core AI servise i poziva `set_ai_services(...)` na `ai_router`.
+  - CEO Console router mount-an pod `/api/ceo-console` + back-compat wrapperi (`/api/ceo/...`) ostaju funkcionalni.
+  - Testovi (`tests/test_canon_endpoints.py`) rade direktan import app-a iz gateway-a i pokrivaju health/ready/ceo/ai canonical endpoint-e.
+
+- Refaktorisan **NotionService** (`services/notion_service.py`):
+  - `NotionSchemaRegistry` kao SSOT za Notion izvore; ENV vrijednosti imaju prednost (override).
+  - Jedan kanonski singleton (`set_notion_service` / `get_notion_service`), koristi se u dependency bootstrappingu.
+  - `sync_knowledge_snapshot()`:
+    - čita core DB-ove: goals, tasks, projects, kpi, leads, agent_exchange, ai_summary.
+    - računa sumarne metrike po statusu i prioritetu (goals/tasks/kpi/leads/agent_exchange).
+    - posebno tretira “extra_databases” (SOP, FLP, itd.) i:
+      - prvo pokušava `databases/{id}/query`;
+      - ako Notion javi “is a page, not a database” → automatski prelazak na `pages/{id}` (page fallback).
+      - razlikuje **no access/object_not_found** od drugih grešaka i loguje non-fatal warnings (sistem nastavlja).
+    - opcionalna podrška za dohvat **blocks** (sadržaj page-a) uz ograničenja broja stranica i blokova.
+
+- **KnowledgeSnapshotService & CEOConsoleSnapshotService**:
+  - `KnowledgeSnapshotService.update_snapshot(...)` sada drži proširenu strukturu (goals/tasks/projects/kpi/leads/agent_exchange/ai_summary + extra_databases + meta).
+  - `CEOConsoleSnapshotService.snapshot()`:
+    - spaja globalni Notion snapshot u **`ceo_dashboard_snapshot`** (SSOT za CEO konzolu).
+    - i dalje izračunava/puni legacy `goals_summary` i `tasks_summary` da se ne slome stariji klijenti/frontovi.
+
+- **Identity i CEO advisory pack** (`services/identity_loader.py`):
+  - Kanonski loaderi za:
+    - `identity.json`, `memory.json`, `kernel.json`, `static_memory.json`,
+      `mode.json`, `state.json`, `decision_engine.json`, `agents.json`.
+  - `load_ceo_identity_pack()` gradi **stabilan “identity pack”** za CEO advisory:
+    - `identity`, `kernel`, `decision_engine`, `static_memory`, `memory`, `agents` + `errors` lista.
+    - fail-soft: ako neki fajl fali ili je nevalidan, pack ostaje dostupan uz zabilješku greške.
+
+- **SystemReadExecutor snapshot API** (`services/system_read_executor.py`):
+  - Nova `snapshot()` metoda daje jedan konsolidovani READ-only pogled za CEO Console:
+    - `identity_pack` (iz `identity_loader`),
+    - `mode` i `state`,
+    - globalni `knowledge_snapshot` (iz `KnowledgeSnapshotService`),
+    - `ceo_notion_snapshot` (iz `CEOConsoleSnapshotService`),
+    - `trace` sa vremenom generisanja i listom grešaka po sekcijama.
+  - Fail-soft: snapshot nikad ne baca exception prema gore, već vraća `available=False` ili sekcijski `error`.
+
+- **Canon endpoint testovi i CI** (`tests/test_canon_endpoints.py`, pre-commit):
+  - Novi/pojačani testovi:
+    - `/health` je liveness i uvijek 200 sa statusom, verzijom i boot flagovima.
+    - `/ready` je readiness i može biti 200 ili 503 u zavisnosti od boot stanja.
+    - `/api/ceo-console/status` garantuje `read_only` contract.
+    - `/api/ai/run` garantuje:
+      - 4xx za prazne requeste,
+      - 200 sa `ok`, `read_only`, `proposed_commands` za validan input.
+    - `/api/ceo/command` (legacy wrapper) je read-only i vraća `proposed_commands`.
+    - `/api/ceo/console/snapshot` sadrži `system`, `approvals`, `knowledge_snapshot` i `ceo_dashboard_snapshot` + legacy summary liste.
+  - Uvedene i očišćene lint/format promjene:
+    - `ruff` + `ruff-format` prolaze (unused imports uklonjeni, stil usklađen).
+    - `pytest` lokalno daje `17 passed` bez dodatnih warnings (uz postojeći `pytest.ini` filter).
+
 ## Sljedeće preporučene faze
 
 - Faza 13: Test suite cleanup (KANON-FIX-012_PHASE13_TEST_SUITE_CLEANUP)  (**STATUS: NEXT**)
