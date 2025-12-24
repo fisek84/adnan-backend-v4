@@ -1,7 +1,7 @@
 # ruff: noqa: E402
 # gateway/gateway_server.py
 # FULL FILE — zamijeni cijeli gateway_server.py ovim.
-# (Ispravka: _preprocess_ceo_nl_input re.sub bug + zadržano sve ostalo)
+# (Phase 11: migrate startup to lifespan; fix OPS_SAFE_MODE flag; keep behavior)
 
 # ================================================================
 # SYSTEM VERSION (V1.1 — VERZIJA C)
@@ -10,6 +10,7 @@ import os
 import logging
 import uuid
 import re
+from contextlib import asynccontextmanager
 from typing import Dict, Any, Optional, List
 
 import httpx
@@ -34,7 +35,7 @@ from system_version import (
 load_dotenv(".env")
 
 OS_ENABLED = os.getenv("OS_ENABLED", "true").lower() == "true"
-OPS_SAFE_MODE = os.getenv("OPS_SAFE_MODE", "false").lower() == "false"
+OPS_SAFE_MODE = os.getenv("OPS_SAFE_MODE", "false").lower() == "true"
 
 NOTION_API_KEY = os.getenv("NOTION_API_KEY") or os.getenv("NOTION_TOKEN")
 NOTION_GOALS_DB_ID = os.getenv("NOTION_GOALS_DB_ID")
@@ -123,12 +124,37 @@ identity = load_identity()
 mode = load_mode()
 state = load_state()
 
+
+# ================================================================
+# LIFESPAN (PHASE 11)
+# ================================================================
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    global _BOOT_READY
+
+    _BOOT_READY = False
+    try:
+        bootstrap_application()
+
+        from services.notion_service import get_notion_service
+
+        notion_service = get_notion_service()
+        await notion_service.sync_knowledge_snapshot()
+
+        _BOOT_READY = True
+        logger.info("🟢 System boot completed. READY.")
+        yield
+    finally:
+        _BOOT_READY = False
+
+
 # ================================================================
 # APP INIT
 # ================================================================
 app = FastAPI(
     title=SYSTEM_NAME,
     version=VERSION,
+    lifespan=lifespan,
 )
 
 # ================================================================
@@ -716,22 +742,6 @@ async def global_exception_handler(request: Request, exc: Exception):
         status_code=500,
         content={"status": "error", "message": str(exc)},
     )
-
-
-@app.on_event("startup")
-async def startup_event():
-    global _BOOT_READY
-
-    bootstrap_application()
-
-    from services.notion_service import get_notion_service
-
-    notion_service = get_notion_service()
-
-    await notion_service.sync_knowledge_snapshot()
-
-    _BOOT_READY = True
-    logger.info("🟢 System boot completed. READY.")
 
 
 app.add_middleware(
