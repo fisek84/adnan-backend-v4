@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+from services.approval_state_service import get_approval_state
 from services.memory_service import MemoryService
 
 
@@ -46,6 +47,73 @@ class AuditService:
             if isinstance(item, dict):
                 out.append(item)
         return out
+
+    # ============================================================
+    # EXECUTION STATS FALLBACK (FROM APPROVALS)
+    # ============================================================
+    def _execution_stats_from_approvals(self) -> Dict[str, Any]:
+        """
+        Fallback kada execution_stats nije popunjen.
+
+        Izvodi agregate iz ApprovalState (pending/approved/rejected),
+        grupisano po "{scope}:{command}".
+        """
+        approval_state = get_approval_state()
+        approvals = approval_state.list_approvals()
+
+        stats: Dict[str, Any] = {}
+
+        for a in approvals:
+            if not isinstance(a, dict):
+                continue
+
+            scope_raw = a.get("scope")
+            scope = scope_raw if isinstance(scope_raw, str) and scope_raw else "unknown"
+
+            cmd_raw = a.get("command")
+            cmd = cmd_raw if isinstance(cmd_raw, str) and cmd_raw else "unknown"
+
+            key = f"{scope}:{cmd}"
+
+            entry = stats.setdefault(
+                key,
+                {
+                    "total": 0,
+                    "allowed": 0,
+                    "blocked": 0,
+                    "approved": 0,
+                    "pending": 0,
+                    "rejected": 0,
+                },
+            )
+
+            entry["total"] = int(entry.get("total", 0)) + 1
+
+            status = a.get("status")
+            if status == "approved":
+                entry["allowed"] = int(entry.get("allowed", 0)) + 1
+                entry["approved"] = int(entry.get("approved", 0)) + 1
+            elif status == "pending":
+                entry["blocked"] = int(entry.get("blocked", 0)) + 1
+                entry["pending"] = int(entry.get("pending", 0)) + 1
+            elif status == "rejected":
+                entry["blocked"] = int(entry.get("blocked", 0)) + 1
+                entry["rejected"] = int(entry.get("rejected", 0)) + 1
+            else:
+                # nepoznat status → ne diramo allowed/blocked
+                pass
+
+        return stats
+
+    def _get_execution_stats(self) -> Dict[str, Any]:
+        """
+        Kanonski izvor: memory.execution_stats
+        Fallback: derive iz approvals state-a.
+        """
+        stats = self._get_memory_dict("execution_stats")
+        if stats:
+            return stats
+        return self._execution_stats_from_approvals()
 
     # ============================================================
     # GENERAL AUDIT LOG
@@ -94,8 +162,7 @@ class AuditService:
         """
         Raw execution governance statistics.
         """
-
-        stats = self._get_memory_dict("execution_stats")
+        stats = self._get_execution_stats()
 
         if context_type and directive:
             entry = stats.get(f"{context_type}:{directive}", {}) or {}
@@ -118,8 +185,7 @@ class AuditService:
         """
         Aggregated execution KPIs across all directives.
         """
-
-        stats = self._get_memory_dict("execution_stats")
+        stats = self._get_execution_stats()
 
         total = 0
         allowed = 0
@@ -178,7 +244,6 @@ class AuditService:
         """
         Incident = unsuccessful decision outcome
         """
-
         incidents = [
             r
             for r in self._get_memory_list_of_dicts("decision_outcomes")
@@ -197,7 +262,6 @@ class AuditService:
         """
         Enterprise / compliance snapshot
         """
-
         return {
             "active_decision": self.get_active_decision(),
             "decision_outcomes": self.get_audit_log(limit=50),

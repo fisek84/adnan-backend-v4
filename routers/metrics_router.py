@@ -44,7 +44,7 @@ def metrics_snapshot() -> Dict[str, Any]:
 
         agent_id_raw = payload.get("agent_id")
         agent_id = (
-            agent_id_raw if isinstance(agent_id_raw, str) and agent_id_raw else None
+            agent_id_raw if isinstance(agent_id_raw, str) and agent_id_raw else ""
         )
         if not agent_id:
             continue
@@ -61,6 +61,7 @@ def metrics_snapshot() -> Dict[str, Any]:
         )
 
         event_type = e.get("event_type")
+
         if event_type == "agent_execution":
             phase = payload.get("phase")
             if phase == "started":
@@ -81,3 +82,7 @@ def metrics_snapshot() -> Dict[str, Any]:
         "counters": counters,
         "read_only": True,
     }
+
+
+# Export alias (da import bude stabilan u gateway_server.py)
+metrics_router = router

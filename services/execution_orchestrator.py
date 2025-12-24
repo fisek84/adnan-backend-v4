@@ -36,10 +36,15 @@ class ExecutionOrchestrator:
         CANON: ovdje se payload kanonizuje u AICommand, bez interpretacije intent-a.
         """
         cmd = self._normalize_command(command)
-        execution_id = getattr(cmd, "execution_id", None)
 
+        execution_id = getattr(cmd, "execution_id", None)
         if not isinstance(execution_id, str) or not execution_id:
             raise ValueError("AICommand.execution_id is required")
+
+        directive = getattr(cmd, "command", None)
+        if not isinstance(directive, str) or not directive:
+            # NEMA "unknown" — audit mora imati smislen ključ
+            raise ValueError("AICommand.command is required")
 
         # 1) REGISTER (idempotent)
         self.registry.register(cmd)
@@ -49,25 +54,24 @@ class ExecutionOrchestrator:
         if not isinstance(initiator, str) or not initiator:
             initiator = "unknown"
 
-        directive = getattr(cmd, "command", None)
-        if not isinstance(directive, str) or not directive:
-            directive = "unknown"
-
+        # context_type: field -> metadata.context_type -> directive fallback
         context_type = getattr(cmd, "context_type", None)
         metadata = getattr(cmd, "metadata", None)
-        if (not isinstance(context_type, str) or not context_type) and isinstance(
-            metadata, dict
-        ):
-            meta_ct = metadata.get("context_type")
-            context_type = meta_ct if isinstance(meta_ct, str) else None
+
         if not isinstance(context_type, str) or not context_type:
-            context_type = "unknown"
+            if isinstance(metadata, dict):
+                meta_ct = metadata.get("context_type")
+                if isinstance(meta_ct, str) and meta_ct:
+                    context_type = meta_ct
+
+        if not isinstance(context_type, str) or not context_type:
+            context_type = directive
 
         params = getattr(cmd, "params", None)
         params_dict: Dict[str, Any] = params if isinstance(params, dict) else {}
 
         approval_id = getattr(cmd, "approval_id", None)
-        if not isinstance(approval_id, str):
+        if not isinstance(approval_id, str) or not approval_id:
             approval_id = None
 
         decision = self.governance.evaluate(
@@ -248,7 +252,7 @@ class ExecutionOrchestrator:
         Koraci (sve preko NotionOpsAgent-a, bez direktnog pisanja u Notion ovdje):
         1) query KPI DB za traženi time_scope (this_week / last_week, ...)
         2) NotionOpsAgent / AI generiše sažetak (3–5 rečenica) iz KPI podataka
-        3) kreira se nova stranica u AI SUMMARY DB (vezan na NOTION_AI_SUMMARY_DB_ID)
+        3) kreira se nova stranica u AI SUMMARY DB
         """
         params = command.params if isinstance(command.params, dict) else {}
         db_key = params.get("db_key", "kpi")
@@ -303,14 +307,8 @@ class ExecutionOrchestrator:
             params={
                 "db_key": "ai_summary",
                 "property_specs": {
-                    "Name": {
-                        "type": "title",
-                        "text": title,
-                    },
-                    "Summary": {
-                        "type": "rich_text",
-                        "text": summary_text,
-                    },
+                    "Name": {"type": "title", "text": title},
+                    "Summary": {"type": "rich_text", "text": summary_text},
                 },
             },
             initiator=command.initiator,
@@ -351,34 +349,67 @@ class ExecutionOrchestrator:
     def _normalize_command(raw: Union[AICommand, Dict[str, Any]]) -> AICommand:
         """
         Jedini dozvoljeni kanonski tip unutar Orchestratora je AICommand.
-        Ako dođe dict, radimo istu normalizaciju kao Registry:
-        - rasklapamo ugniježđeni "command" dict
-        - propagiramo intent
-        - odbacujemo polja koja AICommand ne poznaje
+
+        Ako dođe dict:
+        - podrži "directive" varijantu
+        - rasklopi ugniježđeni "command" dict
+        - propagiraj intent
+        - context_type čuvaj u metadata.context_type (ako AICommand nema field)
+        - odbaci polja koja AICommand ne poznaje
         """
         if isinstance(raw, AICommand):
             return raw
 
-        if isinstance(raw, dict):
-            data: Dict[str, Any] = dict(raw)
+        if not isinstance(raw, dict):
+            raise TypeError("ExecutionOrchestrator requires AICommand or dict payload")
 
-            inner_cmd = data.get("command")
-            if isinstance(inner_cmd, dict):
-                if "command" in inner_cmd:
-                    data["command"] = inner_cmd.get("command")
-                if "params" in inner_cmd and "params" not in data:
-                    data["params"] = inner_cmd.get("params")
-                if "context_type" in inner_cmd and "context_type" not in data:
-                    data["context_type"] = inner_cmd.get("context_type")
-                if "intent" in inner_cmd and "intent" not in data:
-                    data["intent"] = inner_cmd.get("intent")
+        data: Dict[str, Any] = dict(raw)
+        allowed_fields = ExecutionOrchestrator._allowed_fields()
 
-            allowed_fields = ExecutionOrchestrator._allowed_fields()
-            if allowed_fields:
-                filtered = {k: v for k, v in data.items() if k in allowed_fields}
-            else:
-                filtered = data
+        # --- top-level directive support ---
+        if "command" not in data:
+            directive = data.get("directive")
+            if isinstance(directive, str) and directive:
+                data["command"] = directive
 
-            return AICommand(**filtered)
+        # --- top-level context_type -> metadata fallback ---
+        top_ctx = data.get("context_type")
+        if isinstance(top_ctx, str) and top_ctx:
+            if not allowed_fields or "context_type" not in allowed_fields:
+                meta = data.get("metadata")
+                if not isinstance(meta, dict):
+                    meta = {}
+                meta.setdefault("context_type", top_ctx)
+                data["metadata"] = meta
+                data.pop("context_type", None)
 
-        raise TypeError("ExecutionOrchestrator requires AICommand or dict payload")
+        # --- nested command dict support ---
+        inner_cmd = data.get("command")
+        if isinstance(inner_cmd, dict):
+            inner_command = inner_cmd.get("command") or inner_cmd.get("directive")
+            if isinstance(inner_command, str) and inner_command:
+                data["command"] = inner_command
+
+            if "params" in inner_cmd and "params" not in data:
+                data["params"] = inner_cmd.get("params")
+
+            if "intent" in inner_cmd and "intent" not in data:
+                data["intent"] = inner_cmd.get("intent")
+
+            inner_ctx = inner_cmd.get("context_type")
+            if isinstance(inner_ctx, str) and inner_ctx:
+                if not allowed_fields or "context_type" not in allowed_fields:
+                    meta = data.get("metadata")
+                    if not isinstance(meta, dict):
+                        meta = {}
+                    meta.setdefault("context_type", inner_ctx)
+                    data["metadata"] = meta
+                else:
+                    data.setdefault("context_type", inner_ctx)
+
+        if allowed_fields:
+            filtered = {k: v for k, v in data.items() if k in allowed_fields}
+        else:
+            filtered = data
+
+        return AICommand(**filtered)

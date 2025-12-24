@@ -32,22 +32,50 @@ def alerting_status() -> Dict[str, Any]:
     alert_result = alerting_service.evaluate()
 
     ok = bool(alert_result.get("ok", False))
-    violations = alert_result.get("violations", [])
-    if not isinstance(violations, list):
-        violations = []
 
-    snapshot_alerts = alert_result.get("snapshot", {})
-    if not isinstance(snapshot_alerts, dict):
-        snapshot_alerts = {}
+    violations_raw = alert_result.get("violations", [])
+    violations = violations_raw if isinstance(violations_raw, list) else []
+
+    snapshot_alerts_raw = alert_result.get("snapshot", {})
+    snapshot_alerts = (
+        snapshot_alerts_raw if isinstance(snapshot_alerts_raw, dict) else {}
+    )
+
+    # approvals overview treba biti defanzivan (ne pretpostavljamo metodu na servisu)
+    approvals_overview: Dict[str, Any]
+    if hasattr(approval_service, "get_overview"):
+        approvals_overview = approval_service.get_overview()  # type: ignore[attr-defined]
+        if not isinstance(approvals_overview, dict):
+            approvals_overview = {}
+    else:
+        # fallback na kanonske metode koje postoje u ApprovalStateService
+        pending = approval_service.list_pending()
+        approvals_overview = {
+            "total": len(approval_service.list_approvals()),
+            "pending_count": len(pending),
+            "pending": pending,
+        }
+
+    csi = conversation_state.get()
+    if not isinstance(csi, dict):
+        csi = {}
+
+    metrics = MetricsService.snapshot()
+    if not isinstance(metrics, dict):
+        metrics = {}
 
     return {
         "ok": ok,
         "violations": violations,
         "snapshot": {
             "alerts": snapshot_alerts,
-            "csi": conversation_state.get(),
-            "approvals": approval_service.get_overview(),
-            "metrics": MetricsService.snapshot(),
+            "csi": csi,
+            "approvals": approvals_overview,
+            "metrics": metrics,
         },
         "read_only": True,
     }
+
+
+# Export alias (da import bude stabilan u gateway_server.py)
+alerting_router = router

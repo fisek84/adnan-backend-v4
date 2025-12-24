@@ -22,5 +22,5 @@ Ovaj dokument opisuje kako se razvija i održava AI sistem.
 - Faza 6: State / Memory CANON (KANON-FIX-004)  (**STATUS: DONE**)
 - Faza 7: Queue/Worker + Orchestrator (KANON-FIX-005)  (**STATUS: DONE**)
 - Faza 8: Code quality sloj (lint/format/typecheck)  (**STATUS: DONE**)
-- Faza 9: Observability & failure handling  (**STATUS: TODO**)
+- Faza 9: Observability & failure handling  (**STATUS: DONE**)
 - Faza 10: CI/CD & releases  (**STATUS: TODO**)

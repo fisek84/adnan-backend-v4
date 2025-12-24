@@ -103,6 +103,10 @@ from routers.adnan_ai_router import router as adnan_ai_router
 from routers.ai_ops_router import ai_ops_router
 from routers.ceo_console_router import router as ceo_console_router
 
+# Phase 9: Metrics + Alerting dashboards (READ-ONLY)
+from routers.metrics_router import router as metrics_router
+from routers.alerting_router import router as alerting_router
+
 # ================================================================
 # APPLICATION BOOTSTRAP
 # ================================================================
@@ -165,6 +169,10 @@ app.include_router(audit_router, prefix="/api")
 app.include_router(adnan_ai_router, prefix="/api")
 app.include_router(ai_ops_router, prefix="/api")
 app.include_router(ceo_console_router, prefix="/api")
+
+# Phase 9: dashboards (so /api/metrics/ and /api/alerting/ exist)
+app.include_router(metrics_router, prefix="/api")
+app.include_router(alerting_router, prefix="/api")
 
 # ================================================================
 # KANONSKI EXECUTION ENTRYPOINT (INIT ONLY)
