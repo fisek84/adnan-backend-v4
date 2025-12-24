@@ -1,11 +1,14 @@
 import os
 import sys
 import logging
+from contextlib import asynccontextmanager
+from typing import AsyncIterator
 
 from dotenv import load_dotenv
-from uvicorn import run
-from fastapi.staticfiles import StaticFiles
+from fastapi import FastAPI
 from fastapi.routing import APIRoute
+from fastapi.staticfiles import StaticFiles
+from uvicorn import run
 
 # ============================================================
 # ENV + PATH
@@ -62,8 +65,8 @@ logger.info("✅ FastAPI gateway app loaded.")
 # ============================================================
 
 from services.ai_command_service import AICommandService  # noqa: E402
-from services.coo_translation_service import COOTranslationService  # noqa: E402
 from services.coo_conversation_service import COOConversationService  # noqa: E402
+from services.coo_translation_service import COOTranslationService  # noqa: E402
 
 ai_command_service = AICommandService()
 coo_translation_service = COOTranslationService()
@@ -75,8 +78,8 @@ logger.info("🧠 Core AI services initialized.")
 # ROUTER DEPENDENCY INJECTION
 # ============================================================
 
-from routers.ai_router import set_ai_services  # noqa: E402
 from routers.adnan_ai_router import set_adnan_ai_services  # noqa: E402
+from routers.ai_router import set_ai_services  # noqa: E402
 
 # --- PRIMARY /ai ROUTER (UX → SYSTEM → EXECUTION) ---
 set_ai_services(
@@ -98,13 +101,20 @@ logger.info("🔌 AI services injected.")
 # PHASE 5/6/7 SERVICES INIT (DEPENDENCIES SINGLETONS)
 # ============================================================
 
+_orchestrator_available = False
+
 try:
-    from dependencies import init_services, get_orchestrator_service  # noqa: E402
+    from dependencies import get_orchestrator_service, init_services  # noqa: E402
 
     init_services()
+    _orchestrator_available = True
+except Exception as e:
+    logger.warning("ℹ️ dependencies init/orchestrator not available: %s", e)
 
-    @app.on_event("startup")
-    async def _startup_orchestrator_worker() -> None:
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    if _orchestrator_available:
         try:
             orch = get_orchestrator_service()
             if orch:
@@ -113,8 +123,9 @@ try:
         except Exception as e:
             logger.error("❌ Orchestrator startup failed: %s", e)
 
-    @app.on_event("shutdown")
-    async def _shutdown_orchestrator_worker() -> None:
+    yield
+
+    if _orchestrator_available:
         try:
             orch = get_orchestrator_service()
             if orch:
@@ -123,8 +134,9 @@ try:
         except Exception as e:
             logger.error("❌ Orchestrator shutdown failed: %s", e)
 
-except Exception as e:
-    logger.warning("ℹ️ dependencies init/orchestrator not available: %s", e)
+
+# Attach lifespan to existing app instance (avoid deprecated on_event)
+app.router.lifespan_context = _lifespan  # type: ignore[attr-defined]
 
 # ============================================================
 # CEO CONSOLE + NOTION OPS ROUTERS
