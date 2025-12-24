@@ -27,7 +27,8 @@ class CEOCommandRequest(BaseModel):
 
     text: str = Field(..., min_length=1, description="Natural language input from CEO.")
     initiator: Optional[str] = Field(
-        default=None, description="Who initiated the command (for UX/audit display only)."
+        default=None,
+        description="Who initiated the command (for UX/audit display only).",
     )
     session_id: Optional[str] = Field(
         default=None, description="Client session id (for UX correlation only)."
@@ -45,8 +46,12 @@ class ProposedAICommand(BaseModel):
     """
 
     command_type: str = Field(..., description="Type/name of the proposed command.")
-    payload: Dict[str, Any] = Field(default_factory=dict, description="Command payload.")
-    status: str = Field(default="BLOCKED", description="Always BLOCKED at proposal time.")
+    payload: Dict[str, Any] = Field(
+        default_factory=dict, description="Command payload."
+    )
+    status: str = Field(
+        default="BLOCKED", description="Always BLOCKED at proposal time."
+    )
     required_approval: bool = Field(
         default=True, description="Always true for any command with side-effects."
     )
@@ -227,8 +232,12 @@ def _normalize_proposed_commands(raw: Any) -> List[ProposedAICommand]:
                 payload=payload,
                 status="BLOCKED",
                 required_approval=True,
-                cost_hint=it.get("cost_hint") if isinstance(it.get("cost_hint"), str) else None,
-                risk_hint=it.get("risk_hint") if isinstance(it.get("risk_hint"), str) else None,
+                cost_hint=it.get("cost_hint")
+                if isinstance(it.get("cost_hint"), str)
+                else None,
+                risk_hint=it.get("risk_hint")
+                if isinstance(it.get("risk_hint"), str)
+                else None,
             )
         )
 
@@ -273,7 +282,9 @@ def ceo_command(req: CEOCommandRequest = Body(...)) -> CEOCommandResponse:
     result = _llm_advice(text=text, context=context)
 
     summary = result.get("summary") if isinstance(result.get("summary"), str) else ""
-    questions = result.get("questions") if isinstance(result.get("questions"), list) else []
+    questions = (
+        result.get("questions") if isinstance(result.get("questions"), list) else []
+    )
     plan = result.get("plan") if isinstance(result.get("plan"), list) else []
     options = result.get("options") if isinstance(result.get("options"), list) else []
     trace = result.get("trace") if isinstance(result.get("trace"), dict) else {}
