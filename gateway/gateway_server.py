@@ -754,6 +754,7 @@ async def health_check():
         "version": VERSION,
         "boot_ready": _BOOT_READY,
         "boot_error": _BOOT_ERROR,
+        "ops_safe_mode": OPS_SAFE_MODE,
     }
 
 
@@ -765,7 +766,12 @@ async def ready_check():
     """
     if not _BOOT_READY:
         raise HTTPException(status_code=503, detail=_BOOT_ERROR or "System not ready")
-    return {"status": "ready", "version": VERSION}
+    return {
+        "status": "ready",
+        "version": VERSION,
+        "boot_ready": _BOOT_READY,
+        "ops_safe_mode": OPS_SAFE_MODE,
+    }
 
 
 # ================================================================
