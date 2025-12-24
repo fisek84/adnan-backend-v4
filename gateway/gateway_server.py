@@ -104,7 +104,11 @@ from services.ai_summary_service import get_ai_summary_service
 from routers.audit_router import router as audit_router
 from routers.adnan_ai_router import router as adnan_ai_router
 from routers.ai_ops_router import ai_ops_router
-from routers.ceo_console_router import router as ceo_console_router
+
+# IMPORTANT:
+# Import module (not only router) so we can provide a CANON wrapper
+# for legacy /ceo/command without WRITE side effects.
+import routers.ceo_console_router as ceo_console_module
 
 # Phase 9: Metrics + Alerting dashboards (READ-ONLY)
 from routers.metrics_router import router as metrics_router
@@ -205,7 +209,9 @@ else:
 app.include_router(audit_router, prefix="/api")
 app.include_router(adnan_ai_router, prefix="/api")
 app.include_router(ai_ops_router, prefix="/api")
-app.include_router(ceo_console_router, prefix="/api")
+
+# CEO Console router (READ-only advisory endpoints)
+app.include_router(ceo_console_module.router, prefix="/api")
 
 # Phase 9: dashboards (so /api/metrics/ and /api/alerting/ exist)
 app.include_router(metrics_router, prefix="/api")
@@ -241,10 +247,11 @@ class ExecuteRawInput(BaseModel):
 
 class CeoCommandInput(BaseModel):
     """
-    CEO Dashboard → COO (NL input + opcioni smart_context).
+    CEO Dashboard → CEO Command (READ-only advisory).
 
-    - Poštuje isti governance pipeline kao /api/execute
-    - smart_context se koristi kao HINT, ne kao direktan write
+    CANON:
+    - This endpoint MUST NOT execute or register approvals.
+    - It may only produce advice + proposed BLOCKED commands.
     """
 
     input_text: str
@@ -292,6 +299,7 @@ def _preprocess_ceo_nl_input(
 ) -> str:
     """
     Minimalni, deterministički preprocessing za CEO Dashboard NL input.
+    (READ-only; no execution)
     """
     text = (raw_text or "").strip()
     if not text:
@@ -459,7 +467,7 @@ async def _load_tasks_summary() -> List[Dict[str, Any]]:
 
 
 # ================================================================
-# /api/execute — CEO → COO (NL INPUT)
+# /api/execute — EXECUTION PATH (NL INPUT)
 # ================================================================
 @app.post("/api/execute")
 async def execute_command(payload: ExecuteInput):
@@ -482,51 +490,6 @@ async def execute_command(payload: ExecuteInput):
         "execution_id": ai_command.execution_id,
         "status": "pending",
         "source": "system",
-        "command": ai_command.model_dump(),
-    }
-
-    return {
-        "status": "BLOCKED",
-        "execution_state": "BLOCKED",
-        "approval_id": approval_id,
-        "execution_id": ai_command.execution_id,
-        "command": ai_command.model_dump(),
-    }
-
-
-# ================================================================
-# /ceo/command — CEO DASHBOARD → COO (NL + SMART CONTEXT)
-# ================================================================
-@app.post("/ceo/command")
-async def ceo_dashboard_command(payload: CeoCommandInput):
-    cleaned_text = _preprocess_ceo_nl_input(
-        raw_text=payload.input_text,
-        smart_context=payload.smart_context,
-    )
-
-    ai_command = coo_translation_service.translate(
-        raw_input=cleaned_text,
-        source=payload.source or "ceo_dashboard",
-        context={
-            "mode": "execute",
-            "smart_context": payload.smart_context,
-            "original_text": payload.input_text,
-        },
-    )
-
-    if not ai_command:
-        raise HTTPException(400, "Could not translate input to command")
-
-    _execution_registry.register(ai_command)
-
-    approval_id = str(uuid.uuid4())
-
-    approval_state = get_approval_state()
-    approval_state._approvals[approval_id] = {  # type: ignore[attr-defined]
-        "approval_id": approval_id,
-        "execution_id": ai_command.execution_id,
-        "status": "pending",
-        "source": payload.source or "ceo_dashboard",
         "command": ai_command.model_dump(),
     }
 
@@ -573,6 +536,34 @@ async def execute_raw_command(payload: ExecuteRawInput):
         "execution_id": ai_command.execution_id,
         "command": ai_command.model_dump(),
     }
+
+
+# ================================================================
+# LEGACY CEO COMMAND ENDPOINTS (READ-ONLY WRAPPERS)
+# - Kept for frontend compatibility
+# - DO NOT REGISTER APPROVALS / DO NOT EXECUTE
+# ================================================================
+@app.post("/api/ceo/command")
+async def ceo_dashboard_command_api(payload: CeoCommandInput):
+    cleaned_text = _preprocess_ceo_nl_input(
+        raw_text=payload.input_text,
+        smart_context=payload.smart_context,
+    )
+
+    # Delegate to canonical CEO Console router (READ-only)
+    req = ceo_console_module.CEOCommandRequest(
+        text=cleaned_text,
+        initiator=payload.source or "ceo_dashboard",
+        session_id=None,
+        context_hint=payload.smart_context,
+    )
+    return ceo_console_module.ceo_command(req)
+
+
+@app.post("/ceo/command")
+async def ceo_dashboard_command_public(payload: CeoCommandInput):
+    # Public alias for compatibility with older frontend code
+    return await ceo_dashboard_command_api(payload)
 
 
 # ================================================================
