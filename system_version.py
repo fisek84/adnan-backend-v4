@@ -17,7 +17,7 @@ SYSTEM_NAME = "Adnan.AI / Evolia OS"
 # MAJOR — architectural change (VERY RARE)
 # MINOR — feature addition without breaking canon
 # PATCH — bugfix / internal hardening
-VERSION = "1.0.1"
+VERSION = "1.0.4"
 
 # When True:
 # - architecture is frozen
