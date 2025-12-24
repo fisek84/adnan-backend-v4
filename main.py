@@ -36,12 +36,18 @@ REQUIRED_ENV_VARS = [
     "NOTION_OPS_ASSISTANT_ID",
 ]
 
-missing = [v for v in REQUIRED_ENV_VARS if not os.getenv(v)]
-if missing:
-    logger.critical("❌ Missing ENV vars: %s", ", ".join(missing))
-    sys.exit(1)
 
-logger.info("✅ Environment variables validated.")
+def validate_runtime_env_or_raise() -> None:
+    missing = [v for v in REQUIRED_ENV_VARS if not os.getenv(v)]
+    if missing:
+        logger.critical("❌ Missing ENV vars: %s", ", ".join(missing))
+        raise RuntimeError(f"Missing ENV vars: {', '.join(missing)}")
+    logger.info("✅ Environment variables validated.")
+
+
+# NOTE:
+# - Do NOT sys.exit() on import. Tests import `app` via `main`.
+# - Enforce strict env validation only when starting the server ( __main__ ).
 
 # ============================================================
 # LOAD FASTAPI APP (GATEWAY)
@@ -166,6 +172,7 @@ logger.info("🖥️ Frontend mounted at /")
 # ============================================================
 
 if __name__ == "__main__":
+    validate_runtime_env_or_raise()
     port = int(os.environ.get("PORT", 8000))
     logger.info("🚀 Starting Uvicorn on port %s", port)
     run(
