@@ -63,12 +63,16 @@ async def run_ai(req: AIRequest) -> Dict[str, Any]:
     """
     logger.info("[AI] UX request received")
 
-    if not ai_command_service or not coo_conversation_service or not coo_translation_service:
-        raise HTTPException(500, "AI services not initialized")
+    if (
+        not ai_command_service
+        or not coo_conversation_service
+        or not coo_translation_service
+    ):
+        raise HTTPException(status_code=500, detail="AI services not initialized")
 
     text = (req.text or "").strip()
     if not text:
-        raise HTTPException(400, "text is required")
+        raise HTTPException(status_code=400, detail="text is required")
 
     context: Dict[str, Any] = req.context or {}
 
@@ -85,8 +89,8 @@ async def run_ai(req: AIRequest) -> Dict[str, Any]:
             "ok": True,
             "read_only": True,
             "type": getattr(convo, "type", "unknown"),
-            "text": getattr(convo, "text", ""),
-            "next_actions": getattr(convo, "next_actions", []),
+            "text": getattr(convo, "text", "") or "",
+            "next_actions": getattr(convo, "next_actions", []) or [],
             "proposed_commands": [],
         }
 
@@ -103,12 +107,13 @@ async def run_ai(req: AIRequest) -> Dict[str, Any]:
             "read_only": True,
             "type": "rejected",
             "text": "Input cannot be translated into a command. Clarify intent and try again.",
-            "next_actions": ["Clarify the request with concrete scope, constraints, and desired outcome."],
+            "next_actions": [
+                "Clarify the request with concrete scope, constraints, and desired outcome."
+            ],
             "proposed_commands": [],
         }
 
     # 3) PROPOSAL ONLY (NO EXECUTION HERE)
-    # Normalize proposed command for UI
     proposed = {
         "status": "BLOCKED",
         "command": command,
@@ -119,8 +124,14 @@ async def run_ai(req: AIRequest) -> Dict[str, Any]:
         "ok": True,
         "read_only": True,
         "type": "proposal",
-        "text": getattr(convo, "text", "") or "Proposed command is ready for approval/execution flow.",
-        "next_actions": getattr(convo, "next_actions", []) or ["Review proposal, then execute via /api/execute if approved."],
+        "text": (
+            getattr(convo, "text", "")
+            or "Proposed command is ready for approval/execution flow."
+        ),
+        "next_actions": (
+            getattr(convo, "next_actions", [])
+            or ["Review proposal, then execute via /api/execute if approved."]
+        ),
         "proposed_commands": [proposed],
     }
 
