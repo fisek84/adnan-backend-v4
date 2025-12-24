@@ -113,7 +113,9 @@ class OpenAIAssistantExecutor:
                 tool_calls = getattr(submit, "tool_calls", None) if submit else None
 
                 if not tool_calls:
-                    raise RuntimeError("Assistant requires_action but has no tool calls")
+                    raise RuntimeError(
+                        "Assistant requires_action but has no tool calls"
+                    )
 
                 tool_outputs = []
 
