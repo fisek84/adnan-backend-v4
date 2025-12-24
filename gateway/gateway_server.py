@@ -88,7 +88,7 @@ set_notion_service(
     )
 )
 
-logger.info("✅ NotionService singleton initialized")
+logger.info("… NotionService singleton initialized")
 
 # ================================================================
 # WEEKLY MEMORY SERVICE (CEO DASHBOARD)
@@ -119,7 +119,7 @@ from services.app_bootstrap import bootstrap_application
 # INITIAL LOAD
 # ================================================================
 if not OS_ENABLED:
-    logger.critical("❌ OS_ENABLED=false — system will not start.")
+    logger.critical("✖ OS_ENABLED=false — system will not start.")
     raise RuntimeError("OS is disabled by configuration.")
 
 identity = load_identity()
@@ -152,7 +152,7 @@ async def lifespan(_: FastAPI):
             logger.warning("Notion knowledge snapshot sync failed: %s", exc)
 
         _BOOT_READY = True
-        logger.info("🟢 System boot completed. READY.")
+        logger.info("✅ System boot completed. READY.")
         yield
     finally:
         _BOOT_READY = False
@@ -266,6 +266,13 @@ def _to_serializable(obj: Any) -> Any:
         return {k: _to_serializable(v) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):
         return [_to_serializable(v) for v in obj]
+    # Pydantic v2 first: prefer model_dump() ako postoji
+    if hasattr(obj, "model_dump"):
+        try:
+            return obj.model_dump()
+        except Exception:  # noqa: BLE001
+            pass
+    # Fallback na dict() za ostale objekte
     if hasattr(obj, "dict"):
         try:
             return obj.dict()
@@ -475,7 +482,7 @@ async def execute_command(payload: ExecuteInput):
         "execution_id": ai_command.execution_id,
         "status": "pending",
         "source": "system",
-        "command": ai_command.dict(),
+        "command": ai_command.model_dump(),
     }
 
     return {
@@ -483,7 +490,7 @@ async def execute_command(payload: ExecuteInput):
         "execution_state": "BLOCKED",
         "approval_id": approval_id,
         "execution_id": ai_command.execution_id,
-        "command": ai_command.dict(),
+        "command": ai_command.model_dump(),
     }
 
 
@@ -520,7 +527,7 @@ async def ceo_dashboard_command(payload: CeoCommandInput):
         "execution_id": ai_command.execution_id,
         "status": "pending",
         "source": payload.source or "ceo_dashboard",
-        "command": ai_command.dict(),
+        "command": ai_command.model_dump(),
     }
 
     return {
@@ -528,7 +535,7 @@ async def ceo_dashboard_command(payload: CeoCommandInput):
         "execution_state": "BLOCKED",
         "approval_id": approval_id,
         "execution_id": ai_command.execution_id,
-        "command": ai_command.dict(),
+        "command": ai_command.model_dump(),
     }
 
 
@@ -556,7 +563,7 @@ async def execute_raw_command(payload: ExecuteRawInput):
         "execution_id": ai_command.execution_id,
         "status": "pending",
         "source": "system",
-        "command": ai_command.dict(),
+        "command": ai_command.model_dump(),
     }
 
     return {
@@ -564,7 +571,7 @@ async def execute_raw_command(payload: ExecuteRawInput):
         "execution_state": "BLOCKED",
         "approval_id": approval_id,
         "execution_id": ai_command.execution_id,
-        "command": ai_command.dict(),
+        "command": ai_command.model_dump(),
     }
 
 
@@ -694,7 +701,7 @@ async def ceo_weekly_priority_memory():
             detail=f"Failed to load Weekly Priority Memory from AI SUMMARY DB: {exc}",
         ) from exc
 
-    return {"items": [i.dict() for i in items]}
+    return {"items": [i.model_dump() for i in items]}
 
 
 @app.get("/ceo/agents")

@@ -36,7 +36,7 @@ class AICommand(BaseModel):
     params: Dict[str, Any] = Field(default_factory=dict)
 
     # ========================================================
-    # EXECUTION IDS (KLJUČNO)
+    # EXECUTION IDS (KLJUĆNO)
     # ========================================================
     request_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     execution_id: Optional[str] = None
@@ -67,11 +67,14 @@ class AICommand(BaseModel):
     # ========================================================
     @model_validator(mode="after")
     def normalize_ids(self) -> "AICommand":
+        # Ako execution_id nije postavljen, normalizujemo ga na request_id
         if not self.execution_id:
-            self.execution_id = self.request_id
+            object.__setattr__(self, "execution_id", self.request_id)
 
-        # owner is always system
-        self.owner = "system"
+        # owner je uvijek "system" (bez trigera validate_assignment)
+        if self.owner != "system":
+            object.__setattr__(self, "owner", "system")
+
         return self
 
     @classmethod
