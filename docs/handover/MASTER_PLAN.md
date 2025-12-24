@@ -24,3 +24,34 @@ Ovaj dokument opisuje kako se razvija i održava AI sistem.
 - Faza 8: Code quality sloj (lint/format/typecheck)  (**STATUS: DONE**)
 - Faza 9: Observability & failure handling  (**STATUS: DONE**)
 - Faza 10: CI/CD & releases  (**STATUS: DONE**)
+
+## Faze (Level 1 – runtime hardening & deploy health)
+
+- Faza 11: Runtime & Deploy Health (v1.0.6)  
+  - Lifespan startup umjesto `@startup`
+  - `/health` (liveness) uvijek 200 + boot status
+  - `/ready` (readiness) 503 dok boot ne završi
+  - CI-friendly `main.py` entrypoint (import ne ubija proces bez ENV)
+  - Release: VERSION=1.0.6, ARCH_LOCK=True, stable tag `v1.0.6`  
+  (**STATUS: DONE**)
+
+## Faze (Level 2 – stabilizacija, warnings, test determinism)
+
+- Faza 12: Warnings cleanup & test determinism (KANON-FIX-011_PHASE12_WARNINGS_CLEANUP)
+  - Pydantic V2 deprecations cleanup (validatori + ConfigDict)
+  - PytestCollectionWarning uklonjen (test harness klasa više nije “Test*”)
+  - AnyIO determinism: forsiran asyncio backend (bez trio dependency)
+  - httpx deprecation cleanup u testovima (ASGITransport/AsyncClient)
+  - Gate dokaz: pre-commit PASS, pytest PASS, `test_happy_path.ps1` PASS  
+  (**STATUS: DONE**)
+
+## Sljedeće preporučene faze
+
+- Faza 13: Test suite cleanup (KANON-FIX-012_PHASE13_TEST_SUITE_CLEANUP)  (**STATUS: NEXT**)
+  - Pretvoriti postojeće “harness” fajlove u stvarne pytest testove gdje je potrebno
+  - Konsolidovati naming konvencije i strukturu testova
+  - Dodati ciljane testove za edge-case flow (BLOCKED/APPROVED idempotency, error handling)
+
+- Faza 14: Integrations hardening (KANON-FIX-013_PHASE14_INTEGRATIONS_HARDENING)  (**STATUS: BACKLOG**)
+  - Notion/Google integracije: retry/backoff, timeouts, contract tests
+  - Uklanjanje preostalih third-party warnings tamo gdje je relevantno
