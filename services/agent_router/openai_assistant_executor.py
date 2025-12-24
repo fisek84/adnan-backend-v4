@@ -113,9 +113,7 @@ class OpenAIAssistantExecutor:
                 tool_calls = getattr(submit, "tool_calls", None) if submit else None
 
                 if not tool_calls:
-                    raise RuntimeError(
-                        "Assistant requires_action but has no tool calls"
-                    )
+                    raise RuntimeError("Assistant requires_action but has no tool calls")
 
                 tool_outputs = []
 
@@ -190,6 +188,54 @@ class OpenAIAssistantExecutor:
             return {"raw": parsed}
         except Exception:
             return {"raw": text}
+
+    def _normalize_ceo_advisory_payload(self, parsed: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Hardening layer for CEO advisory:
+        - If assistant returns plain text (or non-schema JSON), map it into the expected schema.
+        - Always return: summary/questions/plan/options/proposed_commands/trace as stable types.
+        """
+        # 1) If assistant returned plain text under "raw" -> map to summary
+        raw = parsed.get("raw")
+        if isinstance(raw, str) and raw.strip():
+            parsed = {
+                "summary": raw.strip(),
+                "questions": [],
+                "plan": [],
+                "options": [],
+                "proposed_commands": [],
+                "trace": {"llm": "raw_text_mapped"},
+            }
+
+        # 2) If summary missing but raw is some other type, stringify it
+        if "summary" not in parsed:
+            if raw is not None:
+                parsed["summary"] = str(raw)
+            else:
+                parsed["summary"] = (
+                    "LLM odgovor nije imao 'summary' polje (fallback normalization)."
+                )
+
+        # 3) Stabilize list fields
+        if not isinstance(parsed.get("questions"), list):
+            parsed["questions"] = []
+        if not isinstance(parsed.get("plan"), list):
+            parsed["plan"] = []
+        if not isinstance(parsed.get("options"), list):
+            parsed["options"] = []
+        if not isinstance(parsed.get("proposed_commands"), list):
+            parsed["proposed_commands"] = []
+
+        # 4) Ensure trace dict
+        if not isinstance(parsed.get("trace"), dict):
+            parsed["trace"] = {}
+
+        # 5) Ensure list elements are strings (defensive)
+        parsed["questions"] = [x for x in parsed["questions"] if isinstance(x, str)]
+        parsed["plan"] = [x for x in parsed["plan"] if isinstance(x, str)]
+        parsed["options"] = [x for x in parsed["options"] if isinstance(x, str)]
+
+        return parsed
 
     # ============================================================
     # EXECUTION (WRITE PATH) — used by orchestrator/agent layer
@@ -339,25 +385,13 @@ class OpenAIAssistantExecutor:
         final_text = await self._get_final_assistant_message_text(thread_id=thread.id)
         parsed = self._safe_json_parse(final_text)
 
+        # NEW: normalize plain text / non-schema to expected schema
+        parsed = self._normalize_ceo_advisory_payload(parsed)
+
         # Ensure minimum stable fields + trace guard
         trace = parsed.get("trace") if isinstance(parsed.get("trace"), dict) else {}
         trace["assistant_id"] = assistant_id
         trace["read_only_guard"] = True
         parsed["trace"] = trace
-
-        if "summary" not in parsed:
-            parsed["summary"] = (
-                "LLM odgovor nije imao 'summary' polje (fallback normalization)."
-            )
-        if "questions" not in parsed or not isinstance(parsed.get("questions"), list):
-            parsed["questions"] = []
-        if "plan" not in parsed or not isinstance(parsed.get("plan"), list):
-            parsed["plan"] = []
-        if "options" not in parsed or not isinstance(parsed.get("options"), list):
-            parsed["options"] = []
-        if "proposed_commands" not in parsed or not isinstance(
-            parsed.get("proposed_commands"), list
-        ):
-            parsed["proposed_commands"] = []
 
         return parsed
