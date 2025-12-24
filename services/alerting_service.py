@@ -1,4 +1,6 @@
-from typing import Dict, Any, List
+from __future__ import annotations
+
+from typing import Any, Dict, List
 import logging
 
 from services.metrics_service import MetricsService
@@ -30,15 +32,19 @@ class AlertingService:
     # --------------------------------------------------
     def evaluate(self) -> Dict[str, Any]:
         snapshot = MetricsService.snapshot()
-        counters = snapshot.get("counters", {})
+
+        counters_raw = snapshot.get("counters", {})
+        counters: Dict[str, Any] = (
+            counters_raw if isinstance(counters_raw, dict) else {}
+        )
 
         violations: List[Dict[str, Any]] = []
 
         # ----------------------------------------------
         # DECISION SUCCESS RATE
         # ----------------------------------------------
-        decision_created = counters.get("decision.created", 0)
-        decision_confirmed = counters.get("decision.confirmed", 0)
+        decision_created = int(counters.get("decision.created", 0) or 0)
+        decision_confirmed = int(counters.get("decision.confirmed", 0) or 0)
 
         if decision_created > 0:
             success_rate = decision_confirmed / decision_created
@@ -54,8 +60,8 @@ class AlertingService:
         # ----------------------------------------------
         # EXECUTION FAILURE RATE
         # ----------------------------------------------
-        execution_total = counters.get("execution.total", 0)
-        execution_failed = counters.get("execution.failed", 0)
+        execution_total = int(counters.get("execution.total", 0) or 0)
+        execution_failed = int(counters.get("execution.failed", 0) or 0)
 
         if execution_total > 0:
             failure_rate = execution_failed / execution_total
@@ -71,8 +77,8 @@ class AlertingService:
         # ----------------------------------------------
         # GOVERNANCE BLOCK RATE
         # ----------------------------------------------
-        governance_checks = counters.get("governance.checked", 0)
-        governance_blocked = counters.get("governance.blocked", 0)
+        governance_checks = int(counters.get("governance.checked", 0) or 0)
+        governance_blocked = int(counters.get("governance.blocked", 0) or 0)
 
         if governance_checks > 0:
             block_rate = governance_blocked / governance_checks
@@ -93,4 +99,5 @@ class AlertingService:
                 "execution_total": execution_total,
                 "governance_checks": governance_checks,
             },
+            "read_only": True,
         }

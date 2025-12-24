@@ -13,8 +13,10 @@ Uloga:
 - NEMA side-effecta
 """
 
-from typing import Dict, Any, Optional
+from __future__ import annotations
+
 from datetime import datetime
+from typing import Any, Dict, Optional
 
 
 class FailureHandler:
@@ -32,7 +34,7 @@ class FailureHandler:
     # =========================================================
     # RECOVERY OPTIONS (DESCRIPTIVE ONLY — NO ACTION)
     # =========================================================
-    RECOVERY_OPTIONS = {
+    RECOVERY_OPTIONS: Dict[str, list[str]] = {
         CATEGORY_POLICY: [
             "Promijeniti ulogu ili prava pristupa.",
             "Izmijeniti tip akcije.",
@@ -85,9 +87,9 @@ class FailureHandler:
         """
 
         category = self._resolve_category(source, reason)
-        metadata = metadata or {}
+        md: Dict[str, Any] = metadata if isinstance(metadata, dict) else {}
 
-        response = {
+        response: Dict[str, Any] = {
             "execution_id": execution_id,
             "success": False,
             "execution_state": "FAILED",
@@ -99,16 +101,16 @@ class FailureHandler:
             },
             "timestamp": datetime.utcnow().isoformat(),
             "read_only": True,
-            "metadata": metadata,
+            "metadata": md,
         }
 
         # -----------------------------------------------------
-        # 🔑 PROPAGATE APPROVAL_ID (IF PRESENT)
+        # PROPAGATE APPROVAL_ID (IF PRESENT)
         # -----------------------------------------------------
-        governance = metadata.get("governance")
+        governance = md.get("governance")
         if isinstance(governance, dict):
             approval_id = governance.get("approval_id")
-            if approval_id:
+            if isinstance(approval_id, str) and approval_id:
                 response["approval_id"] = approval_id
 
         return response

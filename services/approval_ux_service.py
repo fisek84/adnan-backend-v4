@@ -1,7 +1,9 @@
 # services/approval_ux_service.py
 
-from typing import Optional, Dict, Any
+from __future__ import annotations
+
 from datetime import datetime
+from typing import Any, Dict, Optional
 
 from services.approval_state_service import get_approval_state
 from services.execution_registry import ExecutionRegistry
@@ -34,9 +36,8 @@ class ApprovalUXService:
         if not execution_id:
             raise RuntimeError("Approved approval has no execution_id")
 
-        # 🔑 SIGNAL — resume existing execution
-        self.registry  # registry exists to guarantee state
-        # actual resume is triggered by orchestrator via registry
+        # SIGNAL — registry exists to guarantee state
+        self.registry  # actual resume is triggered by orchestrator via registry
 
         return {
             "success": True,

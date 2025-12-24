@@ -1,8 +1,15 @@
 # services/observability/telemetry_sink.py
 
-from typing import Protocol
+from __future__ import annotations
+
 import json
+import logging
+from typing import Protocol
+
 from services.observability.telemetry_event import TelemetryEvent
+
+
+logger = logging.getLogger(__name__)
 
 
 class TelemetrySink(Protocol):
@@ -30,6 +37,6 @@ class StdoutTelemetrySink:
                     ensure_ascii=False,
                 ),
             )
-        except Exception:
-            # telemetry must never break runtime
-            pass
+        except Exception as e:
+            # telemetry must never break runtime, but failure should be visible
+            logger.error("STDOUT TELEMETRY SINK FAILED | error=%s", str(e))

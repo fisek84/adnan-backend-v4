@@ -1,11 +1,16 @@
+from __future__ import annotations
+
+from typing import Any, Dict, List
+
 from fastapi import APIRouter
+
 from services.metrics_service import MetricsService
 
 router = APIRouter(prefix="/metrics", tags=["Metrics"])
 
 
 @router.get("/")
-def metrics_snapshot():
+def metrics_snapshot() -> Dict[str, Any]:
     """
     READ-ONLY Metrics Dashboard Snapshot
 
@@ -19,17 +24,28 @@ def metrics_snapshot():
 
     snapshot = MetricsService.snapshot()
 
-    events = snapshot.get("events", [])
-    counters = snapshot.get("counters", {})
+    events_raw = snapshot.get("events", [])
+    counters_raw = snapshot.get("counters", {})
+
+    events: List[Dict[str, Any]] = events_raw if isinstance(events_raw, list) else []
+    counters: Dict[str, Any] = counters_raw if isinstance(counters_raw, dict) else {}
 
     # -------------------------------------------------
     # DERIVED AGENT ACTIVITY VIEW (READ-ONLY)
     # -------------------------------------------------
-    agents = {}
+    agents: Dict[str, Dict[str, Any]] = {}
 
     for e in events:
-        payload = e.get("payload") or {}
-        agent_id = payload.get("agent_id")
+        if not isinstance(e, dict):
+            continue
+
+        payload_raw = e.get("payload") or {}
+        payload: Dict[str, Any] = payload_raw if isinstance(payload_raw, dict) else {}
+
+        agent_id_raw = payload.get("agent_id")
+        agent_id = (
+            agent_id_raw if isinstance(agent_id_raw, str) and agent_id_raw else None
+        )
         if not agent_id:
             continue
 
@@ -44,17 +60,18 @@ def metrics_snapshot():
             },
         )
 
-        if e.get("event_type") in {"agent_execution"}:
+        event_type = e.get("event_type")
+        if event_type == "agent_execution":
             phase = payload.get("phase")
             if phase == "started":
-                agent["executions"] += 1
+                agent["executions"] = int(agent.get("executions", 0)) + 1
             elif phase == "failed":
-                agent["failures"] += 1
+                agent["failures"] = int(agent.get("failures", 0)) + 1
 
             agent["last_status"] = phase
             agent["last_seen"] = e.get("ts")
 
-        if e.get("event_type") == "agent_heartbeat":
+        elif event_type == "agent_heartbeat":
             agent["last_status"] = payload.get("status")
             agent["last_seen"] = payload.get("timestamp")
 

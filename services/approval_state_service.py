@@ -1,10 +1,23 @@
 # services/approval_state_service.py
 
-from typing import Dict, Any, List, Optional
+from __future__ import annotations
+
 from datetime import datetime
-from uuid import uuid4
-from threading import Lock
 import json
+import logging
+from pathlib import Path
+from threading import Lock
+from typing import Any, Dict, List, Optional
+from uuid import uuid4
+
+logger = logging.getLogger(__name__)
+
+# ============================================================
+# STORAGE (SURVIVES RELOAD/RESTART)
+# ============================================================
+
+_BASE_PATH = Path(__file__).resolve().parent.parent / "adnan_ai" / "memory"
+_APPROVAL_FILE = _BASE_PATH / "approval_state.json"
 
 
 class ApprovalStateService:
@@ -19,14 +32,26 @@ class ApprovalStateService:
     - svi instance-i dijele isti backing store (class-level), da se izbjegne
       “approval not found in pending list” kad različiti dijelovi koda kreiraju
       novu instancu servisa.
+
+    NOTE (stabilnost runtime-a / reload):
+    - approvals se persiste na disk (best-effort) da prežive uvicorn reload/restart.
     """
 
     _GLOBAL_APPROVALS: Dict[str, Dict[str, Any]] = {}
     _GLOBAL_LOCK: Lock = Lock()
+    _LOADED_FROM_DISK: bool = False
 
     def __init__(self):
-        self._approvals = ApprovalStateService._GLOBAL_APPROVALS
-        self._lock = ApprovalStateService._GLOBAL_LOCK
+        self._approvals: Dict[str, Dict[str, Any]] = (
+            ApprovalStateService._GLOBAL_APPROVALS
+        )
+        self._lock: Lock = ApprovalStateService._GLOBAL_LOCK
+
+        # Best-effort load once per process
+        with self._lock:
+            if not ApprovalStateService._LOADED_FROM_DISK:
+                self._load_from_disk_locked()
+                ApprovalStateService._LOADED_FROM_DISK = True
 
     # ============================================================
     # CREATE
@@ -63,7 +88,7 @@ class ApprovalStateService:
             approval_id = str(uuid4())
             now = datetime.utcnow().isoformat()
 
-            approval = {
+            approval: Dict[str, Any] = {
                 "approval_id": approval_id,
                 "execution_id": execution_id,
                 "command": command,
@@ -76,6 +101,7 @@ class ApprovalStateService:
             }
 
             self._approvals[approval_id] = approval
+            self._persist_to_disk_locked()
             return approval.copy()
 
     # ============================================================
@@ -85,21 +111,23 @@ class ApprovalStateService:
     def approve(self, approval_id: str) -> Dict[str, Any]:
         with self._lock:
             approval = self._require(approval_id)
-            if approval["status"] != "pending":
+            if approval.get("status") != "pending":
                 return approval.copy()
 
             approval["status"] = "approved"
             approval["decided_at"] = datetime.utcnow().isoformat()
+            self._persist_to_disk_locked()
             return approval.copy()
 
     def reject(self, approval_id: str) -> Dict[str, Any]:
         with self._lock:
             approval = self._require(approval_id)
-            if approval["status"] != "pending":
+            if approval.get("status") != "pending":
                 return approval.copy()
 
             approval["status"] = "rejected"
             approval["decided_at"] = datetime.utcnow().isoformat()
+            self._persist_to_disk_locked()
             return approval.copy()
 
     # ============================================================
@@ -130,9 +158,42 @@ class ApprovalStateService:
     # ============================================================
 
     def _require(self, approval_id: str) -> Dict[str, Any]:
-        if approval_id not in self._approvals:
+        approval = self._approvals.get(approval_id)
+        if not approval:
             raise KeyError("Approval not found")
-        return self._approvals[approval_id]
+        return approval
+
+    def _load_from_disk_locked(self) -> None:
+        try:
+            _BASE_PATH.mkdir(parents=True, exist_ok=True)
+            if not _APPROVAL_FILE.exists():
+                return
+
+            with open(_APPROVAL_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            if not isinstance(data, dict):
+                return
+
+            # Merge disk approvals into memory (disk is not higher authority; best-effort)
+            for k, v in data.items():
+                if (
+                    isinstance(k, str)
+                    and isinstance(v, dict)
+                    and k not in self._approvals
+                ):
+                    self._approvals[k] = v
+
+        except Exception as e:
+            logger.warning("ApprovalState load_from_disk failed: %s", str(e))
+
+    def _persist_to_disk_locked(self) -> None:
+        try:
+            _BASE_PATH.mkdir(parents=True, exist_ok=True)
+            with open(_APPROVAL_FILE, "w", encoding="utf-8") as f:
+                json.dump(self._approvals, f, indent=2, ensure_ascii=False, default=str)
+        except Exception as e:
+            logger.warning("ApprovalState persist_to_disk failed: %s", str(e))
 
 
 # ============================================================

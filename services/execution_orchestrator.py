@@ -1,5 +1,7 @@
-from typing import Dict, Any, Union, List
+from __future__ import annotations
+
 import logging
+from typing import Any, Dict, List, Union
 
 from models.ai_command import AICommand
 from services.execution_governance_service import ExecutionGovernanceService
@@ -34,23 +36,51 @@ class ExecutionOrchestrator:
         CANON: ovdje se payload kanonizuje u AICommand, bez interpretacije intent-a.
         """
         cmd = self._normalize_command(command)
-        execution_id = cmd.execution_id
+        execution_id = getattr(cmd, "execution_id", None)
+
+        if not isinstance(execution_id, str) or not execution_id:
+            raise ValueError("AICommand.execution_id is required")
 
         # 1) REGISTER (idempotent)
         self.registry.register(cmd)
 
         # 2) GOVERNANCE (FIRST-PASS ONLY)
+        initiator = getattr(cmd, "initiator", None)
+        if not isinstance(initiator, str) or not initiator:
+            initiator = "unknown"
+
+        directive = getattr(cmd, "command", None)
+        if not isinstance(directive, str) or not directive:
+            directive = "unknown"
+
+        context_type = getattr(cmd, "context_type", None)
+        metadata = getattr(cmd, "metadata", None)
+        if (not isinstance(context_type, str) or not context_type) and isinstance(
+            metadata, dict
+        ):
+            meta_ct = metadata.get("context_type")
+            context_type = meta_ct if isinstance(meta_ct, str) else None
+        if not isinstance(context_type, str) or not context_type:
+            context_type = "unknown"
+
+        params = getattr(cmd, "params", None)
+        params_dict: Dict[str, Any] = params if isinstance(params, dict) else {}
+
+        approval_id = getattr(cmd, "approval_id", None)
+        if not isinstance(approval_id, str):
+            approval_id = None
+
         decision = self.governance.evaluate(
-            initiator=cmd.initiator,
-            context_type=cmd.command,
-            directive=cmd.command,
-            params=cmd.params or {},
+            initiator=initiator,
+            context_type=context_type,
+            directive=directive,
+            params=params_dict,
             execution_id=execution_id,
-            approval_id=cmd.approval_id,
+            approval_id=approval_id,
         )
 
         # 3) APPROVAL GATE
-        if not decision.get("allowed"):
+        if not bool(decision.get("allowed", False)):
             cmd.execution_state = "BLOCKED"
             self.registry.block(execution_id, decision)
 
@@ -89,7 +119,7 @@ class ExecutionOrchestrator:
         command.execution_state = "EXECUTING"
 
         if command.command == "goal_task_workflow":
-            params = command.params or {}
+            params = command.params if isinstance(command.params, dict) else {}
             workflow_type = params.get("workflow_type")
 
             # Specijalni workflow: KPI WEEKLY SUMMARY → AI SUMMARY DB
@@ -124,9 +154,12 @@ class ExecutionOrchestrator:
         Ovdje NEMA dodatnog governance passa — top-level goal_task_workflow je već odobren.
         Sve write operacije idu kroz NotionOpsAgent → NotionService.
         """
-        params = command.params or {}
+        params = command.params if isinstance(command.params, dict) else {}
         goal_spec = params.get("goal") or {}
-        tasks_specs: List[Dict[str, Any]] = params.get("tasks") or []
+        tasks_specs_raw = params.get("tasks") or []
+        tasks_specs: List[Dict[str, Any]] = (
+            tasks_specs_raw if isinstance(tasks_specs_raw, list) else []
+        )
 
         # ---------------------------
         # 1) KREIRAJ GOAL
@@ -151,18 +184,26 @@ class ExecutionOrchestrator:
         )
 
         goal_result = await self.notion_agent.execute(goal_cmd)
-        goal_page_id = goal_result.get("notion_page_id")
+        goal_page_id = (
+            goal_result.get("notion_page_id") if isinstance(goal_result, dict) else None
+        )
 
         # ---------------------------
         # 2) KREIRAJ TASKOVE POVEZANE NA TAJ GOAL
         # ---------------------------
-        created_tasks = []
+        created_tasks: List[Dict[str, Any]] = []
 
         for t in tasks_specs:
-            base_specs = dict(t.get("property_specs") or {})
+            if not isinstance(t, dict):
+                continue
+
+            base_specs_raw = t.get("property_specs") or {}
+            base_specs: Dict[str, Any] = (
+                dict(base_specs_raw) if isinstance(base_specs_raw, dict) else {}
+            )
 
             # Automatski enforce-amo relation "Goal" na kreirani goal
-            if goal_page_id:
+            if isinstance(goal_page_id, str) and goal_page_id:
                 base_specs["Goal"] = {
                     "type": "relation",
                     "page_ids": [goal_page_id],
@@ -188,7 +229,8 @@ class ExecutionOrchestrator:
             )
 
             task_result = await self.notion_agent.execute(task_cmd)
-            created_tasks.append(task_result)
+            if isinstance(task_result, dict):
+                created_tasks.append(task_result)
 
         return {
             "success": True,
@@ -208,7 +250,7 @@ class ExecutionOrchestrator:
         2) NotionOpsAgent / AI generiše sažetak (3–5 rečenica) iz KPI podataka
         3) kreira se nova stranica u AI SUMMARY DB (vezan na NOTION_AI_SUMMARY_DB_ID)
         """
-        params = command.params or {}
+        params = command.params if isinstance(command.params, dict) else {}
         db_key = params.get("db_key", "kpi")
         time_scope = params.get("time_scope", "this_week")
 
@@ -238,20 +280,19 @@ class ExecutionOrchestrator:
 
         kpi_result = await self.notion_agent.execute(kpi_query_cmd)
 
-        # Pretpostavka: NotionOpsAgent / AI sloj može vratiti neki summary field
-        summary_text = (
-            isinstance(kpi_result, dict)
-            and (
+        summary_text = None
+        if isinstance(kpi_result, dict):
+            summary_text = (
                 kpi_result.get("summary")
                 or kpi_result.get("ai_summary")
                 or kpi_result.get("text")
             )
-        ) or f"Weekly KPI summary for {time_scope} generated by system."
+
+        if not isinstance(summary_text, str) or not summary_text:
+            summary_text = f"Weekly KPI summary for {time_scope} generated by system."
 
         # ---------------------------
         # 2) UPIS U AI SUMMARY DB
-        #    CANON: ne uvodimo nove property-je koji ne postoje u DB
-        #    Minimalni siguran set: Name (title) + Summary (rich_text)
         # ---------------------------
         title = f"Weekly KPI summary – {time_scope}"
 
@@ -260,7 +301,6 @@ class ExecutionOrchestrator:
             intent="create_page",
             read_only=False,
             params={
-                # DB key za AI Weekly / AI Summary DB
                 "db_key": "ai_summary",
                 "property_specs": {
                     "Name": {
@@ -296,6 +336,18 @@ class ExecutionOrchestrator:
         }
 
     @staticmethod
+    def _allowed_fields() -> set[str]:
+        model_fields = getattr(AICommand, "model_fields", None)
+        if isinstance(model_fields, dict):
+            return set(model_fields.keys())
+
+        v1_fields = getattr(AICommand, "__fields__", None)
+        if isinstance(v1_fields, dict):
+            return set(v1_fields.keys())
+
+        return set()
+
+    @staticmethod
     def _normalize_command(raw: Union[AICommand, Dict[str, Any]]) -> AICommand:
         """
         Jedini dozvoljeni kanonski tip unutar Orchestratora je AICommand.
@@ -308,21 +360,24 @@ class ExecutionOrchestrator:
             return raw
 
         if isinstance(raw, dict):
-            data = dict(raw)
+            data: Dict[str, Any] = dict(raw)
 
             inner_cmd = data.get("command")
             if isinstance(inner_cmd, dict):
                 if "command" in inner_cmd:
-                    data["command"] = inner_cmd["command"]
+                    data["command"] = inner_cmd.get("command")
                 if "params" in inner_cmd and "params" not in data:
-                    data["params"] = inner_cmd["params"]
+                    data["params"] = inner_cmd.get("params")
                 if "context_type" in inner_cmd and "context_type" not in data:
-                    data["context_type"] = inner_cmd["context_type"]
+                    data["context_type"] = inner_cmd.get("context_type")
                 if "intent" in inner_cmd and "intent" not in data:
-                    data["intent"] = inner_cmd["intent"]
+                    data["intent"] = inner_cmd.get("intent")
 
-            allowed_fields = set(AICommand.model_fields.keys())
-            filtered = {k: v for k, v in data.items() if k in allowed_fields}
+            allowed_fields = ExecutionOrchestrator._allowed_fields()
+            if allowed_fields:
+                filtered = {k: v for k, v in data.items() if k in allowed_fields}
+            else:
+                filtered = data
 
             return AICommand(**filtered)
 

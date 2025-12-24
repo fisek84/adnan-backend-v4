@@ -1,10 +1,12 @@
 # services/observability/telemetry_emitter.py
 
+from __future__ import annotations
+
 import logging
-from typing import Optional, Dict, Any
+from typing import Any, Dict, Optional
 
 from services.observability.telemetry_event import TelemetryEvent
-from services.observability.telemetry_sink import TelemetrySink, StdoutTelemetrySink
+from services.observability.telemetry_sink import StdoutTelemetrySink, TelemetrySink
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +24,7 @@ class TelemetryEmitter:
     """
 
     def __init__(self, sink: Optional[TelemetrySink] = None):
-        self.sink = sink or StdoutTelemetrySink()
+        self.sink: TelemetrySink = sink or StdoutTelemetrySink()
 
     # -------------------------------------------------
     # GENERIC EMIT (HARDENED)

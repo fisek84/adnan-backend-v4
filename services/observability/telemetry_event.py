@@ -1,8 +1,10 @@
 # services/observability/telemetry_event.py
 
+from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import Optional, Dict, Any
 import time
+from typing import Any, Dict, Optional
 
 
 @dataclass(frozen=True)
@@ -25,7 +27,11 @@ class TelemetryEvent:
     action: Optional[str] = None
 
     # structured payload
-    payload: Optional[Dict[str, Any]] = None
+    payload: Dict[str, Any] = None  # type: ignore[assignment]
+
+    def __post_init__(self) -> None:
+        # Ensure payload is always a dict to simplify downstream consumers.
+        object.__setattr__(self, "payload", self.payload or {})
 
     # -------------------------------------------------
     # FACTORY
@@ -45,7 +51,7 @@ class TelemetryEvent:
             csi_state=csi_state,
             intent=intent,
             action=action,
-            payload=payload or {},
+            payload=payload,
         )
 
     # -------------------------------------------------

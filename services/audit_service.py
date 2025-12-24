@@ -11,14 +11,41 @@ Uloga:
 - nema mutacije stanja
 """
 
-from typing import Dict, Any, List, Optional
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional
+
 from services.memory_service import MemoryService
 
 
 class AuditService:
     def __init__(self, memory_service: Optional[MemoryService] = None):
         # READ-ONLY
-        self.memory = memory_service or MemoryService()
+        self.memory: MemoryService = memory_service or MemoryService()
+
+    # ============================================================
+    # INTERNAL SAFE READ HELPERS (defanzivno, read-only)
+    # ============================================================
+    def _get_memory_dict(self, key: str) -> Dict[str, Any]:
+        raw = getattr(self.memory, "memory", {})
+        if not isinstance(raw, dict):
+            return {}
+        value = raw.get(key, {})
+        return value if isinstance(value, dict) else {}
+
+    def _get_memory_list(self, key: str) -> List[Any]:
+        raw = getattr(self.memory, "memory", {})
+        if not isinstance(raw, dict):
+            return []
+        value = raw.get(key, [])
+        return value if isinstance(value, list) else []
+
+    def _get_memory_list_of_dicts(self, key: str) -> List[Dict[str, Any]]:
+        out: List[Dict[str, Any]] = []
+        for item in self._get_memory_list(key):
+            if isinstance(item, dict):
+                out.append(item)
+        return out
 
     # ============================================================
     # GENERAL AUDIT LOG
@@ -28,7 +55,7 @@ class AuditService:
         limit: int = 100,
         decision_type: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        records = list(self.memory.memory.get("decision_outcomes", []))
+        records = list(self._get_memory_list_of_dicts("decision_outcomes"))
 
         if decision_type:
             records = [r for r in records if r.get("decision_type") == decision_type]
@@ -46,11 +73,14 @@ class AuditService:
         limit: int = 100,
         event_type: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        records = list(self.memory.memory.get("write_audit_events", []) or [])
+        records = list(self._get_memory_list_of_dicts("write_audit_events"))
+
         if event_type:
             records = [r for r in records if r.get("event_type") == event_type]
+
         if limit <= 0:
             return []
+
         return records[-limit:]
 
     # ============================================================
@@ -65,14 +95,19 @@ class AuditService:
         Raw execution governance statistics.
         """
 
-        stats = self.memory.memory.get("execution_stats", {}) or {}
+        stats = self._get_memory_dict("execution_stats")
 
         if context_type and directive:
-            return stats.get(f"{context_type}:{directive}", {}) or {}
+            entry = stats.get(f"{context_type}:{directive}", {}) or {}
+            return entry if isinstance(entry, dict) else {}
 
         if context_type:
             prefix = f"{context_type}:"
-            return {k: v for k, v in stats.items() if k.startswith(prefix)}
+            return {
+                k: v
+                for k, v in stats.items()
+                if isinstance(k, str) and k.startswith(prefix)
+            }
 
         return stats
 
@@ -84,7 +119,7 @@ class AuditService:
         Aggregated execution KPIs across all directives.
         """
 
-        stats = self.memory.memory.get("execution_stats", {}) or {}
+        stats = self._get_memory_dict("execution_stats")
 
         total = 0
         allowed = 0
@@ -111,12 +146,13 @@ class AuditService:
     # SOP AUDIT
     # ============================================================
     def get_sop_audit(self, sop_key: str) -> Dict[str, Any]:
-        relations = self.memory.memory.get("cross_sop_relations", {}) or {}
+        relations = self._get_memory_dict("cross_sop_relations")
 
         related = {
             k: v
             for k, v in relations.items()
-            if k.endswith(f"->{sop_key}") or k.startswith(f"{sop_key}->")
+            if isinstance(k, str)
+            and (k.endswith(f"->{sop_key}") or k.startswith(f"{sop_key}->"))
         }
 
         return {
@@ -145,7 +181,7 @@ class AuditService:
 
         incidents = [
             r
-            for r in self.memory.memory.get("decision_outcomes", [])
+            for r in self._get_memory_list_of_dicts("decision_outcomes")
             if r.get("success") is False
         ]
 

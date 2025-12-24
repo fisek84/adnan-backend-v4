@@ -1,11 +1,14 @@
 # services/metrics_persistence_service.py
 
-from typing import Dict, Any
+from __future__ import annotations
+
 from datetime import datetime
-import os
 import logging
+import os
+from typing import Any, Dict, List, Optional
 
 from notion_client import Client
+
 from services.metrics_service import MetricsService
 
 
@@ -25,10 +28,12 @@ class MetricsPersistenceService:
     MAX_SUMMARY_LINES = 20
 
     def __init__(self):
-        self.api_key = os.getenv("NOTION_API_KEY")
-        self.db_id = os.getenv("NOTION_AGENT_EXCHANGE_DB_ID")
+        self.api_key: Optional[str] = os.getenv("NOTION_API_KEY")
+        self.db_id: Optional[str] = os.getenv("NOTION_AGENT_EXCHANGE_DB_ID")
 
-        self.notion = Client(auth=self.api_key) if self.api_key else None
+        self.notion: Optional[Client] = (
+            Client(auth=self.api_key) if self.api_key else None
+        )
 
         if not self.api_key:
             logger.warning("NOTION_API_KEY not set")
@@ -47,15 +52,27 @@ class MetricsPersistenceService:
             }
 
         snapshot = MetricsService.snapshot()
-        counters = snapshot.get("counters") or {}
-        events = snapshot.get("events") or {}
 
-        if not isinstance(counters, dict):
-            counters = {}
-        if not isinstance(events, dict):
-            events = {}
+        counters_raw = snapshot.get("counters") or {}
+        counters: Dict[str, Any] = (
+            counters_raw if isinstance(counters_raw, dict) else {}
+        )
 
-        summary_lines = [f"{k}: {v}" for k, v in counters.items()][
+        # Backward/forward compatible handling:
+        # - v1 used {"events": {event_type: [...]} }
+        # - newer snapshot can provide {"events": [...], "events_by_type": {...}}
+        events_by_type_raw = snapshot.get("events_by_type")
+        if events_by_type_raw is None:
+            events_raw = snapshot.get("events") or {}
+            events_by_type: Dict[str, Any] = (
+                events_raw if isinstance(events_raw, dict) else {}
+            )
+        else:
+            events_by_type = (
+                events_by_type_raw if isinstance(events_by_type_raw, dict) else {}
+            )
+
+        summary_lines: List[str] = [f"{k}: {v}" for k, v in counters.items()][
             : self.MAX_SUMMARY_LINES
         ]
 
@@ -67,7 +84,7 @@ class MetricsPersistenceService:
                         "title": [
                             {
                                 "text": {
-                                    "content": f"Metrics Snapshot @ {datetime.utcnow().isoformat()}"
+                                    "content": f"Metrics Snapshot @ {datetime.utcnow().isoformat()}",
                                 }
                             }
                         ]
@@ -86,7 +103,7 @@ class MetricsPersistenceService:
                 "ok": True,
                 "page_id": page.get("id"),
                 "counters": len(counters),
-                "event_types": len(events),
+                "event_types": len(events_by_type),
             }
 
         except Exception as e:
