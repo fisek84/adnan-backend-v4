@@ -1,7 +1,10 @@
-from pydantic import BaseModel, Field, validator
-from typing import Optional
+from __future__ import annotations
+
+import logging
 from datetime import datetime
-import logging  # Dodajemo logovanje
+from typing import Optional
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # Inicijalizujemo logger
 logger = logging.getLogger(__name__)
@@ -30,12 +33,10 @@ class TaskUpdate(BaseModel):
         None, description="Updated deadline (ISO8601 YYYY-MM-DD)"
     )
     priority: Optional[str] = Field(
-        None,
-        description="Task priority: low, medium, high",
+        None, description="Task priority: low, medium, high"
     )
     status: Optional[str] = Field(
-        None,
-        description="Task status: pending, in_progress, completed",
+        None, description="Task status: pending, in_progress, completed"
     )
 
     # 🔥 Needed for sortable task lists
@@ -45,38 +46,45 @@ class TaskUpdate(BaseModel):
         None, description="Updated responsible person (optional)"
     )
 
+    model_config = ConfigDict(extra="forbid")
+
     # -------------------------------
     # VALIDATIONS
     # -------------------------------
-    @validator("deadline")
-    def validate_deadline(cls, value):
+    @field_validator("deadline")
+    @classmethod
+    def validate_deadline(cls, value: Optional[str]) -> Optional[str]:
         if value is None:
             return value
         try:
             datetime.fromisoformat(value)
         except ValueError:
-            logger.error(f"Invalid deadline format: {value}")
+            logger.error("Invalid deadline format: %s", value)
             raise ValueError("Deadline must be ISO format YYYY-MM-DD")
         return value
 
-    @validator("priority")
-    def validate_priority(cls, value):
+    @field_validator("priority")
+    @classmethod
+    def validate_priority(cls, value: Optional[str]) -> Optional[str]:
         if value is None:
             return value
 
         allowed = {"low", "medium", "high"}
         if value not in allowed:
-            logger.error(f"Invalid priority value: {value}. Must be one of: {allowed}")
+            logger.error(
+                "Invalid priority value: %s. Must be one of: %s", value, allowed
+            )
             raise ValueError(f"Priority must be one of: {allowed}")
         return value
 
-    @validator("status")
-    def validate_status(cls, value):
+    @field_validator("status")
+    @classmethod
+    def validate_status(cls, value: Optional[str]) -> Optional[str]:
         if value is None:
             return value
 
         allowed = {"pending", "in_progress", "completed"}
         if value not in allowed:
-            logger.error(f"Invalid status value: {value}. Must be one of: {allowed}")
+            logger.error("Invalid status value: %s. Must be one of: %s", value, allowed)
             raise ValueError(f"Status must be one of: {allowed}")
         return value

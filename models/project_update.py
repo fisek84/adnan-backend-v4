@@ -1,7 +1,10 @@
+from __future__ import annotations
+
+import logging
 from datetime import datetime
-from pydantic import BaseModel
-from typing import Optional, List
-import logging  # Dodajemo logovanje
+from typing import List, Optional
+
+from pydantic import BaseModel, ConfigDict
 
 # Inicijalizujemo logger
 logger = logging.getLogger(__name__)
@@ -35,6 +38,8 @@ class ProjectUpdate(BaseModel):
     # important — used in ProjectsService.update_project
     progress: Optional[int] = None
 
+    model_config = ConfigDict(extra="forbid")
+
     # ---------------------------------------------------------
     # VALIDATIONS
     # ---------------------------------------------------------
@@ -45,9 +50,9 @@ class ProjectUpdate(BaseModel):
             return value
         allowed = {"pending", "in_progress", "completed"}
         if value not in allowed:
-            logger.error(f"Invalid status value: {value}. Must be one of: {allowed}")
+            logger.error("Invalid status value: %s. Must be one of: %s", value, allowed)
             raise ValueError(f"Status must be one of: {allowed}")
-        logger.info(f"Valid status value: {value}")
+        logger.info("Valid status value: %s", value)
         return value
 
     @classmethod
@@ -56,9 +61,11 @@ class ProjectUpdate(BaseModel):
             return value
         allowed = {"low", "medium", "high"}
         if value not in allowed:
-            logger.error(f"Invalid priority value: {value}. Must be one of: {allowed}")
+            logger.error(
+                "Invalid priority value: %s. Must be one of: %s", value, allowed
+            )
             raise ValueError(f"Priority must be one of: {allowed}")
-        logger.info(f"Valid priority value: {value}")
+        logger.info("Valid priority value: %s", value)
         return value
 
     @classmethod
@@ -69,10 +76,7 @@ class ProjectUpdate(BaseModel):
             # Proveravamo samo format datuma (ISO 8601)
             datetime.fromisoformat(value)
         except ValueError:
-            logger.error(f"Invalid deadline format: {value}")
+            logger.error("Invalid deadline format: %s", value)
             raise ValueError("Deadline must be in ISO format YYYY-MM-DD")
-        logger.info(f"Valid deadline format: {value}")
+        logger.info("Valid deadline format: %s", value)
         return value
-
-    class Config:
-        extra = "forbid"

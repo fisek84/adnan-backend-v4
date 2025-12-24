@@ -5,7 +5,13 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 
-from notion_client import Client
+try:
+    # Optional dependency in some CI/test environments.
+    # In production (requirements.txt), notion-client should be installed.
+    from notion_client import Client  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover
+    Client = None  # type: ignore[assignment,misc]
+
 from pydantic import BaseModel
 
 logger = logging.getLogger("ai_summary")
@@ -30,6 +36,10 @@ class AISummaryService:
     """
 
     def __init__(self, api_key: str, db_id: str) -> None:
+        if Client is None:
+            raise RuntimeError(
+                "notion-client is not installed. Install requirements.txt dependencies to use AISummaryService."
+            )
         if not api_key:
             raise ValueError("NOTION_API_KEY is missing")
         if not db_id:

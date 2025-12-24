@@ -1,21 +1,45 @@
+from __future__ import annotations
+
 import os
+from typing import Any, Dict
+
 from dotenv import load_dotenv
-from notion_client import Client
-from typing import Dict, Any
+
+try:
+    # Optional in some CI/test environments.
+    from notion_client import Client  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover
+    Client = None  # type: ignore[assignment,misc]
 
 from services.notion_schema_registry import NotionSchemaRegistry
 
 # ============================================================
-# ENV + CLIENT INIT
+# ENV INIT
 # ============================================================
 
 load_dotenv()
 
-NOTION_API_KEY = os.getenv("NOTION_API_KEY")
-if not NOTION_API_KEY:
-    raise RuntimeError("NOTION_API_KEY is missing")
 
-notion = Client(auth=NOTION_API_KEY)
+def _get_notion_client() -> "Client":
+    """Create a Notion client lazily.
+
+    This module is imported by parts of the runtime as well as by tests.
+    To keep imports CI-friendly (Phase 11), we must NOT hard-fail at import
+    time if NOTION_API_KEY is missing.
+
+    We only raise when a Notion operation is actually invoked.
+    """
+    if Client is None:
+        raise RuntimeError(
+            "notion-client is not installed. Install requirements.txt dependencies to use Notion features."
+        )
+
+    api_key = os.getenv("NOTION_API_KEY")
+    if not api_key:
+        raise RuntimeError("NOTION_API_KEY is missing")
+
+    return Client(auth=api_key)
+
 
 # ============================================================
 # LOW-LEVEL WORKERS (NO LOGIC, HARD VALIDATION)
@@ -24,6 +48,7 @@ notion = Client(auth=NOTION_API_KEY)
 
 def create_page(database_id: str, properties: Dict[str, Any]):
     try:
+        notion = _get_notion_client()
         page = notion.pages.create(
             parent={"database_id": database_id},
             properties=properties,
@@ -52,6 +77,7 @@ def create_page(database_id: str, properties: Dict[str, Any]):
 
 def delete_page(page_id: str):
     try:
+        notion = _get_notion_client()
         notion.pages.delete(page_id)
         return {
             "success": True,

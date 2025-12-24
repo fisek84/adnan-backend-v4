@@ -1,7 +1,10 @@
-from datetime import datetime
-from pydantic import BaseModel, Field, validator
-from typing import Optional, Dict, Any
+from __future__ import annotations
+
 import logging
+from datetime import datetime
+from typing import Any, Dict, Optional
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -23,8 +26,7 @@ class TaskCompensationContract(BaseModel):
         None, description="Payload required to perform compensation"
     )
 
-    class Config:
-        extra = "forbid"
+    model_config = ConfigDict(extra="forbid")
 
 
 class TaskExecutionContract(BaseModel):
@@ -61,16 +63,15 @@ class TaskExecutionContract(BaseModel):
         description="Compensation / rollback declaration",
     )
 
-    @validator("execution_status")
-    def validate_execution_status(cls, v):
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("execution_status")
+    @classmethod
+    def validate_execution_status(cls, v: str) -> str:
         allowed = {"not_started", "running", "success", "failed"}
         if v not in allowed:
             raise ValueError(f"Execution status must be one of: {allowed}")
         return v
-
-    class Config:
-        extra = "forbid"
-        json_encoders = {datetime: lambda v: v.isoformat()}
 
 
 class TaskModel(BaseModel):
@@ -111,19 +112,27 @@ class TaskModel(BaseModel):
     created_at: datetime = Field(..., description="Task creation timestamp")
     updated_at: datetime = Field(..., description="Last update timestamp")
 
-    @validator("deadline")
-    def validate_deadline(cls, v):
+    model_config = ConfigDict(
+        from_attributes=True,
+        validate_assignment=True,
+        extra="forbid",
+    )
+
+    @field_validator("deadline")
+    @classmethod
+    def validate_deadline(cls, v: Optional[str]) -> Optional[str]:
         if v is None:
             return v
         try:
             datetime.fromisoformat(v)
         except Exception:
-            logger.error(f"Invalid deadline format: {v}")
+            logger.error("Invalid deadline format: %s", v)
             raise ValueError("Deadline must be ISO format YYYY-MM-DD")
         return v
 
-    @validator("priority")
-    def validate_priority(cls, v):
+    @field_validator("priority")
+    @classmethod
+    def validate_priority(cls, v: Optional[str]) -> Optional[str]:
         if v is None:
             return v
         allowed = {"low", "medium", "high"}
@@ -131,15 +140,10 @@ class TaskModel(BaseModel):
             raise ValueError(f"Priority must be one of: {allowed}")
         return v
 
-    @validator("status")
-    def validate_status(cls, v):
+    @field_validator("status")
+    @classmethod
+    def validate_status(cls, v: str) -> str:
         allowed = {"pending", "in_progress", "completed"}
         if v not in allowed:
             raise ValueError(f"Status must be one of: {allowed}")
         return v
-
-    class Config:
-        from_attributes = True
-        validate_assignment = True
-        extra = "forbid"
-        json_encoders = {datetime: lambda v: v.isoformat()}

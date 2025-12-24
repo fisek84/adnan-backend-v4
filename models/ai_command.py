@@ -1,7 +1,10 @@
-from pydantic import BaseModel, Field, root_validator
-from typing import Optional, Any, Dict
-import uuid
+from __future__ import annotations
+
 import logging
+import uuid
+from typing import Any, Dict, Optional
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -56,25 +59,23 @@ class AICommand(BaseModel):
     # ========================================================
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
+    # Pydantic v2 configuration
+    model_config = ConfigDict(extra="forbid", validate_assignment=True)
+
     # ========================================================
     # NORMALIZATION (POST)
     # ========================================================
-    @root_validator(pre=False, skip_on_failure=True)
-    def normalize_ids(cls, values):
-        if not values.get("execution_id"):
-            values["execution_id"] = values["request_id"]
+    @model_validator(mode="after")
+    def normalize_ids(self) -> "AICommand":
+        if not self.execution_id:
+            self.execution_id = self.request_id
 
         # owner is always system
-        values["owner"] = "system"
-
-        return values
-
-    class Config:
-        extra = "forbid"
-        validate_assignment = True
+        self.owner = "system"
+        return self
 
     @classmethod
-    def log(cls, command: "AICommand"):
+    def log(cls, command: "AICommand") -> None:
         logger.info(
             "[AICommand] command=%s intent=%s execution_id=%s approval_id=%s read_only=%s",
             command.command,

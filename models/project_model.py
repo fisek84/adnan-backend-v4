@@ -1,7 +1,10 @@
-from pydantic import BaseModel
-from typing import Optional, List
+from __future__ import annotations
+
+import logging
 from datetime import datetime
-import logging  # Dodajemo logovanje
+from typing import List, Optional
+
+from pydantic import BaseModel, ConfigDict, Field
 
 # Inicijalizujemo logger
 logger = logging.getLogger(__name__)
@@ -30,8 +33,8 @@ class ProjectModel(BaseModel):
 
     parent_id: Optional[str] = None
 
-    agents: List[str] = []
-    tasks: List[str] = []
+    agents: List[str] = Field(default_factory=list)
+    tasks: List[str] = Field(default_factory=list)
 
     handled_by: Optional[str] = None
 
@@ -42,20 +45,20 @@ class ProjectModel(BaseModel):
     updated_at: datetime
 
     # ------------------------------------------------------
-    # CONFIGURATION
+    # CONFIGURATION (Pydantic v2)
     # ------------------------------------------------------
-    class Config:
-        orm_mode = True
-        validate_assignment = True
-        extra = "forbid"
-        json_encoders = {datetime: lambda v: v.isoformat()}
+    model_config = ConfigDict(
+        from_attributes=True,
+        validate_assignment=True,
+        extra="forbid",
+    )
 
     @classmethod
-    def log_project_creation(cls, project: "ProjectModel"):
-        logger.info(f"Creating project: {project.title} with ID: {project.id}")
-        logger.debug(f"Project details: {project.dict()}")
+    def log_project_creation(cls, project: "ProjectModel") -> None:
+        logger.info("Creating project: %s with ID: %s", project.title, project.id)
+        logger.debug("Project details: %s", project.model_dump())
 
     @classmethod
-    def log_project_update(cls, project: "ProjectModel"):
-        logger.info(f"Updating project: {project.title} with ID: {project.id}")
-        logger.debug(f"Updated project details: {project.dict()}")
+    def log_project_update(cls, project: "ProjectModel") -> None:
+        logger.info("Updating project: %s with ID: %s", project.title, project.id)
+        logger.debug("Updated project details: %s", project.model_dump())

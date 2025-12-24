@@ -1,7 +1,10 @@
-from datetime import datetime
-from pydantic import BaseModel, Field, field_validator
-from typing import Optional
+from __future__ import annotations
+
 import logging
+from datetime import datetime
+from typing import Optional
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # Inicijalizujemo logger
 logger = logging.getLogger(__name__)
@@ -33,32 +36,33 @@ class GoalCreate(BaseModel):
         None, description="Optional parent goal reference (UUID or Notion ID)"
     )
 
+    model_config = ConfigDict(extra="forbid")
+
     # ============================================================
     # VALIDATORS (Pydantic v2)
     # ============================================================
 
     @field_validator("deadline")
-    def validate_deadline(cls, v):
+    @classmethod
+    def validate_deadline(cls, v: Optional[str]) -> Optional[str]:
         if v is None:
             return v
         try:
             datetime.fromisoformat(v)
         except ValueError:
-            logger.error(f"Invalid deadline format: {v}")
+            logger.error("Invalid deadline format: %s", v)
             raise ValueError("Deadline must be ISO format YYYY-MM-DD")
-        logger.info(f"Valid deadline format: {v}")
+        logger.info("Valid deadline format: %s", v)
         return v
 
     @field_validator("priority")
-    def validate_priority(cls, v):
+    @classmethod
+    def validate_priority(cls, v: Optional[str]) -> Optional[str]:
         if v is None:
             return v
         allowed = {"low", "medium", "high"}
         if v not in allowed:
-            logger.error(f"Invalid priority value: {v}. Must be one of: {allowed}")
+            logger.error("Invalid priority value: %s. Must be one of: %s", v, allowed)
             raise ValueError(f"Priority must be one of: {allowed}")
-        logger.info(f"Valid priority value: {v}")
+        logger.info("Valid priority value: %s", v)
         return v
-
-    class Config:
-        extra = "forbid"  # reject unknown fields

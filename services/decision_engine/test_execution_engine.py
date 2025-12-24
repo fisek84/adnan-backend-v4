@@ -1,7 +1,15 @@
 # services/decision_engine/test_execution_engine.py
+#
+# NOTE:
+# This file lives under `services/` but its historical name matches pytest's
+# default discovery patterns (test_*.py).
+#
+# This class is a small helper/harness, not an actual pytest test case.
+# To avoid PytestCollectionWarning (and keep CI output clean), the class name
+# must not match pytest's test-class pattern.
 
 
-class TestExecutionEngine:
+class ExecutionEngineHarness:
     def __init__(self, decision_service):
         self.svc = decision_service
 

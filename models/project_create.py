@@ -1,7 +1,10 @@
+from __future__ import annotations
+
+import logging
 from datetime import datetime
-from pydantic import BaseModel, validator
-from typing import Optional, List
-import logging  # Dodajemo logovanje
+from typing import List, Optional
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # Inicijalizujemo logger
 logger = logging.getLogger(__name__)
@@ -27,47 +30,49 @@ class ProjectCreate(BaseModel):
 
     parent_id: Optional[str] = None
 
-    agents: List[str] = []
-    tasks: List[str] = []
+    agents: List[str] = Field(default_factory=list)
+    tasks: List[str] = Field(default_factory=list)
 
     handled_by: Optional[str] = None
 
     # Required by ProjectsService.create_project()
     progress: Optional[int] = 0
 
+    model_config = ConfigDict(extra="forbid")
+
     # ======================================================
     # 🔥 VALIDATION: Title cannot be empty
     # ======================================================
-    @validator("title")
-    def title_cannot_be_empty(cls, v):
+    @field_validator("title")
+    @classmethod
+    def title_cannot_be_empty(cls, v: str) -> str:
         if not v or v.strip() == "":
             logger.error("Project title cannot be empty.")
             raise ValueError("Project must have a title.")
-        logger.info(f"Project title validated: {v}")
+        logger.info("Project title validated: %s", v)
         return v
 
-    @validator("priority")
-    def validate_priority(cls, v):
+    @field_validator("priority")
+    @classmethod
+    def validate_priority(cls, v: Optional[str]) -> Optional[str]:
         if v is None:
             return v
         allowed = {"low", "medium", "high"}
         if v not in allowed:
-            logger.error(f"Invalid priority value: {v}. Must be one of: {allowed}")
+            logger.error("Invalid priority value: %s. Must be one of: %s", v, allowed)
             raise ValueError(f"Priority must be one of: {allowed}")
-        logger.info(f"Valid priority value: {v}")
+        logger.info("Valid priority value: %s", v)
         return v
 
-    @validator("deadline")
-    def validate_deadline(cls, v):
+    @field_validator("deadline")
+    @classmethod
+    def validate_deadline(cls, v: Optional[str]) -> Optional[str]:
         if v is None:
             return v
         try:
             datetime.fromisoformat(v)
         except ValueError:
-            logger.error(f"Invalid deadline format: {v}")
+            logger.error("Invalid deadline format: %s", v)
             raise ValueError("Deadline must be in ISO format YYYY-MM-DD")
-        logger.info(f"Valid deadline format: {v}")
+        logger.info("Valid deadline format: %s", v)
         return v
-
-    class Config:
-        extra = "forbid"

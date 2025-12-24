@@ -1,6 +1,9 @@
-from pydantic import BaseModel, Field
-from typing import Optional, Any, Dict
-import logging  # Dodajemo logovanje
+from __future__ import annotations
+
+import logging
+from typing import Any, Dict, Optional
+
+from pydantic import BaseModel, ConfigDict, Field
 
 # Inicijalizujemo logger
 logger = logging.getLogger(__name__)
@@ -31,22 +34,20 @@ class AIResponse(BaseModel):
 
     error: Optional[str] = Field(None, description="Error message if operation failed")
 
-    class Config:
-        extra = "forbid"
-        validate_assignment = True
+    model_config = ConfigDict(extra="forbid", validate_assignment=True)
 
     @classmethod
-    def log_success(cls, response: "AIResponse"):
+    def log_success(cls, response: "AIResponse") -> None:
         if response.success:
-            logger.info(f"AI operation succeeded: {response.message}")
-            logger.debug(f"AI result: {response.result}")
-            logger.debug(f"AI metadata: {response.metadata}")
+            logger.info("AI operation succeeded: %s", response.message)
+            logger.debug("AI result: %s", response.result)
+            logger.debug("AI metadata: %s", response.metadata)
 
     @classmethod
-    def log_failure(cls, response: "AIResponse"):
+    def log_failure(cls, response: "AIResponse") -> None:
         if not response.success:
-            logger.error(f"AI operation failed: {response.message}")
+            logger.error("AI operation failed: %s", response.message)
             if response.error:
-                logger.error(f"Error details: {response.error}")
-            logger.debug(f"Failed AI result: {response.result}")
-            logger.debug(f"AI metadata: {response.metadata}")
+                logger.error("Error details: %s", response.error)
+            logger.debug("Failed AI result: %s", response.result)
+            logger.debug("AI metadata: %s", response.metadata)

@@ -1,7 +1,10 @@
-from pydantic import BaseModel, Field, validator
-from typing import Optional
+from __future__ import annotations
+
+import logging
 from datetime import datetime
-import logging  # Dodajemo logovanje
+from typing import Optional
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # Inicijalizujemo logger
 logger = logging.getLogger(__name__)
@@ -36,53 +39,56 @@ class GoalUpdate(BaseModel):
         None, ge=0, le=100, description="Progress percentage (0–100)"
     )
 
+    model_config = ConfigDict(extra="forbid")
+
     # -------------------------------------------
     # VALIDATIONS
     # -------------------------------------------
 
-    @validator("deadline")
-    def validate_deadline(cls, v):
+    @field_validator("deadline")
+    @classmethod
+    def validate_deadline(cls, v: Optional[str]) -> Optional[str]:
         if v is None:
             return v
         try:
             datetime.fromisoformat(v)
         except Exception:
-            logger.error(f"Invalid deadline format: {v}")
+            logger.error("Invalid deadline format: %s", v)
             raise ValueError("Deadline must be ISO format YYYY-MM-DD")
-        logger.info(f"Valid deadline format: {v}")
+        logger.info("Valid deadline format: %s", v)
         return v
 
-    @validator("priority")
-    def validate_priority(cls, v):
+    @field_validator("priority")
+    @classmethod
+    def validate_priority(cls, v: Optional[str]) -> Optional[str]:
         if v is None:
             return v
         allowed = {"low", "medium", "high"}
         if v not in allowed:
-            logger.error(f"Invalid priority value: {v}. Must be one of: {allowed}")
+            logger.error("Invalid priority value: %s. Must be one of: %s", v, allowed)
             raise ValueError(f"Priority must be one of: {allowed}")
-        logger.info(f"Valid priority value: {v}")
+        logger.info("Valid priority value: %s", v)
         return v
 
-    @validator("status")
-    def validate_status(cls, v):
+    @field_validator("status")
+    @classmethod
+    def validate_status(cls, v: Optional[str]) -> Optional[str]:
         if v is None:
             return v
         allowed = {"pending", "in_progress", "completed"}
         if v not in allowed:
-            logger.error(f"Invalid status value: {v}. Must be one of: {allowed}")
+            logger.error("Invalid status value: %s. Must be one of: %s", v, allowed)
             raise ValueError(f"Status must be one of: {allowed}")
-        logger.info(f"Valid status value: {v}")
+        logger.info("Valid status value: %s", v)
         return v
 
-    @validator("progress")
-    def validate_progress(cls, v):
+    @field_validator("progress")
+    @classmethod
+    def validate_progress(cls, v: Optional[int]) -> Optional[int]:
         if v is None:
             return v
         if v < 0 or v > 100:
-            logger.error(f"Invalid progress value: {v}. Must be between 0 and 100.")
+            logger.error("Invalid progress value: %s. Must be between 0 and 100.", v)
             raise ValueError("Progress must be between 0 and 100.")
-        logger.info(f"Valid progress value: {v}")
+        logger.info("Valid progress value: %s", v)
         return v
-
-    class Config:
-        extra = "forbid"  # disallow unknown fields

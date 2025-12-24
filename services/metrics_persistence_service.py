@@ -7,7 +7,11 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 
-from notion_client import Client
+try:
+    # Optional in some CI/test environments.
+    from notion_client import Client  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover
+    Client = None  # type: ignore[assignment,misc]
 
 from services.metrics_service import MetricsService
 
@@ -31,11 +35,16 @@ class MetricsPersistenceService:
         self.api_key: Optional[str] = os.getenv("NOTION_API_KEY")
         self.db_id: Optional[str] = os.getenv("NOTION_AGENT_EXCHANGE_DB_ID")
 
-        self.notion: Optional[Client] = (
-            Client(auth=self.api_key) if self.api_key else None
-        )
+        if Client is None:
+            self.notion = None
+        else:
+            self.notion = Client(auth=self.api_key) if self.api_key else None
 
-        if not self.api_key:
+        if Client is None:
+            logger.warning(
+                "notion-client is not installed; MetricsPersistenceService is disabled in this environment"
+            )
+        elif not self.api_key:
             logger.warning("NOTION_API_KEY not set")
 
         if not self.db_id:

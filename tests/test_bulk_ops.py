@@ -1,10 +1,23 @@
-from fastapi.testclient import TestClient
+import httpx
+import pytest
+
 from main import app
 
-client = TestClient(app)
+
+@pytest.fixture
+async def client():
+    """Async httpx client against the FastAPI ASGI app.
+
+    This avoids httpx's deprecated `app=` shortcut (which Starlette/FastAPI's
+    TestClient used historically) and keeps test output warning-free.
+    """
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        yield client
 
 
-def test_bulk_create_minimal():
+@pytest.mark.anyio
+async def test_bulk_create_minimal(client):
     payload = {
         "items": [
             {"type": "goal", "title": "Test Goal A"},
@@ -12,31 +25,34 @@ def test_bulk_create_minimal():
         ]
     }
 
-    response = client.post("/notion-ops/bulk/create", json=payload)
+    response = await client.post("/notion-ops/bulk/create", json=payload)
     assert response.status_code == 200
     data = response.json()
     assert "created" in data
     assert len(data["created"]) == 2
 
 
-def test_bulk_update_empty():
+@pytest.mark.anyio
+async def test_bulk_update_empty(client):
     payload = {"updates": []}
 
-    response = client.post("/notion-ops/bulk/update", json=payload)
+    response = await client.post("/notion-ops/bulk/update", json=payload)
     assert response.status_code == 200
     assert response.json() == {"updated": []}
 
 
-def test_bulk_query_empty():
+@pytest.mark.anyio
+async def test_bulk_query_empty(client):
     payload = {"queries": []}
 
-    response = client.post("/notion-ops/bulk/query", json=payload)
+    response = await client.post("/notion-ops/bulk/query", json=payload)
     assert response.status_code == 200
     assert response.json() == {"results": []}
 
 
-def test_bulk_invalid_type():
+@pytest.mark.anyio
+async def test_bulk_invalid_type(client):
     payload = {"items": [{"type": "invalid_test_type", "title": "Bad"}]}
 
-    response = client.post("/notion-ops/bulk/create", json=payload)
+    response = await client.post("/notion-ops/bulk/create", json=payload)
     assert response.status_code == 400
