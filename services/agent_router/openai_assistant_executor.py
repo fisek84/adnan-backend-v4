@@ -102,7 +102,9 @@ class OpenAIAssistantExecutor:
             if status == "requires_action":
                 if not allow_tools:
                     # CEO advisory path: tool calls are forbidden
-                    await self._cancel_run_best_effort(thread_id=thread_id, run_id=run_id)
+                    await self._cancel_run_best_effort(
+                        thread_id=thread_id, run_id=run_id
+                    )
                     raise RuntimeError(
                         "Tool calls are not allowed for CEO advisory (read-only)"
                     )
@@ -116,7 +118,9 @@ class OpenAIAssistantExecutor:
                 tool_calls = getattr(submit, "tool_calls", None) if submit else None
 
                 if not tool_calls:
-                    raise RuntimeError("Assistant requires_action but has no tool calls")
+                    raise RuntimeError(
+                        "Assistant requires_action but has no tool calls"
+                    )
 
                 tool_outputs = []
 
@@ -163,7 +167,9 @@ class OpenAIAssistantExecutor:
             self.client.beta.threads.messages.list, thread_id=thread_id
         )
         data = getattr(messages, "data", None) or []
-        assistant_messages = [m for m in data if getattr(m, "role", None) == "assistant"]
+        assistant_messages = [
+            m for m in data if getattr(m, "role", None) == "assistant"
+        ]
 
         if not assistant_messages:
             raise RuntimeError("Assistant produced no response")
@@ -203,7 +209,9 @@ class OpenAIAssistantExecutor:
             return t
 
         # Match ```json\n...\n``` OR ```\n...\n```
-        m = re.match(r"^```(?:json)?\s*(.*?)\s*```$", t, flags=re.DOTALL | re.IGNORECASE)
+        m = re.match(
+            r"^```(?:json)?\s*(.*?)\s*```$", t, flags=re.DOTALL | re.IGNORECASE
+        )
         if m:
             return (m.group(1) or "").strip()
         return t
@@ -333,7 +341,9 @@ class OpenAIAssistantExecutor:
     # CEO ADVISORY (READ-ONLY) — used by CEO Console
     # ============================================================
 
-    async def ceo_command(self, *, text: str, context: Dict[str, Any]) -> Dict[str, Any]:
+    async def ceo_command(
+        self, *, text: str, context: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """
         READ-ONLY advisory path.
         - No tools / no side-effects.

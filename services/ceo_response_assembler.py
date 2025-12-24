@@ -101,11 +101,15 @@ class CEOResponseAssembler:
         if advisory:
             adv = _as_dict(advisory)
             response["advisory"] = {
-                "summary": adv.get("summary") if isinstance(adv.get("summary"), str) else "\n".join(_as_list_of_str(adv.get("summary"))),
+                "summary": adv.get("summary")
+                if isinstance(adv.get("summary"), str)
+                else "\n".join(_as_list_of_str(adv.get("summary"))),
                 "questions": _as_list_of_str(adv.get("questions")),
                 "plan": _as_list_of_str(adv.get("plan")),
                 "options": _as_list_of_str(adv.get("options")),
-                "proposed_commands": adv.get("proposed_commands") if isinstance(adv.get("proposed_commands"), list) else [],
+                "proposed_commands": adv.get("proposed_commands")
+                if isinstance(adv.get("proposed_commands"), list)
+                else [],
                 "trace": _as_dict(adv.get("trace")),
                 "read_only": True,
             }

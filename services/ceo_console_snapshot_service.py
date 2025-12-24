@@ -165,7 +165,9 @@ class _NotionClient:
 
     def retrieve_page(self, page_id: str) -> Dict[str, Any]:
         url = f"{NOTION_API_URL}/pages/{page_id}"
-        resp = requests.get(url, headers=self._headers, timeout=self._config.http_timeout_sec)
+        resp = requests.get(
+            url, headers=self._headers, timeout=self._config.http_timeout_sec
+        )
         if resp.status_code != 200:
             raise RuntimeError(
                 f"Notion retrieve page failed (status={resp.status_code}): {resp.text}"
@@ -185,7 +187,9 @@ class _NotionClient:
             if next_cursor:
                 full_url = f"{url}&start_cursor={next_cursor}"
 
-            resp = requests.get(full_url, headers=self._headers, timeout=self._config.http_timeout_sec)
+            resp = requests.get(
+                full_url, headers=self._headers, timeout=self._config.http_timeout_sec
+            )
             if resp.status_code != 200:
                 raise RuntimeError(
                     f"Notion list block children failed (status={resp.status_code}): {resp.text}"
@@ -262,7 +266,9 @@ class CeoConsoleSnapshotService:
                 "NOTION_TASKS_DATABASE_ID/NOTION_TASKS_DB_ID must be set."
             )
 
-        approvals_db_id = cls._env_first("NOTION_APPROVALS_DATABASE_ID", "NOTION_APPROVALS_DB_ID")
+        approvals_db_id = cls._env_first(
+            "NOTION_APPROVALS_DATABASE_ID", "NOTION_APPROVALS_DB_ID"
+        )
         version = cls._env_first("NOTION_VERSION") or DEFAULT_NOTION_VERSION
 
         cfg = _NotionConfig(
@@ -272,28 +278,41 @@ class CeoConsoleSnapshotService:
             tasks_db_id=tasks_db_id,
             approvals_db_id=approvals_db_id,
             sop_db_id=cls._env_first("NOTION_SOP_DATABASE_ID", "NOTION_SOP_DB_ID"),
-            plans_db_id=cls._env_first("NOTION_PLANS_DATABASE_ID", "NOTION_PLANS_DB_ID"),
+            plans_db_id=cls._env_first(
+                "NOTION_PLANS_DATABASE_ID", "NOTION_PLANS_DB_ID"
+            ),
             time_management_page_id=cls._env_first("NOTION_TIME_MANAGEMENT_PAGE_ID"),
             goal_name_prop=cls._env_first("NOTION_GOAL_NAME_PROP") or "Name",
             goal_status_prop=cls._env_first("NOTION_GOAL_STATUS_PROP") or "Status",
-            goal_priority_prop=cls._env_first("NOTION_GOAL_PRIORITY_PROP") or "Priority",
-            goal_deadline_prop=cls._env_first("NOTION_GOAL_DEADLINE_PROP") or "Deadline",
+            goal_priority_prop=cls._env_first("NOTION_GOAL_PRIORITY_PROP")
+            or "Priority",
+            goal_deadline_prop=cls._env_first("NOTION_GOAL_DEADLINE_PROP")
+            or "Deadline",
             task_title_prop=cls._env_first("NOTION_TASK_TITLE_PROP") or "Name",
             task_status_prop=cls._env_first("NOTION_TASK_STATUS_PROP") or "Status",
-            task_priority_prop=cls._env_first("NOTION_TASK_PRIORITY_PROP") or "Priority",
+            task_priority_prop=cls._env_first("NOTION_TASK_PRIORITY_PROP")
+            or "Priority",
             task_due_date_prop=cls._env_first("NOTION_TASK_DUE_PROP") or "Due",
             task_lead_prop=cls._env_first("NOTION_TASK_LEAD_PROP") or "Lead",
-            approval_status_prop=cls._env_first("NOTION_APPROVAL_STATUS_PROP") or "Status",
-            approval_last_change_prop=cls._env_first("NOTION_APPROVAL_LAST_CHANGE_PROP") or "Last change",
+            approval_status_prop=cls._env_first("NOTION_APPROVAL_STATUS_PROP")
+            or "Status",
+            approval_last_change_prop=cls._env_first("NOTION_APPROVAL_LAST_CHANGE_PROP")
+            or "Last change",
             priority_window_days=cls._env_int("CEO_PRIORITY_WINDOW_DAYS", 7),
-            http_timeout_sec=cls._env_int("NOTION_HTTP_TIMEOUT_SEC", DEFAULT_HTTP_TIMEOUT_SEC),
+            http_timeout_sec=cls._env_int(
+                "NOTION_HTTP_TIMEOUT_SEC", DEFAULT_HTTP_TIMEOUT_SEC
+            ),
             max_rows=cls._env_int("CEO_SNAPSHOT_MAX_ROWS", DEFAULT_MAX_ROWS),
-            excerpt_lines=cls._env_int("CEO_SNAPSHOT_EXCERPT_LINES", DEFAULT_EXCERPT_LINES),
+            excerpt_lines=cls._env_int(
+                "CEO_SNAPSHOT_EXCERPT_LINES", DEFAULT_EXCERPT_LINES
+            ),
         )
 
         high_values_env = cls._env_first("CEO_PRIORITY_HIGH_VALUES")
         if high_values_env:
-            cfg.priority_high_values = [v.strip() for v in high_values_env.split(",") if v.strip()]
+            cfg.priority_high_values = [
+                v.strip() for v in high_values_env.split(",") if v.strip()
+            ]
 
         return cls(notion_client=_NotionClient(cfg), config=cfg)
 
@@ -340,7 +359,11 @@ class CeoConsoleSnapshotService:
                 "knowledge": extra,
             }
         except Exception as e:
-            return {"available": False, "source": "ceo_console_snapshot_service", "error": str(e)}
+            return {
+                "available": False,
+                "source": "ceo_console_snapshot_service",
+                "error": str(e),
+            }
 
     def get_snapshot(self) -> Dict[str, Any]:
         return self.snapshot()
@@ -363,7 +386,8 @@ class CeoConsoleSnapshotService:
         return (
             "Could not find sort property" in s
             or "sort property with name or id" in s
-            or "validation_error" in s and "sort" in s.lower()
+            or "validation_error" in s
+            and "sort" in s.lower()
         )
 
     def _safe_query_with_optional_sort(
@@ -375,14 +399,20 @@ class CeoConsoleSnapshotService:
         assert self._cfg is not None
 
         if not sorts:
-            return self._notion.query_database(database_id, filter_=None, sorts=None, max_rows=self._cfg.max_rows)
+            return self._notion.query_database(
+                database_id, filter_=None, sorts=None, max_rows=self._cfg.max_rows
+            )
 
         try:
-            return self._notion.query_database(database_id, filter_=None, sorts=sorts, max_rows=self._cfg.max_rows)
+            return self._notion.query_database(
+                database_id, filter_=None, sorts=sorts, max_rows=self._cfg.max_rows
+            )
         except RuntimeError as e:
             if self._is_missing_sort_property_error(e):
                 # fallback: no sorts (snapshot must not die because of schema mismatch)
-                return self._notion.query_database(database_id, filter_=None, sorts=None, max_rows=self._cfg.max_rows)
+                return self._notion.query_database(
+                    database_id, filter_=None, sorts=None, max_rows=self._cfg.max_rows
+                )
             raise
 
     def _build_ceo_advisory_knowledge(self) -> Dict[str, Any]:
@@ -396,26 +426,38 @@ class CeoConsoleSnapshotService:
         }
 
         if self._cfg.sop_db_id:
-            knowledge["sop"] = self._summarize_simple_database(self._cfg.sop_db_id, "Name", "sop")
+            knowledge["sop"] = self._summarize_simple_database(
+                self._cfg.sop_db_id, "Name", "sop"
+            )
 
         if self._cfg.plans_db_id:
-            knowledge["plans"] = self._summarize_simple_database(self._cfg.plans_db_id, "Name", "plans")
+            knowledge["plans"] = self._summarize_simple_database(
+                self._cfg.plans_db_id, "Name", "plans"
+            )
 
         if self._cfg.time_management_page_id:
-            knowledge["time_management"] = self._read_page_excerpt(self._cfg.time_management_page_id, "time_management")
+            knowledge["time_management"] = self._read_page_excerpt(
+                self._cfg.time_management_page_id, "time_management"
+            )
 
         return knowledge
 
-    def _summarize_simple_database(self, database_id: str, title_prop: str, label: str) -> Dict[str, Any]:
+    def _summarize_simple_database(
+        self, database_id: str, title_prop: str, label: str
+    ) -> Dict[str, Any]:
         assert self._cfg is not None
         assert self._notion is not None
 
         out: Dict[str, Any] = {"available": False, "label": label, "items": []}
         try:
-            rows = self._notion.query_database(database_id, filter_=None, sorts=None, max_rows=self._cfg.max_rows)
+            rows = self._notion.query_database(
+                database_id, filter_=None, sorts=None, max_rows=self._cfg.max_rows
+            )
             items: List[Dict[str, Any]] = []
             for row in rows:
-                props: Dict[str, Any] = row.get("properties", {}) if isinstance(row, dict) else {}
+                props: Dict[str, Any] = (
+                    row.get("properties", {}) if isinstance(row, dict) else {}
+                )
                 title = self._extract_title(props.get(title_prop)) or "(untitled)"
                 items.append({"id": row.get("id", ""), "title": title})
             out["available"] = True
@@ -430,7 +472,13 @@ class CeoConsoleSnapshotService:
         assert self._cfg is not None
         assert self._notion is not None
 
-        out: Dict[str, Any] = {"available": False, "label": label, "page_id": page_id, "title": None, "excerpt": []}
+        out: Dict[str, Any] = {
+            "available": False,
+            "label": label,
+            "page_id": page_id,
+            "title": None,
+            "excerpt": [],
+        }
         try:
             page = self._notion.retrieve_page(page_id)
             props = page.get("properties", {}) if isinstance(page, dict) else {}
@@ -491,12 +539,16 @@ class CeoConsoleSnapshotService:
 
         rows = self._safe_query_with_optional_sort(
             self._cfg.goals_db_id,
-            sorts=[{"property": self._cfg.goal_deadline_prop, "direction": "ascending"}],
+            sorts=[
+                {"property": self._cfg.goal_deadline_prop, "direction": "ascending"}
+            ],
         )
 
         goals: List[CeoGoal] = []
         for row in rows:
-            props: Dict[str, Any] = row.get("properties", {}) if isinstance(row, dict) else {}
+            props: Dict[str, Any] = (
+                row.get("properties", {}) if isinstance(row, dict) else {}
+            )
             name = self._extract_title(props.get(self._cfg.goal_name_prop))
             status = self._extract_select(props.get(self._cfg.goal_status_prop))
             priority = self._extract_select(props.get(self._cfg.goal_priority_prop))
@@ -518,17 +570,23 @@ class CeoConsoleSnapshotService:
 
         rows = self._safe_query_with_optional_sort(
             self._cfg.tasks_db_id,
-            sorts=[{"property": self._cfg.task_due_date_prop, "direction": "ascending"}],
+            sorts=[
+                {"property": self._cfg.task_due_date_prop, "direction": "ascending"}
+            ],
         )
 
         tasks: List[CeoTask] = []
         for row in rows:
-            props: Dict[str, Any] = row.get("properties", {}) if isinstance(row, dict) else {}
+            props: Dict[str, Any] = (
+                row.get("properties", {}) if isinstance(row, dict) else {}
+            )
             title = self._extract_title(props.get(self._cfg.task_title_prop))
             status = self._extract_select(props.get(self._cfg.task_status_prop))
             priority = self._extract_select(props.get(self._cfg.task_priority_prop))
             due = self._extract_date(props.get(self._cfg.task_due_date_prop))
-            lead = self._extract_people_or_rich_text(props.get(self._cfg.task_lead_prop))
+            lead = self._extract_people_or_rich_text(
+                props.get(self._cfg.task_lead_prop)
+            )
 
             tasks.append(
                 CeoTask(
@@ -542,7 +600,9 @@ class CeoConsoleSnapshotService:
             )
         return tasks
 
-    def _build_weekly_priority(self, goals: List[CeoGoal], tasks: List[CeoTask]) -> List[WeeklyPriorityItem]:
+    def _build_weekly_priority(
+        self, goals: List[CeoGoal], tasks: List[CeoTask]
+    ) -> List[WeeklyPriorityItem]:
         assert self._cfg is not None
 
         window = dt.timedelta(days=self._cfg.priority_window_days)
@@ -600,9 +660,13 @@ class CeoConsoleSnapshotService:
         pending = approved_today = completed = errors = 0
 
         for row in rows:
-            props: Dict[str, Any] = row.get("properties", {}) if isinstance(row, dict) else {}
+            props: Dict[str, Any] = (
+                row.get("properties", {}) if isinstance(row, dict) else {}
+            )
             status = self._extract_select(props.get(self._cfg.approval_status_prop))
-            last_change_date = self._extract_date(props.get(self._cfg.approval_last_change_prop))
+            last_change_date = self._extract_date(
+                props.get(self._cfg.approval_last_change_prop)
+            )
             if not status:
                 continue
 
@@ -613,7 +677,11 @@ class CeoConsoleSnapshotService:
                 completed += 1
                 if last_change_date and last_change_date == today:
                     approved_today += 1
-            elif "executed" in normalized or "done" in normalized or "completed" in normalized:
+            elif (
+                "executed" in normalized
+                or "done" in normalized
+                or "completed" in normalized
+            ):
                 completed += 1
             elif "error" in normalized or "failed" in normalized:
                 errors += 1

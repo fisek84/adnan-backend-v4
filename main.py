@@ -177,6 +177,7 @@ logger.info("✅ Notion bulk ops router mounted at /notion-ops")
 # IMPORTANT: Ensure /api prefix routers are mounted (fix /api/ai/run mismatch)
 # ============================================================
 
+
 def ensure_api_router_prefixes_present() -> None:
     """
     Many callers expect API routes under /api/*.
@@ -192,13 +193,16 @@ def ensure_api_router_prefixes_present() -> None:
 
     # If /api exists already, do nothing.
     if has_api_prefix:
-        logger.info("ℹ️ /api prefix routes already present; skipping compatibility mount.")
+        logger.info(
+            "ℹ️ /api prefix routes already present; skipping compatibility mount."
+        )
         return
 
     # Best-effort: include primary routers with /api prefix if available.
     # We import locally to avoid startup crashes if modules move.
     try:
         from routers.ai_router import router as ai_router  # type: ignore
+
         app.include_router(ai_router, prefix="/api")
         logger.info("✅ Mounted ai_router under /api")
     except Exception as e:
@@ -206,6 +210,7 @@ def ensure_api_router_prefixes_present() -> None:
 
     try:
         from routers.ceo_console_router import router as ceo_router  # type: ignore
+
         app.include_router(ceo_router, prefix="/api")
         logger.info("✅ Mounted ceo_console_router under /api")
     except Exception as e:
@@ -213,6 +218,7 @@ def ensure_api_router_prefixes_present() -> None:
 
     try:
         from routers.notion_ops_router import router as notion_router  # type: ignore
+
         app.include_router(notion_router, prefix="/api")
         logger.info("✅ Mounted notion_ops_router under /api")
     except Exception as e:

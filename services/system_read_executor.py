@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from models.ai_command import AICommand
 from services.action_dictionary import get_action_handler

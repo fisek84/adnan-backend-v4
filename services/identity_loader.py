@@ -1,6 +1,6 @@
 import json
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 
 # ============================================================
@@ -50,7 +50,9 @@ def resolve_path(filename: str) -> str:
 # ============================================================
 
 
-def validate_identity_payload(payload: Dict[str, Any], required_keys: list, name: str) -> None:
+def validate_identity_payload(
+    payload: Dict[str, Any], required_keys: list, name: str
+) -> None:
     if not isinstance(payload, dict):
         raise ValueError(f"[IDENTITY] {name} must be a JSON object")
 
@@ -64,7 +66,9 @@ def validate_agent_definition(agent_id: str, agent: Dict[str, Any]) -> None:
 
     missing = [k for k in required_keys if k not in agent]
     if missing:
-        raise ValueError(f"[AGENTS] Agent '{agent_id}' missing required keys: {missing}")
+        raise ValueError(
+            f"[AGENTS] Agent '{agent_id}' missing required keys: {missing}"
+        )
 
     if not isinstance(agent["capabilities"], list):
         raise ValueError(f"[AGENTS] Agent '{agent_id}' capabilities must be a list")
@@ -80,19 +84,25 @@ def validate_agent_definition(agent_id: str, agent: Dict[str, Any]) -> None:
 
 def load_adnan_identity() -> Dict[str, Any]:
     data = load_json_file(resolve_path("identity.json"))
-    validate_identity_payload(data, required_keys=["name", "role", "version"], name="identity.json")
+    validate_identity_payload(
+        data, required_keys=["name", "role", "version"], name="identity.json"
+    )
     return data
 
 
 def load_adnan_memory() -> Dict[str, Any]:
     data = load_json_file(resolve_path("memory.json"))
-    validate_identity_payload(data, required_keys=["short_term", "long_term"], name="memory.json")
+    validate_identity_payload(
+        data, required_keys=["short_term", "long_term"], name="memory.json"
+    )
     return data
 
 
 def load_adnan_kernel() -> Dict[str, Any]:
     data = load_json_file(resolve_path("kernel.json"))
-    validate_identity_payload(data, required_keys=["principles", "constraints"], name="kernel.json")
+    validate_identity_payload(
+        data, required_keys=["principles", "constraints"], name="kernel.json"
+    )
     return data
 
 
@@ -116,7 +126,9 @@ def load_adnan_state() -> Dict[str, Any]:
 
 def load_decision_engine_config() -> Dict[str, Any]:
     data = load_json_file(resolve_path("decision_engine.json"))
-    validate_identity_payload(data, required_keys=["strategy"], name="decision_engine.json")
+    validate_identity_payload(
+        data, required_keys=["strategy"], name="decision_engine.json"
+    )
     return data
 
 

@@ -299,7 +299,9 @@ def _to_serializable(obj: Any) -> Any:
     return str(obj)
 
 
-def _preprocess_ceo_nl_input(raw_text: str, smart_context: Optional[Dict[str, Any]]) -> str:
+def _preprocess_ceo_nl_input(
+    raw_text: str, smart_context: Optional[Dict[str, Any]]
+) -> str:
     text = (raw_text or "").strip()
     if not text:
         return text
@@ -341,7 +343,11 @@ def _derive_legacy_goal_task_summaries_from_ceo_snapshot(
     tasks_summary: List[Dict[str, Any]] = []
 
     try:
-        dashboard = ceo_dash_snapshot.get("dashboard") if isinstance(ceo_dash_snapshot, dict) else None
+        dashboard = (
+            ceo_dash_snapshot.get("dashboard")
+            if isinstance(ceo_dash_snapshot, dict)
+            else None
+        )
         if not isinstance(dashboard, dict):
             return {"goals_summary": goals_summary, "tasks_summary": tasks_summary}
 
@@ -585,7 +591,9 @@ async def ready_check():
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     logger.exception("GLOBAL ERROR")
-    return JSONResponse(status_code=500, content={"status": "error", "message": str(exc)})
+    return JSONResponse(
+        status_code=500, content={"status": "error", "message": str(exc)}
+    )
 
 
 app.add_middleware(

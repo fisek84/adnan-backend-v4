@@ -38,10 +38,18 @@ class CEOCommandRequest(BaseModel):
 
 class ProposedAICommand(BaseModel):
     command_type: str = Field(..., description="Type/name of the proposed command.")
-    payload: Dict[str, Any] = Field(default_factory=dict, description="Command payload.")
-    status: str = Field(default="BLOCKED", description="Always BLOCKED at proposal time.")
-    required_approval: bool = Field(default=True, description="Always true for side-effects.")
-    cost_hint: Optional[str] = Field(default=None, description="Human-readable estimate.")
+    payload: Dict[str, Any] = Field(
+        default_factory=dict, description="Command payload."
+    )
+    status: str = Field(
+        default="BLOCKED", description="Always BLOCKED at proposal time."
+    )
+    required_approval: bool = Field(
+        default=True, description="Always true for side-effects."
+    )
+    cost_hint: Optional[str] = Field(
+        default=None, description="Human-readable estimate."
+    )
     risk_hint: Optional[str] = Field(default=None, description="Human-readable risks.")
 
 
@@ -160,9 +168,15 @@ async def _build_context(req: CEOCommandRequest) -> Dict[str, Any]:
     snapshotter = _safe_import_snapshotter()
     if snapshotter is None:
         fallback = _try_load_core_snapshot_fallback()
-        fallback["reason"] = "No snapshotter available; using fallback snapshot (READ-only)."
+        fallback["reason"] = (
+            "No snapshotter available; using fallback snapshot (READ-only)."
+        )
         ctx["snapshot"] = fallback
-        ctx["snapshot_meta"] = {"snapshotter": None, "available": False, "source": "fallback"}
+        ctx["snapshot_meta"] = {
+            "snapshotter": None,
+            "available": False,
+            "source": "fallback",
+        }
         return ctx
 
     meta = {
@@ -180,7 +194,11 @@ async def _build_context(req: CEOCommandRequest) -> Dict[str, Any]:
         elif hasattr(snapshotter, "get_snapshot"):
             snap = snapshotter.get_snapshot()  # type: ignore[misc]
         else:
-            snap = {"available": False, "source": meta["snapshotter"], "error": "No snapshot method found."}
+            snap = {
+                "available": False,
+                "source": meta["snapshotter"],
+                "error": "No snapshot method found.",
+            }
 
         snap = await _maybe_await(snap)
 
@@ -199,7 +217,11 @@ async def _build_context(req: CEOCommandRequest) -> Dict[str, Any]:
         else:
             meta["available"] = True
             meta["source"] = meta["snapshotter"]
-            ctx["snapshot"] = {"available": True, "source": meta["snapshotter"], "snapshot": snap}
+            ctx["snapshot"] = {
+                "available": True,
+                "source": meta["snapshotter"],
+                "snapshot": snap,
+            }
 
     except Exception as e:
         meta["available"] = False
@@ -250,14 +272,20 @@ async def _llm_advice(text: str, context: Dict[str, Any]) -> Dict[str, Any]:
                 "executed_commands",
             )
         ):
-            raise RuntimeError("READ-ONLY violation: tool/action fields present in result")
+            raise RuntimeError(
+                "READ-ONLY violation: tool/action fields present in result"
+            )
 
         trace = result.get("trace") if isinstance(result.get("trace"), dict) else {}
         trace["read_only_guard"] = True
         trace["canon_read_only_guard"] = True
 
         # Carry snapshot meta into trace so UX always sees provenance
-        snap_meta = context.get("snapshot_meta") if isinstance(context.get("snapshot_meta"), dict) else {}
+        snap_meta = (
+            context.get("snapshot_meta")
+            if isinstance(context.get("snapshot_meta"), dict)
+            else {}
+        )
         if snap_meta:
             trace["snapshot_meta"] = snap_meta
 
@@ -322,8 +350,16 @@ def _normalize_proposed_commands(raw: Any) -> List[ProposedAICommand]:
                 payload=payload,
                 status="BLOCKED",
                 required_approval=True,
-                cost_hint=(it.get("cost_hint") if isinstance(it.get("cost_hint"), str) else None),
-                risk_hint=(it.get("risk_hint") if isinstance(it.get("risk_hint"), str) else None),
+                cost_hint=(
+                    it.get("cost_hint")
+                    if isinstance(it.get("cost_hint"), str)
+                    else None
+                ),
+                risk_hint=(
+                    it.get("risk_hint")
+                    if isinstance(it.get("risk_hint"), str)
+                    else None
+                ),
             )
         )
 

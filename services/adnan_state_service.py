@@ -62,7 +62,9 @@ def get_adnan_state() -> Dict[str, Any]:
     Does not modify or depend on persistent state storage.
     """
     try:
-        from services.identity_loader import load_adnan_identity  # local import to avoid cycles
+        from services.identity_loader import (
+            load_adnan_identity,
+        )  # local import to avoid cycles
     except Exception:
         load_adnan_identity = None
 
