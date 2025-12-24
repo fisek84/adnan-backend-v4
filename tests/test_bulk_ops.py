@@ -1,3 +1,5 @@
+import os
+
 import httpx
 import pytest
 
@@ -12,7 +14,10 @@ async def client():
     TestClient used historically) and keeps test output warning-free.
     """
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://test",
+    ) as client:
         yield client
 
 
@@ -59,6 +64,10 @@ async def test_bulk_invalid_type(client):
 
 
 @pytest.mark.anyio
+@pytest.mark.skipif(
+    os.getenv("CI") == "true",
+    reason="Full Notion-backed happy-path is skipped in CI (external dependency).",
+)
 async def test_happy_path_execute_approve(client):
     """
     Canonical HAPPY PATH (isti scenarij kao u test_happy_path.ps1):
@@ -84,7 +93,9 @@ async def test_happy_path_execute_approve(client):
     pending = pending_response.json()
     approvals = pending.get("approvals", [])
     approval_ids = [a.get("approval_id") for a in approvals]
-    assert approval_id in approval_ids, "approval_id from execute must be in pending approvals"
+    assert (
+        approval_id in approval_ids
+    ), "approval_id from execute must be in pending approvals"
 
     # 3) Approve -> očekujemo COMPLETED
     approve_response = await client.post(
