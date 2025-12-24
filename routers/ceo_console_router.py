@@ -1,11 +1,11 @@
 # routers/ceo_console_router.py
 from __future__ import annotations
 
+import inspect
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Body, HTTPException
 from pydantic import BaseModel, Field
-
 
 router = APIRouter(prefix="/ceo-console", tags=["CEO Console"])
 
@@ -31,7 +31,8 @@ class CEOCommandRequest(BaseModel):
         description="Who initiated the command (for UX/audit display only).",
     )
     session_id: Optional[str] = Field(
-        default=None, description="Client session id (for UX correlation only)."
+        default=None,
+        description="Client session id (for UX correlation only).",
     )
     context_hint: Optional[Dict[str, Any]] = Field(
         default=None,
@@ -47,13 +48,16 @@ class ProposedAICommand(BaseModel):
 
     command_type: str = Field(..., description="Type/name of the proposed command.")
     payload: Dict[str, Any] = Field(
-        default_factory=dict, description="Command payload."
+        default_factory=dict,
+        description="Command payload.",
     )
     status: str = Field(
-        default="BLOCKED", description="Always BLOCKED at proposal time."
+        default="BLOCKED",
+        description="Always BLOCKED at proposal time.",
     )
     required_approval: bool = Field(
-        default=True, description="Always true for any command with side-effects."
+        default=True,
+        description="Always true for any command with side-effects.",
     )
     cost_hint: Optional[str] = Field(
         default=None,
@@ -86,16 +90,21 @@ class CEOCommandResponse(BaseModel):
 
 
 # ============================================================
-# INTERNAL HELPERS (dynamic imports to avoid breaking startup)
+# INTERNAL HELPERS (READ-ONLY ONLY)
 # ============================================================
+
+
+async def _maybe_await(value: Any) -> Any:
+    if inspect.isawaitable(value):
+        return await value
+    return value
 
 
 def _safe_import_snapshotter() -> Any:
     """
-    Returns a callable/object that can build a READ-only context snapshot.
+    Returns an object that can build a READ-only context snapshot.
     This is intentionally dynamic to avoid hard crashes if internals move.
     """
-    # Preferred: a dedicated read executor if present
     try:
         from services.system_read_executor import SystemReadExecutor  # type: ignore
 
@@ -104,12 +113,53 @@ def _safe_import_snapshotter() -> Any:
         return None
 
 
-def _build_context(req: CEOCommandRequest) -> Dict[str, Any]:
+def _try_load_core_snapshot_fallback() -> Dict[str, Any]:
+    """
+    Best-effort READ-only fallback snapshot if SystemReadExecutor doesn't exist.
+    Must not write or persist anything.
+    """
+    snap: Dict[str, Any] = {"available": True, "source": "fallback"}
+
+    # Identity / mode / state (pure reads)
+    try:
+        from services.adnan_mode_service import load_mode  # type: ignore
+        from services.adnan_state_service import load_state  # type: ignore
+        from services.identity_loader import load_identity  # type: ignore
+
+        snap["identity"] = load_identity()
+        snap["mode"] = load_mode()
+        snap["state"] = load_state()
+    except Exception as e:
+        snap["identity"] = {"available": False, "error": str(e)}
+        snap["mode"] = {"available": False, "error": str(e)}
+        snap["state"] = {"available": False, "error": str(e)}
+
+    # Knowledge snapshot (cached READ)
+    try:
+        from services.knowledge_snapshot_service import (  # type: ignore
+            KnowledgeSnapshotService,
+        )
+
+        snap["knowledge_snapshot"] = KnowledgeSnapshotService.get_snapshot()
+    except Exception as e:
+        snap["knowledge_snapshot"] = {"available": False, "error": str(e)}
+
+    return snap
+
+
+async def _build_context(req: CEOCommandRequest) -> Dict[str, Any]:
     """
     Build context snapshot (READ-only).
     Must not persist anything.
     """
-    ctx: Dict[str, Any] = {}
+    ctx: Dict[str, Any] = {
+        "canon": {
+            "read_only": True,
+            "chat_is_read_only": True,
+            "write_requires_approval": True,
+            "no_side_effects": True,
+        }
+    }
 
     # Lightweight request metadata (safe)
     if req.initiator:
@@ -121,22 +171,26 @@ def _build_context(req: CEOCommandRequest) -> Dict[str, Any]:
 
     snapshotter = _safe_import_snapshotter()
     if snapshotter is None:
-        ctx["snapshot"] = {
-            "available": False,
-            "reason": "SystemReadExecutor not available (READ-only fallback).",
-        }
+        fallback = _try_load_core_snapshot_fallback()
+        fallback["available"] = False
+        fallback["reason"] = (
+            "SystemReadExecutor not available; using best-effort fallback snapshot."
+        )
+        ctx["snapshot"] = fallback
         return ctx
 
     # Try common snapshot APIs without assuming exact signature
     try:
         if hasattr(snapshotter, "snapshot"):
-            snap = snapshotter.snapshot()  # type: ignore
+            snap = snapshotter.snapshot()  # type: ignore[misc]
         elif hasattr(snapshotter, "build_snapshot"):
-            snap = snapshotter.build_snapshot()  # type: ignore
+            snap = snapshotter.build_snapshot()  # type: ignore[misc]
         elif hasattr(snapshotter, "get_snapshot"):
-            snap = snapshotter.get_snapshot()  # type: ignore
+            snap = snapshotter.get_snapshot()  # type: ignore[misc]
         else:
             snap = {"available": False, "reason": "No snapshot method found."}
+
+        snap = await _maybe_await(snap)
         ctx["snapshot"] = snap if isinstance(snap, dict) else {"snapshot": snap}
     except Exception as e:
         ctx["snapshot"] = {"available": False, "error": str(e)}
@@ -144,41 +198,50 @@ def _build_context(req: CEOCommandRequest) -> Dict[str, Any]:
     return ctx
 
 
-def _llm_advice(text: str, context: Dict[str, Any]) -> Dict[str, Any]:
+async def _llm_advice(text: str, context: Dict[str, Any]) -> Dict[str, Any]:
     """
     Produce advisory output + proposed commands.
-    This function MUST NOT execute or write.
-    It may call an internal LLM executor if present; otherwise returns a safe fallback.
+
+    CANON:
+    - READ-ONLY: MUST NOT execute writes / tools / side effects.
+    - Uses services-layer SSOT executor (if available): ceo_command(...)
+    - If executor is unavailable or errors, returns deterministic fallback.
     """
-    # Attempt to use an internal assistant executor if available
     try:
-        from agent_router.openai_assistant_executor import (  # type: ignore
+        from services.agent_router.openai_assistant_executor import (  # type: ignore
             OpenAIAssistantExecutor,
         )
 
         execr = OpenAIAssistantExecutor()
 
-        # Try common APIs without assuming exact signature
-        if hasattr(execr, "ceo_command"):
-            result = execr.ceo_command(text=text, context=context)  # type: ignore
-        elif hasattr(execr, "run"):
-            result = execr.run(text=text, context=context)  # type: ignore
-        elif hasattr(execr, "execute"):
-            result = execr.execute(text=text, context=context)  # type: ignore
-        else:
-            result = None
+        # Force READ-only guard in context, even if caller forgot
+        safe_context = dict(context)
+        canon = dict(safe_context.get("canon") or {})
+        canon["read_only"] = True
+        canon["no_tools"] = True
+        canon["no_side_effects"] = True
+        safe_context["canon"] = canon
+
+        if not hasattr(execr, "ceo_command"):
+            raise RuntimeError("OpenAIAssistantExecutor.ceo_command is not available")
+
+        result = await execr.ceo_command(text=text, context=safe_context)  # type: ignore[misc]
 
         if isinstance(result, dict) and result:
+            trace = result.get("trace") if isinstance(result.get("trace"), dict) else {}
+            trace["canon_read_only_guard"] = True
+            result["trace"] = trace
             return result
 
     except Exception:
-        # Fall through to safe deterministic fallback
         pass
 
-    # Safe fallback: deterministic, no hallucinated execution claims
     return {
-        "summary": "Primio sam CEO zahtjev i pripremio okvir za planiranje na osnovu dostupnog konteksta. "
-        "Za punu dubinu je potrebno da LLM executor bude aktivan i povezan na READ snapshot.",
+        "summary": (
+            "Primio sam CEO zahtjev i pripremio okvir za planiranje na osnovu dostupnog "
+            "READ konteksta. Za punu dubinu, LLM executor treba biti aktivan i povezan na "
+            "snapshot (identity/memory/SOP/state)."
+        ),
         "questions": [
             "Koji je tačan rok (do kojeg dana u sedmici) i da li 1k BAM znači prihod ili profit?",
             "Koji je trenutno najbliži izvor prihoda (usluga/proizvod) koji možemo skalirati ove sedmice?",
@@ -187,7 +250,7 @@ def _llm_advice(text: str, context: Dict[str, Any]) -> Dict[str, Any]:
             "Definiši cilj (prihod vs profit), rok i minimalne ulaze (ponuda, cijena, kanal).",
             "Izvuci iz SOP/memorije: šta je ranije radilo, koje su aktivne prilike i ograničenja.",
             "Razbij cilj na dnevne targete i konkretne taskove (prodaja, isporuka, marketing).",
-            "Predloži 2–3 opcije (konzervativno / agresivno) i odaberi jednu za izvršenje.",
+            "Predloži 2–3 opcije (konzervativno / agresivno) i odaberi jednu za potencijalno izvršenje.",
         ],
         "options": [
             "Opcija A: Fokus na postojeće klijente (brža prodaja, manji trošak).",
@@ -218,6 +281,7 @@ def _normalize_proposed_commands(raw: Any) -> List[ProposedAICommand]:
     for it in items:
         if not isinstance(it, dict):
             continue
+
         cmd_type = it.get("command_type") or it.get("type") or it.get("name")
         if not isinstance(cmd_type, str) or not cmd_type.strip():
             continue
@@ -232,12 +296,16 @@ def _normalize_proposed_commands(raw: Any) -> List[ProposedAICommand]:
                 payload=payload,
                 status="BLOCKED",
                 required_approval=True,
-                cost_hint=it.get("cost_hint")
-                if isinstance(it.get("cost_hint"), str)
-                else None,
-                risk_hint=it.get("risk_hint")
-                if isinstance(it.get("risk_hint"), str)
-                else None,
+                cost_hint=(
+                    it.get("cost_hint")
+                    if isinstance(it.get("cost_hint"), str)
+                    else None
+                ),
+                risk_hint=(
+                    it.get("risk_hint")
+                    if isinstance(it.get("risk_hint"), str)
+                    else None
+                ),
             )
         )
 
@@ -267,7 +335,7 @@ def status() -> Dict[str, Any]:
 
 
 @router.post("/command", response_model=CEOCommandResponse)
-def ceo_command(req: CEOCommandRequest = Body(...)) -> CEOCommandResponse:
+async def ceo_command(req: CEOCommandRequest = Body(...)) -> CEOCommandResponse:
     """
     CEO Command (READ-only):
     - Builds READ snapshot context (identity/memory/SOP/state)
@@ -278,8 +346,8 @@ def ceo_command(req: CEOCommandRequest = Body(...)) -> CEOCommandResponse:
     if not text:
         raise HTTPException(status_code=400, detail="text is required")
 
-    context = _build_context(req)
-    result = _llm_advice(text=text, context=context)
+    context = await _build_context(req)
+    result = await _llm_advice(text=text, context=context)
 
     summary = result.get("summary") if isinstance(result.get("summary"), str) else ""
     questions = (
@@ -289,7 +357,6 @@ def ceo_command(req: CEOCommandRequest = Body(...)) -> CEOCommandResponse:
     options = result.get("options") if isinstance(result.get("options"), list) else []
     trace = result.get("trace") if isinstance(result.get("trace"), dict) else {}
 
-    # Normalize to strings
     questions_s = [q for q in questions if isinstance(q, str)]
     plan_s = [p for p in plan if isinstance(p, str)]
     options_s = [o for o in options if isinstance(o, str)]
@@ -309,5 +376,4 @@ def ceo_command(req: CEOCommandRequest = Body(...)) -> CEOCommandResponse:
     )
 
 
-# Export alias (style kao ostali routeri)
 ceo_console_router = router

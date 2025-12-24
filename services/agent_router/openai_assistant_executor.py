@@ -1,8 +1,13 @@
-from typing import Dict, Any
+# services/agent_router/openai_assistant_executor.py
+from __future__ import annotations
+
 import asyncio
-import os
 import json
 import logging
+import os
+import time
+from typing import Any, Dict, Optional
+
 from openai import OpenAI
 
 from ext.notion.client import perform_notion_action
@@ -14,70 +19,121 @@ class OpenAIAssistantExecutor:
     """
     OPENAI ASSISTANT EXECUTION ADAPTER — KANONSKI
 
-    - agent NIKAD ne vraća failure dict
-    - agent ili izvrši ili baci exception
+    CANON:
+    - Ovaj adapter se koristi za agent execution (sa tool pozivima) I za CEO advisory (READ-only).
+    - CEO advisory NIKAD ne smije izvršiti tool poziv / side-effect.
+      Ako Assistant zatraži tool u ceo_command, to se smatra policy violation i tretira se kao error/fallback.
+    - Agent execute: ili izvrši ili baci exception (nema "failure dict").
     """
 
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        execution_assistant_id_env: str = "NOTION_OPS_ASSISTANT_ID",
+        advisory_assistant_id_env: str = "CEO_ADVISOR_ASSISTANT_ID",
+        poll_interval_s: float = 0.5,
+        max_wait_s: float = 60.0,
+    ) -> None:
         api_key = os.getenv("OPENAI_API_KEY")
-        self.assistant_id = os.getenv("NOTION_OPS_ASSISTANT_ID")
-
         if not api_key:
             raise RuntimeError("OPENAI_API_KEY is missing")
 
-        if not self.assistant_id:
-            raise RuntimeError("NOTION_OPS_ASSISTANT_ID is missing")
+        self._execution_assistant_id_env = execution_assistant_id_env
+        self._advisory_assistant_id_env = advisory_assistant_id_env
 
+        self._poll_interval_s = float(poll_interval_s)
+        self._max_wait_s = float(max_wait_s)
+
+        # NOTE: OpenAI client je sync; u async flow-u pozive šaljemo kroz asyncio.to_thread.
         self.client = OpenAI(api_key=api_key)
 
-    async def execute(self, task: Dict[str, Any]) -> Dict[str, Any]:
-        if not isinstance(task, dict):
-            raise ValueError("Agent task must be a dict")
+    # ============================================================
+    # INTERNALS (sync OpenAI calls wrapped for async)
+    # ============================================================
 
-        command = task.get("command")
-        payload = task.get("payload")
+    async def _to_thread(self, fn, *args, **kwargs):
+        return await asyncio.to_thread(fn, *args, **kwargs)
 
-        if not command or not isinstance(payload, dict):
-            raise ValueError("Agent task requires 'command' and 'payload'")
+    def _get_execution_assistant_id_or_raise(self) -> str:
+        assistant_id = os.getenv(self._execution_assistant_id_env)
+        if not assistant_id:
+            raise RuntimeError(f"{self._execution_assistant_id_env} is missing")
+        return assistant_id
 
-        thread = self.client.beta.threads.create()
+    def _get_advisory_assistant_id(self) -> Optional[str]:
+        # Prefer dedicated advisory assistant, fallback to execution assistant id if present.
+        assistant_id = os.getenv(self._advisory_assistant_id_env)
+        if assistant_id:
+            return assistant_id
+        return os.getenv(self._execution_assistant_id_env)
 
-        execution_contract = {
-            "type": "agent_execution",
-            "command": command,
-            "payload": payload,
-        }
-
-        self.client.beta.threads.messages.create(
-            thread_id=thread.id,
-            role="user",
-            content=json.dumps(execution_contract, ensure_ascii=False),
-        )
-
-        run = self.client.beta.threads.runs.create(
-            thread_id=thread.id,
-            assistant_id=self.assistant_id,
-        )
+    async def _wait_for_run_completion(
+        self,
+        *,
+        thread_id: str,
+        run_id: str,
+        allow_tools: bool,
+    ) -> None:
+        start = time.monotonic()
 
         while True:
-            run_status = self.client.beta.threads.runs.retrieve(
-                thread_id=thread.id,
-                run_id=run.id,
+            if time.monotonic() - start > self._max_wait_s:
+                # Best-effort cancel (ne smijemo visiti beskonačno)
+                try:
+                    await self._to_thread(
+                        self.client.beta.threads.runs.cancel,
+                        thread_id=thread_id,
+                        run_id=run_id,
+                    )
+                except Exception:
+                    pass
+                raise RuntimeError("Assistant run timed out")
+
+            run_status = await self._to_thread(
+                self.client.beta.threads.runs.retrieve,
+                thread_id=thread_id,
+                run_id=run_id,
             )
 
-            if run_status.status == "requires_action":
-                tool_calls = run_status.required_action.submit_tool_outputs.tool_calls
+            status = getattr(run_status, "status", None)
+
+            if status == "requires_action":
+                if not allow_tools:
+                    # CEO advisory path: tool calls are forbidden
+                    raise RuntimeError(
+                        "Tool calls are not allowed for CEO advisory (read-only)"
+                    )
+
+                required_action = getattr(run_status, "required_action", None)
+                submit = (
+                    getattr(required_action, "submit_tool_outputs", None)
+                    if required_action
+                    else None
+                )
+                tool_calls = getattr(submit, "tool_calls", None) if submit else None
+
+                if not tool_calls:
+                    raise RuntimeError(
+                        "Assistant requires_action but has no tool calls"
+                    )
 
                 tool_outputs = []
 
                 for call in tool_calls:
-                    if call.function.name != "perform_notion_action":
-                        raise RuntimeError(
-                            f"Unsupported tool call: {call.function.name}"
-                        )
+                    fn = getattr(call, "function", None)
+                    fn_name = getattr(fn, "name", None) if fn else None
+                    fn_args = getattr(fn, "arguments", None) if fn else None
 
-                    args = json.loads(call.function.arguments)
-                    result = perform_notion_action(**args)
+                    if fn_name != "perform_notion_action":
+                        raise RuntimeError(f"Unsupported tool call: {fn_name}")
+
+                    try:
+                        args = json.loads(fn_args or "{}")
+                    except Exception as e:
+                        raise RuntimeError(f"Invalid tool arguments JSON: {e}") from e
+
+                    # NOTE: ext.notion.client.perform_notion_action je sync.
+                    result = await self._to_thread(perform_notion_action, **args)
 
                     tool_outputs.append(
                         {
@@ -86,37 +142,222 @@ class OpenAIAssistantExecutor:
                         }
                     )
 
-                self.client.beta.threads.runs.submit_tool_outputs(
-                    thread_id=thread.id,
-                    run_id=run.id,
+                await self._to_thread(
+                    self.client.beta.threads.runs.submit_tool_outputs,
+                    thread_id=thread_id,
+                    run_id=run_id,
                     tool_outputs=tool_outputs,
                 )
 
-            elif run_status.status in {"completed"}:
-                break
+            elif status == "completed":
+                return
 
-            elif run_status.status in {"failed", "cancelled"}:
-                raise RuntimeError(
-                    f"Assistant run failed with status: {run_status.status}"
-                )
+            elif status in {"failed", "cancelled", "expired"}:
+                raise RuntimeError(f"Assistant run failed with status: {status}")
 
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(self._poll_interval_s)
 
-        messages = self.client.beta.threads.messages.list(thread_id=thread.id)
-
-        assistant_messages = [m for m in messages.data if m.role == "assistant"]
+    async def _get_final_assistant_message_text(self, *, thread_id: str) -> str:
+        messages = await self._to_thread(
+            self.client.beta.threads.messages.list, thread_id=thread_id
+        )
+        assistant_messages = [
+            m for m in messages.data if getattr(m, "role", None) == "assistant"
+        ]
 
         if not assistant_messages:
             raise RuntimeError("Assistant produced no response")
 
-        final_text = assistant_messages[-1].content[0].text.value
+        # The SDK represents content as an array; we use first text chunk.
+        content = assistant_messages[-1].content
+        if not content:
+            raise RuntimeError("Assistant response has empty content")
 
+        first = content[0]
+        text_obj = getattr(first, "text", None)
+        value = getattr(text_obj, "value", None) if text_obj else None
+
+        if not isinstance(value, str) or not value.strip():
+            raise RuntimeError("Assistant produced empty text response")
+
+        return value
+
+    def _safe_json_parse(self, text: str) -> Dict[str, Any]:
         try:
-            parsed = json.loads(final_text)
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                return parsed
+            return {"raw": parsed}
         except Exception:
-            parsed = {"raw": final_text}
+            return {"raw": text}
+
+    # ============================================================
+    # EXECUTION (WRITE PATH) — used by orchestrator/agent layer
+    # ============================================================
+
+    async def execute(self, task: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        EXECUTION PATH (side-effects allowed, tool calls allowed).
+        Expected task:
+          {
+            "command": "<string>",
+            "payload": { ... }
+          }
+        """
+        if not isinstance(task, dict):
+            raise ValueError("Agent task must be a dict")
+
+        command = task.get("command")
+        payload = task.get("payload")
+
+        if not isinstance(command, str) or not command.strip():
+            raise ValueError("Agent task requires 'command' (str)")
+        if not isinstance(payload, dict):
+            raise ValueError("Agent task requires 'payload' (dict)")
+
+        assistant_id = self._get_execution_assistant_id_or_raise()
+
+        thread = await self._to_thread(self.client.beta.threads.create)
+
+        execution_contract = {
+            "type": "agent_execution",
+            "command": command.strip(),
+            "payload": payload,
+        }
+
+        await self._to_thread(
+            self.client.beta.threads.messages.create,
+            thread_id=thread.id,
+            role="user",
+            content=json.dumps(execution_contract, ensure_ascii=False),
+        )
+
+        run = await self._to_thread(
+            self.client.beta.threads.runs.create,
+            thread_id=thread.id,
+            assistant_id=assistant_id,
+        )
+
+        await self._wait_for_run_completion(
+            thread_id=thread.id,
+            run_id=run.id,
+            allow_tools=True,
+        )
+
+        final_text = await self._get_final_assistant_message_text(thread_id=thread.id)
+        parsed = self._safe_json_parse(final_text)
 
         return {
-            "agent": self.assistant_id,
+            "agent": assistant_id,
             "result": parsed,
         }
+
+    # ============================================================
+    # CEO ADVISORY (READ-ONLY) — used by CEO Console
+    # ============================================================
+
+    async def ceo_command(
+        self, *, text: str, context: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        READ-ONLY advisory path.
+        - No tools / no side-effects.
+        - If assistant requests_action (tool call), we fail fast (policy violation).
+
+        Expected return shape (dict):
+          {
+            "summary": str,
+            "questions": [str],
+            "plan": [str],
+            "options": [str],
+            "proposed_commands": [ ... optional ... ],
+            "trace": { ... }
+          }
+        """
+        t = (text or "").strip()
+        if not t:
+            raise ValueError("text is required")
+
+        if not isinstance(context, dict):
+            context = {}
+
+        assistant_id = self._get_advisory_assistant_id()
+        if not assistant_id:
+            # If no assistant id exists at all, return deterministic fallback instead of raising.
+            return {
+                "summary": "LLM executor nije konfigurisan (nema Assistant ID).",
+                "questions": [
+                    "Postavi Assistant ID (CEO_ADVISOR_ASSISTANT_ID ili NOTION_OPS_ASSISTANT_ID)."
+                ],
+                "plan": ["Konfiguriši LLM executor i ponovi CEO Command."],
+                "options": [],
+                "proposed_commands": [],
+                "trace": {"llm": "not_configured"},
+            }
+
+        thread = await self._to_thread(self.client.beta.threads.create)
+
+        advisory_contract = {
+            "type": "ceo_advice",
+            "text": t,
+            "context": context,
+            "constraints": {
+                "read_only": True,
+                "no_tools": True,
+                "no_side_effects": True,
+                "return_json": True,
+            },
+            "output_schema": {
+                "summary": "string",
+                "questions": "list[string]",
+                "plan": "list[string]",
+                "options": "list[string]",
+                "proposed_commands": "list[object]",
+                "trace": "object",
+            },
+        }
+
+        await self._to_thread(
+            self.client.beta.threads.messages.create,
+            thread_id=thread.id,
+            role="user",
+            content=json.dumps(advisory_contract, ensure_ascii=False),
+        )
+
+        run = await self._to_thread(
+            self.client.beta.threads.runs.create,
+            thread_id=thread.id,
+            assistant_id=assistant_id,
+        )
+
+        await self._wait_for_run_completion(
+            thread_id=thread.id,
+            run_id=run.id,
+            allow_tools=False,
+        )
+
+        final_text = await self._get_final_assistant_message_text(thread_id=thread.id)
+        parsed = self._safe_json_parse(final_text)
+
+        # Ensure minimum stable fields + trace guard
+        trace = parsed.get("trace") if isinstance(parsed.get("trace"), dict) else {}
+        trace["assistant_id"] = assistant_id
+        trace["read_only_guard"] = True
+        parsed["trace"] = trace
+
+        if "summary" not in parsed:
+            parsed["summary"] = (
+                "LLM odgovor nije imao 'summary' polje (fallback normalization)."
+            )
+        if "questions" not in parsed or not isinstance(parsed.get("questions"), list):
+            parsed["questions"] = []
+        if "plan" not in parsed or not isinstance(parsed.get("plan"), list):
+            parsed["plan"] = []
+        if "options" not in parsed or not isinstance(parsed.get("options"), list):
+            parsed["options"] = []
+        if "proposed_commands" not in parsed or not isinstance(
+            parsed.get("proposed_commands"), list
+        ):
+            parsed["proposed_commands"] = []
+
+        return parsed
