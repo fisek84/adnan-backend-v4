@@ -1,0 +1,70 @@
+name: Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Validate tag matches system_version.py VERSION
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" != "tag" ]]; then
+            echo "Not a tag-triggered run; skipping tag/version validation."
+            exit 0
+          fi
+
+          if [[ ! -f system_version.py ]]; then
+            echo "ERROR: system_version.py not found."
+            exit 1
+          fi
+
+          TAG="${GITHUB_REF_NAME}"   # e.g. v1.0.1
+          TAG_VER="${TAG#v}"         # 1.0.1
+
+          FILE_VER="$(python - << 'PY'
+          import re
+          from pathlib import Path
+
+          text = Path("system_version.py").read_text(encoding="utf-8")
+          m = re.search(r'^\s*VERSION\s*=\s*["\']([^"\']+)["\']\s*$', text, re.MULTILINE)
+          if not m:
+              raise SystemExit("VERSION not found in system_version.py")
+          print(m.group(1))
+          PY
+          )"
+
+          echo "Tag version:  ${TAG_VER}"
+          echo "File version: ${FILE_VER}"
+
+          if [[ "${TAG_VER}" != "${FILE_VER}" ]]; then
+            echo "ERROR: Tag ${TAG} does not match system_version.py VERSION=${FILE_VER}"
+            exit 1
+          fi
+
+      - name: Create GitHub Release (auto notes)
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true

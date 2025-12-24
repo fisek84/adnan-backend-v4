@@ -11,4 +11,4 @@ Format svakog zapisa:
 - 2025-12-22 – KANON-FIX-002_AGENT_ROUTER_SSOT – canonical AgentRouter SSOT u `services/agent_router/agent_router.py` (deterministički routing, backpressure, health, isolation) – (testovi: `.\test_runner.ps1` – ALL HAPPY PATH TESTS PASSED)
 - 2025-12-23 – KANON-FIX-003_WRITE_GATEWAY_SSOT – WriteGateway SSOT “MAX”: governance gate (ExecutionGovernanceService), approval handshake, audit trail (write_audit_events), idempotency replay, SSOT enforcement u goals/tasks/projects router+service sloju, wiring kroz dependencies.py – (testovi: `.\test_runner.ps1` – ALL HAPPY PATH TESTS PASSED)
 - 2025-12-23 – KANON-FIX-005_QUEUE_WORKER_ORCHESTRATOR – QueueService + Orchestrator SSOT (in-memory queue + in-process worker; enqueue→claim→execute→persist; execution outcomes upis u MemoryService) – (testovi: `.\test_runner.ps1` – ALL HAPPY PATH TESTS PASSED)
-
+- 2025-12-24 – KANON-FIX-010_CICD_RELEASES – Kanonski CI/CD sloj: GitHub Actions `ci.yml` (pre-commit + pytest na PR/push main) + `release.yml` (tag `v*` + auto GitHub Release notes, VERSION/tag usklađivanje preko `system_version.py`) – (testovi: CI gate: pre-commit + pytest)

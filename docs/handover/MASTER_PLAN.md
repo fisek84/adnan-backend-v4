@@ -23,4 +23,4 @@ Ovaj dokument opisuje kako se razvija i održava AI sistem.
 - Faza 7: Queue/Worker + Orchestrator (KANON-FIX-005)  (**STATUS: DONE**)
 - Faza 8: Code quality sloj (lint/format/typecheck)  (**STATUS: DONE**)
 - Faza 9: Observability & failure handling  (**STATUS: DONE**)
-- Faza 10: CI/CD & releases  (**STATUS: TODO**)
+- Faza 10: CI/CD & releases  (**STATUS: DONE**)
