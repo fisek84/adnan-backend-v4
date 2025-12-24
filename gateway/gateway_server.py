@@ -1,7 +1,7 @@
 # ruff: noqa: E402
 # gateway/gateway_server.py
 # FULL FILE — zamijeni cijeli gateway_server.py ovim.
-# (Phase 11: migrate startup to lifespan; fix OPS_SAFE_MODE flag; keep behavior)
+# (Phase 11: migrate startup to lifespan; fix OPS_SAFE_MODE flag; health = liveness, /ready = readiness)
 
 # ================================================================
 # SYSTEM VERSION (V1.1 — VERZIJA C)
@@ -35,6 +35,7 @@ from system_version import (
 load_dotenv(".env")
 
 OS_ENABLED = os.getenv("OS_ENABLED", "true").lower() == "true"
+# Ispravljeno: OPS_SAFE_MODE je true samo kad je env stvarno "true"
 OPS_SAFE_MODE = os.getenv("OPS_SAFE_MODE", "false").lower() == "true"
 
 NOTION_API_KEY = os.getenv("NOTION_API_KEY") or os.getenv("NOTION_TOKEN")
@@ -42,6 +43,7 @@ NOTION_GOALS_DB_ID = os.getenv("NOTION_GOALS_DB_ID")
 NOTION_TASKS_DB_ID = os.getenv("NOTION_TASKS_DB_ID")
 
 _BOOT_READY = False
+_BOOT_ERROR: Optional[str] = None
 
 # ================================================================
 # LOGGING (KANONSKI)
@@ -130,22 +132,31 @@ state = load_state()
 # ================================================================
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    global _BOOT_READY
+    global _BOOT_READY, _BOOT_ERROR
 
     _BOOT_READY = False
+    _BOOT_ERROR = None
+
     try:
+        # Core bootstrap (fatal ako ovdje pukne)
         bootstrap_application()
 
-        from services.notion_service import get_notion_service
+        # Notion snapshot sync — nije fatalno za boot, samo warning
+        try:
+            from services.notion_service import get_notion_service
 
-        notion_service = get_notion_service()
-        await notion_service.sync_knowledge_snapshot()
+            notion_service = get_notion_service()
+            await notion_service.sync_knowledge_snapshot()
+        except Exception as exc:  # noqa: BLE001
+            _BOOT_ERROR = f"notion_sync_failed: {exc}"
+            logger.warning("Notion knowledge snapshot sync failed: %s", exc)
 
         _BOOT_READY = True
         logger.info("🟢 System boot completed. READY.")
         yield
     finally:
         _BOOT_READY = False
+        logger.info("🛑 System shutdown — boot_ready=False.")
 
 
 # ================================================================
@@ -258,12 +269,12 @@ def _to_serializable(obj: Any) -> Any:
     if hasattr(obj, "dict"):
         try:
             return obj.dict()
-        except Exception:
+        except Exception:  # noqa: BLE001
             pass
     if hasattr(obj, "__dict__"):
         try:
             return {k: _to_serializable(v) for k, v in obj.__dict__.items()}
-        except Exception:
+        except Exception:  # noqa: BLE001
             pass
     return str(obj)
 
@@ -393,7 +404,7 @@ def _extract_date(properties: Dict[str, Any], keywords: List[str]) -> Optional[s
 async def _load_goals_summary() -> List[Dict[str, Any]]:
     try:
         rows = await _query_notion_db(NOTION_GOALS_DB_ID, page_size=50)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.exception("Failed to query Goals DB from Notion: %s", exc)
         return []
 
@@ -418,7 +429,7 @@ async def _load_goals_summary() -> List[Dict[str, Any]]:
 async def _load_tasks_summary() -> List[Dict[str, Any]]:
     try:
         rows = await _query_notion_db(NOTION_TASKS_DB_ID, page_size=50)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.exception("Failed to query Tasks DB from Notion: %s", exc)
         return []
 
@@ -459,7 +470,7 @@ async def execute_command(payload: ExecuteInput):
     approval_id = str(uuid.uuid4())
 
     approval_state = get_approval_state()
-    approval_state._approvals[approval_id] = {
+    approval_state._approvals[approval_id] = {  # type: ignore[attr-defined]
         "approval_id": approval_id,
         "execution_id": ai_command.execution_id,
         "status": "pending",
@@ -504,7 +515,7 @@ async def ceo_dashboard_command(payload: CeoCommandInput):
     approval_id = str(uuid.uuid4())
 
     approval_state = get_approval_state()
-    approval_state._approvals[approval_id] = {
+    approval_state._approvals[approval_id] = {  # type: ignore[attr-defined]
         "approval_id": approval_id,
         "execution_id": ai_command.execution_id,
         "status": "pending",
@@ -540,7 +551,7 @@ async def execute_raw_command(payload: ExecuteRawInput):
     approval_id = str(uuid.uuid4())
 
     approval_state = get_approval_state()
-    approval_state._approvals[approval_id] = {
+    approval_state._approvals[approval_id] = {  # type: ignore[attr-defined]
         "approval_id": approval_id,
         "execution_id": ai_command.execution_id,
         "status": "pending",
@@ -631,6 +642,7 @@ async def ceo_console_snapshot():
             "os_enabled": OS_ENABLED,
             "ops_safe_mode": OPS_SAFE_MODE,
             "boot_ready": _BOOT_READY,
+            "boot_error": _BOOT_ERROR,
         },
         "identity": _to_serializable(identity),
         "mode": _to_serializable(mode),
@@ -675,7 +687,7 @@ async def ceo_weekly_priority_memory():
     try:
         service = get_ai_summary_service()
         items = service.get_this_week_priorities()
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.exception("Failed to load Weekly Priority Memory from AI SUMMARY DB")
         raise HTTPException(
             status_code=500,
@@ -728,13 +740,37 @@ async def serve_frontend():
     return FileResponse(index_path)
 
 
+# ================================================================
+# HEALTH / READY
+# ================================================================
 @app.get("/health")
 async def health_check():
+    """
+    Liveness probe — koristi se za "da li proces živi".
+    UVIJEK vraća 200, ali u body vraća boot_ready i boot_error.
+    """
+    return {
+        "status": "ok",
+        "version": VERSION,
+        "boot_ready": _BOOT_READY,
+        "boot_error": _BOOT_ERROR,
+    }
+
+
+@app.get("/ready")
+async def ready_check():
+    """
+    Readiness probe — koristi se ako želiš da load balancer čeka
+    dok se sistem stvarno ne digne (Notion snapshot itd.).
+    """
     if not _BOOT_READY:
-        raise HTTPException(status_code=503, detail="System not ready")
-    return {"status": "ok"}
+        raise HTTPException(status_code=503, detail=_BOOT_ERROR or "System not ready")
+    return {"status": "ready", "version": VERSION}
 
 
+# ================================================================
+# GLOBAL ERROR HANDLER + CORS
+# ================================================================
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     logger.exception("GLOBAL ERROR")
