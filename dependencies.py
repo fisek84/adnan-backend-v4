@@ -16,7 +16,7 @@ from services.memory_service import MemoryService
 from services.agent_router.agent_router import AgentRouter
 
 # Učitamo .env konfiguraciju
-load_dotenv()
+load_dotenv(override=True)
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)

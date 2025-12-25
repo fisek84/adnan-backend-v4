@@ -1,10 +1,8 @@
-# ruff: noqa: E402
 # gateway/gateway_server.py
 # FULL FILE — zamijeni cijeli gateway_server.py ovim.
-# Canon fixes:
-# - init AI router services inside lifespan (keyword-only set_ai_services)
-# - keep health/ready semantics
-# - keep existing routers + Notion snapshot sync best-effort
+# Phase 1 fix:
+# - /api/execute and /api/execute/raw must create approvals via ApprovalStateService.create()
+# - must correlate command <-> (execution_id, approval_id) so Orchestrator.resume hard-gate can pass
 
 from __future__ import annotations
 
@@ -32,7 +30,7 @@ from system_version import (
 # ================================================================
 # ENV / BOOTSTRAP
 # ================================================================
-load_dotenv(".env")
+load_dotenv(override=False)
 
 OS_ENABLED = os.getenv("OS_ENABLED", "true").lower() == "true"
 OPS_SAFE_MODE = os.getenv("OPS_SAFE_MODE", "false").lower() == "true"
@@ -70,6 +68,7 @@ from services.coo_translation_service import COOTranslationService
 from services.coo_conversation_service import COOConversationService
 from services.approval_state_service import get_approval_state
 from services.execution_registry import ExecutionRegistry
+from services.execution_orchestrator import ExecutionOrchestrator
 from models.ai_command import AICommand
 
 # ================================================================
@@ -146,6 +145,57 @@ ai_command_service = AICommandService()
 coo_translation_service = COOTranslationService()
 coo_conversation_service = COOConversationService()
 _execution_registry = ExecutionRegistry()
+_execution_orchestrator = ExecutionOrchestrator()
+
+
+def _ai_command_field_names() -> set[str]:
+    model_fields = getattr(AICommand, "model_fields", None)
+    if isinstance(model_fields, dict):
+        return set(model_fields.keys())
+    v1_fields = getattr(AICommand, "__fields__", None)
+    if isinstance(v1_fields, dict):
+        return set(v1_fields.keys())
+    return set()
+
+
+def _ensure_trace_on_command(ai_command: AICommand, *, approval_id: str) -> None:
+    # 1) attach to metadata
+    md = getattr(ai_command, "metadata", None)
+    if not isinstance(md, dict):
+        md = {}
+    md["approval_id"] = approval_id
+    ai_command.metadata = md
+
+    # 2) attach to top-level field if model supports it
+    fields = _ai_command_field_names()
+    if "approval_id" in fields:
+        try:
+            ai_command.approval_id = approval_id  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+
+def _safe_command_summary(ai_command: AICommand) -> Dict[str, Any]:
+    try:
+        if hasattr(ai_command, "model_dump"):
+            return ai_command.model_dump()
+    except Exception:
+        pass
+    try:
+        if hasattr(ai_command, "dict"):
+            return ai_command.dict()
+    except Exception:
+        pass
+
+    params = getattr(ai_command, "params", None)
+    intent = getattr(ai_command, "intent", None)
+    cmd = getattr(ai_command, "command", None)
+
+    return {
+        "command": cmd,
+        "intent": intent,
+        "params": params if isinstance(params, dict) else {},
+    }
 
 
 # ================================================================
@@ -398,25 +448,15 @@ async def execute_command(payload: ExecuteInput):
     if not ai_command:
         raise HTTPException(400, "Could not translate input to command")
 
-    _execution_registry.register(ai_command)
+    # Canon: initiator must be explicit
+    if not getattr(ai_command, "initiator", None):
+        ai_command.initiator = "ceo"
 
-    approval_id = str(uuid.uuid4())
-    approval_state = get_approval_state()
-    approval_state._approvals[approval_id] = {  # type: ignore[attr-defined]
-        "approval_id": approval_id,
-        "execution_id": ai_command.execution_id,
-        "status": "pending",
-        "source": "system",
-        "command": ai_command.model_dump(),
-    }
+    result = await _execution_orchestrator.execute(ai_command)
 
-    return {
-        "status": "BLOCKED",
-        "execution_state": "BLOCKED",
-        "approval_id": approval_id,
-        "execution_id": ai_command.execution_id,
-        "command": ai_command.model_dump(),
-    }
+    # Compatibility guard for Happy Path (execution_state + approval_id at top-level)
+    # Orchestrator already returns these keys in BLOCKED case; keep as-is.
+    return result
 
 
 @app.post("/api/execute/raw")
@@ -430,24 +470,28 @@ async def execute_raw_command(payload: ExecuteRawInput):
         metadata=payload.metadata,
     )
 
-    _execution_registry.register(ai_command)
-
-    approval_id = str(uuid.uuid4())
     approval_state = get_approval_state()
-    approval_state._approvals[approval_id] = {  # type: ignore[attr-defined]
-        "approval_id": approval_id,
-        "execution_id": ai_command.execution_id,
-        "status": "pending",
-        "source": "system",
-        "command": ai_command.model_dump(),
-    }
+    approval = approval_state.create(
+        command=payload.command or "execute_raw",
+        payload_summary=_safe_command_summary(ai_command),
+        scope="api_execute_raw",
+        risk_level="unknown",
+        execution_id=ai_command.execution_id,
+    )
+    approval_id = approval.get("approval_id") or str(uuid.uuid4())
+
+    _ensure_trace_on_command(ai_command, approval_id=approval_id)
+
+    _execution_registry.register(ai_command)
 
     return {
         "status": "BLOCKED",
         "execution_state": "BLOCKED",
         "approval_id": approval_id,
         "execution_id": ai_command.execution_id,
-        "command": ai_command.model_dump(),
+        "command": ai_command.model_dump()
+        if hasattr(ai_command, "model_dump")
+        else _to_serializable(ai_command),
     }
 
 

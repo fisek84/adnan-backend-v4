@@ -30,7 +30,11 @@ class ApprovalUXService:
         approved_by: str,
         note: Optional[str] = None,
     ) -> Dict[str, Any]:
-        approval = self.approvals.approve(approval_id)
+        approval = self.approvals.approve(
+            approval_id,
+            approved_by=approved_by,
+            note=note,
+        )
         execution_id = approval.get("execution_id")
 
         if not execution_id:
@@ -47,7 +51,7 @@ class ApprovalUXService:
             "note": note,
             "execution_id": execution_id,
             "timestamp": datetime.utcnow().isoformat(),
-            "read_only": True,
+            "read_only": False,
         }
 
     def reject(
@@ -57,7 +61,11 @@ class ApprovalUXService:
         rejected_by: str,
         note: Optional[str] = None,
     ) -> Dict[str, Any]:
-        approval = self.approvals.reject(approval_id)
+        approval = self.approvals.reject(
+            approval_id,
+            rejected_by=rejected_by,
+            note=note,
+        )
 
         return {
             "success": True,
@@ -66,5 +74,5 @@ class ApprovalUXService:
             "rejected_by": rejected_by,
             "note": note,
             "timestamp": datetime.utcnow().isoformat(),
-            "read_only": True,
+            "read_only": False,
         }

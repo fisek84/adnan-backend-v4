@@ -108,24 +108,46 @@ class ApprovalStateService:
     # DECISIONS
     # ============================================================
 
-    def approve(self, approval_id: str) -> Dict[str, Any]:
+    def approve(
+        self,
+        approval_id: str,
+        *,
+        approved_by: str = "unknown",
+        note: Optional[str] = None,
+    ) -> Dict[str, Any]:
         with self._lock:
             approval = self._require(approval_id)
             if approval.get("status") != "pending":
                 return approval.copy()
 
             approval["status"] = "approved"
+            approval["approved_by"] = approved_by
+
+            if isinstance(note, str) and note.strip():
+                approval["note"] = note
+
             approval["decided_at"] = datetime.utcnow().isoformat()
             self._persist_to_disk_locked()
             return approval.copy()
 
-    def reject(self, approval_id: str) -> Dict[str, Any]:
+    def reject(
+        self,
+        approval_id: str,
+        *,
+        rejected_by: str = "unknown",
+        note: Optional[str] = None,
+    ) -> Dict[str, Any]:
         with self._lock:
             approval = self._require(approval_id)
             if approval.get("status") != "pending":
                 return approval.copy()
 
             approval["status"] = "rejected"
+            approval["rejected_by"] = rejected_by
+
+            if isinstance(note, str) and note.strip():
+                approval["note"] = note
+
             approval["decided_at"] = datetime.utcnow().isoformat()
             self._persist_to_disk_locked()
             return approval.copy()

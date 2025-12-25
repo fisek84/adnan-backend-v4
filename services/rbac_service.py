@@ -45,6 +45,8 @@ class RBACService:
                     "create_task",
                     "create_project",
                     "query_database",
+                    # Required for Goal+Task happy path through orchestrator governance.
+                    "goal_task_workflow",
                 },
             },
             # ----------------------------------

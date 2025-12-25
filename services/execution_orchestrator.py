@@ -1,9 +1,12 @@
+# services/execution_orchestrator.py
+
 from __future__ import annotations
 
 import logging
 from typing import Any, Dict, List, Union
 
 from models.ai_command import AICommand
+from services.approval_state_service import get_approval_state
 from services.execution_governance_service import ExecutionGovernanceService
 from services.execution_registry import ExecutionRegistry
 from services.notion_ops_agent import NotionOpsAgent
@@ -27,6 +30,7 @@ class ExecutionOrchestrator:
         self.governance = ExecutionGovernanceService()
         self.registry = ExecutionRegistry()
         self.notion_agent = NotionOpsAgent(get_notion_service())
+        self.approvals = get_approval_state()
 
     async def execute(
         self, command: Union[AICommand, Dict[str, Any]]
@@ -85,6 +89,20 @@ class ExecutionOrchestrator:
 
         # 3) APPROVAL GATE
         if not bool(decision.get("allowed", False)):
+            # Persist approval_id onto the registered command so resume() hard-gate can pass deterministically.
+            decision_approval_id = decision.get("approval_id")
+            if isinstance(decision_approval_id, str) and decision_approval_id:
+                try:
+                    cmd.approval_id = decision_approval_id  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+
+                md = getattr(cmd, "metadata", None)
+                if not isinstance(md, dict):
+                    md = {}
+                md["approval_id"] = decision_approval_id
+                cmd.metadata = md
+
             cmd.execution_state = "BLOCKED"
             self.registry.block(execution_id, decision)
 
@@ -112,7 +130,38 @@ class ExecutionOrchestrator:
         if cmd is not command:
             self.registry.register(cmd)
 
-        logger.info("Resuming approved execution %s", execution_id)
+        # ------------------------------------------------------------
+        # HARD APPROVAL GATE (FAZA 1)
+        # ------------------------------------------------------------
+        approval_id = getattr(cmd, "approval_id", None)
+
+        if not isinstance(approval_id, str) or not approval_id:
+            md = getattr(cmd, "metadata", None)
+            if isinstance(md, dict):
+                meta_aid = md.get("approval_id")
+                if isinstance(meta_aid, str) and meta_aid:
+                    approval_id = meta_aid
+
+        if not isinstance(approval_id, str) or not approval_id:
+            return {
+                "execution_id": execution_id,
+                "execution_state": "BLOCKED",
+                "reason": "missing_approval_id_for_resume",
+            }
+
+        if self.approvals.is_fully_approved(approval_id) is not True:
+            return {
+                "execution_id": execution_id,
+                "execution_state": "BLOCKED",
+                "reason": "approval_not_granted",
+                "approval_id": approval_id,
+            }
+
+        logger.info(
+            "Resuming approved execution %s (approval_id=%s)",
+            execution_id,
+            approval_id,
+        )
 
         return await self._execute_after_approval(cmd)
 
@@ -165,27 +214,50 @@ class ExecutionOrchestrator:
             tasks_specs_raw if isinstance(tasks_specs_raw, list) else []
         )
 
+        parent_approval_id = getattr(command, "approval_id", None)
+        if not isinstance(parent_approval_id, str) or not parent_approval_id:
+            md = getattr(command, "metadata", None)
+            if isinstance(md, dict):
+                meta_aid = md.get("approval_id")
+                if isinstance(meta_aid, str) and meta_aid:
+                    parent_approval_id = meta_aid
+            if not isinstance(parent_approval_id, str) or not parent_approval_id:
+                parent_approval_id = None
+
+        allowed_fields = self._allowed_fields()
+
         # ---------------------------
         # 1) KREIRAJ GOAL
         # ---------------------------
-        goal_cmd = AICommand(
-            command="notion_write",
-            intent="create_page",
-            read_only=False,
-            params={
+        goal_metadata: Dict[str, Any] = {
+            "context_type": "workflow",
+            "workflow": "goal_task_workflow",
+            "step": "create_goal",
+            "trace_parent": command.execution_id,
+        }
+        if parent_approval_id:
+            goal_metadata["approval_id"] = parent_approval_id
+
+        goal_kwargs: Dict[str, Any] = {
+            "command": "notion_write",
+            "intent": "create_page",
+            "read_only": False,
+            "params": {
                 "db_key": goal_spec.get("db_key", "goals"),
                 "property_specs": goal_spec.get("property_specs") or {},
             },
-            initiator=command.initiator,
-            owner="system",
-            executor="notion_agent",
-            validated=True,
-            metadata={
-                "context_type": "workflow",
-                "workflow": "goal_task_workflow",
-                "step": "create_goal",
-            },
-        )
+            "initiator": command.initiator,
+            "owner": "system",
+            "executor": "notion_agent",
+            "validated": True,
+            "metadata": goal_metadata,
+        }
+        if "execution_id" in allowed_fields:
+            goal_kwargs["execution_id"] = command.execution_id
+        if parent_approval_id and "approval_id" in allowed_fields:
+            goal_kwargs["approval_id"] = parent_approval_id
+
+        goal_cmd = AICommand(**goal_kwargs)
 
         goal_result = await self.notion_agent.execute(goal_cmd)
         goal_page_id = (
@@ -213,24 +285,35 @@ class ExecutionOrchestrator:
                     "page_ids": [goal_page_id],
                 }
 
-            task_cmd = AICommand(
-                command="notion_write",
-                intent="create_page",
-                read_only=False,
-                params={
+            task_metadata: Dict[str, Any] = {
+                "context_type": "workflow",
+                "workflow": "goal_task_workflow",
+                "step": "create_task",
+                "trace_parent": command.execution_id,
+            }
+            if parent_approval_id:
+                task_metadata["approval_id"] = parent_approval_id
+
+            task_kwargs: Dict[str, Any] = {
+                "command": "notion_write",
+                "intent": "create_page",
+                "read_only": False,
+                "params": {
                     "db_key": t.get("db_key", "tasks"),
                     "property_specs": base_specs,
                 },
-                initiator=command.initiator,
-                owner="system",
-                executor="notion_agent",
-                validated=True,
-                metadata={
-                    "context_type": "workflow",
-                    "workflow": "goal_task_workflow",
-                    "step": "create_task",
-                },
-            )
+                "initiator": command.initiator,
+                "owner": "system",
+                "executor": "notion_agent",
+                "validated": True,
+                "metadata": task_metadata,
+            }
+            if "execution_id" in allowed_fields:
+                task_kwargs["execution_id"] = command.execution_id
+            if parent_approval_id and "approval_id" in allowed_fields:
+                task_kwargs["approval_id"] = parent_approval_id
+
+            task_cmd = AICommand(**task_kwargs)
 
             task_result = await self.notion_agent.execute(task_cmd)
             if isinstance(task_result, dict):
@@ -258,29 +341,52 @@ class ExecutionOrchestrator:
         db_key = params.get("db_key", "kpi")
         time_scope = params.get("time_scope", "this_week")
 
+        parent_approval_id = getattr(command, "approval_id", None)
+        if not isinstance(parent_approval_id, str) or not parent_approval_id:
+            md = getattr(command, "metadata", None)
+            if isinstance(md, dict):
+                meta_aid = md.get("approval_id")
+                if isinstance(meta_aid, str) and meta_aid:
+                    parent_approval_id = meta_aid
+            if not isinstance(parent_approval_id, str) or not parent_approval_id:
+                parent_approval_id = None
+
+        allowed_fields = self._allowed_fields()
+
         # ---------------------------
         # 1) QUERY KPI DB
         # ---------------------------
-        kpi_query_cmd = AICommand(
-            command="notion_write",
-            intent="query_database",
-            read_only=True,
-            params={
+        kpi_meta: Dict[str, Any] = {
+            "context_type": "workflow",
+            "workflow": "kpi_weekly_summary",
+            "step": "query_kpi",
+            "report_type": "kpi_weekly_summary",
+            "time_scope": time_scope,
+            "trace_parent": command.execution_id,
+        }
+        if parent_approval_id:
+            kpi_meta["approval_id"] = parent_approval_id
+
+        kpi_kwargs: Dict[str, Any] = {
+            "command": "notion_write",
+            "intent": "query_database",
+            "read_only": True,
+            "params": {
                 "db_key": db_key,
                 "property_specs": {},
             },
-            initiator=command.initiator,
-            owner="system",
-            executor="notion_agent",
-            validated=True,
-            metadata={
-                "context_type": "workflow",
-                "workflow": "kpi_weekly_summary",
-                "step": "query_kpi",
-                "report_type": "kpi_weekly_summary",
-                "time_scope": time_scope,
-            },
-        )
+            "initiator": command.initiator,
+            "owner": "system",
+            "executor": "notion_agent",
+            "validated": True,
+            "metadata": kpi_meta,
+        }
+        if "execution_id" in allowed_fields:
+            kpi_kwargs["execution_id"] = command.execution_id
+        if parent_approval_id and "approval_id" in allowed_fields:
+            kpi_kwargs["approval_id"] = parent_approval_id
+
+        kpi_query_cmd = AICommand(**kpi_kwargs)
 
         kpi_result = await self.notion_agent.execute(kpi_query_cmd)
 
@@ -300,28 +406,39 @@ class ExecutionOrchestrator:
         # ---------------------------
         title = f"Weekly KPI summary – {time_scope}"
 
-        ai_summary_cmd = AICommand(
-            command="notion_write",
-            intent="create_page",
-            read_only=False,
-            params={
+        ai_meta: Dict[str, Any] = {
+            "context_type": "workflow",
+            "workflow": "kpi_weekly_summary",
+            "step": "write_ai_summary",
+            "time_scope": time_scope,
+            "trace_parent": command.execution_id,
+        }
+        if parent_approval_id:
+            ai_meta["approval_id"] = parent_approval_id
+
+        ai_kwargs: Dict[str, Any] = {
+            "command": "notion_write",
+            "intent": "create_page",
+            "read_only": False,
+            "params": {
                 "db_key": "ai_summary",
                 "property_specs": {
                     "Name": {"type": "title", "text": title},
                     "Summary": {"type": "rich_text", "text": summary_text},
                 },
             },
-            initiator=command.initiator,
-            owner="system",
-            executor="notion_agent",
-            validated=True,
-            metadata={
-                "context_type": "workflow",
-                "workflow": "kpi_weekly_summary",
-                "step": "write_ai_summary",
-                "time_scope": time_scope,
-            },
-        )
+            "initiator": command.initiator,
+            "owner": "system",
+            "executor": "notion_agent",
+            "validated": True,
+            "metadata": ai_meta,
+        }
+        if "execution_id" in allowed_fields:
+            ai_kwargs["execution_id"] = command.execution_id
+        if parent_approval_id and "approval_id" in allowed_fields:
+            ai_kwargs["approval_id"] = parent_approval_id
+
+        ai_summary_cmd = AICommand(**ai_kwargs)
 
         ai_summary_result = await self.notion_agent.execute(ai_summary_cmd)
 
