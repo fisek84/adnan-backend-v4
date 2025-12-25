@@ -305,8 +305,12 @@ async def lifespan(_: FastAPI):
         try:
             hook = getattr(ai_ops_router_module, "set_ai_ops_services", None)
             if callable(hook):
-                hook(orchestrator=_execution_orchestrator, approvals=get_approval_state())
-                logger.info("✅ AI Ops router services injected (shared orchestrator/approvals)")
+                hook(
+                    orchestrator=_execution_orchestrator, approvals=get_approval_state()
+                )
+                logger.info(
+                    "✅ AI Ops router services injected (shared orchestrator/approvals)"
+                )
         except Exception as exc:  # noqa: BLE001
             _append_boot_error(f"ai_ops_injection_failed:{exc}")
             logger.warning("AI Ops services injection failed: %s", exc)
