@@ -21,13 +21,14 @@ KOMPATIBILNOST (FAZA 4):
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
-from datetime import datetime
-from threading import Lock
 from copy import deepcopy
-from pathlib import Path
+from dataclasses import dataclass, field
+from datetime import datetime
 import json
+import os
+from pathlib import Path
+from threading import Lock
+from typing import Any, Dict, List, Optional
 
 
 # =========================================================
@@ -46,6 +47,58 @@ class AgentRegistryEntry:
     version: str = "1"
     capabilities: List[str] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+# =========================================================
+# PATH RESOLUTION (Render-safe)
+# =========================================================
+
+
+def _repo_root() -> Path:
+    # services/agent_registry_service.py -> services -> repo root
+    return Path(__file__).resolve().parent.parent
+
+
+def _resolve_agents_json_path(path: str) -> Path:
+    """
+    Render/CI friendly: relativni path može failati jer CWD nije repo root.
+    Ovdje pokušavamo deterministički naći config/agents.json.
+
+    Prioritet:
+    1) ENV override: AGENTS_JSON_PATH
+    2) Ako je path apsolutan i postoji
+    3) Relativno na CWD
+    4) Relativno na repo root
+    """
+    env_override = (os.getenv("AGENTS_JSON_PATH") or "").strip()
+    if env_override:
+        p = Path(env_override).expanduser()
+        if p.is_file():
+            return p
+        raise FileNotFoundError(f"AGENTS_JSON_PATH points to missing file: {p}")
+
+    raw = (path or "config/agents.json").strip()
+    p0 = Path(raw).expanduser()
+
+    # absolute path
+    if p0.is_absolute():
+        if p0.is_file():
+            return p0
+        raise FileNotFoundError(f"agents.json not found at absolute path: {p0}")
+
+    # relative to CWD
+    cwd_candidate = Path.cwd() / p0
+    if cwd_candidate.is_file():
+        return cwd_candidate
+
+    # relative to repo root
+    root_candidate = _repo_root() / p0
+    if root_candidate.is_file():
+        return root_candidate
+
+    raise FileNotFoundError(
+        f"agents.json not found. Tried: {cwd_candidate} and {root_candidate}"
+    )
 
 
 # =========================================================
@@ -91,21 +144,26 @@ class AgentRegistryService:
 
         now = datetime.utcnow().isoformat()
 
-        agent = {
-            "agent_name": str(agent_name),
-            "agent_id": str(agent_id),
-            "capabilities": caps,  # store as LIST (deterministic)
-            "version": str(version or "1"),
-            "status": status,
-            "registered_at": self._agents.get(agent_id, {}).get("registered_at", now),
-            "updated_at": now,
-            "metadata": metadata or {},
-        }
+        # Store a deepcopy to prevent external mutation
+        md = deepcopy(metadata) if isinstance(metadata, dict) else {}
 
         with self._lock:
-            self._agents[agent_id] = agent
+            existing = self._agents.get(agent_id, {})
+            registered_at = existing.get("registered_at", now)
 
-        return deepcopy(agent)
+            agent = {
+                "agent_name": str(agent_name),
+                "agent_id": str(agent_id),
+                "capabilities": caps,  # store as LIST (deterministic)
+                "version": str(version or "1"),
+                "status": status,
+                "registered_at": registered_at,
+                "updated_at": now,
+                "metadata": md,
+            }
+
+            self._agents[agent_id] = agent
+            return deepcopy(agent)
 
     # =========================================================
     # SSOT LOAD (FAZA 4)
@@ -132,9 +190,7 @@ class AgentRegistryService:
         - entrypoint/priority/keywords:
             prvo top-level, pa metadata.*
         """
-        p = Path(path)
-        if not p.exists():
-            raise FileNotFoundError(f"agents.json not found at: {p}")
+        p = _resolve_agents_json_path(path)
 
         with p.open("r", encoding="utf-8") as f:
             data = json.load(f)
@@ -147,7 +203,6 @@ class AgentRegistryService:
 
         file_version = str(data.get("version", "1"))
         agents = data.get("agents", [])
-
         loaded = 0
 
         for a in agents:
@@ -177,6 +232,8 @@ class AgentRegistryService:
             if not isinstance(kw_raw, list):
                 kw_raw = []
             keywords = [str(k).strip().lower() for k in kw_raw if str(k).strip()]
+            # Deterministic keywords: unique + stable order via sort
+            keywords = sorted(set(keywords))
 
             # status: prefer explicit status, else enabled flag
             status_val = a.get("status")
@@ -213,6 +270,7 @@ class AgentRegistryService:
             merged_meta["keywords"] = keywords
             merged_meta["source"] = str(p)
             merged_meta["read_only"] = True
+            merged_meta["loaded_at"] = datetime.utcnow().isoformat()
 
             self.register_agent(
                 agent_name=agent_id,  # stabilan ključ
@@ -385,7 +443,11 @@ class AgentRegistryService:
             if not a:
                 return False
             a["status"] = "disabled"
-            a.setdefault("metadata", {})["disabled_reason"] = str(reason or "")
+            md = a.get("metadata")
+            if not isinstance(md, dict):
+                md = {}
+                a["metadata"] = md
+            md["disabled_reason"] = str(reason or "")
             a["updated_at"] = datetime.utcnow().isoformat()
             return True
 
@@ -410,9 +472,7 @@ class AgentRegistryService:
             return {
                 agent_id: {
                     "agent_id": self._agents[agent_id].get("agent_id"),
-                    "capabilities": list(
-                        self._agents[agent_id].get("capabilities") or []
-                    ),
+                    "capabilities": list(self._agents[agent_id].get("capabilities") or []),
                     "status": self._agents[agent_id].get("status"),
                     "version": self._agents[agent_id].get("version"),
                     "metadata": deepcopy(self._agents[agent_id].get("metadata", {})),

@@ -72,7 +72,7 @@ function appendHistoryMessage(role, text) {
 
   const body = document.createElement("div");
   body.classList.add("text");
-  body.textContent = text;
+  body.textContent = text == null ? "" : String(text);
 
   bubble.appendChild(meta);
   bubble.appendChild(body);
@@ -97,38 +97,109 @@ function clearHistory() {
   history.appendChild(empty);
 }
 
+// --------------------------------------------------
+// CEO CONSOLE RESPONSE FORMATTER (CANON-SAFE)
+// Handles both shapes:
+//  A) { summary, questions[], plan[], options[], proposed_commands[] }
+//  B) legacy-ish { text, proposed_commands: {} } etc.
+// Never throws.
+// --------------------------------------------------
+
+function _asOneLine(v) {
+  if (v == null) return "";
+  if (typeof v === "string") return v.trim();
+  if (typeof v === "number" || typeof v === "boolean") return String(v);
+  try {
+    return JSON.stringify(v);
+  } catch {
+    return String(v);
+  }
+}
+
+function _formatBullets(title, items) {
+  if (!Array.isArray(items) || items.length === 0) return "";
+  const lines = items
+    .map((x) => _asOneLine(x))
+    .filter(Boolean)
+    .map((s) => `- ${s}`);
+  if (lines.length === 0) return "";
+  return `${title}\n${lines.join("\n")}`;
+}
+
+function _normalizeProposedCommands(pc) {
+  // backend can return: [] or {} or null
+  if (Array.isArray(pc)) return pc;
+  if (pc && typeof pc === "object") {
+    // object map -> list
+    const vals = Object.values(pc);
+    return Array.isArray(vals) ? vals : [];
+  }
+  return [];
+}
+
 function formatAdviceFromCeoConsole(data) {
-  const lines = [];
-  const summary = (data && data.summary) || "";
-  const questions = Array.isArray(data?.questions) ? data.questions : [];
-  const plan = Array.isArray(data?.plan) ? data.plan : [];
-  const options = Array.isArray(data?.options) ? data.options : [];
+  try {
+    const lines = [];
 
-  if (summary) {
-    lines.push(summary.trim());
-  } else {
-    lines.push("CEO Command je vratio savjet (READ-only).");
+    const summary =
+      (typeof data?.summary === "string" && data.summary.trim()) ||
+      (typeof data?.text === "string" && data.text.trim()) ||
+      "";
+
+    const questions = Array.isArray(data?.questions) ? data.questions : [];
+    const plan = Array.isArray(data?.plan) ? data.plan : [];
+    const options = Array.isArray(data?.options) ? data.options : [];
+
+    if (summary) {
+      lines.push(summary);
+    } else {
+      lines.push("CEO Command je vratio savjet (READ-only).");
+    }
+
+    const qBlock = _formatBullets("Pitanja za razjašnjenje:", questions);
+    if (qBlock) {
+      lines.push("");
+      lines.push(qBlock);
+    }
+
+    const pBlock = _formatBullets("Predloženi plan:", plan);
+    if (pBlock) {
+      lines.push("");
+      lines.push(pBlock);
+    }
+
+    const oBlock = _formatBullets("Opcije:", options);
+    if (oBlock) {
+      lines.push("");
+      lines.push(oBlock);
+    }
+
+    const proposed = _normalizeProposedCommands(data?.proposed_commands);
+    if (proposed.length) {
+      const pcLines = proposed
+        .map((c) => {
+          if (typeof c === "string") return c.trim();
+          const cmd = _asOneLine(c?.command || c?.name || "(command)");
+          const reason = _asOneLine(c?.reason);
+          const approval = c?.requires_approval ? " (requires approval)" : "";
+          const dry = c?.dry_run ? " [dry-run]" : "";
+          return `${cmd}${approval}${dry}${reason ? " — " + reason : ""}`.trim();
+        })
+        .filter(Boolean)
+        .map((s) => `- ${s}`);
+
+      if (pcLines.length) {
+        lines.push("");
+        lines.push("Proposed commands:");
+        lines.push(...pcLines);
+      }
+    }
+
+    return lines.join("\n");
+  } catch (e) {
+    console.error("formatAdviceFromCeoConsole failed", e, data);
+    return "(UI parse error) Pogledaj console log.";
   }
-
-  if (questions.length) {
-    lines.push("");
-    lines.push("Pitanja za razjašnjenje:");
-    for (const q of questions) lines.push(`- ${q}`);
-  }
-
-  if (plan.length) {
-    lines.push("");
-    lines.push("Predloženi plan:");
-    for (const p of plan) lines.push(`- ${p}`);
-  }
-
-  if (options.length) {
-    lines.push("");
-    lines.push("Opcije:");
-    for (const o of options) lines.push(`- ${o}`);
-  }
-
-  return lines.join("\n");
 }
 
 function attachInlineActionsToSystemMessage(msgEl, { canExecute }) {
@@ -427,7 +498,14 @@ async function sendCeoCommand() {
     }
 
     const data = await res.json();
-    const adviceText = formatAdviceFromCeoConsole(data);
+
+    let adviceText = "";
+    try {
+      adviceText = formatAdviceFromCeoConsole(data);
+    } catch (e) {
+      console.error("formatAdviceFromCeoConsole failed", e, data);
+      adviceText = "(UI parse error) Pogledaj console log.";
+    }
 
     const sysMsgEl = appendHistoryMessage("system", adviceText);
     attachInlineActionsToSystemMessage(sysMsgEl, { canExecute: true });

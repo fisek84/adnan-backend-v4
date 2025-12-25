@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "agents": [
+    {
+      "id": "ceo_clone",
+      "name": "CEO Clone",
+      "enabled": true,
+      "priority": 100,
+      "entrypoint": "services.agent_router_service:ceo_clone_agent",
+      "keywords": [
+        "ceo",
+        "strategy",
+        "plan",
+        "kpi",
+        "goal",
+        "goals",
+        "cilj",
+        "ciljevi",
+        "priorities",
+        "priority",
+        "task",
+        "tasks",
+        "taskove",
+        "taskovi",
+        "zadatak",
+        "zadatke",
+        "zadatci",
+        "zadatci",
+        "todo",
+        "to do"
+      ]
+    },
+    {
+      "id": "specialist_notion",
+      "name": "Notion Specialist",
+      "enabled": true,
+      "priority": 90,
+      "entrypoint": "services.agent_router_service:specialist_notion_agent",
+      "keywords": [
+        "notion",
+        "page",
+        "database",
+        "db",
+        "property",
+        "properties",
+        "schema",
+        "workspace",
+        "table",
+        "tablica"
+      ]
+    }
+  ]
+}

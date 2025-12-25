@@ -140,17 +140,17 @@ p{ margin:0; }
   display:flex;
   flex-direction: column;
   gap: 14px;
-  height: 100%;
+  /* NOTE: do NOT force height:100% here (can trigger grid/flex circular collapse) */
 }
 .column-left{
   min-height: 0;
-  height: 100%;
   overflow: hidden;
+  /* NOTE: do NOT force height:100% here */
 }
 .column-right{
   min-height: 0;
-  height: 100%;
   overflow-y: auto;
+  /* NOTE: do NOT force height:100% here */
 }
 
 /* Card */
@@ -185,35 +185,36 @@ p{ margin:0; }
   min-height: 0;
   display:flex;
   flex-direction: column;
-  height: 100%;
+  /* NOTE: do NOT force height:100% here */
 }
 
-/* CEO chat container */
+/* ===================================================================== */
+/* Base: flex chain for chat (no forced % heights)                        */
+/* ===================================================================== */
 .command-layout,
-.ceo-chat-panel{
-  flex: 1;
-  min-height: 0;
+.ceo-chat-panel,
+.ceo-chatbox{
   display:flex;
   flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0; /* allows children to grow + scroll */
 }
 
+/* CEO chat container padding */
 .ceo-chatbox{
-  flex: 1;
-  min-height: 0;
-  height: 100%;
-  display:flex;
-  flex-direction: column;
   padding: 14px 14px 12px;
 }
 
 /* HISTORY AREA – scrollable box */
 #ceo-history,
 .ceo-chat-history{
-  flex: 1;
+  flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
   padding: 4px 2px 14px;
   scroll-behavior: smooth;
+  height: auto;
+  max-height: none;
 }
 
 /* Right grid (goals/tasks) */
@@ -413,24 +414,27 @@ p{ margin:0; }
 /* Scrollbars (WebKit) */
 .table-wrapper-compact::-webkit-scrollbar,
 .table-wrapper-weekly::-webkit-scrollbar,
-.ceo-chat-history::-webkit-scrollbar{
+.ceo-chat-history::-webkit-scrollbar,
+#ceo-history::-webkit-scrollbar{
   width: 10px;
 }
 .table-wrapper-compact::-webkit-scrollbar-thumb,
 .table-wrapper-weekly::-webkit-scrollbar-thumb,
-.ceo-chat-history::-webkit-scrollbar-thumb{
+.ceo-chat-history::-webkit-scrollbar-thumb,
+#ceo-history::-webkit-scrollbar-thumb{
   background: rgba(255,255,255,.12);
   border: 2px solid rgba(0,0,0,.18);
   border-radius: 999px;
 }
 .table-wrapper-compact::-webkit-scrollbar-track,
 .table-wrapper-weekly::-webkit-scrollbar-track,
-.ceo-chat-history::-webkit-scrollbar-track{
+.ceo-chat-history::-webkit-scrollbar-track,
+#ceo-history::-webkit-scrollbar-track{
   background: rgba(0,0,0,.10);
 }
 
 /* ===================================================================== */
-/* CEO CHATBOX — ChatGPT-like behavior                                  */
+/* CEO CHATBOX — ChatGPT-like behavior                                    */
 /* ===================================================================== */
 
 @keyframes ceoRise {
@@ -645,4 +649,56 @@ p{ margin:0; }
     max-height: none;
     overflow: visible;
   }
+}
+
+/* ===================================================== */
+/* CEO CHAT: HARD GRID PLACEMENT (stop 0px grid child)    */
+/* ===================================================== */
+
+main.layout{
+  grid-template-rows: minmax(0, 1fr) !important;
+  grid-auto-rows: minmax(0, 1fr) !important;
+  align-content: stretch !important;
+}
+
+/* lock the two columns into row 1 */
+main.layout > section.column.column-left{
+  grid-row: 1 / 2 !important;
+  grid-column: 1 / 2 !important;
+  align-self: stretch !important;
+  justify-self: stretch !important;
+  height: 100% !important;
+  min-height: 0 !important;
+}
+
+main.layout > section.column.column-right{
+  grid-row: 1 / 2 !important;
+  grid-column: 2 / 3 !important;
+  align-self: stretch !important;
+  justify-self: stretch !important;
+  height: 100% !important;
+  min-height: 0 !important;
+}
+
+/* keep chat internals scrollable */
+section.column.column-left > section.card.card-command{
+  height: 100% !important;
+  min-height: 0 !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+.command-layout,
+.ceo-chat-panel,
+.ceo-chatbox{
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+#ceo-history{
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  overflow-y: auto !important;
 }

@@ -1,5 +1,9 @@
-from typing import Callable, Dict, Optional, Any
-from services.notion_service import NotionService
+from __future__ import annotations
+
+from typing import Callable, Dict, Optional, Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from services.notion_service import NotionService
 
 
 # ------------------------------------------
@@ -34,7 +38,7 @@ def action_system_query(payload: Dict[str, Any]):
 
 
 def action_system_notion_inbox(payload: Dict[str, Any]):
-    notion: NotionService = payload.get("notion_service")
+    notion = payload.get("notion_service")  # type: ignore[assignment]
     if not notion:
         return {
             "action": "system_notion_inbox",
@@ -71,7 +75,7 @@ def action_system_notion_inbox(payload: Dict[str, Any]):
 
 
 def action_system_inbox_delegation_preview(payload: Dict[str, Any]):
-    notion: NotionService = payload.get("notion_service")
+    notion = payload.get("notion_service")  # type: ignore[assignment]
     if not notion:
         return {
             "action": "system_inbox_delegation_preview",

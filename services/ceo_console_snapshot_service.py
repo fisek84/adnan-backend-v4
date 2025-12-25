@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import datetime as dt
+import logging
 import os
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 from pydantic import BaseModel, Field
@@ -16,9 +17,88 @@ DEFAULT_PAGE_SIZE = 100
 DEFAULT_EXCERPT_LINES = 40
 DEFAULT_MAX_ROWS = 50
 
+# Normalization bounds (read-only; fail-soft)
+DEFAULT_MAX_TEXT_VALUE_CHARS = 2000
+DEFAULT_MAX_LIST_ITEMS = 50
+
+logger = logging.getLogger(__name__)
+
 
 class ConfigurationError(RuntimeError):
     """Config / environment error for CEO console snapshot service."""
+
+
+def _env_true(name: str, default: str = "false") -> bool:
+    return (os.getenv(name, default) or "").strip().lower() == "true"
+
+
+def _safe_model_dump(model: Any) -> Dict[str, Any]:
+    """
+    Pydantic v2: model_dump(mode="json") when possible (stable JSON-serializable)
+    Pydantic v1: dict()
+    """
+    if model is None:
+        return {}
+    try:
+        if hasattr(model, "model_dump"):
+            try:
+                out = model.model_dump(mode="json")  # type: ignore[attr-defined]
+            except Exception:
+                out = model.model_dump()  # type: ignore[attr-defined]
+            return out if isinstance(out, dict) else {}
+    except Exception:
+        pass
+    try:
+        if hasattr(model, "dict"):
+            out = model.dict()  # type: ignore[attr-defined]
+            return out if isinstance(out, dict) else {}
+    except Exception:
+        pass
+    return {}
+
+
+def _sorted_keys_dict(d: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Deterministic serialization: sort top-level keys.
+    (JSON object order is not semantically meaningful, but stable ordering helps diffing/tests.)
+    """
+    try:
+        return {k: d[k] for k in sorted(d.keys(), key=lambda x: (str(x).lower(), str(x)))}
+    except Exception:
+        # fail-soft
+        return dict(d)
+
+
+def _truncate_text(s: str, max_chars: int) -> str:
+    if max_chars <= 0:
+        return s
+    if len(s) <= max_chars:
+        return s
+    return s[: max_chars - 1] + "…"
+
+
+def _canonicalize_properties_raw(props: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Deterministic properties payload:
+      - sort property names
+      - sort keys of each property object (shallow)
+    Fail-soft; never raises.
+    """
+    if not isinstance(props, dict):
+        return {}
+    out: Dict[str, Any] = {}
+    try:
+        keys = sorted(props.keys(), key=lambda x: (str(x).lower(), str(x)))
+    except Exception:
+        keys = list(props.keys())
+
+    for k in keys:
+        v = props.get(k)
+        if isinstance(v, dict):
+            out[k] = _sorted_keys_dict(v)
+        else:
+            out[k] = v
+    return out
 
 
 class CeoGoal(BaseModel):
@@ -28,6 +108,17 @@ class CeoGoal(BaseModel):
     priority: Optional[str] = None
     deadline: Optional[dt.date] = None
 
+    # KANON: expose Notion properties for deep READ introspection
+    # - properties: raw Notion property objects (sorted keys for deterministic dumps)
+    # - properties_text: normalized human-readable values (bounded, fail-soft)
+    # - properties_types: property type per key (best-effort)
+    properties: Dict[str, Any] = Field(default_factory=dict)
+    properties_text: Dict[str, Any] = Field(default_factory=dict)
+    properties_types: Dict[str, str] = Field(default_factory=dict)
+
+    # Optional full raw row payload (can be large)
+    raw: Optional[Dict[str, Any]] = None
+
 
 class CeoTask(BaseModel):
     id: str
@@ -36,6 +127,14 @@ class CeoTask(BaseModel):
     priority: Optional[str] = None
     due_date: Optional[dt.date] = None
     lead: Optional[str] = None
+
+    # KANON: expose Notion properties for deep READ introspection
+    properties: Dict[str, Any] = Field(default_factory=dict)
+    properties_text: Dict[str, Any] = Field(default_factory=dict)
+    properties_types: Dict[str, str] = Field(default_factory=dict)
+
+    # Optional full raw row payload (can be large)
+    raw: Optional[Dict[str, Any]] = None
 
 
 class CeoApprovalSummary(BaseModel):
@@ -97,6 +196,15 @@ class _NotionConfig:
     max_rows: int = DEFAULT_MAX_ROWS
     excerpt_lines: int = DEFAULT_EXCERPT_LINES
 
+    # KANON: detail controls (READ-only)
+    include_properties: bool = True
+    include_properties_text: bool = True
+    include_raw_pages: bool = False  # very heavy; keep default OFF
+
+    # KANON: bounds for normalized values
+    max_text_value_chars: int = DEFAULT_MAX_TEXT_VALUE_CHARS
+    max_list_items: int = DEFAULT_MAX_LIST_ITEMS
+
     def __post_init__(self) -> None:
         if self.priority_high_values is None:
             self.priority_high_values = ["High", "Visok", "Critical"]
@@ -105,6 +213,7 @@ class _NotionConfig:
 class _NotionClient:
     def __init__(self, config: _NotionConfig) -> None:
         self._config = config
+        self._session = requests.Session()
 
     @property
     def _headers(self) -> Dict[str, str]:
@@ -138,7 +247,7 @@ class _NotionClient:
             if next_cursor:
                 payload["start_cursor"] = next_cursor
 
-            resp = requests.post(
+            resp = self._session.post(
                 url,
                 headers=self._headers,
                 json=payload,
@@ -165,7 +274,7 @@ class _NotionClient:
 
     def retrieve_page(self, page_id: str) -> Dict[str, Any]:
         url = f"{NOTION_API_URL}/pages/{page_id}"
-        resp = requests.get(
+        resp = self._session.get(
             url, headers=self._headers, timeout=self._config.http_timeout_sec
         )
         if resp.status_code != 200:
@@ -187,7 +296,7 @@ class _NotionClient:
             if next_cursor:
                 full_url = f"{url}&start_cursor={next_cursor}"
 
-            resp = requests.get(
+            resp = self._session.get(
                 full_url, headers=self._headers, timeout=self._config.http_timeout_sec
             )
             if resp.status_code != 200:
@@ -271,6 +380,10 @@ class CeoConsoleSnapshotService:
         )
         version = cls._env_first("NOTION_VERSION") or DEFAULT_NOTION_VERSION
 
+        include_properties = _env_true("CEO_SNAPSHOT_INCLUDE_PROPERTIES", "true")
+        include_properties_text = _env_true("CEO_SNAPSHOT_INCLUDE_PROPERTIES_TEXT", "true")
+        include_raw_pages = _env_true("CEO_SNAPSHOT_INCLUDE_RAW_PAGES", "false")
+
         cfg = _NotionConfig(
             token=token,
             version=version,
@@ -278,41 +391,36 @@ class CeoConsoleSnapshotService:
             tasks_db_id=tasks_db_id,
             approvals_db_id=approvals_db_id,
             sop_db_id=cls._env_first("NOTION_SOP_DATABASE_ID", "NOTION_SOP_DB_ID"),
-            plans_db_id=cls._env_first(
-                "NOTION_PLANS_DATABASE_ID", "NOTION_PLANS_DB_ID"
-            ),
+            plans_db_id=cls._env_first("NOTION_PLANS_DATABASE_ID", "NOTION_PLANS_DB_ID"),
             time_management_page_id=cls._env_first("NOTION_TIME_MANAGEMENT_PAGE_ID"),
             goal_name_prop=cls._env_first("NOTION_GOAL_NAME_PROP") or "Name",
             goal_status_prop=cls._env_first("NOTION_GOAL_STATUS_PROP") or "Status",
-            goal_priority_prop=cls._env_first("NOTION_GOAL_PRIORITY_PROP")
-            or "Priority",
-            goal_deadline_prop=cls._env_first("NOTION_GOAL_DEADLINE_PROP")
-            or "Deadline",
+            goal_priority_prop=cls._env_first("NOTION_GOAL_PRIORITY_PROP") or "Priority",
+            goal_deadline_prop=cls._env_first("NOTION_GOAL_DEADLINE_PROP") or "Deadline",
             task_title_prop=cls._env_first("NOTION_TASK_TITLE_PROP") or "Name",
             task_status_prop=cls._env_first("NOTION_TASK_STATUS_PROP") or "Status",
-            task_priority_prop=cls._env_first("NOTION_TASK_PRIORITY_PROP")
-            or "Priority",
+            task_priority_prop=cls._env_first("NOTION_TASK_PRIORITY_PROP") or "Priority",
             task_due_date_prop=cls._env_first("NOTION_TASK_DUE_PROP") or "Due",
             task_lead_prop=cls._env_first("NOTION_TASK_LEAD_PROP") or "Lead",
-            approval_status_prop=cls._env_first("NOTION_APPROVAL_STATUS_PROP")
-            or "Status",
+            approval_status_prop=cls._env_first("NOTION_APPROVAL_STATUS_PROP") or "Status",
             approval_last_change_prop=cls._env_first("NOTION_APPROVAL_LAST_CHANGE_PROP")
             or "Last change",
             priority_window_days=cls._env_int("CEO_PRIORITY_WINDOW_DAYS", 7),
-            http_timeout_sec=cls._env_int(
-                "NOTION_HTTP_TIMEOUT_SEC", DEFAULT_HTTP_TIMEOUT_SEC
-            ),
+            http_timeout_sec=cls._env_int("NOTION_HTTP_TIMEOUT_SEC", DEFAULT_HTTP_TIMEOUT_SEC),
             max_rows=cls._env_int("CEO_SNAPSHOT_MAX_ROWS", DEFAULT_MAX_ROWS),
-            excerpt_lines=cls._env_int(
-                "CEO_SNAPSHOT_EXCERPT_LINES", DEFAULT_EXCERPT_LINES
+            excerpt_lines=cls._env_int("CEO_SNAPSHOT_EXCERPT_LINES", DEFAULT_EXCERPT_LINES),
+            include_properties=include_properties,
+            include_properties_text=include_properties_text,
+            include_raw_pages=include_raw_pages,
+            max_text_value_chars=cls._env_int(
+                "CEO_SNAPSHOT_MAX_TEXT_VALUE_CHARS", DEFAULT_MAX_TEXT_VALUE_CHARS
             ),
+            max_list_items=cls._env_int("CEO_SNAPSHOT_MAX_LIST_ITEMS", DEFAULT_MAX_LIST_ITEMS),
         )
 
         high_values_env = cls._env_first("CEO_PRIORITY_HIGH_VALUES")
         if high_values_env:
-            cfg.priority_high_values = [
-                v.strip() for v in high_values_env.split(",") if v.strip()
-            ]
+            cfg.priority_high_values = [v.strip() for v in high_values_env.split(",") if v.strip()]
 
         return cls(notion_client=_NotionClient(cfg), config=cfg)
 
@@ -330,6 +438,9 @@ class CeoConsoleSnapshotService:
 
         meta = self._base_metadata()
         meta["kind"] = "dashboard_snapshot"
+        meta["include_properties"] = bool(self._cfg.include_properties)
+        meta["include_properties_text"] = bool(self._cfg.include_properties_text)
+        meta["include_raw_pages"] = bool(self._cfg.include_raw_pages)
 
         return CeoDashboardSnapshot(
             generated_at=now,
@@ -355,7 +466,7 @@ class CeoConsoleSnapshotService:
                 "available": True,
                 "source": "ceo_console_snapshot_service",
                 "generated_at": dash.generated_at.isoformat(),
-                "dashboard": dash.model_dump(),
+                "dashboard": _safe_model_dump(dash),
                 "knowledge": extra,
             }
         except Exception as e:
@@ -374,20 +485,42 @@ class CeoConsoleSnapshotService:
 
     def _base_metadata(self) -> Dict[str, Any]:
         assert self._cfg is not None
+
+        # Deterministic insertion order
+        dbs: Dict[str, Any] = {
+            "goals": {"database_id": self._cfg.goals_db_id},
+            "tasks": {"database_id": self._cfg.tasks_db_id},
+        }
+        if self._cfg.approvals_db_id:
+            dbs["approvals"] = {"database_id": self._cfg.approvals_db_id}
+        if self._cfg.sop_db_id:
+            dbs["sop"] = {"database_id": self._cfg.sop_db_id}
+        if self._cfg.plans_db_id:
+            dbs["plans"] = {"database_id": self._cfg.plans_db_id}
+        if self._cfg.time_management_page_id:
+            dbs["time_management"] = {"page_id": self._cfg.time_management_page_id}
+
         return {
             "source": "ceo_console_snapshot_service",
             "notion_version": self._cfg.version,
             "priority_window_days": self._cfg.priority_window_days,
+            "limits": {
+                "max_rows": self._cfg.max_rows,
+                "excerpt_lines": self._cfg.excerpt_lines,
+                "max_text_value_chars": self._cfg.max_text_value_chars,
+                "max_list_items": self._cfg.max_list_items,
+            },
+            "databases": dbs,
         }
 
     @staticmethod
     def _is_missing_sort_property_error(err: Exception) -> bool:
         s = str(err)
+        s_low = s.lower()
         return (
-            "Could not find sort property" in s
-            or "sort property with name or id" in s
-            or "validation_error" in s
-            and "sort" in s.lower()
+            ("could not find sort property" in s)
+            or ("sort property with name or id" in s)
+            or ("validation_error" in s_low and "sort" in s_low)
         )
 
     def _safe_query_with_optional_sort(
@@ -455,9 +588,7 @@ class CeoConsoleSnapshotService:
             )
             items: List[Dict[str, Any]] = []
             for row in rows:
-                props: Dict[str, Any] = (
-                    row.get("properties", {}) if isinstance(row, dict) else {}
-                )
+                props: Dict[str, Any] = row.get("properties", {}) if isinstance(row, dict) else {}
                 title = self._extract_title(props.get(title_prop)) or "(untitled)"
                 items.append({"id": row.get("id", ""), "title": title})
             out["available"] = True
@@ -539,20 +670,27 @@ class CeoConsoleSnapshotService:
 
         rows = self._safe_query_with_optional_sort(
             self._cfg.goals_db_id,
-            sorts=[
-                {"property": self._cfg.goal_deadline_prop, "direction": "ascending"}
-            ],
+            sorts=[{"property": self._cfg.goal_deadline_prop, "direction": "ascending"}],
         )
 
         goals: List[CeoGoal] = []
         for row in rows:
-            props: Dict[str, Any] = (
-                row.get("properties", {}) if isinstance(row, dict) else {}
-            )
+            props: Dict[str, Any] = row.get("properties", {}) if isinstance(row, dict) else {}
+
             name = self._extract_title(props.get(self._cfg.goal_name_prop))
             status = self._extract_select(props.get(self._cfg.goal_status_prop))
             priority = self._extract_select(props.get(self._cfg.goal_priority_prop))
             deadline = self._extract_date(props.get(self._cfg.goal_deadline_prop))
+
+            raw_props: Dict[str, Any] = {}
+            text_props: Dict[str, Any] = {}
+            type_map: Dict[str, str] = {}
+            if self._cfg.include_properties:
+                raw_props = _canonicalize_properties_raw(props)
+                if self._cfg.include_properties_text:
+                    text_props, type_map = self._normalize_properties(props)
+
+            raw_obj: Optional[Dict[str, Any]] = row if self._cfg.include_raw_pages else None
 
             goals.append(
                 CeoGoal(
@@ -561,6 +699,10 @@ class CeoConsoleSnapshotService:
                     status=status,
                     priority=priority,
                     deadline=deadline,
+                    properties=raw_props,
+                    properties_text=text_props,
+                    properties_types=type_map,
+                    raw=raw_obj,
                 )
             )
         return goals
@@ -570,23 +712,28 @@ class CeoConsoleSnapshotService:
 
         rows = self._safe_query_with_optional_sort(
             self._cfg.tasks_db_id,
-            sorts=[
-                {"property": self._cfg.task_due_date_prop, "direction": "ascending"}
-            ],
+            sorts=[{"property": self._cfg.task_due_date_prop, "direction": "ascending"}],
         )
 
         tasks: List[CeoTask] = []
         for row in rows:
-            props: Dict[str, Any] = (
-                row.get("properties", {}) if isinstance(row, dict) else {}
-            )
+            props: Dict[str, Any] = row.get("properties", {}) if isinstance(row, dict) else {}
+
             title = self._extract_title(props.get(self._cfg.task_title_prop))
             status = self._extract_select(props.get(self._cfg.task_status_prop))
             priority = self._extract_select(props.get(self._cfg.task_priority_prop))
             due = self._extract_date(props.get(self._cfg.task_due_date_prop))
-            lead = self._extract_people_or_rich_text(
-                props.get(self._cfg.task_lead_prop)
-            )
+            lead = self._extract_people_or_rich_text(props.get(self._cfg.task_lead_prop))
+
+            raw_props: Dict[str, Any] = {}
+            text_props: Dict[str, Any] = {}
+            type_map: Dict[str, str] = {}
+            if self._cfg.include_properties:
+                raw_props = _canonicalize_properties_raw(props)
+                if self._cfg.include_properties_text:
+                    text_props, type_map = self._normalize_properties(props)
+
+            raw_obj: Optional[Dict[str, Any]] = row if self._cfg.include_raw_pages else None
 
             tasks.append(
                 CeoTask(
@@ -596,6 +743,10 @@ class CeoConsoleSnapshotService:
                     priority=priority,
                     due_date=due,
                     lead=lead,
+                    properties=raw_props,
+                    properties_text=text_props,
+                    properties_types=type_map,
+                    raw=raw_obj,
                 )
             )
         return tasks
@@ -660,13 +811,9 @@ class CeoConsoleSnapshotService:
         pending = approved_today = completed = errors = 0
 
         for row in rows:
-            props: Dict[str, Any] = (
-                row.get("properties", {}) if isinstance(row, dict) else {}
-            )
+            props: Dict[str, Any] = row.get("properties", {}) if isinstance(row, dict) else {}
             status = self._extract_select(props.get(self._cfg.approval_status_prop))
-            last_change_date = self._extract_date(
-                props.get(self._cfg.approval_last_change_prop)
-            )
+            last_change_date = self._extract_date(props.get(self._cfg.approval_last_change_prop))
             if not status:
                 continue
 
@@ -677,11 +824,7 @@ class CeoConsoleSnapshotService:
                 completed += 1
                 if last_change_date and last_change_date == today:
                     approved_today += 1
-            elif (
-                "executed" in normalized
-                or "done" in normalized
-                or "completed" in normalized
-            ):
+            elif "executed" in normalized or "done" in normalized or "completed" in normalized:
                 completed += 1
             elif "error" in normalized or "failed" in normalized:
                 errors += 1
@@ -693,6 +836,249 @@ class CeoConsoleSnapshotService:
             errors=errors,
         )
 
+    def _normalize_properties(self, props: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, str]]:
+        """
+        Returns:
+          - text_map: {prop_name: normalized_value}
+          - type_map: {prop_name: notion_type}
+        Fail-soft: never raises.
+        Deterministic: keys sorted.
+        Bounded: long strings truncated, long lists capped.
+        """
+        assert self._cfg is not None
+
+        text_map: Dict[str, Any] = {}
+        type_map: Dict[str, str] = {}
+
+        try:
+            keys = sorted(props.keys(), key=lambda x: (str(x).lower(), str(x)))
+        except Exception:
+            keys = list(props.keys())
+
+        for k in keys:
+            try:
+                v = props.get(k)
+                if not isinstance(v, dict):
+                    text_map[k] = None
+                    type_map[k] = "unknown"
+                    continue
+
+                notion_type = v.get("type")
+                if isinstance(notion_type, str) and notion_type:
+                    type_map[k] = notion_type
+                else:
+                    type_map[k] = "unknown"
+
+                normalized = self._normalize_single_property(v)
+                text_map[k] = normalized
+            except Exception:
+                # fail-soft
+                text_map[k] = None
+                type_map[k] = type_map.get(k, "unknown")
+
+        return text_map, type_map
+
+    def _normalize_single_property(self, prop: Dict[str, Any]) -> Any:
+        """
+        Normalize a Notion property object to a compact, human-readable value.
+        Fail-soft and bounded.
+        """
+        assert self._cfg is not None
+
+        t = prop.get("type")
+        if not isinstance(t, str) or not t:
+            # best-effort heuristic
+            if "title" in prop:
+                return _truncate_text(
+                    self._extract_title(prop) or "", self._cfg.max_text_value_chars
+                ) or None
+            if "rich_text" in prop:
+                return _truncate_text(
+                    self._extract_rich_text(prop) or "", self._cfg.max_text_value_chars
+                ) or None
+            return None
+
+        if t == "title":
+            return _truncate_text(self._extract_title(prop) or "", self._cfg.max_text_value_chars) or None
+
+        if t == "rich_text":
+            return _truncate_text(self._extract_rich_text(prop) or "", self._cfg.max_text_value_chars) or None
+
+        if t in ("select", "status"):
+            return self._extract_select(prop)
+
+        if t == "multi_select":
+            ms = prop.get("multi_select")
+            if not isinstance(ms, list):
+                return []
+            out: List[str] = []
+            for item in ms[: self._cfg.max_list_items]:
+                if isinstance(item, dict):
+                    name = item.get("name")
+                    if isinstance(name, str) and name:
+                        out.append(name)
+            return out
+
+        if t == "date":
+            d = prop.get("date")
+            if not isinstance(d, dict):
+                return None
+            start = d.get("start")
+            end = d.get("end")
+            tz = d.get("time_zone")
+            out: Dict[str, Any] = {}
+            if isinstance(start, str) and start:
+                out["start"] = start
+            if isinstance(end, str) and end:
+                out["end"] = end
+            if isinstance(tz, str) and tz:
+                out["time_zone"] = tz
+            return out or None
+
+        if t == "people":
+            people = prop.get("people") or []
+            names: List[str] = []
+            if isinstance(people, list):
+                for p in people[: self._cfg.max_list_items]:
+                    if isinstance(p, dict):
+                        name = p.get("name") or p.get("email")
+                        if isinstance(name, str) and name:
+                            names.append(name)
+            return names
+
+        if t == "relation":
+            rel = prop.get("relation") or []
+            ids: List[str] = []
+            if isinstance(rel, list):
+                for r in rel[: self._cfg.max_list_items]:
+                    if isinstance(r, dict):
+                        rid = r.get("id")
+                        if isinstance(rid, str) and rid:
+                            ids.append(rid)
+            return ids
+
+        if t == "checkbox":
+            v = prop.get("checkbox")
+            return bool(v) if isinstance(v, bool) else None
+
+        if t == "number":
+            v = prop.get("number")
+            return v if isinstance(v, (int, float)) else None
+
+        if t in ("url", "email", "phone_number"):
+            v = prop.get(t)
+            if isinstance(v, str) and v:
+                return _truncate_text(v, self._cfg.max_text_value_chars)
+            return None
+
+        if t in ("created_time", "last_edited_time"):
+            v = prop.get(t)
+            if isinstance(v, str) and v:
+                return v
+            return None
+
+        if t in ("created_by", "last_edited_by"):
+            obj = prop.get(t)
+            if isinstance(obj, dict):
+                name = obj.get("name") or obj.get("id") or obj.get("email")
+                if isinstance(name, str) and name:
+                    return name
+            return None
+
+        if t == "files":
+            files = prop.get("files") or []
+            out: List[Dict[str, Any]] = []
+            if isinstance(files, list):
+                for f in files[: self._cfg.max_list_items]:
+                    if not isinstance(f, dict):
+                        continue
+                    name = f.get("name")
+                    ft = f.get("type")
+                    entry: Dict[str, Any] = {}
+                    if isinstance(name, str) and name:
+                        entry["name"] = _truncate_text(name, self._cfg.max_text_value_chars)
+                    if isinstance(ft, str) and ft:
+                        entry["type"] = ft
+                        inner = f.get(ft)
+                        if isinstance(inner, dict):
+                            url = inner.get("url")
+                            if isinstance(url, str) and url:
+                                entry["url"] = _truncate_text(url, self._cfg.max_text_value_chars)
+                    if entry:
+                        out.append(entry)
+            return out
+
+        if t == "formula":
+            f = prop.get("formula")
+            if not isinstance(f, dict):
+                return None
+            ft = f.get("type")
+            if isinstance(ft, str) and ft:
+                val = f.get(ft)
+                if isinstance(val, str):
+                    return _truncate_text(val, self._cfg.max_text_value_chars)
+                if isinstance(val, (int, float, bool)):
+                    return val
+                if isinstance(val, dict):
+                    # date formula
+                    start = val.get("start")
+                    end = val.get("end")
+                    if isinstance(start, str) or isinstance(end, str):
+                        return {
+                            k: v
+                            for k, v in {"start": start, "end": end}.items()
+                            if isinstance(v, str) and v
+                        }
+            return None
+
+        if t == "rollup":
+            r = prop.get("rollup")
+            if not isinstance(r, dict):
+                return None
+            rt = r.get("type")
+            if not isinstance(rt, str) or not rt:
+                return None
+            val = r.get(rt)
+            if rt == "array" and isinstance(val, list):
+                out: List[Any] = []
+                for item in val[: self._cfg.max_list_items]:
+                    if isinstance(item, dict):
+                        out.append(self._normalize_single_property(item))
+                    else:
+                        out.append(item)
+                return out
+            if rt in ("number", "date"):
+                return val
+            return val
+
+        # Fallback: include minimal shape for unknown/unsupported types
+        try:
+            candidate = prop.get(t)
+            if isinstance(candidate, str):
+                return _truncate_text(candidate, self._cfg.max_text_value_chars)
+            if isinstance(candidate, (int, float, bool)):
+                return candidate
+            if isinstance(candidate, dict):
+                # shallow, bounded
+                out = {}
+                for kk, vv in list(candidate.items())[:20]:
+                    if isinstance(vv, str):
+                        out[str(kk)] = _truncate_text(vv, self._cfg.max_text_value_chars)
+                    elif isinstance(vv, (int, float, bool)) or vv is None:
+                        out[str(kk)] = vv
+                    else:
+                        out[str(kk)] = str(vv)[: self._cfg.max_text_value_chars]
+                return out
+            if isinstance(candidate, list):
+                return [
+                    str(x)[: self._cfg.max_text_value_chars]
+                    for x in candidate[: self._cfg.max_list_items]
+                ]
+        except Exception:
+            pass
+
+        return None
+
     @staticmethod
     def _extract_title(prop: Optional[Dict[str, Any]]) -> Optional[str]:
         if not prop:
@@ -702,6 +1088,21 @@ class CeoConsoleSnapshotService:
             return None
         texts: List[str] = []
         for item in title_items:
+            if isinstance(item, dict):
+                text = item.get("plain_text")
+                if isinstance(text, str) and text:
+                    texts.append(text)
+        return "".join(texts) if texts else None
+
+    @staticmethod
+    def _extract_rich_text(prop: Optional[Dict[str, Any]]) -> Optional[str]:
+        if not prop:
+            return None
+        rt_items = prop.get("rich_text")
+        if not isinstance(rt_items, list):
+            return None
+        texts: List[str] = []
+        for item in rt_items:
             if isinstance(item, dict):
                 text = item.get("plain_text")
                 if isinstance(text, str) and text:
@@ -736,34 +1137,44 @@ class CeoConsoleSnapshotService:
         except Exception:
             return None
 
-    @staticmethod
-    def _extract_people_or_rich_text(prop: Optional[Dict[str, Any]]) -> Optional[str]:
+    def _extract_people_or_rich_text(self, prop: Optional[Dict[str, Any]]) -> Optional[str]:
+        """
+        Best-effort extraction for "Lead" or similar fields.
+        Bounded by cfg.max_list_items and cfg.max_text_value_chars.
+        Fail-soft.
+        """
         if not prop or not isinstance(prop, dict):
             return None
+
+        max_items = DEFAULT_MAX_LIST_ITEMS
+        max_chars = DEFAULT_MAX_TEXT_VALUE_CHARS
+        if self._cfg is not None:
+            max_items = int(self._cfg.max_list_items or DEFAULT_MAX_LIST_ITEMS)
+            max_chars = int(self._cfg.max_text_value_chars or DEFAULT_MAX_TEXT_VALUE_CHARS)
 
         if "people" in prop:
             people = prop.get("people") or []
             names: List[str] = []
             if isinstance(people, list):
-                for p in people:
+                for p in people[:max_items]:
                     if isinstance(p, dict):
                         name = p.get("name") or p.get("email")
                         if isinstance(name, str) and name:
                             names.append(name)
             if names:
-                return ", ".join(names)
+                return _truncate_text(", ".join(names), max_chars)
 
         if "rich_text" in prop:
             rt = prop.get("rich_text") or []
             texts: List[str] = []
             if isinstance(rt, list):
-                for item in rt:
+                for item in rt[:max_items]:
                     if isinstance(item, dict):
                         t = item.get("plain_text")
                         if isinstance(t, str) and t:
                             texts.append(t)
             if texts:
-                return "".join(texts)
+                return _truncate_text("".join(texts), max_chars)
 
         return None
 

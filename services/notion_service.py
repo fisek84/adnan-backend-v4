@@ -1069,6 +1069,23 @@ class NotionService:
     def get_knowledge_snapshot(self) -> Dict[str, Any]:
         return dict(self.knowledge_snapshot)
 
+    # --------------------------------------------------
+    # SHUTDOWN (close aiohttp session)
+    # --------------------------------------------------
+    async def aclose(self) -> None:
+        """
+        Graceful shutdown for aiohttp session.
+        Eliminates: 'Unclosed client session' / 'Unclosed connector' on Ctrl+C / reload.
+        """
+        sess = self.session
+        self.session = None
+        if sess is not None and not sess.closed:
+            try:
+                await sess.close()
+            except Exception:
+                # fail-soft: shutdown path must not raise
+                pass
+
 
 # --------------------------------------------------
 # SINGLETON (KANONSKI)

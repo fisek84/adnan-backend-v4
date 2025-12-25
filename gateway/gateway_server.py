@@ -8,6 +8,8 @@ import os
 import logging
 import uuid
 import re
+import json
+from pathlib import Path
 from contextlib import asynccontextmanager
 from typing import Dict, Any, Optional, List
 
@@ -55,6 +57,33 @@ def _append_boot_error(msg: str) -> None:
         _BOOT_ERROR = msg
         return
     _BOOT_ERROR = f"{_BOOT_ERROR}; {msg}"
+
+
+# ================================================================
+# PATHS (repo-root aware)
+# ================================================================
+REPO_ROOT = Path(__file__).resolve().parents[1]  # .../gateway/gateway_server.py -> repo root
+FRONTEND_DIR = REPO_ROOT / "gateway" / "frontend"
+
+
+def _agents_registry_path() -> Path:
+    """
+    SSOT registry path.
+    Default: <repo_root>/config/agents.json
+
+    Env overrides (priority):
+      1) AGENTS_JSON_PATH (canonical; shared with AgentRegistryService resolver)
+      2) AGENTS_REGISTRY_PATH (legacy gateway override)
+    """
+    p = (os.getenv("AGENTS_JSON_PATH") or "").strip()
+    if p:
+        return Path(p)
+
+    p2 = (os.getenv("AGENTS_REGISTRY_PATH") or "").strip()
+    if p2:
+        return Path(p2)
+
+    return REPO_ROOT / "config" / "agents.json"
 
 
 # ================================================================
@@ -115,11 +144,11 @@ from services.ai_summary_service import get_ai_summary_service
 # ================================================================
 # FAZA 4 — AGENT REGISTRY + ROUTER + CANONICAL CHAT ENDPOINT
 # ================================================================
-from services.agent_registry_service import AgentRegistryService
+from services.agent_registry_service import get_agent_registry_service
 from services.agent_router_service import AgentRouterService
 from routers.chat_router import build_chat_router
 
-_agent_registry = AgentRegistryService()
+_agent_registry = get_agent_registry_service()  # SINGLETON (SSOT in runtime)
 _agent_router = AgentRouterService(_agent_registry)
 _chat_router = build_chat_router(_agent_router)  # defines "/chat"
 
@@ -216,12 +245,14 @@ def _ensure_trace_on_command(ai_command: AICommand, *, approval_id: str) -> None
 def _safe_command_summary(ai_command: AICommand) -> Dict[str, Any]:
     try:
         if hasattr(ai_command, "model_dump"):
-            return ai_command.model_dump()
+            out = ai_command.model_dump()
+            return out if isinstance(out, dict) else {}
     except Exception:
         pass
     try:
         if hasattr(ai_command, "dict"):
-            return ai_command.dict()
+            out = ai_command.dict()
+            return out if isinstance(out, dict) else {}
     except Exception:
         pass
 
@@ -278,8 +309,14 @@ async def lifespan(_: FastAPI):
 
         # ---- FAZA 4: load agents.json (SSOT) ----
         try:
-            _agent_registry.load_from_agents_json("config/agents.json", clear=True)
-            logger.info("✅ Agent registry loaded from config/agents.json (SSOT)")
+            p = _agents_registry_path()
+            load_result = _agent_registry.load_from_agents_json(str(p), clear=True)
+            logger.info(
+                "✅ Agent registry loaded (SSOT): path=%s loaded=%s version=%s",
+                load_result.get("path"),
+                load_result.get("loaded"),
+                load_result.get("version"),
+            )
         except Exception as exc:  # noqa: BLE001
             _append_boot_error(f"agents_registry_load_failed:{exc}")
             logger.warning("Agent registry load failed: %s", exc)
@@ -299,18 +336,12 @@ async def lifespan(_: FastAPI):
             _append_boot_error(f"ai_router_init_failed:{exc}")
             logger.warning("AI router init failed: %s", exc)
 
-        # ---- AI OPS router optional injection (prevents singleton mismatch) ----
-        # If your routers/ai_ops_router.py exposes set_ai_ops_services(orchestrator, approvals),
-        # we will inject the same approval store / orchestrator instances used by gateway.
+        # ---- AI OPS router optional injection ----
         try:
             hook = getattr(ai_ops_router_module, "set_ai_ops_services", None)
             if callable(hook):
-                hook(
-                    orchestrator=_execution_orchestrator, approvals=get_approval_state()
-                )
-                logger.info(
-                    "✅ AI Ops router services injected (shared orchestrator/approvals)"
-                )
+                hook(orchestrator=_execution_orchestrator, approvals=get_approval_state())
+                logger.info("✅ AI Ops router services injected (shared orchestrator/approvals)")
         except Exception as exc:  # noqa: BLE001
             _append_boot_error(f"ai_ops_injection_failed:{exc}")
             logger.warning("AI Ops services injection failed: %s", exc)
@@ -345,30 +376,28 @@ app = FastAPI(
 # ================================================================
 # FRONTEND (CEO DASHBOARD)
 # ================================================================
-FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "frontend")
-
-if not os.path.isdir(FRONTEND_DIR):
+if not FRONTEND_DIR.is_dir():
     logger.warning("Frontend directory not found: %s", FRONTEND_DIR)
 else:
     app.mount(
         "/static",
-        StaticFiles(directory=FRONTEND_DIR),
+        StaticFiles(directory=str(FRONTEND_DIR)),
         name="static",
     )
 
     @app.get("/style.css", include_in_schema=False)
     async def serve_style_css():
-        path = os.path.join(FRONTEND_DIR, "style.css")
-        if not os.path.isfile(path):
+        path = FRONTEND_DIR / "style.css"
+        if not path.is_file():
             raise HTTPException(status_code=404, detail="style.css not found")
-        return FileResponse(path)
+        return FileResponse(str(path))
 
     @app.get("/script.js", include_in_schema=False)
     async def serve_script_js():
-        path = os.path.join(FRONTEND_DIR, "script.js")
-        if not os.path.isfile(path):
+        path = FRONTEND_DIR / "script.js"
+        if not path.is_file():
             raise HTTPException(status_code=404, detail="script.js not found")
-        return FileResponse(path)
+        return FileResponse(str(path))
 
 
 # ================================================================
@@ -415,9 +444,7 @@ class CeoCommandInput(BaseModel):
     source: str = "ceo_dashboard"
 
 
-def _preprocess_ceo_nl_input(
-    raw_text: str, smart_context: Optional[Dict[str, Any]]
-) -> str:
+def _preprocess_ceo_nl_input(raw_text: str, smart_context: Optional[Dict[str, Any]]) -> str:
     text = (raw_text or "").strip()
     if not text:
         return text
@@ -459,11 +486,7 @@ def _derive_legacy_goal_task_summaries_from_ceo_snapshot(
     tasks_summary: List[Dict[str, Any]] = []
 
     try:
-        dashboard = (
-            ceo_dash_snapshot.get("dashboard")
-            if isinstance(ceo_dash_snapshot, dict)
-            else None
-        )
+        dashboard = ceo_dash_snapshot.get("dashboard") if isinstance(ceo_dash_snapshot, dict) else None
         if not isinstance(dashboard, dict):
             return {"goals_summary": goals_summary, "tasks_summary": tasks_summary}
 
@@ -529,9 +552,7 @@ async def execute_command(payload: ExecuteInput):
     )
     approval_id = approval.get("approval_id")
     if not approval_id:
-        raise HTTPException(
-            status_code=500, detail="Approval create failed: missing approval_id"
-        )
+        raise HTTPException(status_code=500, detail="Approval create failed: missing approval_id")
 
     _ensure_trace_on_command(ai_command, approval_id=approval_id)
     _execution_registry.register(ai_command)
@@ -568,9 +589,7 @@ async def execute_raw_command(payload: ExecuteRawInput):
     )
     approval_id = approval.get("approval_id")
     if not approval_id:
-        raise HTTPException(
-            status_code=500, detail="Approval create failed: missing approval_id"
-        )
+        raise HTTPException(status_code=500, detail="Approval create failed: missing approval_id")
 
     _ensure_trace_on_command(ai_command, approval_id=approval_id)
     _execution_registry.register(ai_command)
@@ -580,9 +599,7 @@ async def execute_raw_command(payload: ExecuteRawInput):
         "execution_state": "BLOCKED",
         "approval_id": approval_id,
         "execution_id": execution_id,
-        "command": ai_command.model_dump()
-        if hasattr(ai_command, "model_dump")
-        else _to_serializable(ai_command),
+        "command": ai_command.model_dump() if hasattr(ai_command, "model_dump") else _to_serializable(ai_command),
     }
 
 
@@ -687,10 +704,10 @@ async def ceo_weekly_priority_memory():
 
 @app.get("/")
 async def serve_frontend():
-    index_path = os.path.join(FRONTEND_DIR, "index.html")
-    if not os.path.isfile(index_path):
+    index_path = FRONTEND_DIR / "index.html"
+    if not index_path.is_file():
         raise HTTPException(status_code=404, detail="Frontend not found")
-    return FileResponse(index_path)
+    return FileResponse(str(index_path))
 
 
 # ================================================================
@@ -725,9 +742,7 @@ async def ready_check():
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     logger.exception("GLOBAL ERROR")
-    return JSONResponse(
-        status_code=500, content={"status": "error", "message": str(exc)}
-    )
+    return JSONResponse(status_code=500, content={"status": "error", "message": str(exc)})
 
 
 app.add_middleware(

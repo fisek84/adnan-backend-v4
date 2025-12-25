@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 def _json_default(obj: Any) -> Any:
     """
     JSON serializer for objects that are not serializable by default json.dumps.
-    This is critical for Render snapshot/context payloads containing datetime/UUID/etc.
+    This is critical for snapshot/context payloads containing datetime/UUID/etc.
     """
     if isinstance(obj, (datetime, date)):
         return obj.isoformat()
@@ -40,8 +40,9 @@ class OpenAIAssistantExecutor:
     CANON:
     - Ovaj adapter se koristi za agent execution (sa tool pozivima) I za CEO advisory (READ-only).
     - CEO advisory NIKAD ne smije izvršiti tool poziv / side-effect.
-      Ako Assistant zatraži tool u ceo_command, to se smatra policy violation i tretira se kao error/fallback.
-    - Agent execute: ili izvrši ili baci exception (nema "failure dict").
+      Ako Assistant zatraži tool u ceo_command, to je policy violation i mora fail-soft (ne rušiti UI).
+    - Agent execute: side-effects su dozvoljeni (tool calls allowed). Greške se propagiraju (raise),
+      jer orchestrator treba da upravlja failure handlingom.
     """
 
     def __init__(
@@ -104,7 +105,6 @@ class OpenAIAssistantExecutor:
 
         while True:
             if time.monotonic() - start > self._max_wait_s:
-                # Best-effort cancel (ne smijemo visiti beskonačno)
                 await self._cancel_run_best_effort(thread_id=thread_id, run_id=run_id)
                 raise RuntimeError("Assistant run timed out")
 
@@ -119,9 +119,7 @@ class OpenAIAssistantExecutor:
             if status == "requires_action":
                 if not allow_tools:
                     # CEO advisory path: tool calls are forbidden
-                    await self._cancel_run_best_effort(
-                        thread_id=thread_id, run_id=run_id
-                    )
+                    await self._cancel_run_best_effort(thread_id=thread_id, run_id=run_id)
                     raise RuntimeError(
                         "Tool calls are not allowed for CEO advisory (read-only)"
                     )
@@ -135,9 +133,7 @@ class OpenAIAssistantExecutor:
                 tool_calls = getattr(submit, "tool_calls", None) if submit else None
 
                 if not tool_calls:
-                    raise RuntimeError(
-                        "Assistant requires_action but has no tool calls"
-                    )
+                    raise RuntimeError("Assistant requires_action but has no tool calls")
 
                 tool_outputs = []
 
@@ -153,6 +149,9 @@ class OpenAIAssistantExecutor:
                         args = json.loads(fn_args or "{}")
                     except Exception as e:
                         raise RuntimeError(f"Invalid tool arguments JSON: {e}") from e
+
+                    if not isinstance(args, dict):
+                        raise RuntimeError("Tool arguments must be a JSON object")
 
                     # NOTE: ext.notion.client.perform_notion_action je sync.
                     result = await self._to_thread(perform_notion_action, **args)
@@ -179,6 +178,7 @@ class OpenAIAssistantExecutor:
             elif status in {"failed", "cancelled", "expired"}:
                 raise RuntimeError(f"Assistant run failed with status: {status}")
 
+            # queued / in_progress / unknown -> keep polling
             await asyncio.sleep(self._poll_interval_s)
 
     async def _get_final_assistant_message_text(self, *, thread_id: str) -> str:
@@ -186,14 +186,12 @@ class OpenAIAssistantExecutor:
             self.client.beta.threads.messages.list, thread_id=thread_id
         )
         data = getattr(messages, "data", None) or []
-        assistant_messages = [
-            m for m in data if getattr(m, "role", None) == "assistant"
-        ]
+        assistant_messages = [m for m in data if getattr(m, "role", None) == "assistant"]
 
         if not assistant_messages:
             raise RuntimeError("Assistant produced no response")
 
-        # Be deterministic: pick newest assistant message by created_at if present.
+        # Deterministic: pick newest assistant message by created_at if present.
         def _created_at(msg: Any) -> int:
             ca = getattr(msg, "created_at", None)
             return int(ca) if isinstance(ca, int) else 0
@@ -227,7 +225,6 @@ class OpenAIAssistantExecutor:
         if not t:
             return t
 
-        # Match ```json\n...\n``` OR ```\n...\n```
         m = re.match(
             r"^```(?:json)?\s*(.*?)\s*```$", t, flags=re.DOTALL | re.IGNORECASE
         )
@@ -249,7 +246,7 @@ class OpenAIAssistantExecutor:
         """
         Hardening layer for CEO advisory:
         - If assistant returns plain text (or non-schema JSON), map it into the expected schema.
-        - Always return: summary/questions/plan/options/proposed_commands/trace as stable types.
+        - Always return stable fields with stable types.
         """
         raw = parsed.get("raw")
 
@@ -362,13 +359,11 @@ class OpenAIAssistantExecutor:
     # CEO ADVISORY (READ-ONLY) — used by CEO Console
     # ============================================================
 
-    async def ceo_command(
-        self, *, text: str, context: Dict[str, Any]
-    ) -> Dict[str, Any]:
+    async def ceo_command(self, *, text: str, context: Dict[str, Any]) -> Dict[str, Any]:
         """
         READ-ONLY advisory path.
         - No tools / no side-effects.
-        - If assistant requests_action (tool call), we fail fast (policy violation).
+        - If assistant requests_action (tool call), we fail-soft with policy_violation response.
 
         Expected return shape (dict):
           {
@@ -389,7 +384,6 @@ class OpenAIAssistantExecutor:
 
         assistant_id = self._get_advisory_assistant_id()
         if not assistant_id:
-            # If no assistant id exists at all, return deterministic fallback instead of raising.
             return {
                 "summary": "LLM executor nije konfigurisan (nema Assistant ID).",
                 "questions": [
@@ -435,9 +429,7 @@ class OpenAIAssistantExecutor:
             self.client.beta.threads.messages.create,
             thread_id=thread.id,
             role="user",
-            content=json.dumps(
-                advisory_contract, ensure_ascii=False, default=_json_default
-            ),
+            content=json.dumps(advisory_contract, ensure_ascii=False, default=_json_default),
         )
 
         run = await self._to_thread(
@@ -447,20 +439,42 @@ class OpenAIAssistantExecutor:
         )
 
         t0 = time.monotonic()
-        await self._wait_for_run_completion(
-            thread_id=thread.id,
-            run_id=run.id,
-            allow_tools=False,
-        )
+        try:
+            await self._wait_for_run_completion(
+                thread_id=thread.id,
+                run_id=run.id,
+                allow_tools=False,
+            )
+            final_text = await self._get_final_assistant_message_text(thread_id=thread.id)
+            parsed = self._safe_json_parse(final_text)
+            parsed = self._normalize_ceo_advisory_payload(parsed)
+        except Exception as exc:  # noqa: BLE001
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
+            # Fail-soft: UI mora dobiti stabilan odgovor
+            return {
+                "summary": "CEO advisory nije mogao sigurno završiti (read-only guard).",
+                "questions": [
+                    "Da li želiš da preformulišem upit kao čisti READ zahtjev bez tool poziva?",
+                ],
+                "plan": [
+                    "Provjeri da li CEO Advisor Assistant ima instrukcije da nikad ne traži tool pozive.",
+                    "Ako je upit write-intent, koristi approval pipeline (proposed_commands) umjesto direktnog izvršenja.",
+                ],
+                "options": [],
+                "proposed_commands": [],
+                "trace": {
+                    "assistant_id": assistant_id,
+                    "thread_id": getattr(thread, "id", None),
+                    "run_id": getattr(run, "id", None),
+                    "read_only_guard": True,
+                    "no_tools_guard": True,
+                    "error": repr(exc),
+                    "elapsed_ms": elapsed_ms,
+                },
+            }
+
         elapsed_ms = int((time.monotonic() - t0) * 1000)
 
-        final_text = await self._get_final_assistant_message_text(thread_id=thread.id)
-        parsed = self._safe_json_parse(final_text)
-
-        # Normalize plain text / non-schema to expected schema
-        parsed = self._normalize_ceo_advisory_payload(parsed)
-
-        # Ensure minimum stable fields + trace guard
         trace = parsed.get("trace") if isinstance(parsed.get("trace"), dict) else {}
         trace["assistant_id"] = assistant_id
         trace["thread_id"] = thread.id

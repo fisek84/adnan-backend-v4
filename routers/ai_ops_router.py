@@ -1,9 +1,9 @@
 # routers/ai_ops_router.py
 from __future__ import annotations
 
-import os
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -62,20 +62,46 @@ def _guard_write(request: Request) -> None:
 
 
 # ------------------------------------------------------------
+# APPROVAL STATE (optional injection to avoid singleton mismatch)
+# ------------------------------------------------------------
+
+_approval_state_override: Optional[Any] = None
+
+
+def _get_approval_state() -> Any:
+    return _approval_state_override or get_approval_state()
+
+
+# ------------------------------------------------------------
 # AGENT REGISTRY (READ-ONLY INTROSPECTION)
 # ------------------------------------------------------------
 
 
+def _repo_root() -> Path:
+    # routers/ai_ops_router.py -> routers -> repo root
+    return Path(__file__).resolve().parents[1]
+
+
 def _agents_registry_path() -> Path:
     """
-    SSOT path for registry.
-    Default: <repo_root>/config/agents.json
-    Override via env: AGENTS_REGISTRY_PATH
+    SSOT path for registry (agents.json).
+
+    Preferred env:
+      - AGENTS_JSON_PATH (canonical elsewhere)
+      - AGENTS_REGISTRY_PATH (legacy)
+    Default:
+      <repo_root>/config/agents.json
     """
-    repo_root = Path(__file__).resolve().parents[1]  # routers/ -> repo root
-    return Path(
-        os.getenv("AGENTS_REGISTRY_PATH", str(repo_root / "config" / "agents.json"))
-    )
+    repo_root = _repo_root()
+
+    env_path = (os.getenv("AGENTS_JSON_PATH") or "").strip()
+    if not env_path:
+        env_path = (os.getenv("AGENTS_REGISTRY_PATH") or "").strip()
+
+    if env_path:
+        return Path(env_path).expanduser()
+
+    return repo_root / "config" / "agents.json"
 
 
 def _load_agents_registry() -> Dict[str, Any]:
@@ -84,29 +110,30 @@ def _load_agents_registry() -> Dict[str, Any]:
     Must never crash the server; returns error payload on failure.
     """
     p = _agents_registry_path()
-    if not p.exists():
-        return {
-            "ok": False,
-            "error": "agents.json not found",
-            "path": str(p),
-            "read_only": True,
-        }
 
     try:
+        if not p.exists():
+            return {
+                "ok": False,
+                "error": "agents.json not found",
+                "path": str(p),
+                "read_only": True,
+            }
+
         data = json.loads(p.read_text(encoding="utf-8"))
         if isinstance(data, dict):
-            # normalize
             data.setdefault("ok", True)
             data.setdefault("path", str(p))
             data.setdefault("read_only", True)
             return data
+
         return {
             "ok": True,
             "path": str(p),
             "data": data,
             "read_only": True,
         }
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         return {
             "ok": False,
             "error": f"failed to parse agents.json: {e}",
@@ -128,6 +155,7 @@ def _registry_agent_count(reg: Dict[str, Any]) -> int:
 # ------------------------------------------------------------
 # SERVICES (singletons)
 # ------------------------------------------------------------
+
 _agent_health = AgentHealthService()
 _metrics_persistence = MetricsPersistenceService()
 _alert_forwarder = AlertForwardingService()
@@ -151,6 +179,18 @@ def set_cron_service(cron_service: CronService) -> None:
     # app_bootstrap.py expects this function
     global _cron_service
     _cron_service = cron_service
+
+
+def set_ai_ops_services(*, orchestrator: ExecutionOrchestrator, approvals: Any) -> None:
+    """
+    Optional injection hook used by gateway_server.py lifespan to ensure:
+      - shared orchestrator instance
+      - shared approval state instance
+    """
+    global _orchestrator, _approval_state_override
+    _orchestrator = orchestrator
+    _approval_state_override = approvals
+    logger.info("ai_ops_router: services injected (shared orchestrator/approvals)")
 
 
 # ============================================================
@@ -193,7 +233,7 @@ def cron_status() -> Dict[str, Any]:
 
 @router.get("/approval/pending")
 def list_pending() -> Dict[str, Any]:
-    approval_state = get_approval_state()
+    approval_state = _get_approval_state()
     pending = approval_state.list_pending()
     return {"approvals": pending, "read_only": True}
 
@@ -209,7 +249,7 @@ async def approve(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[st
     approved_by = body.get("approved_by", "unknown")
     note = body.get("note")
 
-    approval_state = get_approval_state()
+    approval_state = _get_approval_state()
 
     try:
         approval = approval_state.approve(
@@ -228,8 +268,7 @@ async def approve(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[st
     orch = _get_orchestrator()
     execution_result = await orch.resume(execution_id.strip())
 
-    # Make sure test can read execution_state at root.
-    # If orchestrator already returns it, keep it.
+    # Ensure test can read execution_state at root.
     if isinstance(execution_result, dict):
         execution_result.setdefault("approval", approval)
         execution_result.setdefault("read_only", False)
@@ -254,7 +293,7 @@ def reject(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[str, Any]
     rejected_by = body.get("rejected_by", "unknown")
     note = body.get("note")
 
-    approval_state = get_approval_state()
+    approval_state = _get_approval_state()
     try:
         approval = approval_state.reject(
             approval_id.strip(),
@@ -306,6 +345,7 @@ def agents_health() -> Dict[str, Any]:
         "runtime_count": len(runtime) if isinstance(runtime, dict) else 0,
         "registry_loaded": registry_loaded,
         "registry_count": registry_count,
+        "registry_path": str(_agents_registry_path()),
     }
 
 
