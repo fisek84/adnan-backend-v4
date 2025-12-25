@@ -1,5 +1,4 @@
 # services/agent_registry_service.py
-
 """
 AGENT REGISTRY SERVICE — CANONICAL
 
@@ -35,7 +34,6 @@ import json
 # DATA CONTRACT (for router)
 # =========================================================
 
-
 @dataclass(frozen=True)
 class AgentRegistryEntry:
     id: str
@@ -53,9 +51,8 @@ class AgentRegistryEntry:
 # SERVICE
 # =========================================================
 
-
 class AgentRegistryService:
-    def __init__(self):
+    def __init__(self) -> None:
         # In-memory registry (kanonski runtime SSOT)
         # Key: agent_id (deterministički)
         self._agents: Dict[str, Dict[str, Any]] = {}
@@ -86,12 +83,16 @@ class AgentRegistryService:
         if status not in ("active", "disabled"):
             raise ValueError("status must be 'active' or 'disabled'")
 
+        # Deterministic capabilities (unique + stable order)
+        caps = [str(c).strip() for c in capabilities if str(c).strip()]
+        caps = sorted(set(caps))
+
         now = datetime.utcnow().isoformat()
 
         agent = {
-            "agent_name": agent_name,
-            "agent_id": agent_id,
-            "capabilities": set(capabilities),
+            "agent_name": str(agent_name),
+            "agent_id": str(agent_id),
+            "capabilities": caps,  # store as LIST (deterministic)
             "version": str(version or "1"),
             "status": status,
             "registered_at": self._agents.get(agent_id, {}).get("registered_at", now),
@@ -145,19 +146,26 @@ class AgentRegistryService:
         file_version = str(data.get("version", "1"))
         agents = data.get("agents", [])
 
+        loaded = 0
+
         for a in agents:
+            if not isinstance(a, dict):
+                continue
+
             agent_id = str(a.get("id", "")).strip()
             if not agent_id:
                 continue
 
             display_name = str(a.get("name") or agent_id).strip() or agent_id
 
-            # Resolve entrypoint/priority/keywords from legacy or metadata.*
             md = a.get("metadata") if isinstance(a.get("metadata"), dict) else {}
+
+            # Resolve entrypoint/priority/keywords from legacy or metadata.*
             entrypoint = str(a.get("entrypoint") or md.get("entrypoint") or "").strip()
-            priority = a.get("priority", md.get("priority", 0))
+
+            priority_raw = a.get("priority", md.get("priority", 0))
             try:
-                priority_int = int(priority)
+                priority_int = int(priority_raw)
             except Exception:
                 priority_int = 0
 
@@ -173,9 +181,7 @@ class AgentRegistryService:
             if isinstance(status_val, str) and status_val.strip():
                 status_norm = status_val.strip().lower()
                 if status_norm not in ("active", "disabled"):
-                    raise ValueError(
-                        f"Invalid status for agent '{agent_id}': {status_val}"
-                    )
+                    raise ValueError(f"Invalid status for agent '{agent_id}': {status_val}")
                 status = status_norm
             else:
                 enabled = bool(a.get("enabled", True))
@@ -205,15 +211,16 @@ class AgentRegistryService:
             merged_meta["read_only"] = True
 
             self.register_agent(
-                agent_name=agent_id,  # stabilan ključ
+                agent_name=agent_id,   # stabilan ključ
                 agent_id=agent_id,
                 capabilities=capabilities,
                 version=agent_version,
                 status=status,
                 metadata=merged_meta,
             )
+            loaded += 1
 
-        return {"loaded": len(agents), "path": str(p), "version": file_version}
+        return {"loaded": loaded, "path": str(p), "version": file_version}
 
     def _validate_agents_json(self, data: Dict[str, Any]) -> None:
         if not isinstance(data, dict):
@@ -223,8 +230,8 @@ class AgentRegistryService:
         if not isinstance(agents, list):
             raise ValueError("agents.json must contain 'agents' as a list")
 
-        if len(agents) < 2:
-            raise ValueError("agents.json must register at least 2 agents")
+        if len(agents) < 1:
+            raise ValueError("agents.json must register at least 1 agent")
 
         seen = set()
         for a in agents:
@@ -242,15 +249,12 @@ class AgentRegistryService:
             md = a.get("metadata") if isinstance(a.get("metadata"), dict) else {}
             entrypoint = str(a.get("entrypoint") or md.get("entrypoint") or "").strip()
             if not entrypoint:
-                raise ValueError("Agent entry missing required field: entrypoint")
+                raise ValueError(f"Agent '{agent_id}' missing required field: entrypoint")
 
-            if (
-                ":" not in entrypoint
-                or entrypoint.startswith(":")
-                or entrypoint.endswith(":")
-            ):
+            if (":" not in entrypoint) or entrypoint.startswith(":") or entrypoint.endswith(":"):
                 raise ValueError(
-                    f"Invalid entrypoint '{entrypoint}'. Expected format: module.path:callable"
+                    f"Invalid entrypoint '{entrypoint}' for agent '{agent_id}'. "
+                    f"Expected format: module.path:callable"
                 )
 
             # Optional: status validation (if provided)
@@ -260,9 +264,7 @@ class AgentRegistryService:
                     raise ValueError(f"Invalid status type for agent '{agent_id}'")
                 st = status_val.strip().lower()
                 if st not in ("active", "disabled"):
-                    raise ValueError(
-                        f"Invalid status for agent '{agent_id}': {status_val}"
-                    )
+                    raise ValueError(f"Invalid status for agent '{agent_id}': {status_val}")
 
     # =========================================================
     # LOOKUP (router compatibility)
@@ -274,8 +276,10 @@ class AgentRegistryService:
             a = self._agents.get(agent_id)
             if not a:
                 return None
+
             md = a.get("metadata") if isinstance(a.get("metadata"), dict) else {}
             enabled = a.get("status") == "active"
+
             return AgentRegistryEntry(
                 id=str(a.get("agent_id") or agent_id),
                 name=str(md.get("display_name") or a.get("agent_name") or agent_id),
@@ -296,20 +300,17 @@ class AgentRegistryService:
                 enabled = a.get("status") == "active"
                 if enabled_only and not enabled:
                     continue
+
                 entries.append(
                     AgentRegistryEntry(
                         id=str(a.get("agent_id") or agent_id),
-                        name=str(
-                            md.get("display_name") or a.get("agent_name") or agent_id
-                        ),
+                        name=str(md.get("display_name") or a.get("agent_name") or agent_id),
                         enabled=bool(enabled),
                         priority=int(md.get("priority") or 0),
                         entrypoint=str(md.get("entrypoint") or ""),
                         keywords=list(md.get("keywords") or []),
                         version=str(a.get("version") or "1"),
-                        capabilities=[
-                            str(c) for c in (list(a.get("capabilities") or []))
-                        ],
+                        capabilities=[str(c) for c in (list(a.get("capabilities") or []))],
                         metadata=deepcopy(md),
                     )
                 )
@@ -322,41 +323,36 @@ class AgentRegistryService:
         if not capability:
             return []
         cap = capability.strip()
+
+        out: List[AgentRegistryEntry] = []
         with self._lock:
-            out: List[AgentRegistryEntry] = []
             for agent_id, a in self._agents.items():
                 if a.get("status") != "active":
                     continue
-                caps = a.get("capabilities", set())
-                if isinstance(caps, set):
-                    has = cap in caps
-                else:
-                    try:
-                        has = cap in set(caps)
-                    except Exception:
-                        has = False
-                if not has:
+
+                caps = a.get("capabilities") or []
+                caps_set = set(str(c) for c in caps)
+
+                if cap not in caps_set:
                     continue
+
                 md = a.get("metadata") if isinstance(a.get("metadata"), dict) else {}
                 out.append(
                     AgentRegistryEntry(
                         id=str(a.get("agent_id") or agent_id),
-                        name=str(
-                            md.get("display_name") or a.get("agent_name") or agent_id
-                        ),
+                        name=str(md.get("display_name") or a.get("agent_name") or agent_id),
                         enabled=True,
                         priority=int(md.get("priority") or 0),
                         entrypoint=str(md.get("entrypoint") or ""),
                         keywords=list(md.get("keywords") or []),
                         version=str(a.get("version") or "1"),
-                        capabilities=[
-                            str(c) for c in (list(a.get("capabilities") or []))
-                        ],
+                        capabilities=[str(c) for c in (list(a.get("capabilities") or []))],
                         metadata=deepcopy(md),
                     )
                 )
-            out.sort(key=lambda e: (-e.priority, e.id))
-            return out
+
+        out.sort(key=lambda e: (-e.priority, e.id))
+        return out
 
     # =========================================================
     # STATUS MANAGEMENT
@@ -369,7 +365,7 @@ class AgentRegistryService:
             if not a:
                 return False
             a["status"] = "disabled"
-            a.setdefault("metadata", {})["disabled_reason"] = reason
+            a.setdefault("metadata", {})["disabled_reason"] = str(reason or "")
             a["updated_at"] = datetime.utcnow().isoformat()
             return True
 
@@ -389,14 +385,36 @@ class AgentRegistryService:
     # =========================================================
     def snapshot(self) -> Dict[str, Dict[str, Any]]:
         with self._lock:
+            # Deterministic snapshot (sort keys)
+            ids = sorted(self._agents.keys())
             return {
                 agent_id: {
-                    "agent_id": a.get("agent_id"),
-                    "capabilities": list(a.get("capabilities") or []),
-                    "status": a.get("status"),
-                    "version": a.get("version"),
-                    "metadata": deepcopy(a.get("metadata", {})),
+                    "agent_id": self._agents[agent_id].get("agent_id"),
+                    "capabilities": list(self._agents[agent_id].get("capabilities") or []),
+                    "status": self._agents[agent_id].get("status"),
+                    "version": self._agents[agent_id].get("version"),
+                    "metadata": deepcopy(self._agents[agent_id].get("metadata", {})),
                     "read_only": True,
                 }
-                for agent_id, a in self._agents.items()
+                for agent_id in ids
             }
+
+
+# =========================================================
+# SINGLETON ACCESS (for router/bootstrap)
+# =========================================================
+
+_registry_singleton: Optional[AgentRegistryService] = None
+_registry_lock = Lock()
+
+def get_agent_registry_service() -> AgentRegistryService:
+    """
+    Global singleton accessor (avoids import cycles).
+    Bootstrapping može pozvati .load_from_agents_json(...) eksplicitno.
+    Router može samo pozvati snapshot/list_agents/get_agent.
+    """
+    global _registry_singleton
+    with _registry_lock:
+        if _registry_singleton is None:
+            _registry_singleton = AgentRegistryService()
+        return _registry_singleton

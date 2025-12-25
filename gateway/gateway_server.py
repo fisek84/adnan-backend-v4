@@ -1,9 +1,6 @@
 # gateway/gateway_server.py
-# FULL FILE — zamijeni cijeli gateway_server.py ovim.
-# gateway/gateway_server.py
 # ruff: noqa: E402
 # FULL FILE — zamijeni cijeli gateway_server.py ovim.
-
 
 from __future__ import annotations
 
@@ -33,8 +30,17 @@ from system_version import (
 # ================================================================
 load_dotenv(override=False)
 
-OS_ENABLED = os.getenv("OS_ENABLED", "true").lower() == "true"
-OPS_SAFE_MODE = os.getenv("OPS_SAFE_MODE", "false").lower() == "true"
+
+def _env_true(name: str, default: str = "false") -> bool:
+    return (os.getenv(name, default) or "").strip().lower() == "true"
+
+
+def _ops_safe_mode() -> bool:
+    # IMPORTANT: runtime read, not frozen at import
+    return _env_true("OPS_SAFE_MODE", "false")
+
+
+OS_ENABLED = _env_true("OS_ENABLED", "true")
 
 _BOOT_READY = False
 _BOOT_ERROR: Optional[str] = None
@@ -115,9 +121,7 @@ from routers.chat_router import build_chat_router
 
 _agent_registry = AgentRegistryService()
 _agent_router = AgentRouterService(_agent_registry)
-_chat_router = build_chat_router(
-    _agent_router
-)  # defines "/chat" (see routers/chat_router.py)
+_chat_router = build_chat_router(_agent_router)  # defines "/chat"
 
 # ================================================================
 # ROUTERS
@@ -125,6 +129,9 @@ _chat_router = build_chat_router(
 from routers.audit_router import router as audit_router
 from routers.adnan_ai_router import router as adnan_ai_router
 from routers.ai_ops_router import ai_ops_router
+
+# OPTIONAL: import module for possible injection hooks
+import routers.ai_ops_router as ai_ops_router_module
 
 # IMPORTANT: import MODULE (so set_ai_services is available)
 import routers.ai_router as ai_router_module
@@ -257,7 +264,7 @@ def _to_serializable(obj: Any) -> Any:
 
 
 # ================================================================
-# LIFESPAN (PHASE 11)
+# LIFESPAN
 # ================================================================
 @asynccontextmanager
 async def lifespan(_: FastAPI):
@@ -267,7 +274,6 @@ async def lifespan(_: FastAPI):
     _BOOT_ERROR = None
 
     try:
-        # Core bootstrap (fatal ako ovdje pukne)
         bootstrap_application()
 
         # ---- FAZA 4: load agents.json (SSOT) ----
@@ -292,6 +298,18 @@ async def lifespan(_: FastAPI):
         except Exception as exc:  # noqa: BLE001
             _append_boot_error(f"ai_router_init_failed:{exc}")
             logger.warning("AI router init failed: %s", exc)
+
+        # ---- AI OPS router optional injection (prevents singleton mismatch) ----
+        # If your routers/ai_ops_router.py exposes set_ai_ops_services(orchestrator, approvals),
+        # we will inject the same approval store / orchestrator instances used by gateway.
+        try:
+            hook = getattr(ai_ops_router_module, "set_ai_ops_services", None)
+            if callable(hook):
+                hook(orchestrator=_execution_orchestrator, approvals=get_approval_state())
+                logger.info("✅ AI Ops router services injected (shared orchestrator/approvals)")
+        except Exception as exc:  # noqa: BLE001
+            _append_boot_error(f"ai_ops_injection_failed:{exc}")
+            logger.warning("AI Ops services injection failed: %s", exc)
 
         # Notion snapshot sync — best-effort (nije fatalno)
         try:
@@ -358,13 +376,16 @@ app.include_router(adnan_ai_router, prefix="/api")
 # AI UX entrypoint (/api/ai/run)
 app.include_router(ai_router_module.router, prefix="/api")
 
+# AI OPS (approvals + agents registry/health)
 app.include_router(ai_ops_router, prefix="/api")
+
+# CEO Console
 app.include_router(ceo_console_module.router, prefix="/api")
 
 app.include_router(metrics_router, prefix="/api")
 app.include_router(alerting_router, prefix="/api")
 
-# FAZA 4: Canonical Chat endpoint (READ/PROPOSE ONLY) — canonical path: /api/chat
+# FAZA 4: Canonical Chat endpoint — /api/chat
 app.include_router(_chat_router, prefix="/api")
 
 
@@ -509,7 +530,6 @@ async def execute_command(payload: ExecuteInput):
         )
 
     _ensure_trace_on_command(ai_command, approval_id=approval_id)
-
     _execution_registry.register(ai_command)
 
     result = await _execution_orchestrator.execute(ai_command)
@@ -549,7 +569,6 @@ async def execute_raw_command(payload: ExecuteRawInput):
         )
 
     _ensure_trace_on_command(ai_command, approval_id=approval_id)
-
     _execution_registry.register(ai_command)
 
     return {
@@ -611,7 +630,7 @@ async def ceo_console_snapshot():
             "release_channel": RELEASE_CHANNEL,
             "arch_lock": ARCH_LOCK,
             "os_enabled": OS_ENABLED,
-            "ops_safe_mode": OPS_SAFE_MODE,
+            "ops_safe_mode": _ops_safe_mode(),  # runtime
             "boot_ready": _BOOT_READY,
             "boot_error": _BOOT_ERROR,
         },
@@ -680,7 +699,7 @@ async def health_check():
         "version": VERSION,
         "boot_ready": _BOOT_READY,
         "boot_error": _BOOT_ERROR,
-        "ops_safe_mode": OPS_SAFE_MODE,
+        "ops_safe_mode": _ops_safe_mode(),  # runtime
     }
 
 
@@ -692,7 +711,7 @@ async def ready_check():
         "status": "ready",
         "version": VERSION,
         "boot_ready": _BOOT_READY,
-        "ops_safe_mode": OPS_SAFE_MODE,
+        "ops_safe_mode": _ops_safe_mode(),  # runtime
     }
 
 

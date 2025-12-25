@@ -1,7 +1,10 @@
+# routers/ai_ops_router.py
 from __future__ import annotations
 
 import os
+import json
 import logging
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Body, HTTPException, Request
@@ -17,7 +20,7 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 # ------------------------------------------------------------
-# CANONICAL WRITE GUARDS
+# CANONICAL WRITE GUARDS (runtime reads)
 # ------------------------------------------------------------
 
 
@@ -26,6 +29,7 @@ def _env_true(name: str, default: str = "false") -> bool:
 
 
 def _ops_safe_mode_enabled() -> bool:
+    # IMPORTANT: runtime read
     return _env_true("OPS_SAFE_MODE", "false")
 
 
@@ -58,21 +62,93 @@ def _guard_write(request: Request) -> None:
 
 
 # ------------------------------------------------------------
+# AGENT REGISTRY (READ-ONLY INTROSPECTION)
+# ------------------------------------------------------------
+
+
+def _agents_registry_path() -> Path:
+    """
+    SSOT path for registry.
+    Default: <repo_root>/config/agents.json
+    Override via env: AGENTS_REGISTRY_PATH
+    """
+    repo_root = Path(__file__).resolve().parents[1]  # routers/ -> repo root
+    return Path(
+        os.getenv("AGENTS_REGISTRY_PATH", str(repo_root / "config" / "agents.json"))
+    )
+
+
+def _load_agents_registry() -> Dict[str, Any]:
+    """
+    READ-ONLY: Load agents.json for introspection/debugging.
+    Must never crash the server; returns error payload on failure.
+    """
+    p = _agents_registry_path()
+    if not p.exists():
+        return {
+            "ok": False,
+            "error": "agents.json not found",
+            "path": str(p),
+            "read_only": True,
+        }
+
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            # normalize
+            data.setdefault("ok", True)
+            data.setdefault("path", str(p))
+            data.setdefault("read_only", True)
+            return data
+        return {
+            "ok": True,
+            "path": str(p),
+            "data": data,
+            "read_only": True,
+        }
+    except Exception as e:
+        return {
+            "ok": False,
+            "error": f"failed to parse agents.json: {e}",
+            "path": str(p),
+            "read_only": True,
+        }
+
+
+def _registry_agent_count(reg: Dict[str, Any]) -> int:
+    try:
+        agents = reg.get("agents")
+        if isinstance(agents, list):
+            return len(agents)
+        return 0
+    except Exception:
+        return 0
+
+
+# ------------------------------------------------------------
 # SERVICES (singletons)
 # ------------------------------------------------------------
 _agent_health = AgentHealthService()
 _metrics_persistence = MetricsPersistenceService()
 _alert_forwarder = AlertForwardingService()
-
-# Orchestrator internally uses get_approval_state() in its __init__
-# so this stays consistent with the canonical approval store.
-_orchestrator = ExecutionOrchestrator()
-
 _cron_service: Optional[CronService] = None
+
+# IMPORTANT:
+# Do NOT instantiate orchestrator at import time.
+# Lazy init prevents mismatch with approval_state singleton / bootstrap order.
+_orchestrator: Optional[ExecutionOrchestrator] = None
+
+
+def _get_orchestrator() -> ExecutionOrchestrator:
+    global _orchestrator
+    if _orchestrator is None:
+        _orchestrator = ExecutionOrchestrator()
+        logger.info("ai_ops_router: ExecutionOrchestrator initialized (lazy)")
+    return _orchestrator
 
 
 def set_cron_service(cron_service: CronService) -> None:
-    # app_bootstrap.py očekuje ovu funkciju
+    # app_bootstrap.py expects this function
     global _cron_service
     _cron_service = cron_service
 
@@ -80,8 +156,8 @@ def set_cron_service(cron_service: CronService) -> None:
 # ============================================================
 # ROUTER
 # IMPORTANT:
-# gateway_server.py radi include_router(ai_ops_router, prefix="/api")
-# zato ovdje prefix mora biti "/ai-ops" (NE "/api/ai-ops")
+# gateway_server.py does include_router(ai_ops_router, prefix="/api")
+# therefore prefix here must be "/ai-ops" (NOT "/api/ai-ops")
 # ============================================================
 router = APIRouter(prefix="/ai-ops", tags=["AI Ops"])
 
@@ -109,9 +185,9 @@ def cron_status() -> Dict[str, Any]:
 
 # ============================================================
 # APPROVAL OPS (Happy Path CONTRACT)
-# Test očekuje:
-#   GET  /api/ai-ops/approval/pending   -> {"approvals":[...]}, svaki item ima approval_id
-#   POST /api/ai-ops/approval/approve   (body: {approval_id: ...}) -> execution_state == "COMPLETED"
+# Test expects:
+#   GET  /api/ai-ops/approval/pending   -> {"approvals":[...]} each item has approval_id
+#   POST /api/ai-ops/approval/approve   body {approval_id: "..."} -> execution_state == "COMPLETED"
 # ============================================================
 
 
@@ -119,7 +195,6 @@ def cron_status() -> Dict[str, Any]:
 def list_pending() -> Dict[str, Any]:
     approval_state = get_approval_state()
     pending = approval_state.list_pending()
-    # Testu je bitno da je approvals lista i da itemi imaju approval_id.
     return {"approvals": pending, "read_only": True}
 
 
@@ -135,6 +210,7 @@ async def approve(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[st
     note = body.get("note")
 
     approval_state = get_approval_state()
+
     try:
         approval = approval_state.approve(
             approval_id.strip(),
@@ -146,12 +222,14 @@ async def approve(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[st
 
     execution_id = approval.get("execution_id")
     if not isinstance(execution_id, str) or not execution_id.strip():
+        # This should never be "normal": it means /api/execute didn't attach execution_id properly
         raise HTTPException(500, detail="Approval has no execution_id")
 
-    # Resume execution (orchestrator hard-gates approval via ApprovalStateService)
-    execution_result = await _orchestrator.resume(execution_id.strip())
+    orch = _get_orchestrator()
+    execution_result = await orch.resume(execution_id.strip())
 
-    # Test očekuje execution_state na rootu.
+    # Make sure test can read execution_state at root.
+    # If orchestrator already returns it, keep it.
     if isinstance(execution_result, dict):
         execution_result.setdefault("approval", approval)
         execution_result.setdefault("read_only", False)
@@ -194,13 +272,41 @@ def reject(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[str, Any]
 
 
 # ============================================================
-# HEALTH (READ-ONLY)
+# AGENTS (READ-ONLY)
 # ============================================================
+
+
+@router.get("/agents/registry")
+def agents_registry() -> Dict[str, Any]:
+    """
+    READ-ONLY introspection endpoint for SSOT registry (agents.json).
+    Path: /api/ai-ops/agents/registry
+    """
+    return _load_agents_registry()
 
 
 @router.get("/agents/health")
 def agents_health() -> Dict[str, Any]:
-    return {"agents": _agent_health.snapshot(), "read_only": True}
+    """
+    Runtime health (heartbeats/workers) + registry summary.
+    Runtime may be empty if you haven't implemented agent heartbeat registration yet.
+    """
+    runtime = _agent_health.snapshot()
+    reg = _load_agents_registry()
+
+    registry_loaded = not (isinstance(reg, dict) and reg.get("ok") is False)
+    registry_count = (
+        _registry_agent_count(reg) if registry_loaded and isinstance(reg, dict) else 0
+    )
+
+    return {
+        "read_only": True,
+        "agents": runtime,  # backward compatible key
+        "runtime_agents": runtime,
+        "runtime_count": len(runtime) if isinstance(runtime, dict) else 0,
+        "registry_loaded": registry_loaded,
+        "registry_count": registry_count,
+    }
 
 
 # ============================================================
