@@ -20,6 +20,7 @@ logger.setLevel(logging.INFO)
 # CANONICAL WRITE GUARDS
 # ------------------------------------------------------------
 
+
 def _env_true(name: str, default: str = "false") -> bool:
     return (os.getenv(name, default) or "").strip().lower() == "true"
 
@@ -50,7 +51,9 @@ def _require_ceo_token_if_enforced(request: Request) -> None:
 
 def _guard_write(request: Request) -> None:
     if _ops_safe_mode_enabled():
-        raise HTTPException(status_code=403, detail="OPS_SAFE_MODE enabled (writes blocked)")
+        raise HTTPException(
+            status_code=403, detail="OPS_SAFE_MODE enabled (writes blocked)"
+        )
     _require_ceo_token_if_enforced(request)
 
 
@@ -87,6 +90,7 @@ router = APIRouter(prefix="/ai-ops", tags=["AI Ops"])
 # CRON OPS
 # ============================================================
 
+
 @router.post("/cron/run")
 def cron_run(request: Request) -> Dict[str, Any]:
     _guard_write(request)
@@ -109,6 +113,7 @@ def cron_status() -> Dict[str, Any]:
 #   GET  /api/ai-ops/approval/pending   -> {"approvals":[...]}, svaki item ima approval_id
 #   POST /api/ai-ops/approval/approve   (body: {approval_id: ...}) -> execution_state == "COMPLETED"
 # ============================================================
+
 
 @router.get("/approval/pending")
 def list_pending() -> Dict[str, Any]:
@@ -192,6 +197,7 @@ def reject(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[str, Any]
 # HEALTH (READ-ONLY)
 # ============================================================
 
+
 @router.get("/agents/health")
 def agents_health() -> Dict[str, Any]:
     return {"agents": _agent_health.snapshot(), "read_only": True}
@@ -200,6 +206,7 @@ def agents_health() -> Dict[str, Any]:
 # ============================================================
 # METRICS OPS (WRITE)
 # ============================================================
+
 
 @router.post("/metrics/persist")
 def persist_metrics_snapshot(request: Request) -> Dict[str, Any]:
@@ -211,6 +218,7 @@ def persist_metrics_snapshot(request: Request) -> Dict[str, Any]:
 # ============================================================
 # ALERTS OPS (WRITE)
 # ============================================================
+
 
 @router.post("/alerts/forward")
 def forward_alerts(request: Request) -> Dict[str, Any]:

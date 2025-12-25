@@ -24,6 +24,7 @@ router = APIRouter(prefix="/tasks", tags=["Tasks"])
 # CANONICAL WRITE GUARDS (match ai_ops_router semantics)
 # ============================================================
 
+
 def _env_true(name: str, default: str = "false") -> bool:
     return os.getenv(name, default).strip().lower() == "true"
 
@@ -71,6 +72,7 @@ def _guard_write(request: Request) -> None:
 # HELPERS
 # ============================================================
 
+
 def _task_to_dict(task: TaskModel) -> dict:
     if hasattr(task, "model_dump"):
         return task.model_dump()
@@ -95,7 +97,9 @@ async def create_task(
     _guard_write(request)
 
     if not payload.title or not payload.description:
-        raise HTTPException(status_code=400, detail="Title and description are required.")
+        raise HTTPException(
+            status_code=400, detail="Title and description are required."
+        )
 
     logger.info("Creating task with title: %s", payload.title)
 
@@ -104,7 +108,9 @@ async def create_task(
         if not db_id:
             raise HTTPException(status_code=500, detail="NOTION_TASKS_DB_ID not set")
 
-        payload_dict = payload.model_dump() if hasattr(payload, "model_dump") else dict(payload)
+        payload_dict = (
+            payload.model_dump() if hasattr(payload, "model_dump") else dict(payload)
+        )
 
         async def _wg_create_with_notion(env):
             # 1) local domain create (inside commit)
@@ -124,9 +130,13 @@ async def create_task(
             notion_payload: Dict[str, Any] = {
                 "parent": {"database_id": db_id},
                 "properties": {
-                    "Name": {"title": [{"text": {"content": payload_dict.get("title")}}]},
+                    "Name": {
+                        "title": [{"text": {"content": payload_dict.get("title")}}]
+                    },
                     "Description": {
-                        "rich_text": [{"text": {"content": payload_dict.get("description")}}]
+                        "rich_text": [
+                            {"text": {"content": payload_dict.get("description")}}
+                        ]
                     },
                 },
             }
@@ -142,11 +152,15 @@ async def create_task(
                 }
 
             if goal_id_str:
-                notion_payload["properties"]["Goal"] = {"relation": [{"id": goal_id_str}]}
+                notion_payload["properties"]["Goal"] = {
+                    "relation": [{"id": goal_id_str}]
+                }
 
             notion_res = await notion.create_page(notion_payload)
             if not notion_res.get("ok"):
-                raise RuntimeError(f"Notion page creation failed: {notion_res.get('error')}")
+                raise RuntimeError(
+                    f"Notion page creation failed: {notion_res.get('error')}"
+                )
 
             notion_id = notion_res["data"]["id"]
             notion_url = notion_res["data"].get("url")
@@ -170,7 +184,9 @@ async def create_task(
             }
 
         # Override handler so Notion I/O happens INSIDE WriteGateway commit
-        tasks_service.write_gateway.register_handler("tasks_create", _wg_create_with_notion)
+        tasks_service.write_gateway.register_handler(
+            "tasks_create", _wg_create_with_notion
+        )
 
         envelope = {
             "command": "tasks_create",
@@ -187,7 +203,9 @@ async def create_task(
             data = res.get("data") or {}
             task_id_val = data.get("task_id")
             if not task_id_val:
-                raise HTTPException(500, detail="Write applied but missing task_id in response")
+                raise HTTPException(
+                    500, detail="Write applied but missing task_id in response"
+                )
 
             task_id = str(task_id_val)
             task = tasks_service.tasks.get(task_id)
@@ -205,7 +223,9 @@ async def create_task(
                 },
             )
 
-        raise HTTPException(status_code=403, detail=res.get("reason") or "write_rejected")
+        raise HTTPException(
+            status_code=403, detail=res.get("reason") or "write_rejected"
+        )
 
     except HTTPException:
         raise
@@ -231,10 +251,16 @@ async def update_task(
         # Keep service API as-is; do not assume its expected type
         res = await tasks_service.update_task(task_id, payload)
 
-        if isinstance(res, dict) and res.get("success") is True and res.get("status") in ("applied", "replayed"):
+        if (
+            isinstance(res, dict)
+            and res.get("success") is True
+            and res.get("status") in ("applied", "replayed")
+        ):
             updated = tasks_service.tasks.get(task_id)
             if not updated:
-                raise HTTPException(status_code=404, detail=f"Task {task_id} not found after update")
+                raise HTTPException(
+                    status_code=404, detail=f"Task {task_id} not found after update"
+                )
             return updated
 
         if isinstance(res, dict) and res.get("status") == "requires_approval":
@@ -273,6 +299,7 @@ async def delete_task(
     logger.info("Deleting task ID: %s", task_id)
 
     try:
+
         async def _wg_delete_with_notion(env):
             # capture notion_id before delete
             t = tasks_service.tasks.get(task_id)
@@ -283,11 +310,15 @@ async def delete_task(
             if notion_id:
                 notion_res = await notion.delete_page(notion_id)
                 if not notion_res.get("ok"):
-                    raise RuntimeError(f"Notion deletion failed: {notion_res.get('error')}")
+                    raise RuntimeError(
+                        f"Notion deletion failed: {notion_res.get('error')}"
+                    )
 
             return {"deleted": True, "notion_id": notion_id, "domain": out}
 
-        tasks_service.write_gateway.register_handler("tasks_delete", _wg_delete_with_notion)
+        tasks_service.write_gateway.register_handler(
+            "tasks_delete", _wg_delete_with_notion
+        )
 
         envelope = {
             "command": "tasks_delete",
@@ -301,7 +332,10 @@ async def delete_task(
         res = await tasks_service.write_gateway.write(envelope)
 
         if res.get("success") is True and res.get("status") in ("applied", "replayed"):
-            return {"message": f"Task {task_id} deleted from backend + Notion.", "read_only": False}
+            return {
+                "message": f"Task {task_id} deleted from backend + Notion.",
+                "read_only": False,
+            }
 
         if res.get("status") == "requires_approval":
             raise HTTPException(
@@ -313,7 +347,9 @@ async def delete_task(
                 },
             )
 
-        raise HTTPException(status_code=404, detail=res.get("reason") or f"Task {task_id} not found.")
+        raise HTTPException(
+            status_code=404, detail=res.get("reason") or f"Task {task_id} not found."
+        )
 
     except HTTPException:
         raise
@@ -329,7 +365,11 @@ async def delete_task(
 async def list_tasks(tasks_service: TasksService = Depends(get_tasks_service)):
     try:
         tasks = tasks_service.get_all()
-        return {"status": "ok", "tasks": [_task_to_dict(t) for t in tasks], "read_only": True}
+        return {
+            "status": "ok",
+            "tasks": [_task_to_dict(t) for t in tasks],
+            "read_only": True,
+        }
     except Exception as e:
         logger.error("Failed to list tasks: %s", e)
         raise HTTPException(status_code=500, detail="Failed to list tasks")

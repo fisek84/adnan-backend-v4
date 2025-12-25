@@ -83,7 +83,11 @@ def _guard_write(request: Request) -> None:
 async def get_all_goals(goals_service=Depends(get_goals_service)) -> Dict[str, Any]:
     try:
         goals = goals_service.get_all()
-        return {"status": "ok", "read_only": True, "goals": [g.model_dump() for g in goals]}
+        return {
+            "status": "ok",
+            "read_only": True,
+            "goals": [g.model_dump() for g in goals],
+        }
     except Exception as e:  # noqa: BLE001
         logger.error("Failed to list goals: %s", e)
         raise HTTPException(500, f"Failed to list goals: {e}") from e
@@ -133,7 +137,9 @@ async def create_goal(
             }
 
         # override handler to ensure Notion write happens inside gateway commit
-        goals_service.write_gateway.register_handler("goals_create", _wg_create_with_notion)
+        goals_service.write_gateway.register_handler(
+            "goals_create", _wg_create_with_notion
+        )
 
         envelope = {
             "command": "goals_create",
@@ -193,7 +199,10 @@ async def update_goal(
         res = await goals_service.update_goal(goal_id, payload.model_dump())
 
         if isinstance(res, dict) and res.get("success") is not None:
-            if res.get("success") is True and res.get("status") in ("applied", "replayed"):
+            if res.get("success") is True and res.get("status") in (
+                "applied",
+                "replayed",
+            ):
                 updated_goal: Optional[GoalModel] = goals_service.goals.get(goal_id)
                 if not updated_goal:
                     raise HTTPException(404, "Updated goal not found")
@@ -242,6 +251,7 @@ async def delete_goal(
     _guard_write(request)
 
     try:
+
         async def _wg_delete_with_notion(env):
             notion_id = None
 
@@ -257,7 +267,9 @@ async def delete_goal(
 
             return {"notion_id": notion_id, "deleted": True}
 
-        goals_service.write_gateway.register_handler("goals_delete", _wg_delete_with_notion)
+        goals_service.write_gateway.register_handler(
+            "goals_delete", _wg_delete_with_notion
+        )
 
         envelope = {
             "command": "goals_delete",

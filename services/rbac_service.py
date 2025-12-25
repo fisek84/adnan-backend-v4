@@ -96,7 +96,9 @@ class RBACService:
         """
         initiator = kwargs.get("initiator")
         role = kwargs.get("role")
-        action = kwargs.get("action") or kwargs.get("directive") or kwargs.get("command")
+        action = (
+            kwargs.get("action") or kwargs.get("directive") or kwargs.get("command")
+        )
 
         # positional fallback
         if len(args) >= 2 and not action:
@@ -106,7 +108,13 @@ class RBACService:
                 first = args[0]
                 if isinstance(first, str):
                     # if first looks like a known role -> role, else initiator
-                    if first.strip().lower() in {"system", "ceo", "admin", "user", "guest"}:
+                    if first.strip().lower() in {
+                        "system",
+                        "ceo",
+                        "admin",
+                        "user",
+                        "guest",
+                    }:
                         role = first
                     else:
                         initiator = first

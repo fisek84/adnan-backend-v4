@@ -67,7 +67,9 @@ class ApprovalStateService:
     _LOADED_FROM_DISK: bool = False
 
     def __init__(self):
-        self._approvals: Dict[str, Dict[str, Any]] = ApprovalStateService._GLOBAL_APPROVALS
+        self._approvals: Dict[str, Dict[str, Any]] = (
+            ApprovalStateService._GLOBAL_APPROVALS
+        )
         self._lock: Lock = ApprovalStateService._GLOBAL_LOCK
 
         # Best-effort load once per process

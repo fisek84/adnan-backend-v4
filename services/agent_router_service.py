@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import importlib
-from typing import Callable, Dict, List, Tuple, Any, Optional
+from typing import Any, Callable, Dict, List, Tuple
 
 from models.agent_contract import AgentInput, AgentOutput, ProposedCommand
-from services.agent_registry_service import AgentRegistryService, AgentRegistryEntry
+from services.agent_registry_service import AgentRegistryEntry, AgentRegistryService
 
 AgentCallable = Callable[[AgentInput, Dict[str, Any]], AgentOutput]
 
@@ -23,7 +23,7 @@ class AgentRouterService:
     - get_agent(agent_id) -> Optional[AgentRegistryEntry]
     """
 
-    def __init__(self, registry: AgentRegistryService):
+    def __init__(self, registry: AgentRegistryService) -> None:
         self.registry = registry
 
     def route(self, agent_input: AgentInput) -> AgentOutput:
@@ -76,7 +76,9 @@ class AgentRouterService:
     # INTERNALS
     # =========================================================
     def _select_agent(
-        self, agent_input: AgentInput, agents: List[AgentRegistryEntry]
+        self,
+        agent_input: AgentInput,
+        agents: List[AgentRegistryEntry],
     ) -> Tuple[AgentRegistryEntry, Dict[str, Any]]:
         msg = (agent_input.message or "").lower()
 
@@ -127,7 +129,7 @@ class AgentRouterService:
         fn = getattr(mod, fn_name, None)
         if fn is None or not callable(fn):
             raise ValueError(
-                f"Invalid agent entrypoint; callable not found: {entrypoint}"
+                f"Invalid agent entrypoint; callable not found: {entrypoint}",
             )
         return fn
 
@@ -152,6 +154,7 @@ def _tokenize(text: str) -> List[str]:
 # Minimal agent implementations (READ/PROPOSE ONLY)
 # ---------------------------------------------------------------------
 
+
 def ceo_clone_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> AgentOutput:
     msg = (agent_input.message or "").strip()
     proposed: List[ProposedCommand] = []
@@ -163,18 +166,20 @@ def ceo_clone_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> AgentOutput
                 command="ceo.plan.propose",
                 args={"prompt": msg},
                 reason=(
-                    "User is asking for CEO-level planning; proposing a planning command "
-                    "for the write/approval pipeline."
+                    "User is asking for CEO-level planning; proposing a planning "
+                    "command for the write/approval pipeline."
                 ),
                 requires_approval=True,
                 risk="MED",
                 dry_run=True,
-            )
+            ),
         )
 
     text = (
-        "CEO Clone (read-only): Primio sam upit i mogu pomoći sa analizom i prijedlogom narednih koraka. "
-        "Ako želiš da sistem kasnije izvrši bilo kakav write, to mora ići kroz approval/ops pipeline; ovdje samo predlažem.\n\n"
+        "CEO Clone (read-only): Primio sam upit i mogu pomoći sa analizom i "
+        "prijedlogom narednih koraka. Ako želiš da sistem kasnije izvrši bilo "
+        "kakav write, to mora ići kroz approval/ops pipeline; ovdje samo "
+        "predlažem.\n\n"
         f"Sažetak upita: {msg}"
     )
 
@@ -187,21 +192,29 @@ def ceo_clone_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> AgentOutput
     )
 
 
-def specialist_notion_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> AgentOutput:
+def specialist_notion_agent(
+    agent_input: AgentInput,
+    ctx: Dict[str, Any],
+) -> AgentOutput:
     msg = (agent_input.message or "").strip()
     lower = msg.lower()
     proposed: List[ProposedCommand] = []
 
-    if "notion" in lower or any(x in lower for x in ["database", "page", "property", "schema"]):
+    if "notion" in lower or any(
+        x in lower for x in ["database", "page", "property", "schema"]
+    ):
         proposed.append(
             ProposedCommand(
                 command="notion.read.propose",
                 args={"query": msg},
-                reason="User is asking for Notion-related info; proposing a read/query command.",
+                reason=(
+                    "User is asking for Notion-related info; proposing a read/query "
+                    "command."
+                ),
                 requires_approval=False,
                 risk="LOW",
                 dry_run=True,
-            )
+            ),
         )
 
         if any(x in lower for x in ["create", "add", "update", "delete"]):
@@ -209,16 +222,19 @@ def specialist_notion_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> Age
                 ProposedCommand(
                     command="notion.write.propose",
                     args={"intent": msg},
-                    reason="User request implies a write in Notion; proposing it for approval workflow.",
+                    reason=(
+                        "User request implies a write in Notion; proposing it for "
+                        "approval workflow."
+                    ),
                     requires_approval=True,
                     risk="HIGH",
                     dry_run=True,
-                )
+                ),
             )
 
     text = (
-        "Notion Specialist (read-only): Mogu mapirati tvoj zahtjev na Notion operacije i vratiti prijedloge komandi. "
-        "Ovdje se ništa ne izvršava.\n\n"
+        "Notion Specialist (read-only): Mogu mapirati tvoj zahtjev na Notion "
+        "operacije i vratiti prijedloge komandi. Ovdje se ništa ne izvršava.\n\n"
         f"Sažetak upita: {msg}"
     )
 

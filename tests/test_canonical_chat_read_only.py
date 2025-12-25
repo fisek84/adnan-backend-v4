@@ -1,14 +1,15 @@
-import os
-
 from fastapi.testclient import TestClient
+
 
 # Pokušaj najčešćih entrypoint-a za app
 def _load_app():
     try:
         from gateway.gateway_server import app  # type: ignore
+
         return app
     except Exception:
         from main import app  # type: ignore
+
         return app
 
 

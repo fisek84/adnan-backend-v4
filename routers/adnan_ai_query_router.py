@@ -67,7 +67,9 @@ async def _llm_readonly_advice(prompt: str, user_text: str) -> str:
                 return out.strip()
         if hasattr(execr, "ceo_command"):
             # reuse ceo_command in strictly read-only mode
-            result = await execr.ceo_command(text=user_text, context={"canon": {"read_only": True}})  # type: ignore[misc]
+            result = await execr.ceo_command(
+                text=user_text, context={"canon": {"read_only": True}}
+            )  # type: ignore[misc]
             if isinstance(result, dict):
                 summary = result.get("summary")
                 if isinstance(summary, str) and summary.strip():

@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Optional
 
 from services.rbac_service import RBACService
 
@@ -23,7 +22,7 @@ class PolicyService:
     - NE radi safety payload-inspection (to je drugi sloj)
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.rbac = RBACService()
         self.ops_safe_mode = os.getenv("OPS_SAFE_MODE", "false").lower() == "true"
 

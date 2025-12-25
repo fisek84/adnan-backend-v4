@@ -38,7 +38,6 @@ class NotionSchemaRegistry:
                 "Deadline": {"type": "date", "required": False},
             },
         },
-
         # =======================
         # GOALS — DERIVED VIEWS (READ-ONLY)
         # =======================
@@ -110,7 +109,6 @@ class NotionSchemaRegistry:
                 "Priority": {"type": "select", "required": False},
             },
         },
-
         # =======================
         # TASKS
         # =======================
@@ -139,7 +137,6 @@ class NotionSchemaRegistry:
                 "AI Agent": {"type": "people", "required": False},
             },
         },
-
         # =======================
         # PROJECTS
         # =======================
@@ -173,7 +170,6 @@ class NotionSchemaRegistry:
                 "Handled By": {"type": "people", "required": False},
             },
         },
-
         # =======================
         # KPI (WEEKLY KPI DB)
         # =======================
@@ -229,7 +225,6 @@ class NotionSchemaRegistry:
                 "Daily Score": {"type": "number", "required": False},
             },
         },
-
         # =======================
         # AGENT EXCHANGE LAYER
         # =======================
@@ -260,7 +255,6 @@ class NotionSchemaRegistry:
                 "Version History": {"type": "rich_text", "required": False},
             },
         },
-
         "agent_projects": {
             "db_id": os.getenv("NOTION_AGENT_PROJECTS_DB_ID"),
             "entity": "AgentProject",
@@ -284,12 +278,12 @@ class NotionSchemaRegistry:
                 "Status Auto": {"type": "select", "required": False},
             },
         },
-
         # =======================
         # AI SUMMARY (canonical)
         # =======================
         "ai_summary": {
-            "db_id": os.getenv("NOTION_AI_SUMMARY_DB_ID") or os.getenv("NOTION_AI_WEEKLY_SUMMARY_DB_ID"),
+            "db_id": os.getenv("NOTION_AI_SUMMARY_DB_ID")
+            or os.getenv("NOTION_AI_WEEKLY_SUMMARY_DB_ID"),
             "entity": "AISummary",
             "write_enabled": True,
             "properties": {
@@ -300,7 +294,6 @@ class NotionSchemaRegistry:
                 "Tags": {"type": "multi_select", "required": False},
             },
         },
-
         # =======================
         # SOP BAZE (READ-ONLY)
         # =======================

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -48,6 +48,7 @@ router = APIRouter(prefix="/ai", tags=["AI"])
 # ============================================================
 # REQUEST MODEL (UX INPUT ONLY)
 # ============================================================
+
 
 class AIRequest(BaseModel):
     text: str = Field(..., min_length=1)
@@ -149,6 +150,7 @@ def _proposal_v2_from_ai_command(ai_cmd_serialized: Any) -> Dict[str, Any]:
 # ============================================================
 # RUN AI — UX ENTRYPOINT (CANON: READ-ONLY)
 # ============================================================
+
 
 @router.post("/run")
 async def run_ai(req: AIRequest) -> Dict[str, Any]:

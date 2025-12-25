@@ -62,12 +62,16 @@ def _to_dict(cmd: AICommand) -> Dict[str, Any]:
     return {
         "command": getattr(cmd, "command", None),
         "intent": getattr(cmd, "intent", None),
-        "params": getattr(cmd, "params", None) if isinstance(getattr(cmd, "params", None), dict) else {},
+        "params": getattr(cmd, "params", None)
+        if isinstance(getattr(cmd, "params", None), dict)
+        else {},
         "initiator": getattr(cmd, "initiator", None),
         "execution_id": getattr(cmd, "execution_id", None),
         "approval_id": getattr(cmd, "approval_id", None),
         "read_only": getattr(cmd, "read_only", None),
-        "metadata": getattr(cmd, "metadata", None) if isinstance(getattr(cmd, "metadata", None), dict) else {},
+        "metadata": getattr(cmd, "metadata", None)
+        if isinstance(getattr(cmd, "metadata", None), dict)
+        else {},
     }
 
 
@@ -82,15 +86,23 @@ def _from_dict(data: Dict[str, Any]) -> Optional[AICommand]:
             minimal: Dict[str, Any] = {
                 "command": data.get("command") or "unknown",
                 "intent": data.get("intent"),
-                "params": data.get("params") if isinstance(data.get("params"), dict) else {},
+                "params": data.get("params")
+                if isinstance(data.get("params"), dict)
+                else {},
                 "initiator": data.get("initiator") or "unknown",
                 "read_only": bool(data.get("read_only", False)),
-                "metadata": data.get("metadata") if isinstance(data.get("metadata"), dict) else {},
+                "metadata": data.get("metadata")
+                if isinstance(data.get("metadata"), dict)
+                else {},
                 "execution_id": data.get("execution_id"),
                 "approval_id": data.get("approval_id"),
                 "execution_state": data.get("execution_state"),
-                "decision": data.get("decision") if isinstance(data.get("decision"), dict) else None,
-                "result": data.get("result") if isinstance(data.get("result"), dict) else None,
+                "decision": data.get("decision")
+                if isinstance(data.get("decision"), dict)
+                else None,
+                "result": data.get("result")
+                if isinstance(data.get("result"), dict)
+                else None,
                 "validated": bool(data.get("validated", False)),
             }
             return AICommand(**minimal)
@@ -139,7 +151,9 @@ class ExecutionRegistry:
         """
         execution_id = getattr(cmd, "execution_id", None)
         if not isinstance(execution_id, str) or not execution_id.strip():
-            raise ValueError("ExecutionRegistry.register requires AICommand.execution_id")
+            raise ValueError(
+                "ExecutionRegistry.register requires AICommand.execution_id"
+            )
 
         execution_id = execution_id.strip()
         now = _utc_ts()
@@ -150,18 +164,33 @@ class ExecutionRegistry:
             # Merge: ako postoje decision/result u store, nemoj ih izgubiti
             if isinstance(existing, dict):
                 existing_cmd_dict = existing.get("command")
-                existing_cmd = _from_dict(existing_cmd_dict) if isinstance(existing_cmd_dict, dict) else None
+                existing_cmd = (
+                    _from_dict(existing_cmd_dict)
+                    if isinstance(existing_cmd_dict, dict)
+                    else None
+                )
 
                 if existing_cmd is not None:
                     # Ako novi cmd nema decision/result/state, a stari ima — prenesi.
-                    if getattr(cmd, "decision", None) is None and getattr(existing_cmd, "decision", None) is not None:
+                    if (
+                        getattr(cmd, "decision", None) is None
+                        and getattr(existing_cmd, "decision", None) is not None
+                    ):
                         cmd.decision = existing_cmd.decision
-                    if getattr(cmd, "result", None) is None and getattr(existing_cmd, "result", None) is not None:
+                    if (
+                        getattr(cmd, "result", None) is None
+                        and getattr(existing_cmd, "result", None) is not None
+                    ):
                         cmd.result = existing_cmd.result
-                    if getattr(cmd, "execution_state", None) is None and getattr(existing_cmd, "execution_state", None) is not None:
+                    if (
+                        getattr(cmd, "execution_state", None) is None
+                        and getattr(existing_cmd, "execution_state", None) is not None
+                    ):
                         cmd.execution_state = existing_cmd.execution_state
                     # approval_id: sačuvaj ako postoji na starom
-                    if not getattr(cmd, "approval_id", None) and getattr(existing_cmd, "approval_id", None):
+                    if not getattr(cmd, "approval_id", None) and getattr(
+                        existing_cmd, "approval_id", None
+                    ):
                         cmd.approval_id = existing_cmd.approval_id
 
             self._store[execution_id] = {
@@ -205,7 +234,9 @@ class ExecutionRegistry:
             cmd = _from_dict(cmd_dict) if isinstance(cmd_dict, dict) else None
             if cmd is None:
                 # Minimal placeholder
-                cmd = AICommand(command="unknown", initiator="unknown", params={}, read_only=False)
+                cmd = AICommand(
+                    command="unknown", initiator="unknown", params={}, read_only=False
+                )
 
             cmd.execution_id = eid
             cmd.execution_state = "BLOCKED"
@@ -234,7 +265,9 @@ class ExecutionRegistry:
 
             cmd = _from_dict(cmd_dict) if isinstance(cmd_dict, dict) else None
             if cmd is None:
-                cmd = AICommand(command="unknown", initiator="unknown", params={}, read_only=False)
+                cmd = AICommand(
+                    command="unknown", initiator="unknown", params={}, read_only=False
+                )
 
             cmd.execution_id = eid
             cmd.execution_state = "COMPLETED"
@@ -260,13 +293,16 @@ class ExecutionRegistry:
             for eid, rec in self._store.items():
                 if not isinstance(rec, dict):
                     continue
-                cmd_dict = rec.get("command") if isinstance(rec.get("command"), dict) else {}
+                cmd_dict = (
+                    rec.get("command") if isinstance(rec.get("command"), dict) else {}
+                )
                 out[eid] = {
                     "command": cmd_dict.get("command"),
                     "intent": cmd_dict.get("intent"),
                     "initiator": cmd_dict.get("initiator"),
                     "execution_state": cmd_dict.get("execution_state"),
-                    "approval_id": cmd_dict.get("approval_id") or (cmd_dict.get("metadata") or {}).get("approval_id"),
+                    "approval_id": cmd_dict.get("approval_id")
+                    or (cmd_dict.get("metadata") or {}).get("approval_id"),
                     "updated_at": rec.get("updated_at"),
                 }
             return {"read_only": True, "executions": out}

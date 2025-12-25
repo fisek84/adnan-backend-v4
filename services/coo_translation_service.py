@@ -249,7 +249,9 @@ class COOTranslationService:
         read_only = bool(data.get("read_only", False))
 
         initiator = str(data.get("initiator") or fallback_ctx.get("initiator") or "ceo")
-        metadata = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
+        metadata = (
+            data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
+        )
         if "context_type" not in metadata:
             metadata["context_type"] = str(fallback_ctx.get("context_type") or "ux")
         metadata.setdefault("source", source)
@@ -258,7 +260,9 @@ class COOTranslationService:
         try:
             return AICommand(
                 command=cmd_name,
-                intent=str(intent) if isinstance(intent, str) and intent.strip() else None,
+                intent=str(intent)
+                if isinstance(intent, str) and intent.strip()
+                else None,
                 read_only=read_only,
                 params=params,
                 initiator=initiator,
@@ -272,7 +276,9 @@ class COOTranslationService:
             # pa se držimo minimalnog seta
             return AICommand(
                 command=cmd_name,
-                intent=str(intent) if isinstance(intent, str) and intent.strip() else None,
+                intent=str(intent)
+                if isinstance(intent, str) and intent.strip()
+                else None,
                 read_only=read_only,
                 params=params,
                 initiator=initiator,
@@ -318,7 +324,9 @@ class COOTranslationService:
 
         return AICommand(
             command=cmd,
-            intent=intent.strip() if isinstance(intent, str) and intent.strip() else None,
+            intent=intent.strip()
+            if isinstance(intent, str) and intent.strip()
+            else None,
             read_only=ro_flag,
             params=params,
             initiator=initiator,
@@ -398,10 +406,12 @@ class COOTranslationService:
         #
         # FIX: test koristi riječ "rezime", a ranije je matcher tražio samo summary/sažetak.
         # Podržimo i: rezime, rezime/rezimé varijante bez dijakritike, pregled.
-        if re.search(r"\bkpi\b", t, flags=re.IGNORECASE) and re.search(
-            r"\b(weekly|sedmic|tjedn)\b", t, flags=re.IGNORECASE
-        ) and re.search(
-            r"\b(summary|sažetak|sazetak|rezime|pregled)\b", t, flags=re.IGNORECASE
+        if (
+            re.search(r"\bkpi\b", t, flags=re.IGNORECASE)
+            and re.search(r"\b(weekly|sedmic|tjedn)\b", t, flags=re.IGNORECASE)
+            and re.search(
+                r"\b(summary|sažetak|sazetak|rezime|pregled)\b", t, flags=re.IGNORECASE
+            )
         ):
             time_scope = "this_week"
             if re.search(r"\b(last|prosla|prošla)\b", t, flags=re.IGNORECASE):
@@ -574,10 +584,16 @@ class COOTranslationService:
 
         return _ParsedFields(
             title=title,
-            status=status.strip(" ,.-") if isinstance(status, str) and status.strip() else None,
-            priority=priority.strip(" ,.-") if isinstance(priority, str) and priority.strip() else None,
+            status=status.strip(" ,.-")
+            if isinstance(status, str) and status.strip()
+            else None,
+            priority=priority.strip(" ,.-")
+            if isinstance(priority, str) and priority.strip()
+            else None,
             due=due,
-            description=description.strip() if isinstance(description, str) and description.strip() else None,
+            description=description.strip()
+            if isinstance(description, str) and description.strip()
+            else None,
         )
 
     @staticmethod

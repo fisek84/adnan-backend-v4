@@ -35,6 +35,7 @@ import json
 # DATA CONTRACT (for router)
 # =========================================================
 
+
 @dataclass(frozen=True)
 class AgentRegistryEntry:
     id: str
@@ -51,6 +52,7 @@ class AgentRegistryEntry:
 # =========================================================
 # SERVICE
 # =========================================================
+
 
 class AgentRegistryService:
     def __init__(self):
@@ -171,7 +173,9 @@ class AgentRegistryService:
             if isinstance(status_val, str) and status_val.strip():
                 status_norm = status_val.strip().lower()
                 if status_norm not in ("active", "disabled"):
-                    raise ValueError(f"Invalid status for agent '{agent_id}': {status_val}")
+                    raise ValueError(
+                        f"Invalid status for agent '{agent_id}': {status_val}"
+                    )
                 status = status_norm
             else:
                 enabled = bool(a.get("enabled", True))
@@ -240,7 +244,11 @@ class AgentRegistryService:
             if not entrypoint:
                 raise ValueError("Agent entry missing required field: entrypoint")
 
-            if ":" not in entrypoint or entrypoint.startswith(":") or entrypoint.endswith(":"):
+            if (
+                ":" not in entrypoint
+                or entrypoint.startswith(":")
+                or entrypoint.endswith(":")
+            ):
                 raise ValueError(
                     f"Invalid entrypoint '{entrypoint}'. Expected format: module.path:callable"
                 )
@@ -252,7 +260,9 @@ class AgentRegistryService:
                     raise ValueError(f"Invalid status type for agent '{agent_id}'")
                 st = status_val.strip().lower()
                 if st not in ("active", "disabled"):
-                    raise ValueError(f"Invalid status for agent '{agent_id}': {status_val}")
+                    raise ValueError(
+                        f"Invalid status for agent '{agent_id}': {status_val}"
+                    )
 
     # =========================================================
     # LOOKUP (router compatibility)
@@ -289,13 +299,17 @@ class AgentRegistryService:
                 entries.append(
                     AgentRegistryEntry(
                         id=str(a.get("agent_id") or agent_id),
-                        name=str(md.get("display_name") or a.get("agent_name") or agent_id),
+                        name=str(
+                            md.get("display_name") or a.get("agent_name") or agent_id
+                        ),
                         enabled=bool(enabled),
                         priority=int(md.get("priority") or 0),
                         entrypoint=str(md.get("entrypoint") or ""),
                         keywords=list(md.get("keywords") or []),
                         version=str(a.get("version") or "1"),
-                        capabilities=[str(c) for c in (list(a.get("capabilities") or []))],
+                        capabilities=[
+                            str(c) for c in (list(a.get("capabilities") or []))
+                        ],
                         metadata=deepcopy(md),
                     )
                 )
@@ -327,13 +341,17 @@ class AgentRegistryService:
                 out.append(
                     AgentRegistryEntry(
                         id=str(a.get("agent_id") or agent_id),
-                        name=str(md.get("display_name") or a.get("agent_name") or agent_id),
+                        name=str(
+                            md.get("display_name") or a.get("agent_name") or agent_id
+                        ),
                         enabled=True,
                         priority=int(md.get("priority") or 0),
                         entrypoint=str(md.get("entrypoint") or ""),
                         keywords=list(md.get("keywords") or []),
                         version=str(a.get("version") or "1"),
-                        capabilities=[str(c) for c in (list(a.get("capabilities") or []))],
+                        capabilities=[
+                            str(c) for c in (list(a.get("capabilities") or []))
+                        ],
                         metadata=deepcopy(md),
                     )
                 )

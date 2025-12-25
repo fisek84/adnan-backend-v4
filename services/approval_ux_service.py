@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from services.approval_state_service import get_approval_state
 
@@ -27,7 +27,7 @@ class ApprovalUXService:
     - UX sloj mora biti idempotentan i bez side-effect-a (osim approve/reject poziva u StateService).
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.state = get_approval_state()
 
     # -----------------------------
@@ -67,7 +67,11 @@ class ApprovalUXService:
         approved_by: str = "unknown",
         note: Optional[str] = None,
     ) -> Dict[str, Any]:
-        approval = self.state.approve(approval_id, approved_by=approved_by, note=note)
+        approval = self.state.approve(
+            approval_id,
+            approved_by=approved_by,
+            note=note,
+        )
         return {
             "ok": True,
             "item": self._to_card(approval),
@@ -80,7 +84,11 @@ class ApprovalUXService:
         rejected_by: str = "unknown",
         note: Optional[str] = None,
     ) -> Dict[str, Any]:
-        approval = self.state.reject(approval_id, rejected_by=rejected_by, note=note)
+        approval = self.state.reject(
+            approval_id,
+            rejected_by=rejected_by,
+            note=note,
+        )
         return {
             "ok": True,
             "item": self._to_card(approval),
@@ -94,7 +102,9 @@ class ApprovalUXService:
         """
         Stabilan UX shape za prikaz (frontend/CLI).
         """
-        payload_summary = approval.get("payload_summary") if isinstance(approval, dict) else {}
+        payload_summary = (
+            approval.get("payload_summary") if isinstance(approval, dict) else {}
+        )
         if not isinstance(payload_summary, dict):
             payload_summary = {}
 

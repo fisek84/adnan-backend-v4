@@ -62,10 +62,18 @@ class CEOCommandRequest(BaseModel):
 
 class ProposedAICommand(BaseModel):
     command_type: str = Field(..., description="Type/name of the proposed command.")
-    payload: Dict[str, Any] = Field(default_factory=dict, description="Command payload.")
-    status: str = Field(default="BLOCKED", description="Always BLOCKED at proposal time.")
-    required_approval: bool = Field(default=True, description="Always true for side-effects.")
-    cost_hint: Optional[str] = Field(default=None, description="Human-readable estimate.")
+    payload: Dict[str, Any] = Field(
+        default_factory=dict, description="Command payload."
+    )
+    status: str = Field(
+        default="BLOCKED", description="Always BLOCKED at proposal time."
+    )
+    required_approval: bool = Field(
+        default=True, description="Always true for side-effects."
+    )
+    cost_hint: Optional[str] = Field(
+        default=None, description="Human-readable estimate."
+    )
     risk_hint: Optional[str] = Field(default=None, description="Human-readable risks.")
 
 
@@ -182,7 +190,9 @@ async def _build_context(req: CEOCommandRequest) -> Dict[str, Any]:
     snapshotter = _safe_import_snapshotter()
     if snapshotter is None:
         fallback = _try_load_core_snapshot_fallback()
-        fallback["reason"] = "No snapshotter available; using fallback snapshot (READ-only)."
+        fallback["reason"] = (
+            "No snapshotter available; using fallback snapshot (READ-only)."
+        )
         ctx["snapshot"] = fallback
         ctx["snapshot_meta"] = {
             "snapshotter": None,
@@ -243,7 +253,9 @@ async def _build_context(req: CEOCommandRequest) -> Dict[str, Any]:
     return ctx
 
 
-def _map_agent_proposals_to_ceo_commands(proposed: List[ProposedCommand]) -> List[ProposedAICommand]:
+def _map_agent_proposals_to_ceo_commands(
+    proposed: List[ProposedCommand],
+) -> List[ProposedAICommand]:
     out: List[ProposedAICommand] = []
     for pc in proposed or []:
         # ProposedCommand is already proposal-only; enforce BLOCKED and read-only semantics.
@@ -264,7 +276,9 @@ def _map_agent_proposals_to_ceo_commands(proposed: List[ProposedCommand]) -> Lis
     return out
 
 
-async def _ceo_advice_via_agent_router(text: str, context: Dict[str, Any]) -> Dict[str, Any]:
+async def _ceo_advice_via_agent_router(
+    text: str, context: Dict[str, Any]
+) -> Dict[str, Any]:
     """
     READ-ONLY advisory via FAZA 4 agentic layer.
     - No tools
@@ -274,7 +288,9 @@ async def _ceo_advice_via_agent_router(text: str, context: Dict[str, Any]) -> Di
     """
     _ensure_registry_loaded()
 
-    snapshot = context.get("snapshot") if isinstance(context.get("snapshot"), dict) else {}
+    snapshot = (
+        context.get("snapshot") if isinstance(context.get("snapshot"), dict) else {}
+    )
     identity_pack: Dict[str, Any] = {
         "initiator": context.get("initiator"),
         "session_id": context.get("session_id"),
@@ -306,7 +322,11 @@ async def _ceo_advice_via_agent_router(text: str, context: Dict[str, Any]) -> Di
     trace["read_only_guard"] = True
     trace["canon_read_only_guard"] = True
 
-    snap_meta = context.get("snapshot_meta") if isinstance(context.get("snapshot_meta"), dict) else {}
+    snap_meta = (
+        context.get("snapshot_meta")
+        if isinstance(context.get("snapshot_meta"), dict)
+        else {}
+    )
     if snap_meta:
         trace["snapshot_meta"] = snap_meta
 
@@ -315,7 +335,9 @@ async def _ceo_advice_via_agent_router(text: str, context: Dict[str, Any]) -> Di
         "questions": [],
         "plan": [],
         "options": [],
-        "proposed_commands": _map_agent_proposals_to_ceo_commands(out.proposed_commands),
+        "proposed_commands": _map_agent_proposals_to_ceo_commands(
+            out.proposed_commands
+        ),
         "trace": trace,
     }
 

@@ -20,11 +20,11 @@ class ExecutionGovernanceService:
       Njegova uloga je: validate + policy gate + approval verification.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.policy = PolicyService()
         self.approvals = get_approval_state()
 
-        self._governance_limits = {
+        self._governance_limits: Dict[str, Any] = {
             "max_execution_time_seconds": 30,
             "retry_policy": {"enabled": False, "max_retries": 0},
         }
@@ -35,7 +35,7 @@ class ExecutionGovernanceService:
         initiator: str,
         context_type: str,
         directive: str,
-        params: Dict[str, Any],
+        params: Dict[str, Any],  # primamo parametre, ali governance ih ne mijenja
         execution_id: str,
         approval_id: Optional[str] = None,
     ) -> Dict[str, Any]:
@@ -44,7 +44,6 @@ class ExecutionGovernanceService:
         initiator_norm = str(initiator or "").strip()
         context_type_norm = str(context_type or "").strip()
         directive_norm = str(directive or "").strip()
-        params_norm: Dict[str, Any] = params if isinstance(params, dict) else {}
         execution_id_norm = str(execution_id or "").strip()
 
         approval_id_norm: Optional[str]

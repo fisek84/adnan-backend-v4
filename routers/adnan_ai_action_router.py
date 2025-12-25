@@ -40,12 +40,24 @@ class ActionRequest(BaseModel):
 
 class ProposedAction(BaseModel):
     kind: str = Field(..., description="action | workflow")
-    directive: Optional[str] = Field(default=None, description="Primary directive (for action).")
-    workflow: Optional[Dict[str, Any]] = Field(default=None, description="Workflow payload (for workflow).")
-    params: Dict[str, Any] = Field(default_factory=dict, description="Context params computed by decision engine.")
-    requires_approval: bool = Field(default=True, description="Always True for side effects.")
-    allowed_by_safety: bool = Field(default=False, description="Safety validation result (advisory).")
-    safety_reason: Optional[str] = Field(default=None, description="Why blocked/allowed by safety.")
+    directive: Optional[str] = Field(
+        default=None, description="Primary directive (for action)."
+    )
+    workflow: Optional[Dict[str, Any]] = Field(
+        default=None, description="Workflow payload (for workflow)."
+    )
+    params: Dict[str, Any] = Field(
+        default_factory=dict, description="Context params computed by decision engine."
+    )
+    requires_approval: bool = Field(
+        default=True, description="Always True for side effects."
+    )
+    allowed_by_safety: bool = Field(
+        default=False, description="Safety validation result (advisory)."
+    )
+    safety_reason: Optional[str] = Field(
+        default=None, description="Why blocked/allowed by safety."
+    )
 
 
 class ActionProposalResponse(BaseModel):
@@ -88,7 +100,11 @@ async def ai_action_endpoint(request: ActionRequest) -> ActionProposalResponse:
     proposed: List[ProposedAction] = []
 
     # 1) Workflow proposal
-    if isinstance(decision, dict) and "workflow" in decision and isinstance(decision.get("workflow"), dict):
+    if (
+        isinstance(decision, dict)
+        and "workflow" in decision
+        and isinstance(decision.get("workflow"), dict)
+    ):
         workflow = decision["workflow"]
 
         safety = safety_service.validate_workflow(workflow)

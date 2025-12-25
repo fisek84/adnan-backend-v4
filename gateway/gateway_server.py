@@ -1,5 +1,9 @@
 # gateway/gateway_server.py
 # FULL FILE — zamijeni cijeli gateway_server.py ovim.
+# gateway/gateway_server.py
+# ruff: noqa: E402
+# FULL FILE — zamijeni cijeli gateway_server.py ovim.
+
 
 from __future__ import annotations
 
@@ -111,7 +115,9 @@ from routers.chat_router import build_chat_router
 
 _agent_registry = AgentRegistryService()
 _agent_router = AgentRouterService(_agent_registry)
-_chat_router = build_chat_router(_agent_router)  # defines "/chat" (see routers/chat_router.py)
+_chat_router = build_chat_router(
+    _agent_router
+)  # defines "/chat" (see routers/chat_router.py)
 
 # ================================================================
 # ROUTERS
@@ -342,6 +348,7 @@ else:
             raise HTTPException(status_code=404, detail="script.js not found")
         return FileResponse(path)
 
+
 # ================================================================
 # INCLUDE ROUTERS
 # ================================================================
@@ -359,6 +366,7 @@ app.include_router(alerting_router, prefix="/api")
 
 # FAZA 4: Canonical Chat endpoint (READ/PROPOSE ONLY) — canonical path: /api/chat
 app.include_router(_chat_router, prefix="/api")
+
 
 # ================================================================
 # REQUEST MODELS

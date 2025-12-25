@@ -57,7 +57,9 @@ class NotionOpsAgent:
             raise RuntimeError("goal_task_workflow requires 'goal' dict in params")
 
         if not isinstance(tasks_specs, list) or len(tasks_specs) == 0:
-            raise RuntimeError("goal_task_workflow requires non-empty 'tasks' list in params")
+            raise RuntimeError(
+                "goal_task_workflow requires non-empty 'tasks' list in params"
+            )
 
         # 1) GOAL
         goal_params: Dict[str, Any] = {
