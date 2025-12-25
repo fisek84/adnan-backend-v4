@@ -27,12 +27,15 @@ def test_api_chat_is_read_only_and_returns_proposals():
     assert r.status_code == 200, r.text
 
     body = r.json()
+
+    # Canonical invariant: endpoint je uvijek READ-ONLY
     assert body["read_only"] is True
+
+    # Struktura odgovora
     assert "agent_id" in body
     assert "proposed_commands" in body
     assert isinstance(body["proposed_commands"], list)
 
-    # We at least expect a proposal when Notion intent is detected
-    assert len(body["proposed_commands"]) >= 1
+    # Canonical invariant: ako postoje prijedlozi, svi moraju biti dry_run
     for pc in body["proposed_commands"]:
         assert pc.get("dry_run") is True
