@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -25,6 +25,10 @@ def set_ai_services(
 ) -> None:
     """
     Canon injection hook. Must be called during app bootstrap.
+
+    NOTE (FAZA 4):
+    - This router is UX/proposal-only and MUST NOT execute writes.
+    - command_service is accepted for compatibility, but is not used for execution here.
     """
     global ai_command_service
     global coo_conversation_service
@@ -45,7 +49,6 @@ router = APIRouter(prefix="/ai", tags=["AI"])
 # REQUEST MODEL (UX INPUT ONLY)
 # ============================================================
 
-
 class AIRequest(BaseModel):
     text: str = Field(..., min_length=1)
     context: Optional[Dict[str, Any]] = None
@@ -54,7 +57,6 @@ class AIRequest(BaseModel):
 # ============================================================
 # HEURISTICS (READ-ONLY; SAFE FALLBACK)
 # ============================================================
-
 
 _ACTION_PREFIX_RE = re.compile(
     r"^\s*(dodaj|kreiraj|napravi|create|add)\s+",
@@ -105,27 +107,48 @@ def _looks_like_action_command(text: str) -> bool:
 
 def _serialize_command(cmd: Any) -> Any:
     """
-    Make command payload JSON-friendly.
+    Make command payload JSON-friendly (never return raw object).
     """
     if cmd is None:
         return None
+
     if hasattr(cmd, "model_dump"):
         try:
             return cmd.model_dump()
         except Exception:  # noqa: BLE001
             pass
+
     if hasattr(cmd, "dict"):
         try:
             return cmd.dict()
         except Exception:  # noqa: BLE001
             pass
-    return cmd
+
+    if isinstance(cmd, dict):
+        return cmd
+
+    # last resort: safe string
+    return {"_type": type(cmd).__name__, "_repr": str(cmd)}
+
+
+def _proposal_v2_from_ai_command(ai_cmd_serialized: Any) -> Dict[str, Any]:
+    """
+    Kanonski proposal shape (kompatibilan sa ProposedCommand),
+    ali ovdje vraćen kao dict radi backwards-compat response-a.
+    """
+    return {
+        "command": "ai.execute.propose",
+        "args": {"ai_command": ai_cmd_serialized},
+        "reason": "UX endpoint produced a translation; proposing for approval/execution pipeline.",
+        "dry_run": True,
+        "requires_approval": True,
+        "risk": "MED",
+    }
 
 
 # ============================================================
 # RUN AI — UX ENTRYPOINT (CANON: READ-ONLY)
 # ============================================================
-
 
 @router.post("/run")
 async def run_ai(req: AIRequest) -> Dict[str, Any]:
@@ -155,7 +178,12 @@ async def run_ai(req: AIRequest) -> Dict[str, Any]:
             "text": "AI services not initialized; returning no-op proposal.",
             "next_actions": [],
             "proposed_commands": [],
-            "meta": {"reason": "ai_services_not_initialized"},
+            "proposed_commands_v2": [],
+            "meta": {
+                "reason": "ai_services_not_initialized",
+                "endpoint": "/ai/run",
+                "canon": "read_propose_only",
+            },
         }
 
     text = (req.text or "").strip()
@@ -187,23 +215,34 @@ async def run_ai(req: AIRequest) -> Dict[str, Any]:
                 context=context,
             )
             if command:
-                proposed = {
+                serialized = _serialize_command(command)
+
+                # Legacy proposal (existing clients)
+                proposed_legacy = {
                     "status": "BLOCKED",
-                    "command": _serialize_command(command),
+                    "command": serialized,
                     "required_approval": True,
                 }
+
+                # v2 proposal (compatible with ProposedCommand)
+                proposed_v2 = _proposal_v2_from_ai_command(serialized)
+
                 return {
                     "ok": True,
                     "read_only": True,
                     "type": "proposal",
-                    "text": (
-                        "Akcija je prepoznata (fallback) i spremna za approval i dalju obradu."
-                    ),
+                    "text": "Akcija je prepoznata (fallback) i spremna za approval i dalju obradu.",
                     "next_actions": [
                         "Review proposal, then execute via /api/execute if approved."
                     ],
-                    "proposed_commands": [proposed],
-                    "meta": {"gating_override": True, "convo_type": convo_type},
+                    "proposed_commands": [proposed_legacy],
+                    "proposed_commands_v2": [proposed_v2],
+                    "meta": {
+                        "gating_override": True,
+                        "convo_type": convo_type,
+                        "endpoint": "/ai/run",
+                        "canon": "read_propose_only",
+                    },
                 }
 
         return {
@@ -213,6 +252,11 @@ async def run_ai(req: AIRequest) -> Dict[str, Any]:
             "text": getattr(convo, "text", "") or "",
             "next_actions": getattr(convo, "next_actions", []) or [],
             "proposed_commands": [],
+            "proposed_commands_v2": [],
+            "meta": {
+                "endpoint": "/ai/run",
+                "canon": "read_propose_only",
+            },
         }
 
     # 2) TRANSLATION (PROPOSE AICommand)
@@ -232,14 +276,22 @@ async def run_ai(req: AIRequest) -> Dict[str, Any]:
                 "Clarify the request with concrete scope, constraints, and desired outcome.",
             ],
             "proposed_commands": [],
+            "proposed_commands_v2": [],
+            "meta": {
+                "endpoint": "/ai/run",
+                "canon": "read_propose_only",
+            },
         }
 
+    serialized = _serialize_command(command)
+
     # 3) PROPOSAL ONLY (NO EXECUTION HERE)
-    proposed = {
+    proposed_legacy = {
         "status": "BLOCKED",
-        "command": _serialize_command(command),
+        "command": serialized,
         "required_approval": True,
     }
+    proposed_v2 = _proposal_v2_from_ai_command(serialized)
 
     return {
         "ok": True,
@@ -253,7 +305,12 @@ async def run_ai(req: AIRequest) -> Dict[str, Any]:
             getattr(convo, "next_actions", [])
             or ["Review proposal, then execute via /api/execute if approved."]
         ),
-        "proposed_commands": [proposed],
+        "proposed_commands": [proposed_legacy],
+        "proposed_commands_v2": [proposed_v2],
+        "meta": {
+            "endpoint": "/ai/run",
+            "canon": "read_propose_only",
+        },
     }
 
 

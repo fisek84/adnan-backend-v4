@@ -1,104 +1,93 @@
 # services/policy_service.py
+# FULL FILE — zamijeni cijeli services/policy_service.py ovim.
 
-"""
-ENTERPRISE POLICY SERVICE — FAZA 9 (POLICY EVOLUTION)
+from __future__ import annotations
 
-Uloga:
-- statički policy sloj (kanonski)
-- policy se NE izvršava
-- policy se NE evaluira ovdje
-- policy se SAMO izlaže (READ-ONLY)
-- enforcement je izvan ovog servisa
-"""
+import logging
+import os
+from typing import Optional
 
-from typing import Dict, Any, Optional
-from copy import deepcopy
 from services.rbac_service import RBACService
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 
 class PolicyService:
+    """
+    CANONICAL POLICY SERVICE
+
+    Odgovornost:
+    - odlučuje da li initiator smije uopšte tražiti akciju (can_request)
+    - odlučuje da li je directive dozvoljen za taj initiator (RBAC)
+    - NE radi safety payload-inspection (to je drugi sloj)
+    """
+
     def __init__(self):
-        # --------------------------------------------------------
-        # GLOBAL POLICIES (STATIC, READ-ONLY)
-        # --------------------------------------------------------
-        self._global_policies: Dict[str, Any] = {
-            "allow_write_actions": True,
-            "require_confirmation_for_write": True,
-            "max_parallel_steps": 5,
-        }
+        self.rbac = RBACService()
+        self.ops_safe_mode = os.getenv("OPS_SAFE_MODE", "false").lower() == "true"
 
-        # --------------------------------------------------------
-        # CONTEXT POLICIES (STATIC, READ-ONLY)
-        # --------------------------------------------------------
-        self._context_policies: Dict[str, Dict[str, Any]] = {
-            "chat": {
-                "execution_allowed": False,
-            },
-            "knowledge": {
-                "execution_allowed": False,
-            },
-            "sop": {
-                "execution_allowed": True,
-            },
-            "meta": {
-                "execution_allowed": False,
-            },
-            "system": {
-                "execution_allowed": True,
-            },
-        }
-
-        # --------------------------------------------------------
-        # RBAC (SINGLE SOURCE OF TRUTH)
-        # --------------------------------------------------------
-        self._rbac = RBACService()
-
-    # ============================================================
-    # GLOBAL POLICY (READ-ONLY)
-    # ============================================================
-    def get_global_policy(self) -> Dict[str, Any]:
-        return deepcopy(self._global_policies)
-
-    # ============================================================
-    # CONTEXT POLICY (READ-ONLY)
-    # ============================================================
-    def get_context_policy(self, context_type: str) -> Optional[Dict[str, Any]]:
-        if not isinstance(context_type, str) or not context_type:
-            return None
-
-        policy = self._context_policies.get(context_type)
-        return deepcopy(policy) if policy else None
-
-    # ============================================================
-    # RBAC PROXIES (READ-ONLY)
-    # ============================================================
-    def get_role_policy(self, role: str) -> Dict[str, Any]:
-        if not role:
-            return {}
-        return self._rbac.get_role(role)
-
-    def is_action_allowed_for_role(self, role: str, action: str) -> bool:
-        if not role or not action:
+    # --------------------------------------------------------
+    # INITIATOR POLICY
+    # --------------------------------------------------------
+    def can_request(self, initiator: str) -> bool:
+        """
+        Minimalna kanonska politika:
+        - initiator mora biti poznat i mapiran na role
+        """
+        initiator_norm = (initiator or "").strip().lower()
+        if not initiator_norm:
             return False
-        return self._rbac.is_action_allowed(role, action)
 
-    def can_request(self, role: str) -> bool:
-        if not role:
+        role = self.rbac.get_role_for_initiator(initiator_norm)
+        return role is not None
+
+    # --------------------------------------------------------
+    # ACTION (DIRECTIVE) POLICY
+    # --------------------------------------------------------
+    def is_action_allowed_for_role(self, initiator: str, directive: str) -> bool:
+        """
+        directive = AICommand.command (npr. "notion_write", "goal_task_workflow", "goal_write")
+        """
+        initiator_norm = (initiator or "").strip().lower()
+        directive_norm = (directive or "").strip()
+
+        if not initiator_norm or not directive_norm:
             return False
-        return self._rbac.can_request(role)
 
-    def can_execute(self, role: str) -> bool:
-        if not role:
+        role = self.rbac.get_role_for_initiator(initiator_norm)
+        if role is None:
             return False
-        return self._rbac.can_execute(role)
 
-    # ============================================================
-    # POLICY SNAPSHOT (UI / AUDIT)
-    # ============================================================
-    def get_policy_snapshot(self) -> Dict[str, Any]:
-        return {
-            "global": deepcopy(self._global_policies),
-            "contexts": deepcopy(self._context_policies),
-            "rbac": self._rbac.get_rbac_snapshot(),
-            "read_only": True,
-        }
+        # OPS_SAFE_MODE: global kill-switch za WRITE (ali read/propose može)
+        if self.ops_safe_mode and self._is_write_directive(directive_norm):
+            logger.warning(
+                "OPS_SAFE_MODE active: blocking write directive=%s initiator=%s",
+                directive_norm,
+                initiator_norm,
+            )
+            return False
+
+        return self.rbac.is_allowed(role, directive_norm)
+
+    # --------------------------------------------------------
+    # INTERNAL
+    # --------------------------------------------------------
+    @staticmethod
+    def _is_write_directive(directive: str) -> bool:
+        """
+        Konzervativna klasifikacija (bolje block nego allow).
+        """
+        d = (directive or "").strip().lower()
+        if not d:
+            return True
+
+        # eksplicitni write entrypoints u ovom sistemu
+        if d in {"notion_write", "goal_write", "goal_task_workflow", "create_goal"}:
+            return True
+
+        # fallback: ako je nešto "write-ish"
+        if "write" in d or "create" in d or "update" in d or "delete" in d:
+            return True
+
+        return False

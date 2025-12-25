@@ -1,13 +1,32 @@
 # routers/adnan_ai_action_router.py
+#
+# CANONICAL PATCH (FAZA 4) — READ/PROPOSE ONLY
+#
+# Problem (old):
+# - Endpoint je direktno interpretirao tekst i izvršavao akcije/workflow (side effects)
+# - To je CANON rupa: “chat/AI text -> write/execute” bez approval pipeline-a
+# - File je imao i sintaksnu grešku na kraju (trailing "\")
+#
+# Fix (FAZA 4):
+# - Endpoint ostaje kao UX entrypoint, ali isključivo PROPOSAL:
+#   - koristi decision engine + safety validation
+#   - vraća proposed_directives / proposed_workflow
+#   - NIKAD ne poziva ActionExecutionService ili ActionWorkflowService
+# - read_only=True i action_executed=False su hard-coded
+#
+# Napomena:
+# - Ako ikad želiš stvarno izvršavanje, to mora ići kroz /api/execute + approval/resume,
+#   ne kroz ovaj router.
+
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from services.adnan_ai_decision_service import AdnanAIDecisionService
 from services.action_safety_service import ActionSafetyService
-from services.action_execution_service import ActionExecutionService
-from services.action_workflow_service import ActionWorkflowService
-
 
 router = APIRouter(prefix="/adnan-ai/actions", tags=["AdnanAI Actions"])
 
@@ -16,97 +35,136 @@ router = APIRouter(prefix="/adnan-ai/actions", tags=["AdnanAI Actions"])
 # MODELS
 # -------------------------------
 class ActionRequest(BaseModel):
-    text: str
+    text: str = Field(..., min_length=1)
+
+
+class ProposedAction(BaseModel):
+    kind: str = Field(..., description="action | workflow")
+    directive: Optional[str] = Field(default=None, description="Primary directive (for action).")
+    workflow: Optional[Dict[str, Any]] = Field(default=None, description="Workflow payload (for workflow).")
+    params: Dict[str, Any] = Field(default_factory=dict, description="Context params computed by decision engine.")
+    requires_approval: bool = Field(default=True, description="Always True for side effects.")
+    allowed_by_safety: bool = Field(default=False, description="Safety validation result (advisory).")
+    safety_reason: Optional[str] = Field(default=None, description="Why blocked/allowed by safety.")
+
+
+class ActionProposalResponse(BaseModel):
+    ok: bool = True
+    read_only: bool = True
+
+    action_executed: bool = False
+    workflow_executed: bool = False
+
+    proposed: List[ProposedAction] = Field(default_factory=list)
+
+    decision: Dict[str, Any] = Field(default_factory=dict)
+    trace: Dict[str, Any] = Field(default_factory=dict)
 
 
 # -------------------------------
-# MAIN ENDPOINT
+# MAIN ENDPOINT (PROPOSAL ONLY)
 # -------------------------------
-@router.post("/")
-async def ai_action_endpoint(request: ActionRequest):
+@router.post("/", response_model=ActionProposalResponse)
+async def ai_action_endpoint(request: ActionRequest) -> ActionProposalResponse:
     """
-    Action Engine Endpoint (Korak 8.6)
-    Prima AI text → decision engine → action/workflow izvršenje.
-    """
+    CANON: READ/PROPOSE ONLY
 
+    Prima AI text → decision engine → safety validation → vraća prijedlog.
+    Nema execution-a, nema workflow run-a, nema side-effect-a.
+    """
     decision_service = AdnanAIDecisionService()
     safety_service = ActionSafetyService()
-    executor = ActionExecutionService()
-    workflow_executor = ActionWorkflowService()
 
-    # ---------------------------------------
-    # 1. Decision Engine → interpretacija teksta
-    # ---------------------------------------
     decision = decision_service.process(request.text)
-    directives = decision.get("directives", [])
+    directives = decision.get("directives", []) or []
 
-    # Ako nema direktiva → nema akcija
-    if not directives:
-        return {
-            "ok": True,
-            "action_executed": False,
-            "reason": "no_action_detected",
-            "decision": decision,
-        }
-
-    # ---------------------------------------
-    # 2. Ako AI generiše workflow umjesto jedne akcije
-    # ---------------------------------------
-    # Convention: decision["workflow"] može postojati
-    if "workflow" in decision:
-        workflow = decision["workflow"]
-
-        # SAFETY PROVJERA
-        safety = safety_service.validate_workflow(workflow)
-        if not safety["allowed"]:
-            return {
-                "ok": False,
-                "workflow_executed": False,
-                "reason": safety["reason"],
-                "decision": decision,
-            }
-
-        # EXECUTE WORKFLOW
-        result = workflow_executor.execute_workflow(workflow)
-
-        return {
-            "ok": True,
-            "workflow_executed": True,
-            "result": result,
-            "decision": decision,
-        }
-
-    # ---------------------------------------
-    # 3. Jednostruka akcija
-    # ---------------------------------------
-    directive = directives[0]  # uzimamo primarni directive
-
-    params = {
+    params: Dict[str, Any] = {
         "input": decision.get("input"),
         "state": decision.get("state"),
         "mode": decision.get("mode"),
         "priority_context": decision.get("priority_context"),
     }
 
-    # SAFETY PROVJERA ZA AKCIJU
-    safety = safety_service.validate_action(directive, params)
-    if not safety["allowed"]:
-        return {
-            "ok": False,
-            "action_executed": False,
-            "reason": safety["reason"],
-            "decision": decision,
-        }
+    proposed: List[ProposedAction] = []
 
-    # ---------------------------------------
-    # 4. Izvršenje akcije (safe execution)
-    # ---------------------------------------
-    exec_result = executor.execute(directive, params)
+    # 1) Workflow proposal
+    if isinstance(decision, dict) and "workflow" in decision and isinstance(decision.get("workflow"), dict):
+        workflow = decision["workflow"]
 
-    return {
-        "ok": True,
-        "action_executed": exec_result.get("executed", False),
-        "directive": directive,
-        "result": exec_result,
-        "decision": decision,
-    }
+        safety = safety_service.validate_workflow(workflow)
+        allowed = bool(safety.get("allowed"))
+        reason = safety.get("reason")
+
+        proposed.append(
+            ProposedAction(
+                kind="workflow",
+                workflow=workflow,
+                params=params,
+                requires_approval=True,
+                allowed_by_safety=allowed,
+                safety_reason=str(reason) if reason is not None else None,
+            )
+        )
+
+        return ActionProposalResponse(
+            ok=True,
+            read_only=True,
+            action_executed=False,
+            workflow_executed=False,
+            proposed=proposed,
+            decision=decision,
+            trace={
+                "endpoint": "/adnan-ai/actions/",
+                "canon": "read_propose_only",
+                "decision_engine": "process",
+                "proposal_kind": "workflow",
+            },
+        )
+
+    # 2) Single-action proposal (primary directive)
+    if directives:
+        directive = directives[0]
+        safety = safety_service.validate_action(directive, params)
+        allowed = bool(safety.get("allowed"))
+        reason = safety.get("reason")
+
+        proposed.append(
+            ProposedAction(
+                kind="action",
+                directive=str(directive),
+                params=params,
+                requires_approval=True,
+                allowed_by_safety=allowed,
+                safety_reason=str(reason) if reason is not None else None,
+            )
+        )
+
+        return ActionProposalResponse(
+            ok=True,
+            read_only=True,
+            action_executed=False,
+            workflow_executed=False,
+            proposed=proposed,
+            decision=decision,
+            trace={
+                "endpoint": "/adnan-ai/actions/",
+                "canon": "read_propose_only",
+                "decision_engine": "process",
+                "proposal_kind": "action",
+            },
+        )
+
+    # 3) No directives => no proposal
+    return ActionProposalResponse(
+        ok=True,
+        read_only=True,
+        action_executed=False,
+        workflow_executed=False,
+        proposed=[],
+        decision=decision,
+        trace={
+            "endpoint": "/adnan-ai/actions/",
+            "canon": "read_propose_only",
+            "reason": "no_action_detected",
+        },
+    )

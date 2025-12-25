@@ -7,7 +7,31 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Body, HTTPException
 from pydantic import BaseModel, Field
 
+from models.agent_contract import AgentInput, AgentOutput, ProposedCommand
+from services.agent_registry_service import AgentRegistryService
+from services.agent_router_service import AgentRouterService
+
 router = APIRouter(prefix="/ceo-console", tags=["CEO Console"])
+
+# ============================================================
+# CANON AGENTIC LAYER (READ/PROPOSE ONLY)
+# ============================================================
+
+_agent_registry = AgentRegistryService()
+_agent_router = AgentRouterService(_agent_registry)
+
+
+def _ensure_registry_loaded() -> None:
+    """
+    Primary load should happen in gateway lifespan.
+    This is a safe fallback to keep CEO console read-only working.
+    """
+    try:
+        if not _agent_registry.list_agents():
+            _agent_registry.load_from_agents_json("config/agents.json", clear=True)
+    except Exception:
+        # Fail closed: CEO console remains read-only, but may have degraded agent availability.
+        pass
 
 
 # ============================================================
@@ -38,18 +62,10 @@ class CEOCommandRequest(BaseModel):
 
 class ProposedAICommand(BaseModel):
     command_type: str = Field(..., description="Type/name of the proposed command.")
-    payload: Dict[str, Any] = Field(
-        default_factory=dict, description="Command payload."
-    )
-    status: str = Field(
-        default="BLOCKED", description="Always BLOCKED at proposal time."
-    )
-    required_approval: bool = Field(
-        default=True, description="Always true for side-effects."
-    )
-    cost_hint: Optional[str] = Field(
-        default=None, description="Human-readable estimate."
-    )
+    payload: Dict[str, Any] = Field(default_factory=dict, description="Command payload.")
+    status: str = Field(default="BLOCKED", description="Always BLOCKED at proposal time.")
+    required_approval: bool = Field(default=True, description="Always true for side-effects.")
+    cost_hint: Optional[str] = Field(default=None, description="Human-readable estimate.")
     risk_hint: Optional[str] = Field(default=None, description="Human-readable risks.")
 
 
@@ -121,9 +137,7 @@ def _try_load_core_snapshot_fallback() -> Dict[str, Any]:
         snap["state"] = {"available": False, "error": str(e)}
 
     try:
-        from services.knowledge_snapshot_service import (  # type: ignore
-            KnowledgeSnapshotService,
-        )
+        from services.knowledge_snapshot_service import KnowledgeSnapshotService  # type: ignore
 
         snap["knowledge_snapshot"] = KnowledgeSnapshotService.get_snapshot()
     except Exception as e:
@@ -168,9 +182,7 @@ async def _build_context(req: CEOCommandRequest) -> Dict[str, Any]:
     snapshotter = _safe_import_snapshotter()
     if snapshotter is None:
         fallback = _try_load_core_snapshot_fallback()
-        fallback["reason"] = (
-            "No snapshotter available; using fallback snapshot (READ-only)."
-        )
+        fallback["reason"] = "No snapshotter available; using fallback snapshot (READ-only)."
         ctx["snapshot"] = fallback
         ctx["snapshot_meta"] = {
             "snapshotter": None,
@@ -203,7 +215,6 @@ async def _build_context(req: CEOCommandRequest) -> Dict[str, Any]:
         snap = await _maybe_await(snap)
 
         if isinstance(snap, dict):
-            # Ensure canonical fields are visible to UX
             if "available" not in snap:
                 snap["available"] = True
             if "source" not in snap:
@@ -212,7 +223,6 @@ async def _build_context(req: CEOCommandRequest) -> Dict[str, Any]:
             meta["available"] = snap.get("available")
             meta["source"] = snap.get("source")
             meta["error"] = snap.get("error")
-
             ctx["snapshot"] = snap
         else:
             meta["available"] = True
@@ -233,137 +243,81 @@ async def _build_context(req: CEOCommandRequest) -> Dict[str, Any]:
     return ctx
 
 
-async def _llm_advice(text: str, context: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    READ-ONLY advisory:
-    - No tools / no side effects.
-    - Uses OpenAIAssistantExecutor.ceo_command if available.
-    """
-    try:
-        from services.agent_router.openai_assistant_executor import (  # type: ignore
-            OpenAIAssistantExecutor,
-        )
-
-        execr = OpenAIAssistantExecutor()
-
-        safe_context = dict(context)
-        canon = dict(safe_context.get("canon") or {})
-        canon["read_only"] = True
-        canon["no_tools"] = True
-        canon["no_side_effects"] = True
-        safe_context["canon"] = canon
-
-        if not hasattr(execr, "ceo_command"):
-            raise RuntimeError("OpenAIAssistantExecutor.ceo_command is not available")
-
-        result = await execr.ceo_command(text=text, context=safe_context)  # type: ignore[misc]
-
-        if not isinstance(result, dict) or not result:
-            raise RuntimeError("CEO advisory returned empty/invalid payload")
-
-        # Hard guard: forbid tool/action fields
-        if any(
-            k in result
-            for k in (
-                "tool_calls",
-                "required_action",
-                "tool_outputs",
-                "actions",
-                "executed_commands",
-            )
-        ):
-            raise RuntimeError(
-                "READ-ONLY violation: tool/action fields present in result"
-            )
-
-        trace = result.get("trace") if isinstance(result.get("trace"), dict) else {}
-        trace["read_only_guard"] = True
-        trace["canon_read_only_guard"] = True
-
-        # Carry snapshot meta into trace so UX always sees provenance
-        snap_meta = (
-            context.get("snapshot_meta")
-            if isinstance(context.get("snapshot_meta"), dict)
-            else {}
-        )
-        if snap_meta:
-            trace["snapshot_meta"] = snap_meta
-
-        result["trace"] = trace
-        return result
-
-    except Exception as e:
-        return {
-            "summary": (
-                "CEO zahtjev je primljen. Sistem radi u READ-only modu i priprema okvir "
-                "za planiranje na osnovu dostupnog snapshot konteksta. Za punu dubinu, "
-                "LLM executor mora biti aktivan i povezan."
-            ),
-            "questions": [
-                "Koji je tačan cilj i rok (datum) i šta je definicija uspjeha (prihod/profit)?",
-                "Koji kanal je prioritet (postojeći klijenti, outreach, partneri) i koji je budžet/limit?",
-            ],
-            "plan": [
-                "Validirati cilj/rok i postojeće konverzije (ponuda, cijena, kanal).",
-                "Izvući relevantno iz SOP/Plans/Time management izvora (READ).",
-                "Razbiti cilj na dnevne targete i taskove (prodaja/operacije/marketing).",
-                "Predložiti 2–3 opcije i jasno označiti rizike/pretpostavke.",
-            ],
-            "options": [
-                "Opcija A: Fokus na postojeće klijente (brže, niži rizik).",
-                "Opcija B: Brzi outreach sa jednostavnom ponudom (više volumena, veći rizik).",
-                "Opcija C: Partner kanal (sporiji start, potencijalno skalabilno).",
-            ],
-            "proposed_commands": [],
-            "trace": {"llm": "fallback", "error": str(e), "read_only_guard": True},
-        }
-
-
-def _normalize_proposed_commands(raw: Any) -> List[ProposedAICommand]:
-    cmds: List[ProposedAICommand] = []
-
-    if not raw:
-        return cmds
-
-    if isinstance(raw, list):
-        items = raw
-    elif isinstance(raw, dict) and isinstance(raw.get("proposed_commands"), list):
-        items = raw["proposed_commands"]
-    else:
-        return cmds
-
-    for it in items:
-        if not isinstance(it, dict):
+def _map_agent_proposals_to_ceo_commands(proposed: List[ProposedCommand]) -> List[ProposedAICommand]:
+    out: List[ProposedAICommand] = []
+    for pc in proposed or []:
+        # ProposedCommand is already proposal-only; enforce BLOCKED and read-only semantics.
+        cmd_type = (pc.command or "").strip()
+        if not cmd_type:
             continue
-
-        cmd_type = it.get("command_type") or it.get("type") or it.get("name")
-        if not isinstance(cmd_type, str) or not cmd_type.strip():
-            continue
-
-        payload = it.get("payload")
-        if not isinstance(payload, dict):
-            payload = {}
-
-        cmds.append(
+        payload = pc.args if isinstance(pc.args, dict) else {}
+        out.append(
             ProposedAICommand(
-                command_type=cmd_type.strip(),
+                command_type=cmd_type,
                 payload=payload,
                 status="BLOCKED",
-                required_approval=True,
-                cost_hint=(
-                    it.get("cost_hint")
-                    if isinstance(it.get("cost_hint"), str)
-                    else None
-                ),
-                risk_hint=(
-                    it.get("risk_hint")
-                    if isinstance(it.get("risk_hint"), str)
-                    else None
-                ),
+                required_approval=bool(getattr(pc, "requires_approval", True)),
+                cost_hint=None,
+                risk_hint=str(getattr(pc, "risk", "") or "").strip() or None,
             )
         )
+    return out
 
-    return cmds
+
+async def _ceo_advice_via_agent_router(text: str, context: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    READ-ONLY advisory via FAZA 4 agentic layer.
+    - No tools
+    - No side effects
+    - No approvals
+    - No execution
+    """
+    _ensure_registry_loaded()
+
+    snapshot = context.get("snapshot") if isinstance(context.get("snapshot"), dict) else {}
+    identity_pack: Dict[str, Any] = {
+        "initiator": context.get("initiator"),
+        "session_id": context.get("session_id"),
+    }
+    # Remove None keys
+    identity_pack = {k: v for k, v in identity_pack.items() if v is not None}
+
+    agent_input = AgentInput(
+        message=text,
+        identity_pack=identity_pack,
+        snapshot=snapshot,
+        preferred_agent_id="ceo_clone",  # deterministic for CEO console
+        metadata={
+            "endpoint": "/ceo-console/command",
+            "read_only": True,
+            "canon": "read_propose_only",
+            "ui_context_hint": context.get("ui_context_hint"),
+        },
+    )
+
+    out: AgentOutput = _agent_router.route(agent_input)
+
+    # Defense-in-depth
+    out.read_only = True
+    for pc in out.proposed_commands or []:
+        pc.dry_run = True
+
+    trace = out.trace if isinstance(out.trace, dict) else {}
+    trace["read_only_guard"] = True
+    trace["canon_read_only_guard"] = True
+
+    snap_meta = context.get("snapshot_meta") if isinstance(context.get("snapshot_meta"), dict) else {}
+    if snap_meta:
+        trace["snapshot_meta"] = snap_meta
+
+    return {
+        "summary": out.text or "",
+        "questions": [],
+        "plan": [],
+        "options": [],
+        "proposed_commands": _map_agent_proposals_to_ceo_commands(out.proposed_commands),
+        "trace": trace,
+    }
 
 
 # ============================================================
@@ -394,7 +348,9 @@ async def ceo_command(req: CEOCommandRequest = Body(...)) -> CEOCommandResponse:
         raise HTTPException(status_code=400, detail="text is required")
 
     context = await _build_context(req)
-    result = await _llm_advice(text=text, context=context)
+
+    # FAZA 4: Use canonical agent router (read/propose only)
+    result = await _ceo_advice_via_agent_router(text=text, context=context)
 
     summary_val = result.get("summary")
     if isinstance(summary_val, str):
@@ -408,7 +364,9 @@ async def ceo_command(req: CEOCommandRequest = Body(...)) -> CEOCommandResponse:
     options_s = _as_list_of_str(result.get("options"))
 
     trace = result.get("trace") if isinstance(result.get("trace"), dict) else {}
-    proposed = _normalize_proposed_commands(result)
+    proposed = result.get("proposed_commands") or []
+    if not isinstance(proposed, list):
+        proposed = []
 
     return CEOCommandResponse(
         ok=True,
@@ -418,7 +376,7 @@ async def ceo_command(req: CEOCommandRequest = Body(...)) -> CEOCommandResponse:
         questions=questions_s,
         plan=plan_s,
         options=options_s,
-        proposed_commands=proposed,
+        proposed_commands=[p for p in proposed if isinstance(p, ProposedAICommand)],
         trace=trace,
     )
 

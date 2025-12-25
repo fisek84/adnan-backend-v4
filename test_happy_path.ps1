@@ -1,9 +1,11 @@
 Write-Host "HAPPY PATH TEST START"
 
+$BASE = "http://127.0.0.1:8000"
+
 # 1. CEO input -> expect BLOCKED + approval_id
 $r = Invoke-RestMethod `
   -Method POST `
-  -Uri http://localhost:8000/api/execute `
+  -Uri "$BASE/api/execute" `
   -ContentType "application/json" `
   -Body '{
     "text": "create goal Test Happy Path"
@@ -23,7 +25,7 @@ Write-Host "BLOCKED with approval_id=$approval"
 # 2. Approval must exist (LIST-based)
 $pending = Invoke-RestMethod `
   -Method GET `
-  -Uri http://localhost:8000/api/ai-ops/approval/pending
+  -Uri "$BASE/api/ai-ops/approval/pending"
 
 $approvalIds = $pending.approvals | ForEach-Object { $_.approval_id }
 
@@ -36,7 +38,7 @@ Write-Host "Approval is pending"
 # 3. Approve
 $approved = Invoke-RestMethod `
   -Method POST `
-  -Uri http://localhost:8000/api/ai-ops/approval/approve `
+  -Uri "$BASE/api/ai-ops/approval/approve" `
   -ContentType "application/json" `
   -Body (@{
       approval_id = $approval

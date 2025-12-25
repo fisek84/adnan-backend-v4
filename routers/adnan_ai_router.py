@@ -1,23 +1,40 @@
 # routers/adnan_ai_router.py
-# KANONSKA VERZIJA — ČIST ENTRYPOINT, BEZ INTERPRETACIJE EXECUTIONA
+# KANONSKA VERZIJA — READ/PROPOSE ONLY (FAZA 4)
+# - NEMA execution iz chat-a
+# - kompatibilno sa app_bootstrap injection hook-om (command_service/coo_translation/coo_conversation)
+#
+# Napomena:
+# - Agent registry se učitava iz config/agents.json (SSOT) i koristi AgentRouterService.
+# - Ovaj router je legacy UX wrapper; canonical endpoint je /api/chat.
 
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from __future__ import annotations
+
 import logging
 from typing import Optional, Dict, Any
 
-from services.coo_translation_service import COOTranslationService
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+
 from services.coo_conversation_service import COOConversationService
+from services.coo_translation_service import COOTranslationService
 from services.ai_command_service import AICommandService
-from models.ai_command import AICommand
+
+from models.agent_contract import AgentInput, AgentOutput
+from services.agent_registry_service import AgentRegistryService
+from services.agent_router_service import AgentRouterService
 
 router = APIRouter(prefix="/adnan-ai", tags=["AdnanAI"])
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
+# Keep these for bootstrap compatibility; only conversation is required.
 ai_command_service: Optional[AICommandService] = None
 coo_translation_service: Optional[COOTranslationService] = None
 coo_conversation_service: Optional[COOConversationService] = None
+
+# Canon agentic layer (read-only)
+_agent_registry = AgentRegistryService()
+_agent_router = AgentRouterService(_agent_registry)
 
 
 def set_adnan_ai_services(
@@ -25,6 +42,13 @@ def set_adnan_ai_services(
     coo_translation: COOTranslationService,
     coo_conversation: COOConversationService,
 ):
+    """
+    Bootstrap hook (legacy-compatible).
+
+    FAZA 4 rule:
+    - We accept all services for compatibility with app_bootstrap.
+    - This router MUST NOT execute anything.
+    """
     global ai_command_service, coo_translation_service, coo_conversation_service
     ai_command_service = command_service
     coo_translation_service = coo_translation
@@ -35,15 +59,40 @@ class AdnanAIInput(BaseModel):
     text: str
     context: Optional[Dict[str, Any]] = None
 
+    # Optional CANON payloads (ako ih klijent već ima)
+    identity_pack: Optional[Dict[str, Any]] = None
+    snapshot: Optional[Dict[str, Any]] = None
 
-@router.post("/input")
-async def adnan_ai_input(payload: AdnanAIInput):
-    if (
-        not ai_command_service
-        or not coo_translation_service
-        or not coo_conversation_service
-    ):
-        raise HTTPException(500, "AI services not initialized")
+    # Optional agent selection (passthrough)
+    preferred_agent_id: Optional[str] = None
+
+
+def _ensure_registry_loaded() -> None:
+    """
+    Best-effort load; never raises from this wrapper.
+    Canonical load happens in gateway lifespan; this is only a fallback.
+    """
+    try:
+        if not _agent_registry.list_agents():
+            _agent_registry.load_from_agents_json("config/agents.json", clear=True)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Agent registry load fallback failed: %s", exc)
+
+
+@router.post("/input", response_model=AgentOutput)
+async def adnan_ai_input(payload: AdnanAIInput) -> AgentOutput:
+    """
+    Legacy UX endpoint -> READ/PROPOSE ONLY wrapper.
+
+    Pravila:
+    - nema execute
+    - nema approval create
+    - samo agent_router.route() -> AgentOutput
+    """
+    if not coo_conversation_service:
+        raise HTTPException(
+            500, "AI services not initialized (coo_conversation_service missing)"
+        )
 
     user_text = (payload.text or "").strip()
     if not user_text:
@@ -51,42 +100,53 @@ async def adnan_ai_input(payload: AdnanAIInput):
 
     context = payload.context or {}
 
-    # ========================================================
-    # 1. COO CONVERSATION — UX ONLY
-    # ========================================================
+    # 1) COO CONVERSATION — UX ONLY
     conversation_result = coo_conversation_service.handle_user_input(
         raw_input=user_text,
         source="user",
         context=context,
     )
 
-    if conversation_result.type != "ready_for_translation":
-        return {
-            "type": conversation_result.type,
-            "text": conversation_result.text,
-            "next_actions": conversation_result.next_actions,
-        }
+    if getattr(conversation_result, "type", None) != "ready_for_translation":
+        return AgentOutput(
+            text=getattr(conversation_result, "text", "") or "",
+            proposed_commands=[],
+            agent_id="ux_gate",
+            read_only=True,
+            trace={
+                "selected_by": "coo_conversation_gate",
+                "conversation_type": getattr(conversation_result, "type", None),
+                "next_actions": getattr(conversation_result, "next_actions", None),
+                "endpoint": "/adnan-ai/input",
+                "canon": "read_propose_only",
+            },
+        )
 
-    # ========================================================
-    # 2. COO TRANSLATION — UX → SYSTEM
-    # ========================================================
-    ai_command: Optional[AICommand] = coo_translation_service.translate(
-        raw_input=user_text,
-        source="user",
-        context=context,
+    # 2) CANON AGENT ROUTER — READ/PROPOSE ONLY
+    _ensure_registry_loaded()
+
+    agent_input = AgentInput(
+        message=user_text,
+        identity_pack=payload.identity_pack or {},
+        snapshot=payload.snapshot or {},
+        preferred_agent_id=payload.preferred_agent_id,
+        metadata={
+            "context": context,
+            "endpoint": "/adnan-ai/input",
+            "read_only": True,
+            "legacy_wrapper": True,
+        },
     )
 
-    if not ai_command:
-        return {
-            "status": "rejected",
-            "reason": "Input could not be translated into a valid system command.",
-        }
+    out = _agent_router.route(agent_input)
 
-    # ========================================================
-    # 3. SYSTEM EXECUTION — NO STATUS MAPPING
-    # ========================================================
-    try:
-        return await ai_command_service.execute(ai_command)
-    except Exception:
-        logger.exception("Execution failed")
-        raise HTTPException(500, "Execution failed")
+    # Final hard gate
+    out.read_only = True
+    if out.trace is None:
+        out.trace = {}
+    out.trace["endpoint"] = "/adnan-ai/input"
+    out.trace["canon"] = "read_propose_only"
+    for pc in out.proposed_commands or []:
+        pc.dry_run = True
+
+    return out
