@@ -7,13 +7,30 @@ import logging
 import os
 import re
 import time
+from datetime import date, datetime
+from decimal import Decimal
 from typing import Any, Dict, Optional
+from uuid import UUID
 
 from openai import OpenAI
 
 from ext.notion.client import perform_notion_action
 
 logger = logging.getLogger(__name__)
+
+
+def _json_default(obj: Any) -> Any:
+    """
+    JSON serializer for objects that are not serializable by default json.dumps.
+    This is critical for Render snapshot/context payloads containing datetime/UUID/etc.
+    """
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    if isinstance(obj, UUID):
+        return str(obj)
+    if isinstance(obj, Decimal):
+        return float(obj)
+    return str(obj)
 
 
 class OpenAIAssistantExecutor:
@@ -143,7 +160,9 @@ class OpenAIAssistantExecutor:
                     tool_outputs.append(
                         {
                             "tool_call_id": call.id,
-                            "output": json.dumps(result, ensure_ascii=False),
+                            "output": json.dumps(
+                                result, ensure_ascii=False, default=_json_default
+                            ),
                         }
                     )
 
@@ -313,7 +332,9 @@ class OpenAIAssistantExecutor:
             self.client.beta.threads.messages.create,
             thread_id=thread.id,
             role="user",
-            content=json.dumps(execution_contract, ensure_ascii=False),
+            content=json.dumps(
+                execution_contract, ensure_ascii=False, default=_json_default
+            ),
         )
 
         run = await self._to_thread(
@@ -414,7 +435,9 @@ class OpenAIAssistantExecutor:
             self.client.beta.threads.messages.create,
             thread_id=thread.id,
             role="user",
-            content=json.dumps(advisory_contract, ensure_ascii=False),
+            content=json.dumps(
+                advisory_contract, ensure_ascii=False, default=_json_default
+            ),
         )
 
         run = await self._to_thread(
