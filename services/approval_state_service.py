@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 import json
 import logging
+import os
+from datetime import datetime
 from pathlib import Path
 from threading import Lock
 from typing import Any, Dict, List, Optional
@@ -20,6 +21,30 @@ _BASE_PATH = Path(__file__).resolve().parent.parent / "adnan_ai" / "memory"
 _APPROVAL_FILE = _BASE_PATH / "approval_state.json"
 
 
+def _utc_now_iso() -> str:
+    return datetime.utcnow().isoformat()
+
+
+def _atomic_write_json(path: Path, data: Any) -> None:
+    """
+    Best-effort atomic write:
+    - write to temp file in same directory
+    - fsync
+    - replace (atomic on most OS/filesystems)
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    tmp_name = f".{path.name}.{os.getpid()}.tmp"
+    tmp_path = path.parent / tmp_name
+
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False, default=str)
+        f.flush()
+        os.fsync(f.fileno())
+
+    os.replace(tmp_path, path)
+
+
 class ApprovalStateService:
     """
     CANONICAL APPROVAL STATE SERVICE
@@ -30,7 +55,7 @@ class ApprovalStateService:
 
     NOTE (stabilnost testova):
     - svi instance-i dijele isti backing store (class-level), da se izbjegne
-      “approval not found in pending list” kad različiti dijelovi koda kreiraju
+      "approval not found in pending list" kad različiti dijelovi koda kreiraju
       novu instancu servisa.
 
     NOTE (stabilnost runtime-a / reload):
@@ -42,9 +67,7 @@ class ApprovalStateService:
     _LOADED_FROM_DISK: bool = False
 
     def __init__(self):
-        self._approvals: Dict[str, Dict[str, Any]] = (
-            ApprovalStateService._GLOBAL_APPROVALS
-        )
+        self._approvals: Dict[str, Dict[str, Any]] = ApprovalStateService._GLOBAL_APPROVALS
         self._lock: Lock = ApprovalStateService._GLOBAL_LOCK
 
         # Best-effort load once per process
@@ -66,8 +89,12 @@ class ApprovalStateService:
         risk_level: str,
         execution_id: str,
     ) -> Dict[str, Any]:
-        if not execution_id:
+        if not isinstance(execution_id, str) or not execution_id.strip():
             raise ValueError("execution_id is required for approval")
+
+        cmd_norm = str(command or "").strip()
+        if not cmd_norm:
+            raise ValueError("command is required for approval")
 
         try:
             payload_key = json.dumps(payload_summary or {}, sort_keys=True, default=str)
@@ -78,7 +105,7 @@ class ApprovalStateService:
             # replay: ako već postoji pending ili approved za isti execution_id+command+payload
             for approval in self._approvals.values():
                 if (
-                    approval.get("command") == command
+                    approval.get("command") == cmd_norm
                     and approval.get("payload_key") == payload_key
                     and approval.get("execution_id") == execution_id
                     and approval.get("status") in ("pending", "approved")
@@ -86,16 +113,16 @@ class ApprovalStateService:
                     return approval.copy()
 
             approval_id = str(uuid4())
-            now = datetime.utcnow().isoformat()
+            now = _utc_now_iso()
 
             approval: Dict[str, Any] = {
                 "approval_id": approval_id,
                 "execution_id": execution_id,
-                "command": command,
+                "command": cmd_norm,
                 "payload_summary": payload_summary or {},
                 "payload_key": payload_key,
-                "scope": scope,
-                "risk_level": risk_level,
+                "scope": str(scope or "").strip(),
+                "risk_level": str(risk_level or "").strip() or "standard",
                 "status": "pending",
                 "created_at": now,
             }
@@ -117,16 +144,18 @@ class ApprovalStateService:
     ) -> Dict[str, Any]:
         with self._lock:
             approval = self._require(approval_id)
+
+            # idempotent
             if approval.get("status") != "pending":
                 return approval.copy()
 
             approval["status"] = "approved"
-            approval["approved_by"] = approved_by
+            approval["approved_by"] = str(approved_by or "unknown")
 
             if isinstance(note, str) and note.strip():
-                approval["note"] = note
+                approval["note"] = note.strip()
 
-            approval["decided_at"] = datetime.utcnow().isoformat()
+            approval["decided_at"] = _utc_now_iso()
             self._persist_to_disk_locked()
             return approval.copy()
 
@@ -139,16 +168,18 @@ class ApprovalStateService:
     ) -> Dict[str, Any]:
         with self._lock:
             approval = self._require(approval_id)
+
+            # idempotent
             if approval.get("status") != "pending":
                 return approval.copy()
 
             approval["status"] = "rejected"
-            approval["rejected_by"] = rejected_by
+            approval["rejected_by"] = str(rejected_by or "unknown")
 
             if isinstance(note, str) and note.strip():
-                approval["note"] = note
+                approval["note"] = note.strip()
 
-            approval["decided_at"] = datetime.utcnow().isoformat()
+            approval["decided_at"] = _utc_now_iso()
             self._persist_to_disk_locked()
             return approval.copy()
 
@@ -175,6 +206,15 @@ class ApprovalStateService:
     def list_pending(self) -> List[Dict[str, Any]]:
         return self.list_approvals(status="pending")
 
+    # Optional helper (non-breaking)
+    def list_by_execution_id(self, execution_id: str) -> List[Dict[str, Any]]:
+        with self._lock:
+            return [
+                a.copy()
+                for a in self._approvals.values()
+                if a.get("execution_id") == execution_id
+            ]
+
     # ============================================================
     # INTERNAL
     # ============================================================
@@ -197,13 +237,20 @@ class ApprovalStateService:
             if not isinstance(data, dict):
                 return
 
-            # Merge disk approvals into memory (disk is not higher authority; best-effort)
+            # Merge disk approvals into memory (best-effort; disk nije viša vlast)
             for k, v in data.items():
-                if (
-                    isinstance(k, str)
-                    and isinstance(v, dict)
-                    and k not in self._approvals
-                ):
+                if not (isinstance(k, str) and isinstance(v, dict)):
+                    continue
+
+                # minimalna validacija shape-a
+                if "approval_id" not in v:
+                    v["approval_id"] = k
+                if "status" not in v:
+                    v["status"] = "pending"
+                if "created_at" not in v:
+                    v["created_at"] = _utc_now_iso()
+
+                if k not in self._approvals:
                     self._approvals[k] = v
 
         except Exception as e:
@@ -211,9 +258,7 @@ class ApprovalStateService:
 
     def _persist_to_disk_locked(self) -> None:
         try:
-            _BASE_PATH.mkdir(parents=True, exist_ok=True)
-            with open(_APPROVAL_FILE, "w", encoding="utf-8") as f:
-                json.dump(self._approvals, f, indent=2, ensure_ascii=False, default=str)
+            _atomic_write_json(_APPROVAL_FILE, self._approvals)
         except Exception as e:
             logger.warning("ApprovalState persist_to_disk failed: %s", str(e))
 

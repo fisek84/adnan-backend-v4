@@ -21,7 +21,7 @@ class ExecutionOrchestrator:
     CANONICAL EXECUTION ORCHESTRATOR
 
     - orchestrira lifecycle
-    - NE odlučuje policy
+    - NE odlučuje policy (to radi ExecutionGovernanceService + PolicyService)
     - NE izvršava write direktno (uvijek preko agenata)
     - radi ISKLJUČIVO nad AICommand, uz ulaznu normalizaciju
     """
@@ -32,9 +32,7 @@ class ExecutionOrchestrator:
         self.notion_agent = NotionOpsAgent(get_notion_service())
         self.approvals = get_approval_state()
 
-    async def execute(
-        self, command: Union[AICommand, Dict[str, Any]]
-    ) -> Dict[str, Any]:
+    async def execute(self, command: Union[AICommand, Dict[str, Any]]) -> Dict[str, Any]:
         """
         Ulaz može biti AICommand ili dict (npr. direktno iz API sloja).
         CANON: ovdje se payload kanonizuje u AICommand, bez interpretacije intent-a.
@@ -47,7 +45,6 @@ class ExecutionOrchestrator:
 
         directive = getattr(cmd, "command", None)
         if not isinstance(directive, str) or not directive:
-            # NEMA "unknown" — audit mora imati smislen ključ
             raise ValueError("AICommand.command is required")
 
         # 1) REGISTER (idempotent)
@@ -195,9 +192,7 @@ class ExecutionOrchestrator:
             "result": result,
         }
 
-    async def _execute_goal_with_tasks_workflow(
-        self, command: AICommand
-    ) -> Dict[str, Any]:
+    async def _execute_goal_with_tasks_workflow(self, command: AICommand) -> Dict[str, Any]:
         """
         WORKFLOW:
         - kreira Goal u Goals DB
@@ -210,9 +205,7 @@ class ExecutionOrchestrator:
         params = command.params if isinstance(command.params, dict) else {}
         goal_spec = params.get("goal") or {}
         tasks_specs_raw = params.get("tasks") or []
-        tasks_specs: List[Dict[str, Any]] = (
-            tasks_specs_raw if isinstance(tasks_specs_raw, list) else []
-        )
+        tasks_specs: List[Dict[str, Any]] = tasks_specs_raw if isinstance(tasks_specs_raw, list) else []
 
         parent_approval_id = getattr(command, "approval_id", None)
         if not isinstance(parent_approval_id, str) or not parent_approval_id:
@@ -260,9 +253,7 @@ class ExecutionOrchestrator:
         goal_cmd = AICommand(**goal_kwargs)
 
         goal_result = await self.notion_agent.execute(goal_cmd)
-        goal_page_id = (
-            goal_result.get("notion_page_id") if isinstance(goal_result, dict) else None
-        )
+        goal_page_id = goal_result.get("notion_page_id") if isinstance(goal_result, dict) else None
 
         # ---------------------------
         # 2) KREIRAJ TASKOVE POVEZANE NA TAJ GOAL
@@ -274,16 +265,11 @@ class ExecutionOrchestrator:
                 continue
 
             base_specs_raw = t.get("property_specs") or {}
-            base_specs: Dict[str, Any] = (
-                dict(base_specs_raw) if isinstance(base_specs_raw, dict) else {}
-            )
+            base_specs: Dict[str, Any] = dict(base_specs_raw) if isinstance(base_specs_raw, dict) else {}
 
             # Automatski enforce-amo relation "Goal" na kreirani goal
             if isinstance(goal_page_id, str) and goal_page_id:
-                base_specs["Goal"] = {
-                    "type": "relation",
-                    "page_ids": [goal_page_id],
-                }
+                base_specs["Goal"] = {"type": "relation", "page_ids": [goal_page_id]}
 
             task_metadata: Dict[str, Any] = {
                 "context_type": "workflow",
@@ -326,16 +312,14 @@ class ExecutionOrchestrator:
             "tasks": created_tasks,
         }
 
-    async def _execute_kpi_weekly_summary_workflow(
-        self, command: AICommand
-    ) -> Dict[str, Any]:
+    async def _execute_kpi_weekly_summary_workflow(self, command: AICommand) -> Dict[str, Any]:
         """
         WORKFLOW: KPI WEEKLY SUMMARY → AI SUMMARY DB
 
-        Koraci (sve preko NotionOpsAgent-a, bez direktnog pisanja u Notion ovdje):
-        1) query KPI DB za traženi time_scope (this_week / last_week, ...)
-        2) NotionOpsAgent / AI generiše sažetak (3–5 rečenica) iz KPI podataka
-        3) kreira se nova stranica u AI SUMMARY DB
+        Kanonski tok:
+        1) query KPI DB (read-only) preko NotionOpsAgent → NotionService
+        2) ORCHESTRATOR ovdje deterministički napravi sažetak iz results
+        3) upiše novu stranicu u AI SUMMARY DB
         """
         params = command.params if isinstance(command.params, dict) else {}
         db_key = params.get("db_key", "kpi")
@@ -360,7 +344,6 @@ class ExecutionOrchestrator:
             "context_type": "workflow",
             "workflow": "kpi_weekly_summary",
             "step": "query_kpi",
-            "report_type": "kpi_weekly_summary",
             "time_scope": time_scope,
             "trace_parent": command.execution_id,
         }
@@ -387,22 +370,21 @@ class ExecutionOrchestrator:
             kpi_kwargs["approval_id"] = parent_approval_id
 
         kpi_query_cmd = AICommand(**kpi_kwargs)
-
         kpi_result = await self.notion_agent.execute(kpi_query_cmd)
 
-        summary_text = None
+        results = []
         if isinstance(kpi_result, dict):
-            summary_text = (
-                kpi_result.get("summary")
-                or kpi_result.get("ai_summary")
-                or kpi_result.get("text")
-            )
-
-        if not isinstance(summary_text, str) or not summary_text:
-            summary_text = f"Weekly KPI summary for {time_scope} generated by system."
+            results = kpi_result.get("results") or []
+        if not isinstance(results, list):
+            results = []
 
         # ---------------------------
-        # 2) UPIS U AI SUMMARY DB
+        # 2) BUILD SUMMARY (deterministički)
+        # ---------------------------
+        summary_text = self._build_kpi_summary_text(results, time_scope=time_scope)
+
+        # ---------------------------
+        # 3) WRITE AI SUMMARY DB
         # ---------------------------
         title = f"Weekly KPI summary – {time_scope}"
 
@@ -439,7 +421,6 @@ class ExecutionOrchestrator:
             ai_kwargs["approval_id"] = parent_approval_id
 
         ai_summary_cmd = AICommand(**ai_kwargs)
-
         ai_summary_result = await self.notion_agent.execute(ai_summary_cmd)
 
         return {
@@ -449,6 +430,60 @@ class ExecutionOrchestrator:
             "kpi_source": kpi_result,
             "ai_summary": ai_summary_result,
         }
+
+    @staticmethod
+    def _build_kpi_summary_text(results: List[Any], *, time_scope: str) -> str:
+        """
+        Minimalan deterministički sažetak:
+        - uzme zadnji KPI zapis (ako postoji)
+        - izvuče title (Name) i sve number property-jeve
+        - vrati 1–3 rečenice
+        """
+        if not results:
+            return f"Nema KPI zapisa za period '{time_scope}'."
+
+        latest = results[-1]
+        if not isinstance(latest, dict):
+            return f"KPI zapisi su pronađeni za '{time_scope}', ali format zapisa nije očekivan."
+
+        props = latest.get("properties") or {}
+        if not isinstance(props, dict):
+            props = {}
+
+        # title
+        title = None
+        name_prop = props.get("Name")
+        if isinstance(name_prop, dict) and name_prop.get("type") == "title":
+            title_arr = name_prop.get("title") or []
+            if isinstance(title_arr, list):
+                pieces = [p.get("plain_text", "") for p in title_arr if isinstance(p, dict)]
+                title = "".join(pieces).strip() or None
+
+        # numbers
+        metrics: Dict[str, Any] = {}
+        for k, v in props.items():
+            if not isinstance(v, dict):
+                continue
+            if v.get("type") != "number":
+                continue
+            n = v.get("number")
+            if n is None:
+                continue
+            metrics[k] = n
+
+        metrics_str = ""
+        if metrics:
+            # limit da ne bude predugačko
+            items = list(metrics.items())[:12]
+            metrics_str = ", ".join(f"{k}={v}" for k, v in items)
+
+        if title and metrics_str:
+            return f"Period '{time_scope}': '{title}'. Metrike: {metrics_str}."
+        if title:
+            return f"Period '{time_scope}': '{title}'."
+        if metrics_str:
+            return f"Period '{time_scope}': Metrike: {metrics_str}."
+        return f"Period '{time_scope}': KPI zapisi su pronađeni."
 
     @staticmethod
     def _allowed_fields() -> set[str]:

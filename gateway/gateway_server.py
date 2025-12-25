@@ -1,8 +1,5 @@
 # gateway/gateway_server.py
 # FULL FILE — zamijeni cijeli gateway_server.py ovim.
-# Phase 1 fix:
-# - /api/execute and /api/execute/raw must create approvals via ApprovalStateService.create()
-# - must correlate command <-> (execution_id, approval_id) so Orchestrator.resume hard-gate can pass
 
 from __future__ import annotations
 
@@ -47,7 +44,6 @@ def _append_boot_error(msg: str) -> None:
     if not _BOOT_ERROR:
         _BOOT_ERROR = msg
         return
-    # Append (preserve first failure context)
     _BOOT_ERROR = f"{_BOOT_ERROR}; {msg}"
 
 
@@ -107,6 +103,17 @@ from services.weekly_memory_service import get_weekly_memory_service
 from services.ai_summary_service import get_ai_summary_service
 
 # ================================================================
+# FAZA 4 — AGENT REGISTRY + ROUTER + CANONICAL CHAT ENDPOINT
+# ================================================================
+from services.agent_registry_service import AgentRegistryService
+from services.agent_router_service import AgentRouterService
+from routers.chat_router import build_chat_router
+
+_agent_registry = AgentRegistryService()
+_agent_router = AgentRouterService(_agent_registry)
+_chat_router = build_chat_router(_agent_router)  # defines "/chat" (see routers/chat_router.py)
+
+# ================================================================
 # ROUTERS
 # ================================================================
 from routers.audit_router import router as audit_router
@@ -158,15 +165,33 @@ def _ai_command_field_names() -> set[str]:
     return set()
 
 
+def _ensure_execution_id(ai_command: AICommand) -> str:
+    """
+    Guarantee da komanda ima execution_id, jer approval correlation često zavisi od toga.
+    """
+    existing = getattr(ai_command, "execution_id", None)
+    if isinstance(existing, str) and existing.strip():
+        return existing
+
+    new_id = str(uuid.uuid4())
+    try:
+        ai_command.execution_id = new_id  # type: ignore[attr-defined]
+    except Exception:
+        md = getattr(ai_command, "metadata", None)
+        if not isinstance(md, dict):
+            md = {}
+        md["execution_id"] = new_id
+        ai_command.metadata = md
+    return new_id
+
+
 def _ensure_trace_on_command(ai_command: AICommand, *, approval_id: str) -> None:
-    # 1) attach to metadata
     md = getattr(ai_command, "metadata", None)
     if not isinstance(md, dict):
         md = {}
     md["approval_id"] = approval_id
     ai_command.metadata = md
 
-    # 2) attach to top-level field if model supports it
     fields = _ai_command_field_names()
     if "approval_id" in fields:
         try:
@@ -198,6 +223,33 @@ def _safe_command_summary(ai_command: AICommand) -> Dict[str, Any]:
     }
 
 
+def _to_serializable(obj: Any) -> Any:
+    if obj is None:
+        return None
+    if isinstance(obj, (str, int, float, bool)):
+        return obj
+    if isinstance(obj, dict):
+        return {k: _to_serializable(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_to_serializable(v) for v in obj]
+    if hasattr(obj, "model_dump"):
+        try:
+            return obj.model_dump()
+        except Exception:
+            pass
+    if hasattr(obj, "dict"):
+        try:
+            return obj.dict()
+        except Exception:
+            pass
+    if hasattr(obj, "__dict__"):
+        try:
+            return {k: _to_serializable(v) for k, v in obj.__dict__.items()}
+        except Exception:
+            pass
+    return str(obj)
+
+
 # ================================================================
 # LIFESPAN (PHASE 11)
 # ================================================================
@@ -212,12 +264,19 @@ async def lifespan(_: FastAPI):
         # Core bootstrap (fatal ako ovdje pukne)
         bootstrap_application()
 
+        # ---- FAZA 4: load agents.json (SSOT) ----
+        try:
+            _agent_registry.load_from_agents_json("config/agents.json", clear=True)
+            logger.info("✅ Agent registry loaded from config/agents.json (SSOT)")
+        except Exception as exc:  # noqa: BLE001
+            _append_boot_error(f"agents_registry_load_failed:{exc}")
+            logger.warning("Agent registry load failed: %s", exc)
+
         # ---- AI router init (CANON) ----
         try:
             if not hasattr(ai_router_module, "set_ai_services"):
                 raise RuntimeError("ai_router_init_hook_not_found")
 
-            # set_ai_services is keyword-only — MUST use keyword args
             ai_router_module.set_ai_services(
                 command_service=ai_command_service,
                 conversation_service=coo_conversation_service,
@@ -283,7 +342,6 @@ else:
             raise HTTPException(status_code=404, detail="script.js not found")
         return FileResponse(path)
 
-
 # ================================================================
 # INCLUDE ROUTERS
 # ================================================================
@@ -299,6 +357,8 @@ app.include_router(ceo_console_module.router, prefix="/api")
 app.include_router(metrics_router, prefix="/api")
 app.include_router(alerting_router, prefix="/api")
 
+# FAZA 4: Canonical Chat endpoint (READ/PROPOSE ONLY) — canonical path: /api/chat
+app.include_router(_chat_router, prefix="/api")
 
 # ================================================================
 # REQUEST MODELS
@@ -320,33 +380,6 @@ class CeoCommandInput(BaseModel):
     input_text: str
     smart_context: Optional[Dict[str, Any]] = None
     source: str = "ceo_dashboard"
-
-
-def _to_serializable(obj: Any) -> Any:
-    if obj is None:
-        return None
-    if isinstance(obj, (str, int, float, bool)):
-        return obj
-    if isinstance(obj, dict):
-        return {k: _to_serializable(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple)):
-        return [_to_serializable(v) for v in obj]
-    if hasattr(obj, "model_dump"):
-        try:
-            return obj.model_dump()
-        except Exception:  # noqa: BLE001
-            pass
-    if hasattr(obj, "dict"):
-        try:
-            return obj.dict()
-        except Exception:  # noqa: BLE001
-            pass
-    if hasattr(obj, "__dict__"):
-        try:
-            return {k: _to_serializable(v) for k, v in obj.__dict__.items()}
-        except Exception:  # noqa: BLE001
-            pass
-    return str(obj)
 
 
 def _preprocess_ceo_nl_input(
@@ -429,7 +462,7 @@ def _derive_legacy_goal_task_summaries_from_ceo_snapshot(
                         "due_date": (t.get("due_date") or "-"),
                     }
                 )
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
 
     return {"goals_summary": goals_summary, "tasks_summary": tasks_summary}
@@ -448,14 +481,35 @@ async def execute_command(payload: ExecuteInput):
     if not ai_command:
         raise HTTPException(400, "Could not translate input to command")
 
-    # Canon: initiator must be explicit
     if not getattr(ai_command, "initiator", None):
         ai_command.initiator = "ceo"
 
+    execution_id = _ensure_execution_id(ai_command)
+
+    approval_state = get_approval_state()
+    approval = approval_state.create(
+        command=getattr(ai_command, "command", None) or "execute",
+        payload_summary=_safe_command_summary(ai_command),
+        scope="api_execute",
+        risk_level="unknown",
+        execution_id=execution_id,
+    )
+    approval_id = approval.get("approval_id")
+    if not approval_id:
+        raise HTTPException(
+            status_code=500, detail="Approval create failed: missing approval_id"
+        )
+
+    _ensure_trace_on_command(ai_command, approval_id=approval_id)
+
+    _execution_registry.register(ai_command)
+
     result = await _execution_orchestrator.execute(ai_command)
 
-    # Compatibility guard for Happy Path (execution_state + approval_id at top-level)
-    # Orchestrator already returns these keys in BLOCKED case; keep as-is.
+    if isinstance(result, dict):
+        result.setdefault("approval_id", approval_id)
+        result.setdefault("execution_id", execution_id)
+
     return result
 
 
@@ -470,15 +524,21 @@ async def execute_raw_command(payload: ExecuteRawInput):
         metadata=payload.metadata,
     )
 
+    execution_id = _ensure_execution_id(ai_command)
+
     approval_state = get_approval_state()
     approval = approval_state.create(
         command=payload.command or "execute_raw",
         payload_summary=_safe_command_summary(ai_command),
         scope="api_execute_raw",
         risk_level="unknown",
-        execution_id=ai_command.execution_id,
+        execution_id=execution_id,
     )
-    approval_id = approval.get("approval_id") or str(uuid.uuid4())
+    approval_id = approval.get("approval_id")
+    if not approval_id:
+        raise HTTPException(
+            status_code=500, detail="Approval create failed: missing approval_id"
+        )
 
     _ensure_trace_on_command(ai_command, approval_id=approval_id)
 
@@ -488,7 +548,7 @@ async def execute_raw_command(payload: ExecuteRawInput):
         "status": "BLOCKED",
         "execution_state": "BLOCKED",
         "approval_id": approval_id,
-        "execution_id": ai_command.execution_id,
+        "execution_id": execution_id,
         "command": ai_command.model_dump()
         if hasattr(ai_command, "model_dump")
         else _to_serializable(ai_command),
@@ -533,7 +593,6 @@ async def ceo_console_snapshot():
 
     ks = KnowledgeSnapshotService.get_snapshot()
 
-    # SSOT: CEOConsoleSnapshotService (never raises)
     ceo_dash = CEOConsoleSnapshotService().snapshot()
     legacy = _derive_legacy_goal_task_summaries_from_ceo_snapshot(ceo_dash)
 
@@ -586,7 +645,7 @@ async def ceo_weekly_memory():
 async def ceo_weekly_priority_memory():
     try:
         items = get_ai_summary_service().get_this_week_priorities()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.exception("Failed to load Weekly Priority Memory from AI SUMMARY DB")
         raise HTTPException(
             status_code=500,

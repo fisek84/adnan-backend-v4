@@ -2,77 +2,113 @@
 
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Any, Dict, Optional
+import logging
+from typing import Any, Dict, List, Optional
 
 from services.approval_state_service import get_approval_state
-from services.execution_registry import ExecutionRegistry
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 
 class ApprovalUXService:
     """
-    APPROVAL UX SERVICE — CANONICAL
+    APPROVAL UX SERVICE — KANON
 
-    Pravila:
-    - UX sloj, bez execution logike
-    - mijenja SAMO approval state
-    - nakon approve šalje SIGNAL registry-ju za resume
+    Svrha:
+    - “presentation/UX” sloj oko ApprovalStateService
+    - NE donosi policy odluke
+    - NE izvršava ništa
+    - samo formatira, filtrira, i daje stabilne UX strukture za frontend/CLI.
+
+    Kanonska pravila:
+    - approval je vezan za execution_id
+    - approval lifecycle: pending -> approved|rejected
+    - UX sloj mora biti idempotentan i bez side-effect-a (osim approve/reject poziva u StateService).
     """
 
     def __init__(self):
-        self.approvals = get_approval_state()
-        self.registry = ExecutionRegistry()
+        self.state = get_approval_state()
 
+    # -----------------------------
+    # LIST / GET
+    # -----------------------------
+    def list_pending(self) -> Dict[str, Any]:
+        pending = self.state.list_pending()
+        return {
+            "ok": True,
+            "count": len(pending),
+            "items": [self._to_card(a) for a in pending],
+        }
+
+    def list_all(self, status: Optional[str] = None) -> Dict[str, Any]:
+        items = self.state.list_approvals(status=status)
+        return {
+            "ok": True,
+            "count": len(items),
+            "status": status,
+            "items": [self._to_card(a) for a in items],
+        }
+
+    def get(self, approval_id: str) -> Dict[str, Any]:
+        approval = self.state.get(approval_id)
+        return {
+            "ok": True,
+            "item": self._to_card(approval),
+        }
+
+    # -----------------------------
+    # DECISIONS
+    # -----------------------------
     def approve(
         self,
-        *,
         approval_id: str,
-        approved_by: str,
+        *,
+        approved_by: str = "unknown",
         note: Optional[str] = None,
     ) -> Dict[str, Any]:
-        approval = self.approvals.approve(
-            approval_id,
-            approved_by=approved_by,
-            note=note,
-        )
-        execution_id = approval.get("execution_id")
-
-        if not execution_id:
-            raise RuntimeError("Approved approval has no execution_id")
-
-        # SIGNAL — registry exists to guarantee state
-        self.registry  # actual resume is triggered by orchestrator via registry
-
+        approval = self.state.approve(approval_id, approved_by=approved_by, note=note)
         return {
-            "success": True,
-            "status": "approved",
-            "approval": approval,
-            "approved_by": approved_by,
-            "note": note,
-            "execution_id": execution_id,
-            "timestamp": datetime.utcnow().isoformat(),
-            "read_only": False,
+            "ok": True,
+            "item": self._to_card(approval),
         }
 
     def reject(
         self,
-        *,
         approval_id: str,
-        rejected_by: str,
+        *,
+        rejected_by: str = "unknown",
         note: Optional[str] = None,
     ) -> Dict[str, Any]:
-        approval = self.approvals.reject(
-            approval_id,
-            rejected_by=rejected_by,
-            note=note,
-        )
+        approval = self.state.reject(approval_id, rejected_by=rejected_by, note=note)
+        return {
+            "ok": True,
+            "item": self._to_card(approval),
+        }
+
+    # -----------------------------
+    # UI HELPERS
+    # -----------------------------
+    @staticmethod
+    def _to_card(approval: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Stabilan UX shape za prikaz (frontend/CLI).
+        """
+        payload_summary = approval.get("payload_summary") if isinstance(approval, dict) else {}
+        if not isinstance(payload_summary, dict):
+            payload_summary = {}
 
         return {
-            "success": True,
-            "status": "rejected",
-            "approval": approval,
-            "rejected_by": rejected_by,
-            "note": note,
-            "timestamp": datetime.utcnow().isoformat(),
-            "read_only": False,
+            "approval_id": approval.get("approval_id"),
+            "execution_id": approval.get("execution_id"),
+            "status": approval.get("status"),
+            "command": approval.get("command"),
+            "scope": approval.get("scope"),
+            "risk_level": approval.get("risk_level"),
+            "created_at": approval.get("created_at"),
+            "decided_at": approval.get("decided_at"),
+            "approved_by": approval.get("approved_by"),
+            "rejected_by": approval.get("rejected_by"),
+            "note": approval.get("note"),
+            "payload_summary": payload_summary,
         }

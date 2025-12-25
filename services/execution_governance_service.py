@@ -16,6 +16,8 @@ class ExecutionGovernanceService:
     Pravilo:
     - Policy gleda KO TRAŽI (initiator), ne ko POSJEDUJE sistem
     - Governance NE ponavlja safety
+    - Governance NE SMIJE praviti dupli approval ako je approval lifecycle već kreiran upstream (npr. /api/execute).
+      Njegova uloga je: validate + policy gate + approval verification.
     """
 
     def __init__(self):
@@ -24,10 +26,7 @@ class ExecutionGovernanceService:
 
         self._governance_limits = {
             "max_execution_time_seconds": 30,
-            "retry_policy": {
-                "enabled": False,
-                "max_retries": 0,
-            },
+            "retry_policy": {"enabled": False, "max_retries": 0},
         }
 
     def evaluate(
@@ -52,46 +51,50 @@ class ExecutionGovernanceService:
         if approval_id is None:
             approval_id_norm = None
         else:
-            approval_id_str = str(approval_id).strip()
-            approval_id_norm = approval_id_str if approval_id_str else None
+            a = str(approval_id).strip()
+            approval_id_norm = a if a else None
 
         # --------------------------------------------------------
         # BASIC VALIDATION
         # --------------------------------------------------------
         if not execution_id_norm:
             return self._block(
-                reason="Missing execution_id.",
+                reason="missing_execution_id",
                 ts=ts,
                 execution_id=execution_id_norm,
                 context_type=context_type_norm,
                 directive=directive_norm,
+                approval_id=approval_id_norm,
             )
 
         if not initiator_norm:
             return self._block(
-                reason="Missing initiator.",
+                reason="missing_initiator",
                 ts=ts,
                 execution_id=execution_id_norm,
                 context_type=context_type_norm,
                 directive=directive_norm,
+                approval_id=approval_id_norm,
             )
 
         if not directive_norm:
             return self._block(
-                reason="Missing directive.",
+                reason="missing_directive",
                 ts=ts,
                 execution_id=execution_id_norm,
                 context_type=context_type_norm,
                 directive=directive_norm,
+                approval_id=approval_id_norm,
             )
 
         if not context_type_norm:
             return self._block(
-                reason="Missing context_type.",
+                reason="missing_context_type",
                 ts=ts,
                 execution_id=execution_id_norm,
                 context_type=context_type_norm,
                 directive=directive_norm,
+                approval_id=approval_id_norm,
             )
 
         # --------------------------------------------------------
@@ -99,53 +102,42 @@ class ExecutionGovernanceService:
         # --------------------------------------------------------
         if not self.policy.can_request(initiator_norm):
             return self._block(
-                reason="Initiator not allowed.",
+                reason="initiator_not_allowed",
                 ts=ts,
                 execution_id=execution_id_norm,
                 context_type=context_type_norm,
                 directive=directive_norm,
+                approval_id=approval_id_norm,
             )
 
         if not self.policy.is_action_allowed_for_role(initiator_norm, directive_norm):
             return self._block(
-                reason="Action not allowed.",
+                reason="action_not_allowed",
                 ts=ts,
                 execution_id=execution_id_norm,
                 context_type=context_type_norm,
                 directive=directive_norm,
+                approval_id=approval_id_norm,
             )
 
         # --------------------------------------------------------
-        # APPROVAL GATE
+        # APPROVAL VERIFICATION (NO DUPLICATE CREATE)
         # --------------------------------------------------------
         if not approval_id_norm:
-            # payload_summary JE jedini izvor istine za delegation sloj
-            payload_summary: Dict[str, Any] = {
-                "command": directive_norm,
-                "payload": params_norm,
-                "scope": context_type_norm,
-            }
-
-            approval = self.approvals.create(
-                command=directive_norm,
-                payload_summary=payload_summary,
-                scope=context_type_norm,
-                risk_level="standard",
-                execution_id=execution_id_norm,
-            )
-
+            # Kanonski: approval se kreira upstream (/api/execute ili drugi entrypoint).
+            # Governance ovdje samo kaže da je approval potreban.
             return self._block(
-                reason="Approval required.",
+                reason="approval_required",
                 ts=ts,
                 execution_id=execution_id_norm,
                 context_type=context_type_norm,
                 directive=directive_norm,
-                approval_id=approval.get("approval_id"),
+                approval_id=None,
             )
 
         if not self.approvals.is_fully_approved(approval_id_norm):
             return self._block(
-                reason="Approval not granted.",
+                reason="approval_not_granted",
                 ts=ts,
                 execution_id=execution_id_norm,
                 context_type=context_type_norm,
@@ -165,6 +157,10 @@ class ExecutionGovernanceService:
             "read_only": False,
             "governance": self._governance_limits,
             "timestamp": ts,
+            # debug/helpful but non-sensitive:
+            "policy": {
+                "initiator": initiator_norm,
+            },
         }
 
     def _block(
@@ -186,8 +182,6 @@ class ExecutionGovernanceService:
             "timestamp": ts,
             "governance": self._governance_limits,
         }
-
         if approval_id:
             resp["approval_id"] = approval_id
-
         return resp

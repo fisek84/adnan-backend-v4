@@ -1,1544 +1,702 @@
-"""
-COO TRANSLATION SERVICE (CANONICAL)
-"""
+# services/coo_translation_service.py
+# FULL FILE — zamijeni cijeli services/coo_translation_service.py ovim.
 
-from typing import Optional, Dict, Any, List
-import re
+from __future__ import annotations
+
+import json
 import logging
+import re
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Tuple
 
 from models.ai_command import AICommand
-from services.intent_classifier import IntentClassifier
-from services.intent_contract import Intent, IntentType
-from services.action_dictionary import is_valid_command
-from services.goal_nl_parser import (
-    parse_ceo_goal_plan,  # noqa: F401  # trenutno se ne koristi, ali ostaje za kompatibilnost
-)
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+
+@dataclass
+class _ParsedFields:
+    title: str
+    status: Optional[str] = None
+    priority: Optional[str] = None
+    due: Optional[str] = None
+    description: Optional[str] = None
 
 
 class COOTranslationService:
+    """
+    COO TRANSLATION SERVICE — CANONICAL
+
+    Uloga:
+    - PREVODI user text (NL ili structured) u AICommand (PROPOSAL)
+    - NE izvršava ništa
+    - NE poziva NotionService / agente
+    - vraća ili:
+        - AICommand(read_only=True) za sistemska pitanja (system_query)
+        - AICommand za write/workflow directive (npr. goal_task_workflow, notion_write, goal_write)
+        - None ako ne može da prevede input
+
+    FAZA 4:
+    - Chat/UX slojevi smiju samo "propose"; execution ide kroz /api/execute i approval pipeline.
+    """
+
     READ_ONLY_COMMAND = "system_query"
 
-    CEO_READ_ONLY_MATCHES = {
-        "SYSTEM SNAPSHOT: goals": "goals",
-        "SYSTEM SNAPSHOT: tasks": "tasks",
-        "SYSTEM SNAPSHOT: agents": "agents",
-        "SYSTEM STATUS": "status",
-        "SYSTEM MODE": "mode",
+    # “Known top-level directives” (minimal SSOT; real SSOT može biti action_dictionary/rbac, ali ovo je safe default)
+    _KNOWN_COMMANDS: set[str] = {
+        "goal_task_workflow",
+        "notion_write",
+        "goal_write",
+        "list_goals",
+        READ_ONLY_COMMAND,
     }
 
-    SOP_DB_KEYWORDS: Dict[str, str] = {
-        "outreach": "outreach_sop",
-        "qualification": "qualification_sop",
-        "follow up": "follow_up_sop",
-        "follow-up": "follow_up_sop",
-        "fsc": "fsc_sop",
-        "flp ops": "flp_ops_sop",
-        "lss": "lss_sop",
-        "partner activation": "partner_activation_sop",
-        "partner performance": "partner_performance_sop",
-        "partner leadership": "partner_leadership_sop",
-        "customer onboarding": "customer_onboarding_sop",
-        "customer retention": "customer_retention_sop",
-        "customer performance": "customer_performance_sop",
-        "partner potential": "partner_potential_sop",
-        "sales closing": "sales_closing_sop",
-    }
-
-    def __init__(self):
-        self.intent_classifier = IntentClassifier()
-
-    # -----------------------------------------------------
-    # INTERNAL HELPERS — NOTION DSL PARSING
-    # -----------------------------------------------------
-    @staticmethod
-    def _extract_name_after_prefix(
+    # ------------------------------------------------------------
+    # PUBLIC API
+    # ------------------------------------------------------------
+    def translate(
+        self,
+        *,
         raw_input: str,
-        prefix: str,
-        stop_tokens: Optional[List[str]] = None,
-    ) -> str:
+        source: str = "user",
+        context: Optional[Dict[str, Any]] = None,
+    ) -> Optional[AICommand]:
         """
-        Uzmemo sve nakon prefiksa, do prvog stop tokena (priority, status, due date, ...).
+        Primarni prevod:
+        - pokušaj structured payload (JSON / dict-like)
+        - pokušaj eksplicitni “command:” format
+        - pokušaj workflow format (goal+tasks)
+        - pokušaj goal/task NL
+        - fallback: system_query (read-only) ako izgleda kao pitanje / query
         """
-        stop_tokens = stop_tokens or []
-        text_after = raw_input[len(prefix) :].strip()
+        text = (raw_input or "").strip()
+        ctx = context or {}
 
-        lowered_after = text_after.lower()
-        cut_pos = len(text_after)
-
-        for token in stop_tokens:
-            idx = lowered_after.find(f" {token.lower()} ")
-            if idx != -1 and idx < cut_pos:
-                cut_pos = idx
-
-        name = text_after[:cut_pos].strip(" ,")
-        return name or text_after
-
-    @staticmethod
-    def _extract_segment(regex: str, raw_input: str) -> Optional[str]:
-        """
-        Helper za izvlačenje statusa/prioriteta/due date/start datuma iz slobodnog teksta.
-        """
-        m = re.search(regex, raw_input, flags=re.IGNORECASE)
-        if not m:
+        if not text:
             return None
-        return m.group(1).strip(" ,")
 
-    @staticmethod
-    def _extract_date_range(raw_input: str) -> Optional[Dict[str, str]]:
-        """
-        Podržava:
-        - 'od YYYY-MM-DD do YYYY-MM-DD'
-        - 'između YYYY-MM-DD i YYYY-MM-DD'
-        """
-        lowered = raw_input.lower()
+        # 0) Explicit structured payload in context (ako UI šalje već parsirano)
+        cmd_from_ctx = self._translate_from_context(ctx)
+        if cmd_from_ctx is not None:
+            return cmd_from_ctx
 
-        m = re.search(
-            r"od\s+(\d{4}-\d{2}-\d{2})\s+do\s+(\d{4}-\d{2}-\d{2})",
-            lowered,
-        )
-        if m:
-            return {"start": m.group(1), "end": m.group(2)}
+        # 1) JSON payload u tekstu
+        cmd = self._translate_from_json_text(text, source=source, context=ctx)
+        if cmd is not None:
+            return cmd
 
-        m = re.search(
-            r"između\s+(\d{4}-\d{2}-\d{2})\s+i\s+(\d{4}-\d{2}-\d{2})",
-            lowered,
-        )
-        if m:
-            return {"start": m.group(1), "end": m.group(2)}
+        # 2) “command=..., intent=...” ili “directive: ...”
+        cmd = self._translate_from_explicit_kv(text, source=source, context=ctx)
+        if cmd is not None:
+            return cmd
+
+        # 3) workflow (goal_task_workflow) ako se prepozna multi-entity
+        cmd = self._translate_goal_task_workflow(text, source=source, context=ctx)
+        if cmd is not None:
+            return cmd
+
+        # 4) single goal
+        cmd = self._translate_goal(text, source=source, context=ctx)
+        if cmd is not None:
+            return cmd
+
+        # 5) single task
+        cmd = self._translate_task(text, source=source, context=ctx)
+        if cmd is not None:
+            return cmd
+
+        # 6) read-only query fallback (sigurno)
+        if self._looks_like_question(text):
+            return AICommand(
+                command=self.READ_ONLY_COMMAND,
+                intent="advice",
+                read_only=True,
+                params={"query": text, "source": source, "context": ctx},
+                initiator=str(ctx.get("initiator") or "ceo"),
+                validated=True,
+                metadata={"context_type": "ux", "source": source},
+            )
 
         return None
 
-    @staticmethod
-    def _extract_quarter_range(raw_input: str) -> Optional[Dict[str, str]]:
+    # ------------------------------------------------------------
+    # VALIDATION HELPERS
+    # ------------------------------------------------------------
+    @classmethod
+    def is_valid_command(cls, command_name: str) -> bool:
+        name = str(command_name or "").strip()
+        return bool(name and name in cls._KNOWN_COMMANDS)
+
+    # ------------------------------------------------------------
+    # CONTEXT-BASED TRANSLATION
+    # ------------------------------------------------------------
+    def _translate_from_context(self, ctx: Dict[str, Any]) -> Optional[AICommand]:
         """
-        Podržava:
-        - 'za Q1 2026', 'u Q2 2025', itd.
-        Mapira Qx + godina u [start, end] range.
+        Podrži “smart_context” pattern iz CEO UI-a ili slične integracije.
+        Ne “izmišljamo” komandu: mora biti deterministična i sigurna.
         """
-        lowered = raw_input.lower()
-
-        m_q = re.search(r"\bq([1-4])\b", lowered)
-        if not m_q:
-            return None
-        q = int(m_q.group(1))
-
-        m_year = re.search(r"\b(20\d{2})\b", lowered)
-        if not m_year:
-            return None
-        year = int(m_year.group(1))
-
-        if q == 1:
-            start = f"{year}-01-01"
-            end = f"{year}-03-31"
-        elif q == 2:
-            start = f"{year}-04-01"
-            end = f"{year}-06-30"
-        elif q == 3:
-            start = f"{year}-07-01"
-            end = f"{year}-09-30"
-        else:
-            start = f"{year}-10-01"
-            end = f"{year}-12-31"
-
-        return {"start": start, "end": end}
-
-    @staticmethod
-    def _parse_bosnian_date(date_str: str) -> Optional[str]:
-        """
-        Pretvara:
-        - 'DD.MM.YYYY' u 'YYYY-MM-DD'
-        - ili propušta 'YYYY-MM-DD' kao važeći datum.
-
-        Ako ne prepozna format, vraća None.
-        """
-        if not date_str:
+        if not isinstance(ctx, dict) or not ctx:
             return None
 
-        ds = date_str.strip()
+        # 1) Ako je eksplicitno dat command payload
+        payload = ctx.get("ai_command") or ctx.get("command_payload")
+        if isinstance(payload, dict):
+            return self._ai_command_from_dict(payload, fallback_ctx=ctx)
 
-        # ISO format već spreman
-        if re.match(r"^\d{4}-\d{2}-\d{2}$", ds):
-            return ds
+        # 2) CEO UI: command_type + goal/task polja
+        command_type = ctx.get("command_type")
+        if command_type == "create_goal":
+            goal = ctx.get("goal") or {}
+            if isinstance(goal, dict):
+                name = (goal.get("name") or "").strip()
+                if name:
+                    # map minimal fields to property_specs
+                    specs: Dict[str, Any] = {"Name": {"type": "title", "text": name}}
+                    prio = (goal.get("priority") or "").strip()
+                    status = (goal.get("status") or "").strip()
+                    due = (goal.get("due") or "").strip()
+                    if status:
+                        specs["Status"] = {"type": "status", "name": status}
+                    if prio:
+                        specs["Priority"] = {"type": "select", "name": prio}
+                    if due:
+                        iso = self._try_parse_date_to_iso(due)
+                        if iso:
+                            specs["Deadline"] = {"type": "date", "start": iso}
 
-        # Klasični bosanski/evropski format
-        m = re.match(r"^(\d{1,2})\.(\d{1,2})\.(\d{4})$", ds)
-        if not m:
-            return None
+                    return AICommand(
+                        command="notion_write",
+                        intent="create_page",
+                        read_only=False,
+                        params={"db_key": "goals", "property_specs": specs},
+                        initiator=str(ctx.get("initiator") or "ceo"),
+                        validated=True,
+                        metadata={"context_type": "ux", "source": "smart_context"},
+                    )
 
-        day = int(m.group(1))
-        month = int(m.group(2))
-        year = int(m.group(3))
-        return f"{year:04d}-{month:02d}-{day:02d}"
+        return None
 
-    @staticmethod
-    def _parse_ceo_goal_plan_bosnian(raw_input: str) -> Dict[str, Any]:
-        """
-        Generalizovani CEO NL plan (Bosanski):
-
-        Podržava:
-        - različite nazive centralnog cilja
-        - datume tipa '01.05.2025' ili '2025-05-01'
-        - bilo koji broj podciljeva ('Kreiraj ... podciljeva:')
-        - N-dnevni plan (7, 14, ...) — 'Kreiraj 7-dnevni plan...', 'Kreiraj 14-dnevni plan...'
-        - bilo koji naziv projekta u navodnicima
-
-        Vraća strukturirani plan:
-        {
-          "central_goal": {name, priority, status, due_date_iso, due_date_raw},
-          "subgoals": [{name, priority, status}, ...],
-          "tasks": [{day_index, name, priority, status}, ...],
-          "project_name": str | None,
-          "days_count": int | None,
-        }
-        """
-        text = raw_input.strip()
-        plan: Dict[str, Any] = {
-            "central_goal": {},
-            "subgoals": [],
-            "tasks": [],
-            "project_name": None,
-            "days_count": None,
-        }
-
-        # --- CENTRALNI CILJ (generički datum) ---
-        m_central = re.search(
-            r"kreiraj\s+centralni\s+cilj\s+[\"“](.+?)[\"”]\s+sa\s+due\s+date\s+([0-9./\-]+)\s*,\s*prioritet\s+([A-Za-zČĆŽŠĐčćžšđ]+)\s*,\s*status\s+([A-Za-zČĆŽŠĐčćžšđ]+)",
-            text,
-            flags=re.IGNORECASE | re.DOTALL,
-        )
-        if m_central:
-            name = m_central.group(1).strip()
-            due_raw = m_central.group(2).strip()
-            priority = m_central.group(3).strip()
-            status = m_central.group(4).strip()
-            due_iso = COOTranslationService._parse_bosnian_date(due_raw)
-
-            plan["central_goal"] = {
-                "name": name,
-                "priority": priority,
-                "status": status,
-                "due_date_iso": due_iso,
-                "due_date_raw": due_raw,
-            }
-
-        # --- BROJ DANA (7, 14, ...) ---
-        m_days = re.search(
-            r"kreiraj\s+(\d+)[-\s]*dnevni\s+plan",
-            text,
-            flags=re.IGNORECASE,
-        )
-        if m_days:
-            try:
-                plan["days_count"] = int(m_days.group(1))
-            except ValueError:
-                plan["days_count"] = None
-
-        # --- PODCILJEVI ---
-        m_sub_section = re.search(
-            r"kreiraj\s+.*podcilj[ea]*\s*:(.*?)(?:kreiraj\s+\d+[-\s]*dnevni\s+plan)",
-            text,
-            flags=re.IGNORECASE | re.DOTALL,
-        )
-        if m_sub_section:
-            sub_text = m_sub_section.group(1)
-            for name, prio in re.findall(
-                r"([^\n,]+?)\s*\(prioritet\s+([^)]+)\)",
-                sub_text,
-                flags=re.IGNORECASE,
-            ):
-                plan["subgoals"].append(
-                    {
-                        "name": name.strip(" \n\r-•"),
-                        "priority": prio.strip(" \n\r,"),
-                        "status": "Not Started",
-                    }
-                )
-
-        # --- PROJEKAT ---
-        m_proj = re.search(
-            r"projekat\s+[\"“](.+?)[\"”]",
-            text,
-            flags=re.IGNORECASE,
-        )
-        if m_proj:
-            plan["project_name"] = m_proj.group(1).strip()
-
-        # --- TASKOVI: Dan X: ... (prio) ---
-        for day, name, prio in re.findall(
-            r"Dan\s+(\d+)\s*:\s*(.+?)\s*\(([^)]+)\)",
-            text,
-            flags=re.IGNORECASE,
-        ):
-            try:
-                day_index = int(day)
-            except ValueError:
-                continue
-
-            plan["tasks"].append(
-                {
-                    "day_index": day_index,
-                    "name": name.strip(),
-                    "priority": prio.strip(),
-                    "status": "To Do",
-                }
-            )
-
-        return plan
-
-    @staticmethod
-    def _build_task_property_specs_from_text(raw_input: str) -> Dict[str, Any]:
-        """
-        Mapira CEO NL za TASK u Notion DSL property_specs.
-
-        Primjer:
-        'kreiraj task EVO-CEO-TASK-001 priority High status Not Started due date 2025-12-25'
-        """
-        stop_tokens = ["priority", "status", "due date"]
-        raw = (raw_input or "").strip()
-
-        # Normalizuj prefiks (podrži "kreiraj task:", "napravi zadatak -", itd.)
-        m = re.match(
-            r"(?i)^(kreiraj|napravi)\s+(novi\s+)?(task|zadatak)\s*[:\-]?\s*(.+)$",
-            raw,
-        )
-        if m:
-            tail = m.group(4).strip()
-            # Reuse existing extractor logic by reconstructing a canonical prefix
-            canonical = "kreiraj task " + tail
-            name = COOTranslationService._extract_name_after_prefix(
-                canonical,
-                prefix="kreiraj task ",
-                stop_tokens=stop_tokens,
-            )
-            src_for_segments = canonical
-        else:
-            name = raw
-            src_for_segments = raw
-
-        status = COOTranslationService._extract_segment(
-            r"status\s+(.+?)(?=\s+due date\b|$)", src_for_segments
-        )
-        priority = COOTranslationService._extract_segment(
-            r"priority\s+(\w+)", src_for_segments
-        )
-        due_date = COOTranslationService._extract_segment(
-            r"due date\s+(\d{4}-\d{2}-\d{2})", src_for_segments
-        )
-
-        property_specs: Dict[str, Any] = {
-            "Name": {"type": "title", "text": name},
-        }
-
-        if status:
-            property_specs["Status"] = {
-                "type": "select",
-                "name": status,
-            }
-
-        if priority:
-            property_specs["Priority"] = {
-                "type": "select",
-                "name": priority,
-            }
-
-        if due_date:
-            property_specs["Due Date"] = {
-                "type": "date",
-                "start": due_date,
-            }
-
-        return property_specs
-
-    @staticmethod
-    def _build_goal_property_specs_from_text(raw_input: str) -> Dict[str, Any]:
-        """
-        Mapira CEO NL za GOAL u Notion DSL property_specs.
-
-        Primjer:
-        'kreiraj cilj FLP manager status Not Started priority High deadline 2025-12-31'
-        """
-        stop_tokens = ["priority", "status", "due date", "deadline"]
-        lowered = raw_input.lower()
-
-        if lowered.startswith("kreiraj cilj "):
-            name = COOTranslationService._extract_name_after_prefix(
-                raw_input,
-                prefix="kreiraj cilj ",
-                stop_tokens=stop_tokens,
-            )
-        else:
-            name = raw_input
-
-        status = COOTranslationService._extract_segment(
-            r"status\s+(.+?)(?=\s+priority\b|\s+due date\b|\s+deadline\b|$)",
-            raw_input,
-        )
-        priority = COOTranslationService._extract_segment(
-            r"priority\s+(\w+)", raw_input
-        )
-        deadline = COOTranslationService._extract_segment(
-            r"(?:due date|deadline)\s+(\d{4}-\d{2}-\d{2})", raw_input
-        )
-
-        property_specs: Dict[str, Any] = {
-            "Name": {"type": "title", "text": name},
-        }
-
-        if status:
-            property_specs["Status"] = {
-                "type": "select",
-                "name": status,
-            }
-
-        if priority:
-            property_specs["Priority"] = {
-                "type": "select",
-                "name": priority,
-            }
-
-        if deadline:
-            property_specs["Deadline"] = {
-                "type": "date",
-                "start": deadline,
-            }
-
-        return property_specs
-
-    @staticmethod
-    def _build_project_property_specs_from_text(raw_input: str) -> Dict[str, Any]:
-        """
-        Mapira CEO NL za PROJECT u Notion DSL property_specs.
-
-        Primjer:
-        'kreiraj projekt EVO-OS rollout status In Progress priority High target deadline 2026-03-31'
-        """
-        stop_tokens = ["status", "priority", "target deadline", "deadline", "due date"]
-        lowered = raw_input.lower()
-
-        if lowered.startswith("kreiraj projekt "):
-            name = COOTranslationService._extract_name_after_prefix(
-                raw_input,
-                prefix="kreiraj projekt ",
-                stop_tokens=stop_tokens,
-            )
-        elif lowered.startswith("napravi projekt "):
-            name = COOTranslationService._extract_name_after_prefix(
-                raw_input,
-                prefix="napravi projekt ",
-                stop_tokens=stop_tokens,
-            )
-        else:
-            name = raw_input
-
-        status = COOTranslationService._extract_segment(
-            r"status\s+(.+?)(?=\s+priority\b|\s+target deadline\b|\s+deadline\b|\s+due date\b|$)",
-            raw_input,
-        )
-        priority = COOTranslationService._extract_segment(
-            r"priority\s+(\w+)", raw_input
-        )
-        deadline = COOTranslationService._extract_segment(
-            r"(?:target deadline|deadline|due date)\s+(\d{4}-\d{2}-\d{2})",
-            raw_input,
-        )
-
-        property_specs: Dict[str, Any] = {
-            "Project Name": {"type": "title", "text": name},
-        }
-
-        if status:
-            property_specs["Status"] = {
-                "type": "select",
-                "name": status,
-            }
-
-        if priority:
-            property_specs["Priority"] = {
-                "type": "select",
-                "name": priority,
-            }
-
-        if deadline:
-            property_specs["Target Deadline"] = {
-                "type": "date",
-                "start": deadline,
-            }
-
-        return property_specs
-
-    @staticmethod
-    def _build_ceo_goal_plan_params(plan: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Pretvara strukturirani CEO plan u parametre za goal_task_workflow:
-        - goal: centralni cilj
-        - subgoals: lista podciljeva
-        - tasks: lista taskova
-        - project (opcionalno)
-        - days_count (opcionalno)
-        """
-        # --- CENTRAL GOAL ---
-        central = plan.get("central_goal") or {}
-        cg_name = central.get("name") or ""
-        cg_status = central.get("status")
-        cg_priority = central.get("priority")
-        cg_due_iso = central.get("due_date_iso")
-
-        goal_sentence = f"kreiraj cilj {cg_name}"
-        if cg_status:
-            goal_sentence += f" status {cg_status}"
-        if cg_priority:
-            goal_sentence += f" priority {cg_priority}"
-        if cg_due_iso:
-            goal_sentence += f" due date {cg_due_iso}"
-
-        goal_specs = COOTranslationService._build_goal_property_specs_from_text(
-            goal_sentence
-        )
-
-        # --- SUBGOALS ---
-        subgoals_cfg: List[Dict[str, Any]] = []
-        for sg in plan.get("subgoals") or []:
-            sg_name = sg.get("name") or ""
-            sg_priority = sg.get("priority")
-            sg_status = sg.get("status") or "Not Started"
-
-            sg_sentence = f"kreiraj cilj {sg_name}"
-            if sg_status:
-                sg_sentence += f" status {sg_status}"
-            if sg_priority:
-                sg_sentence += f" priority {sg_priority}"
-
-            sg_specs = COOTranslationService._build_goal_property_specs_from_text(
-                sg_sentence
-            )
-
-            subgoals_cfg.append(
-                {
-                    "db_key": "goals",
-                    "property_specs": sg_specs,
-                    "link_to_parent_goal": True,
-                }
-            )
-
-        # --- TASKS ---
-        tasks_cfg: List[Dict[str, Any]] = []
-        for t in plan.get("tasks") or []:
-            t_name = t.get("name") or ""
-            t_priority = t.get("priority")
-            t_status = t.get("status") or "To Do"
-
-            t_sentence = f"kreiraj task {t_name}"
-            if t_priority:
-                t_sentence += f" priority {t_priority}"
-            if t_status:
-                t_sentence += f" status {t_status}"
-
-            t_specs = COOTranslationService._build_task_property_specs_from_text(
-                t_sentence
-            )
-
-            cfg: Dict[str, Any] = {
-                "db_key": "tasks",
-                "property_specs": t_specs,
-            }
-            if "day_index" in t:
-                cfg["day_index"] = t["day_index"]
-
-            tasks_cfg.append(cfg)
-
-        params: Dict[str, Any] = {
-            "mode": "ceo_goal_plan",
-            "goal": {
-                "db_key": "goals",
-                "property_specs": goal_specs,
-            },
-            "subgoals": subgoals_cfg,
-            "tasks": tasks_cfg,
-        }
-
-        project_name = plan.get("project_name")
-        if project_name:
-            params["project"] = {"name": project_name}
-
-        days_count = plan.get("days_count")
-        if days_count:
-            params["days_count"] = days_count
-
-        return params
-
-    # -----------------------------------------------------
-    # MAIN TRANSLATION ENTRYPOINT
-    # -----------------------------------------------------
-    def translate(
-        self,
-        raw_input: str,
-        *,
-        source: str,
-        context: Dict[str, Any],
+    # ------------------------------------------------------------
+    # JSON / STRUCTURED TEXT
+    # ------------------------------------------------------------
+    def _translate_from_json_text(
+        self, text: str, *, source: str, context: Dict[str, Any]
     ) -> Optional[AICommand]:
-        text = (raw_input or "").strip()
-        lowered = text.lower()
-        context = context or {}
+        """
+        Ako je user zalijepio JSON, podrži:
+        - {"command":"notion_write","intent":"create_page","params":{...}}
+        - {"directive":"goal_task_workflow",...}
+        - {"command":{"command":"notion_write","intent":"create_page","params":{...}}}
+        """
+        t = text.strip()
+        if not (t.startswith("{") and t.endswith("}")):
+            return None
 
-        logger.info("COO TRANSLATE v3 ACTIVE: raw='%s'", text)
+        try:
+            data = json.loads(t)
+        except Exception:
+            return None
 
-        # -----------------------------------------------------
-        # 0) CEO READ-ONLY HARD MATCH
-        # -----------------------------------------------------
-        if text in self.CEO_READ_ONLY_MATCHES:
-            if not is_valid_command(self.READ_ONLY_COMMAND):
-                return None
+        if not isinstance(data, dict):
+            return None
 
+        return self._ai_command_from_dict(data, fallback_ctx=context, source=source)
+
+    def _ai_command_from_dict(
+        self,
+        data: Dict[str, Any],
+        *,
+        fallback_ctx: Dict[str, Any],
+        source: str = "user",
+    ) -> Optional[AICommand]:
+        if not isinstance(data, dict) or not data:
+            return None
+
+        # top-level directive support
+        if "command" not in data and isinstance(data.get("directive"), str):
+            data = dict(data)
+            data["command"] = data.get("directive")
+
+        # nested command dict support
+        inner = data.get("command")
+        if isinstance(inner, dict):
+            merged = dict(data)
+            inner_cmd = inner.get("command") or inner.get("directive")
+            if isinstance(inner_cmd, str) and inner_cmd:
+                merged["command"] = inner_cmd
+            if "intent" in inner and "intent" not in merged:
+                merged["intent"] = inner.get("intent")
+            if "params" in inner and "params" not in merged:
+                merged["params"] = inner.get("params")
+            if "read_only" in inner and "read_only" not in merged:
+                merged["read_only"] = inner.get("read_only")
+            if "metadata" in inner and "metadata" not in merged:
+                merged["metadata"] = inner.get("metadata")
+            data = merged
+
+        cmd_name = str(data.get("command") or "").strip()
+        if not cmd_name:
+            return None
+
+        # allow system_query always, and known set otherwise
+        if cmd_name != self.READ_ONLY_COMMAND and not self.is_valid_command(cmd_name):
+            return None
+
+        intent = data.get("intent")
+        params = data.get("params") if isinstance(data.get("params"), dict) else {}
+        read_only = bool(data.get("read_only", False))
+
+        initiator = str(data.get("initiator") or fallback_ctx.get("initiator") or "ceo")
+        metadata = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
+        if "context_type" not in metadata:
+            metadata["context_type"] = str(fallback_ctx.get("context_type") or "ux")
+        metadata.setdefault("source", source)
+
+        # approval_id/execution_id će AICommand normalize_ids srediti ako fali
+        try:
             return AICommand(
-                command=self.READ_ONLY_COMMAND,
-                read_only=True,
-                params={
-                    "snapshot_type": self.CEO_READ_ONLY_MATCHES[text],
-                },
-                metadata={"context_type": "system"},
-                validated=True,
-            )
-
-        # -----------------------------------------------------
-        # 0.A) CEO GOAL PLAN (centralni cilj + podciljevi + N-dnevni taskovi)
-        # -----------------------------------------------------
-        if lowered.startswith("kreiraj centralni cilj"):
-            logger.info(
-                "COO TRANSLATE: matched CEO GOAL PLAN (central goal + subgoals + tasks)"
-            )
-
-            if not is_valid_command("goal_task_workflow"):
-                return None
-
-            structured_plan = self._parse_ceo_goal_plan_bosnian(text)
-            params = self._build_ceo_goal_plan_params(structured_plan)
-
-            return AICommand(
-                command="goal_task_workflow",
-                intent="run_workflow",
-                read_only=False,
+                command=cmd_name,
+                intent=str(intent) if isinstance(intent, str) and intent.strip() else None,
+                read_only=read_only,
                 params=params,
-                metadata={"context_type": "system", "source": source},
+                initiator=initiator,
                 validated=True,
+                metadata=metadata,
+                execution_id=data.get("execution_id"),
+                approval_id=data.get("approval_id"),
+            )
+        except Exception:
+            # ako payload ima ekstra polja, AICommand(extra=forbid) bi pukao,
+            # pa se držimo minimalnog seta
+            return AICommand(
+                command=cmd_name,
+                intent=str(intent) if isinstance(intent, str) and intent.strip() else None,
+                read_only=read_only,
+                params=params,
+                initiator=initiator,
+                validated=True,
+                metadata=metadata,
             )
 
-        # -----------------------------------------------------
-        # 0.B) CEO NL → GOAL + TASK WORKFLOW (BOSANSKI)
-        # -----------------------------------------------------
-        m_wf = re.search(
-            r"(?i)^kreiraj cilj (.+?) i task (.+)$",
-            text,
+    # ------------------------------------------------------------
+    # EXPLICIT KV (command=..., intent=...)
+    # ------------------------------------------------------------
+    def _translate_from_explicit_kv(
+        self, text: str, *, source: str, context: Dict[str, Any]
+    ) -> Optional[AICommand]:
+        """
+        Podrži “operator friendly” input:
+        - command: notion_write; intent: create_page; db: tasks; name: ...
+        """
+        lower = text.lower()
+        if "command" not in lower and "directive" not in lower:
+            return None
+
+        cmd = self._kv_extract(text, "command") or self._kv_extract(text, "directive")
+        if not cmd:
+            return None
+
+        cmd = cmd.strip()
+        if cmd != self.READ_ONLY_COMMAND and not self.is_valid_command(cmd):
+            return None
+
+        intent = self._kv_extract(text, "intent")
+        read_only = self._kv_extract(text, "read_only")
+        ro_flag = str(read_only or "").strip().lower() in ("1", "true", "yes")
+
+        # minimal params extraction for notion_write
+        params: Dict[str, Any] = {}
+        if cmd == "notion_write":
+            db_key = self._kv_extract(text, "db") or self._kv_extract(text, "db_key")
+            if db_key:
+                params["db_key"] = db_key.strip()
+
+        metadata: Dict[str, Any] = {"context_type": "ux", "source": source}
+        initiator = str(context.get("initiator") or "ceo")
+
+        return AICommand(
+            command=cmd,
+            intent=intent.strip() if isinstance(intent, str) and intent.strip() else None,
+            read_only=ro_flag,
+            params=params,
+            initiator=initiator,
+            validated=True,
+            metadata=metadata,
         )
-        if m_wf:
-            logger.info("COO TRANSLATE: matched GOAL+TASK WORKFLOW")
 
-            if not is_valid_command("goal_task_workflow"):
-                return None
+    # ------------------------------------------------------------
+    # WORKFLOW TRANSLATION
+    # ------------------------------------------------------------
+    def _translate_goal_task_workflow(
+        self, text: str, *, source: str, context: Dict[str, Any]
+    ) -> Optional[AICommand]:
+        """
+        Detekcija za workflow:
+        - eksplicitno “goal_task_workflow”
+        - ili obrazac: “goal: ...; tasks: ...” / multi-line with “tasks”
+        """
+        t = text.strip()
 
-            goal_segment = "kreiraj cilj " + m_wf.group(1).strip()
-            task_segment = "kreiraj task " + m_wf.group(2).strip()
+        if "goal_task_workflow" in t:
+            # očekujemo da je user dao barem nekakav structured segment
+            payload = self._try_extract_inline_json(t)
+            if isinstance(payload, dict):
+                goal = payload.get("goal")
+                tasks = payload.get("tasks")
+                if isinstance(goal, dict) and isinstance(tasks, list) and tasks:
+                    return AICommand(
+                        command="goal_task_workflow",
+                        intent=None,
+                        read_only=False,
+                        params={"goal": goal, "tasks": tasks},
+                        initiator=str(context.get("initiator") or "ceo"),
+                        validated=True,
+                        metadata={"context_type": "workflow", "source": source},
+                    )
 
-            goal_specs = self._build_goal_property_specs_from_text(goal_segment)
-            task_specs = self._build_task_property_specs_from_text(task_segment)
-
-            return AICommand(
-                command="goal_task_workflow",
-                intent="run_workflow",
-                read_only=False,
-                params={
-                    "goal": {
-                        "db_key": "goals",
-                        "property_specs": goal_specs,
+        # heuristic: “goal” + “task(s)” in same text
+        if re.search(r"\b(goal|cilj)\b", t, flags=re.IGNORECASE) and re.search(
+            r"\b(task|tasks|zadatak|zadaci)\b", t, flags=re.IGNORECASE
+        ):
+            # minimal parse:
+            # - first line / sentence is goal title
+            # - subsequent “task:” lines become tasks
+            goal_title, task_titles = self._split_goal_and_tasks(t)
+            if goal_title and task_titles:
+                goal_specs = {
+                    "db_key": "goals",
+                    "property_specs": {
+                        "Name": {"type": "title", "text": goal_title},
+                        "Status": {"type": "status", "name": "Not started"},
                     },
-                    "tasks": [
+                }
+                tasks_specs: List[Dict[str, Any]] = []
+                for tt in task_titles:
+                    tasks_specs.append(
                         {
                             "db_key": "tasks",
-                            "property_specs": task_specs,
-                        }
-                    ],
-                },
-                metadata={"context_type": "system", "source": source},
-                validated=True,
-            )
-
-        # -----------------------------------------------------
-        # 0.C) CEO NL → 7-DAY PLAN (GOAL + 7 TASKS)
-        # -----------------------------------------------------
-        if lowered.startswith("kreiraj 7 day plan za cilj "):
-            logger.info("COO TRANSLATE: matched BOSNIAN 7-DAY PLAN WORKFLOW")
-
-            if not is_valid_command("goal_task_workflow"):
-                return None
-
-            prefix = "kreiraj 7 day plan za cilj "
-            goal_tail = text[len(prefix) :].strip()
-
-            synthetic_goal_sentence = "kreiraj cilj " + goal_tail
-            goal_specs = self._build_goal_property_specs_from_text(
-                synthetic_goal_sentence
-            )
-
-            start_date = self._extract_segment(
-                r"start\s+(\d{4}-\d{2}-\d{2})",
-                text,
-            )
-
-            params: Dict[str, Any] = {
-                "mode": "7day",
-                "goal": {
-                    "db_key": "goals",
-                    "property_specs": goal_specs,
-                },
-                "tasks": [],
-            }
-
-            if start_date:
-                params["start_date"] = start_date
-
-            return AICommand(
-                command="goal_task_workflow",
-                intent="run_workflow",
-                read_only=False,
-                params=params,
-                metadata={"context_type": "system", "source": source},
-                validated=True,
-            )
-
-        # -----------------------------------------------------
-        # 0.D) CEO NL → FLP MANAGER PLAN (GOAL + TEMPLATE TASKS)
-        # -----------------------------------------------------
-        if lowered.startswith("kreiraj flp manager plan za cilj "):
-            logger.info("COO TRANSLATE: matched FLP MANAGER PLAN WORKFLOW")
-
-            if not is_valid_command("goal_task_workflow"):
-                return None
-
-            prefix = "kreiraj flp manager plan za cilj "
-            goal_tail = text[len(prefix) :].strip()
-
-            synthetic_goal_sentence = "kreiraj cilj " + goal_tail
-            goal_specs = self._build_goal_property_specs_from_text(
-                synthetic_goal_sentence
-            )
-
-            goal_name: Optional[str] = None
-            name_spec = goal_specs.get("Name")
-            if isinstance(name_spec, dict):
-                goal_name = name_spec.get("text") or None
-
-            base_task_name = goal_name or "FLP manager task"
-
-            tasks: List[Dict[str, Any]] = []
-            for i in range(1, 6):
-                tasks.append(
-                    {
-                        "db_key": "tasks",
-                        "property_specs": {
-                            "Name": {
-                                "type": "title",
-                                "text": f"{base_task_name} — step {i}",
+                            "property_specs": {
+                                "Name": {"type": "title", "text": tt},
+                                "Status": {"type": "select", "name": "Not started"},
                             },
-                        },
-                    }
+                        }
+                    )
+
+                return AICommand(
+                    command="goal_task_workflow",
+                    intent=None,
+                    read_only=False,
+                    params={"goal": goal_specs, "tasks": tasks_specs},
+                    initiator=str(context.get("initiator") or "ceo"),
+                    validated=True,
+                    metadata={"context_type": "workflow", "source": source},
                 )
 
-            return AICommand(
-                command="goal_task_workflow",
-                intent="run_workflow",
-                read_only=False,
-                params={
-                    "mode": "flp_manager",
-                    "goal": {
-                        "db_key": "goals",
-                        "property_specs": goal_specs,
-                    },
-                    "tasks": tasks,
-                },
-                metadata={"context_type": "system", "source": source},
-                validated=True,
-            )
-
-        # -----------------------------------------------------
-        # 0.1) CEO NL → TASK CREATE (NOTION DSL)  [FIX: podrži ":" i "zadatak" i "novi"]
-        # -----------------------------------------------------
-        m_task_create = re.match(
-            r"(?i)^(kreiraj|napravi)\s+(novi\s+)?(task|zadatak)\s*[:\-]?\s*(.+)$",
-            text.strip(),
-        )
-        if m_task_create:
-            logger.info("COO TRANSLATE: matched BOSNIAN TASK CREATE")
-
-            if not is_valid_command("notion_write"):
-                return None
-
-            tail = m_task_create.group(4).strip()
-            synthetic = "kreiraj task " + tail
-            property_specs = self._build_task_property_specs_from_text(synthetic)
-
-            return AICommand(
-                command="notion_write",
-                intent="create_page",
-                read_only=False,
-                params={
-                    "db_key": "tasks",
-                    "property_specs": property_specs,
-                },
-                metadata={"context_type": "system", "source": source},
-                validated=True,
-            )
-
-        # -----------------------------------------------------
-        # 0.2.a) CEO NL → TASK STATUS SUMMARY (REPORT)
-        # -----------------------------------------------------
-        if (
-            "sažetak taskova po statusu" in lowered
-            or "sazetak taskova po statusu" in lowered
+        # KPI weekly summary “special workflow” (mapirano u ExecutionOrchestrator)
+        #
+        # FIX: test koristi riječ "rezime", a ranije je matcher tražio samo summary/sažetak.
+        # Podržimo i: rezime, rezime/rezimé varijante bez dijakritike, pregled.
+        if re.search(r"\bkpi\b", t, flags=re.IGNORECASE) and re.search(
+            r"\b(weekly|sedmic|tjedn)\b", t, flags=re.IGNORECASE
+        ) and re.search(
+            r"\b(summary|sažetak|sazetak|rezime|pregled)\b", t, flags=re.IGNORECASE
         ):
-            logger.info("COO TRANSLATE: matched TASK STATUS SUMMARY REPORT")
-
-            if not is_valid_command("notion_write"):
-                return None
-
-            return AICommand(
-                command="notion_write",
-                intent="query_database",
-                read_only=True,
-                params={
-                    "db_key": "tasks",
-                    "property_specs": {},
-                },
-                metadata={
-                    "context_type": "system",
-                    "source": source,
-                    "report_type": "tasks_by_status",
-                },
-                validated=True,
-            )
-
-        # -----------------------------------------------------
-        # 0.2.b) CEO NL → GOAL STATUS SUMMARY (REPORT)
-        # -----------------------------------------------------
-        if (
-            "sažetak ciljeva po statusu" in lowered
-            or "sazetak ciljeva po statusu" in lowered
-        ):
-            logger.info("COO TRANSLATE: matched GOAL STATUS SUMMARY REPORT")
-
-            if not is_valid_command("notion_write"):
-                return None
-
-            return AICommand(
-                command="notion_write",
-                intent="query_database",
-                read_only=True,
-                params={
-                    "db_key": "goals",
-                    "property_specs": {},
-                },
-                metadata={
-                    "context_type": "system",
-                    "source": source,
-                    "report_type": "goals_by_status",
-                },
-                validated=True,
-            )
-
-        # -----------------------------------------------------
-        # 0.2.c) CEO NL → KPI WEEKLY SUMMARY WORKFLOW (KPI → AI SUMMARY DB)
-        # -----------------------------------------------------
-        if "weekly kpi" in lowered and (
-            "rezime" in lowered or "sažetak" in lowered or "sazetak" in lowered
-        ):
-            logger.info(
-                "COO TRANSLATE: matched KPI WEEKLY SUMMARY WORKFLOW (KPI → AI SUMMARY DB)"
-            )
-
-            if not is_valid_command("goal_task_workflow"):
-                return None
-
             time_scope = "this_week"
-            if (
-                "prošlu sedmicu" in lowered
-                or "proslu sedmicu" in lowered
-                or "prošle sedmice" in lowered
-                or "prosle sedmice" in lowered
-            ):
+            if re.search(r"\b(last|prosla|prošla)\b", t, flags=re.IGNORECASE):
                 time_scope = "last_week"
 
             return AICommand(
                 command="goal_task_workflow",
-                intent="run_workflow",
+                intent=None,
                 read_only=False,
                 params={
                     "workflow_type": "kpi_weekly_summary",
                     "db_key": "kpi",
                     "time_scope": time_scope,
                 },
-                metadata={
-                    "context_type": "system",
-                    "source": source,
-                    "report_type": "kpi_weekly_summary",
-                    "time_scope": time_scope,
-                },
+                initiator=str(context.get("initiator") or "ceo"),
                 validated=True,
-            )
-
-        # -----------------------------------------------------
-        # 0.2.d) CEO NL → KPI PERIOD SUMMARY (Qx YYYY)
-        # -----------------------------------------------------
-        if (
-            "kpi" in lowered
-            and ("rezime" in lowered or "sažetak" in lowered or "sazetak" in lowered)
-            and "weekly kpi" not in lowered
-        ):
-            m_period = re.search(r"\bq([1-4])\s*(20\d{2})", lowered)
-            if m_period:
-                logger.info("COO TRANSLATE: matched KPI PERIOD SUMMARY")
-
-                if not is_valid_command("notion_write"):
-                    return None
-
-                q = m_period.group(1)
-                year = m_period.group(2)
-                period_label = f"Q{q} {year}"
-
-                property_specs: Dict[str, Any] = {
-                    "Period": {
-                        "type": "select",
-                        "name": period_label,
-                    }
-                }
-
-                return AICommand(
-                    command="notion_write",
-                    intent="query_database",
-                    read_only=True,
-                    params={
-                        "db_key": "kpi",
-                        "property_specs": property_specs,
-                    },
-                    metadata={
-                        "context_type": "system",
-                        "source": source,
-                        "report_type": "kpi_period_summary",
-                        "period": period_label,
-                    },
-                    validated=True,
-                )
-
-        # -----------------------------------------------------
-        # 0.2.e) CEO NL → KPI TOP N BY STATUS
-        # -----------------------------------------------------
-        if (
-            "kpi" in lowered
-            and "top" in lowered
-            and ("statusom" in lowered or "status" in lowered)
-        ):
-            logger.info("COO TRANSLATE: matched KPI TOP N BY STATUS")
-
-            if not is_valid_command("notion_write"):
-                return None
-
-            m_top = re.search(r"top\s+(\d+)", lowered)
-            limit: Optional[int] = None
-            if m_top:
-                try:
-                    limit = int(m_top.group(1))
-                except ValueError:
-                    limit = None
-
-            status_value = self._extract_segment(
-                r"(?:statusom|status)\s+(.+)$",
-                text,
-            )
-
-            property_specs: Dict[str, Any] = {}
-            if status_value:
-                property_specs["Status"] = {
-                    "type": "select",
-                    "name": status_value,
-                }
-
-            metadata: Dict[str, Any] = {
-                "context_type": "system",
-                "source": source,
-                "report_type": "kpi_top_by_status",
-            }
-            if limit is not None:
-                metadata["limit"] = limit
-            if status_value:
-                metadata["status"] = status_value
-
-            return AICommand(
-                command="notion_write",
-                intent="query_database",
-                read_only=True,
-                params={
-                    "db_key": "kpi",
-                    "property_specs": property_specs,
-                },
-                metadata=metadata,
-                validated=True,
-            )
-
-        # -----------------------------------------------------
-        # 0.2.f) CEO NL → SOP LOOKUP (READ-ONLY)
-        # -----------------------------------------------------
-        if "sop" in lowered or "proces" in lowered or "procedure" in lowered:
-            for keyword, db_key in self.SOP_DB_KEYWORDS.items():
-                if keyword in lowered:
-                    logger.info(
-                        "COO TRANSLATE: matched SOP LOOKUP (%s -> %s)", keyword, db_key
-                    )
-
-                    if not is_valid_command("notion_write"):
-                        return None
-
-                    return AICommand(
-                        command="notion_write",
-                        intent="query_database",
-                        read_only=True,
-                        params={
-                            "db_key": db_key,
-                            "property_specs": {},
-                        },
-                        metadata={
-                            "context_type": "system",
-                            "source": source,
-                            "report_type": "sop_lookup",
-                            "sop_key": db_key,
-                            "keyword": keyword,
-                        },
-                        validated=True,
-                    )
-
-        # -----------------------------------------------------
-        # 0.2.g) CEO NL → AGENT EXCHANGE OPEN REQUESTS (READ-ONLY)
-        # -----------------------------------------------------
-        if (
-            "agent exchange" in lowered or ("zahtjev" in lowered and "agent" in lowered)
-        ) and ("otvorene" in lowered or "otvoreni" in lowered or "open" in lowered):
-            logger.info("COO TRANSLATE: matched AGENT EXCHANGE OPEN REQUESTS")
-
-            if not is_valid_command("notion_write"):
-                return None
-
-            property_specs: Dict[str, Any] = {
-                "Status": {
-                    "type": "select",
-                    "name": "Open",
-                }
-            }
-
-            return AICommand(
-                command="notion_write",
-                intent="query_database",
-                read_only=True,
-                params={
-                    "db_key": "agent_exchange",
-                    "property_specs": property_specs,
-                },
-                metadata={
-                    "context_type": "system",
-                    "source": source,
-                    "report_type": "agent_exchange_open",
-                },
-                validated=True,
-            )
-
-        # -----------------------------------------------------
-        # 0.2) CEO NL → TASK QUERY (READ, NOTION DSL)
-        # -----------------------------------------------------
-        if "taskove" in lowered and "statusom" in lowered:
-            logger.info("COO TRANSLATE: matched BOSNIAN TASK QUERY")
-
-            if not is_valid_command("notion_write"):
-                return None
-
-            status_value = self._extract_segment(
-                r"statusom\s+(.+?)(?=\s+i\s+prioritetom\b|$)", text
-            )
-            priority_value = self._extract_segment(r"prioritetom\s+(\w+)", text)
-            date_range = self._extract_date_range(text)
-
-            property_specs: Dict[str, Any] = {}
-            if status_value:
-                property_specs["Status"] = {
-                    "type": "select",
-                    "name": status_value,
-                }
-            if priority_value:
-                property_specs["Priority"] = {
-                    "type": "select",
-                    "name": priority_value,
-                }
-            if date_range:
-                property_specs["Due Date"] = {
-                    "type": "date_range",
-                    "start": date_range["start"],
-                    "end": date_range["end"],
-                }
-
-            return AICommand(
-                command="notion_write",
-                intent="query_database",
-                read_only=True,
-                params={
-                    "db_key": "tasks",
-                    "property_specs": property_specs,
-                },
-                metadata={"context_type": "system", "source": source},
-                validated=True,
-            )
-
-        # -----------------------------------------------------
-        # 0.3.a) CEO NL → GOAL CREATE SYNONYMS ("napravi novi cilj ...")
-        # -----------------------------------------------------
-        m_new_goal = re.match(
-            r"(?i)^(napravi|naprvi)\s+(novi\s+)?cilj\s*[:\-]?\s*(.+)$",
-            text.strip(),
-        )
-        if m_new_goal:
-            logger.info(
-                "COO TRANSLATE: matched BOSNIAN GOAL CREATE (NAPRAVI NOVI CILJ)"
-            )
-
-            if not is_valid_command("notion_write"):
-                return None
-
-            tail = m_new_goal.group(3).strip()
-            synthetic = "kreiraj cilj " + tail
-
-            property_specs = self._build_goal_property_specs_from_text(synthetic)
-
-            return AICommand(
-                command="notion_write",
-                intent="create_page",
-                read_only=False,
-                params={
-                    "db_key": "goals",
-                    "property_specs": property_specs,
-                },
-                metadata={"context_type": "system", "source": source},
-                validated=True,
-            )
-
-        # -----------------------------------------------------
-        # 0.3.b) CEO NL → PROJECT CREATE (KREIRAJ / NAPRAVI PROJEKT ...)
-        # -----------------------------------------------------
-        m_new_project = re.match(
-            r"(?i)^(kreiraj|napravi)\s+(novi\s+)?projekt\s*[:\-]?\s*(.+)$",
-            text.strip(),
-        )
-        if m_new_project:
-            logger.info("COO TRANSLATE: matched PROJECT CREATE")
-
-            if not is_valid_command("notion_write"):
-                return None
-
-            tail = m_new_project.group(3).strip()
-            synthetic = "kreiraj projekt " + tail
-
-            property_specs = self._build_project_property_specs_from_text(synthetic)
-
-            return AICommand(
-                command="notion_write",
-                intent="create_page",
-                read_only=False,
-                params={
-                    "db_key": "projects",
-                    "property_specs": property_specs,
-                },
-                metadata={"context_type": "system", "source": source},
-                validated=True,
-            )
-
-        # -----------------------------------------------------
-        # 0.3) CEO NL → GOAL CREATE (NOTION DSL, Bosanski)
-        # -----------------------------------------------------
-        if lowered.startswith("kreiraj cilj "):
-            logger.info("COO TRANSLATE: matched BOSNIAN GOAL CREATE")
-
-            if not is_valid_command("notion_write"):
-                return None
-
-            property_specs = self._build_goal_property_specs_from_text(text)
-
-            return AICommand(
-                command="notion_write",
-                intent="create_page",
-                read_only=False,
-                params={
-                    "db_key": "goals",
-                    "property_specs": property_specs,
-                },
-                metadata={"context_type": "system", "source": source},
-                validated=True,
-            )
-
-        # -----------------------------------------------------
-        # 0.4) CEO NL → GOAL QUERY (READ, Notion DSL)
-        # -----------------------------------------------------
-        if "ciljeve" in lowered and "statusom" in lowered:
-            logger.info("COO TRANSLATE: matched BOSNIAN GOAL QUERY")
-
-            if not is_valid_command("notion_write"):
-                return None
-
-            status_value = self._extract_segment(
-                r"statusom\s+(.+?)(?=\s+i\s+prioritetom\b|$)", text
-            )
-            priority_value = self._extract_segment(r"prioritetom\s+(\w+)", text)
-            date_range = self._extract_date_range(text)
-            if not date_range:
-                date_range = self._extract_quarter_range(text)
-
-            property_specs: Dict[str, Any] = {}
-            if status_value:
-                property_specs["Status"] = {
-                    "type": "select",
-                    "name": status_value,
-                }
-            if priority_value:
-                property_specs["Priority"] = {
-                    "type": "select",
-                    "name": priority_value,
-                }
-            if date_range:
-                property_specs["Deadline"] = {
-                    "type": "date_range",
-                    "start": date_range["start"],
-                    "end": date_range["end"],
-                }
-
-            return AICommand(
-                command="notion_write",
-                intent="query_database",
-                read_only=True,
-                params={
-                    "db_key": "goals",
-                    "property_specs": property_specs,
-                },
-                metadata={"context_type": "system", "source": source},
-                validated=True,
-            )
-
-        # -----------------------------------------------------
-        # 0.4.a) CEO NL → PROJECT QUERY BY STATUS (READ)
-        # -----------------------------------------------------
-        if (
-            "projekat" in lowered
-            or "projekti" in lowered
-            or "projekte" in lowered
-            or "projekt" in lowered
-        ) and "statusu" in lowered:
-            logger.info("COO TRANSLATE: matched PROJECT QUERY BY STATUS")
-
-            if not is_valid_command("notion_write"):
-                return None
-
-            status_value = self._extract_segment(
-                r"statusu\s+(.+)$",
-                text,
-            )
-
-            property_specs: Dict[str, Any] = {}
-            if status_value:
-                property_specs["Status"] = {
-                    "type": "select",
-                    "name": status_value,
-                }
-
-            return AICommand(
-                command="notion_write",
-                intent="query_database",
-                read_only=True,
-                params={
-                    "db_key": "projects",
-                    "property_specs": property_specs,
-                },
-                metadata={"context_type": "system", "source": source},
-                validated=True,
-            )
-
-        # -----------------------------------------------------
-        # 0.5) CEO NL → TASK STATUS UPDATE (BY PAGE ID)
-        # -----------------------------------------------------
-        m_task_status = re.search(
-            r"(?i)^(oznaci|označi)\s+task\s+([0-9a-f\-]{36})\s+kao\s+(.+)$",
-            text.strip(),
-        )
-        if m_task_status:
-            logger.info("COO TRANSLATE: matched BOSNIAN TASK STATUS UPDATE")
-
-            if not is_valid_command("notion_write"):
-                return None
-
-            page_id = m_task_status.group(2).strip()
-            status_value = m_task_status.group(3).strip()
-
-            property_specs: Dict[str, Any] = {
-                "Status": {
-                    "type": "select",
-                    "name": status_value,
-                }
-            }
-
-            return AICommand(
-                command="notion_write",
-                intent="update_page",
-                read_only=False,
-                params={
-                    "page_id": page_id,
-                    "property_specs": property_specs,
-                },
-                metadata={"context_type": "system", "source": source},
-                validated=True,
-            )
-
-        # -----------------------------------------------------
-        # 0.6) CEO NL → GOAL STATUS UPDATE (BY PAGE ID)
-        # -----------------------------------------------------
-        m_goal_status = re.search(
-            r"(?i)^(oznaci|označi)\s+cilj\s+([0-9a-f\-]{36})\s+kao\s+(.+)$",
-            text.strip(),
-        )
-        if m_goal_status:
-            logger.info("COO TRANSLATE: matched BOSNIAN GOAL STATUS UPDATE")
-
-            if not is_valid_command("notion_write"):
-                return None
-
-            page_id = m_goal_status.group(2).strip()
-            status_value = m_goal_status.group(3).strip()
-
-            property_specs: Dict[str, Any] = {
-                "Status": {
-                    "type": "select",
-                    "name": status_value,
-                }
-            }
-
-            return AICommand(
-                command="notion_write",
-                intent="update_page",
-                read_only=False,
-                params={
-                    "page_id": page_id,
-                    "property_specs": property_specs,
-                },
-                metadata={"context_type": "system", "source": source},
-                validated=True,
-            )
-
-        # -----------------------------------------------------
-        # 0.7) CEO NL → TASK PRIORITY UPDATE (BY PAGE ID)
-        # -----------------------------------------------------
-        m_task_prio = re.search(
-            r"(?i)^promijeni prioritet taska\s+([0-9a-f\-]{36})\s+u\s+(.+)$",
-            text.strip(),
-        )
-        if m_task_prio:
-            logger.info("COO TRANSLATE: matched BOSNIAN TASK PRIORITY UPDATE")
-
-            if not is_valid_command("notion_write"):
-                return None
-
-            page_id = m_task_prio.group(1).strip()
-            prio_value = m_task_prio.group(2).strip()
-
-            property_specs: Dict[str, Any] = {
-                "Priority": {
-                    "type": "select",
-                    "name": prio_value,
-                }
-            }
-
-            return AICommand(
-                command="notion_write",
-                intent="update_page",
-                read_only=False,
-                params={
-                    "page_id": page_id,
-                    "property_specs": property_specs,
-                },
-                metadata={"context_type": "system", "source": source},
-                validated=True,
-            )
-
-        # -----------------------------------------------------
-        # 0.8) CEO NL → GOAL PRIORITY UPDATE (BY PAGE ID)
-        # -----------------------------------------------------
-        m_goal_prio = re.search(
-            r"(?i)^promijeni prioritet cilja\s+([0-9a-f\-]{36})\s+u\s+(.+)$",
-            text.strip(),
-        )
-        if m_goal_prio:
-            logger.info("COO TRANSLATE: matched BOSNIAN GOAL PRIORITY UPDATE")
-
-            if not is_valid_command("notion_write"):
-                return None
-
-            page_id = m_goal_prio.group(1).strip()
-            prio_value = m_goal_prio.group(2).strip()
-
-            property_specs: Dict[str, Any] = {
-                "Priority": {
-                    "type": "select",
-                    "name": prio_value,
-                }
-            }
-
-            return AICommand(
-                command="notion_write",
-                intent="update_page",
-                read_only=False,
-                params={
-                    "page_id": page_id,
-                    "property_specs": property_specs,
-                },
-                metadata={"context_type": "system", "source": source},
-                validated=True,
-            )
-
-        # -----------------------------------------------------
-        # 0.9) CEO NL → TASK DUE DATE UPDATE (BY PAGE ID)
-        # -----------------------------------------------------
-        m_task_due = re.search(
-            r"(?i)^promijeni due date taska\s+([0-9a-f\-]{36})\s+na\s+(\d{4}-\d{2}-\d{2})$",
-            text.strip(),
-        )
-        if m_task_due:
-            logger.info("COO TRANSLATE: matched BOSNIAN TASK DUE DATE UPDATE")
-
-            if not is_valid_command("notion_write"):
-                return None
-
-            page_id = m_task_due.group(1).strip()
-            due_date = m_task_due.group(2).strip()
-
-            property_specs: Dict[str, Any] = {
-                "Due Date": {
-                    "type": "date",
-                    "start": due_date,
-                }
-            }
-
-            return AICommand(
-                command="notion_write",
-                intent="update_page",
-                read_only=False,
-                params={
-                    "page_id": page_id,
-                    "property_specs": property_specs,
-                },
-                metadata={"context_type": "system", "source": source},
-                validated=True,
-            )
-
-        # -----------------------------------------------------
-        # 0.10) CEO NL → GOAL DEADLINE UPDATE (BY PAGE ID)
-        # -----------------------------------------------------
-        m_goal_deadline = re.search(
-            r"(?i)^promijeni (?:deadline|due date) cilja\s+([0-9a-f\-]{36})\s+na\s+(\d{4}-\d{2}-\d{2})$",
-            text.strip(),
-        )
-        if m_goal_deadline:
-            logger.info("COO TRANSLATE: matched BOSNIAN GOAL DEADLINE UPDATE")
-
-            if not is_valid_command("notion_write"):
-                return None
-
-            page_id = m_goal_deadline.group(1).strip()
-            deadline = m_goal_deadline.group(2).strip()
-
-            property_specs: Dict[str, Any] = {
-                "Deadline": {
-                    "type": "date",
-                    "start": deadline,
-                }
-            }
-
-            return AICommand(
-                command="notion_write",
-                intent="update_page",
-                read_only=False,
-                params={
-                    "page_id": page_id,
-                    "property_specs": property_specs,
-                },
-                metadata={"context_type": "system", "source": source},
-                validated=True,
-            )
-
-        # -----------------------------------------------------
-        # 1) INTENT CLASSIFICATION (SVE OSTALO)
-        # -----------------------------------------------------
-        intent: Intent = self.intent_classifier.classify(raw_input, source=source)
-
-        if intent.confidence < self.intent_classifier.DEFAULT_CONFIDENCE_THRESHOLD:
-            return None
-
-        if not intent.is_executable:
-            return None
-
-        # -----------------------------------------------------
-        # 2) SYSTEM QUERY (READ-ONLY)
-        # -----------------------------------------------------
-        if intent.type == IntentType.SYSTEM_QUERY:
-            if not is_valid_command(self.READ_ONLY_COMMAND):
-                return None
-
-            return AICommand(
-                command=self.READ_ONLY_COMMAND,
-                read_only=True,
-                params={},
-                metadata={"context_type": "system"},
-                validated=True,
-            )
-
-        # -----------------------------------------------------
-        # 3) GOALS LIST (READ)
-        # -----------------------------------------------------
-        if intent.type == IntentType.GOALS_LIST:
-            if not is_valid_command("list_goals"):
-                return None
-
-            return AICommand(
-                command="list_goals",
-                read_only=True,
-                params={},
-                metadata={"context_type": "system"},
-                validated=True,
-            )
-
-        # -----------------------------------------------------
-        # 4) GOAL CREATE (WRITE — HAPPY PATH V1, ENGLISH)
-        # -----------------------------------------------------
-        if intent.type == IntentType.GOAL_CREATE:
-            params: Dict[str, Any] = {"name": raw_input}
-
-            m_q = re.search(r"\bq([1-4])\b", lowered)
-            if m_q:
-                params["quarter"] = f"Q{m_q.group(1)}"
-
-            m_year = re.search(r"\b(20\d{2})\b", lowered)
-            if m_year:
-                params["year"] = int(m_year.group(1))
-
-            m_pct = re.search(r"(\d{1,3})\s*%+", lowered)
-            if m_pct:
-                params["target_pct"] = int(m_pct.group(1))
-
-            return AICommand(
-                command="goal_write",
-                intent="create_goal",
-                read_only=False,
-                params=params,
-                metadata={"context_type": "system"},
-                validated=True,
+                metadata={"context_type": "workflow", "source": source},
             )
 
         return None
+
+    # ------------------------------------------------------------
+    # GOAL TRANSLATION
+    # ------------------------------------------------------------
+    def _translate_goal(
+        self, text: str, *, source: str, context: Dict[str, Any]
+    ) -> Optional[AICommand]:
+        t = text.strip()
+
+        # “list goals”
+        if re.search(
+            r"\b(list\s+goals|prikaži\s+ciljeve|prikazi\s+ciljeve)\b",
+            t,
+            re.IGNORECASE,
+        ):
+            return AICommand(
+                command="list_goals",
+                intent="read",
+                read_only=True,
+                params={"query": t},
+                initiator=str(context.get("initiator") or "ceo"),
+                validated=True,
+                metadata={"context_type": "ux", "source": source},
+            )
+
+        # create goal (EN/BS)
+        if not re.search(r"^(create|kreiraj|napravi|dodaj)\s+", t, re.IGNORECASE):
+            return None
+        if not re.search(r"\b(goal|cilj)\b", t, re.IGNORECASE):
+            return None
+
+        fields = self._parse_common_fields(t, entity="goal")
+        if not fields.title:
+            return None
+
+        specs: Dict[str, Any] = {
+            "Name": {"type": "title", "text": fields.title},
+        }
+
+        # goals schema uses Status as status-type in registry; safe default
+        specs["Status"] = {"type": "status", "name": fields.status or "Not started"}
+
+        if fields.priority:
+            specs["Priority"] = {"type": "select", "name": fields.priority}
+
+        if fields.due:
+            specs["Deadline"] = {"type": "date", "start": fields.due}
+
+        if fields.description:
+            specs["Description"] = {"type": "rich_text", "text": fields.description}
+
+        return AICommand(
+            command="notion_write",
+            intent="create_page",
+            read_only=False,
+            params={"db_key": "goals", "property_specs": specs},
+            initiator=str(context.get("initiator") or "ceo"),
+            validated=True,
+            metadata={"context_type": "ux", "source": source},
+        )
+
+    # ------------------------------------------------------------
+    # TASK TRANSLATION
+    # ------------------------------------------------------------
+    def _translate_task(
+        self, text: str, *, source: str, context: Dict[str, Any]
+    ) -> Optional[AICommand]:
+        t = text.strip()
+
+        if not re.search(r"^(create|kreiraj|napravi|dodaj)\s+", t, re.IGNORECASE):
+            return None
+
+        # task-ish keyword
+        if not re.search(r"\b(task|zadatak|todo|to-do)\b", t, re.IGNORECASE):
+            return None
+
+        fields = self._parse_common_fields(t, entity="task")
+        if not fields.title:
+            return None
+
+        specs: Dict[str, Any] = {
+            "Name": {"type": "title", "text": fields.title},
+            "Status": {"type": "select", "name": fields.status or "Not started"},
+        }
+
+        if fields.priority:
+            specs["Priority"] = {"type": "select", "name": fields.priority}
+
+        if fields.due:
+            specs["Due Date"] = {"type": "date", "start": fields.due}
+
+        if fields.description:
+            specs["Description"] = {"type": "rich_text", "text": fields.description}
+
+        return AICommand(
+            command="notion_write",
+            intent="create_page",
+            read_only=False,
+            params={"db_key": "tasks", "property_specs": specs},
+            initiator=str(context.get("initiator") or "ceo"),
+            validated=True,
+            metadata={"context_type": "ux", "source": source},
+        )
+
+    # ------------------------------------------------------------
+    # PARSING HELPERS
+    # ------------------------------------------------------------
+    def _parse_common_fields(self, text: str, *, entity: str) -> _ParsedFields:
+        """
+        Minimal deterministic parsing:
+        - title: ostatak teksta bez “create/kreiraj ... task/goal”
+        - status: “status X”
+        - priority: “priority X” / “prioritet X”
+        - due: “due YYYY-MM-DD” / “rok YYYY-MM-DD” / “deadline YYYY-MM-DD”
+        - description: “opis ...” ili trailing segment nakon “desc/description”
+        """
+        raw = text.strip()
+
+        # status
+        status = self._extract_after_keyword(raw, ["status"])
+        priority = self._extract_after_keyword(raw, ["prioritet", "priority"])
+        due_raw = self._extract_after_keyword(raw, ["due", "rok", "deadline"])
+        due = self._try_parse_date_to_iso(due_raw) if due_raw else None
+
+        description = self._extract_after_keyword(raw, ["opis", "description", "desc"])
+
+        # remove the fields segments from title candidate
+        cleaned = raw
+        cleaned = re.sub(
+            r"(?i)\b(status|prioritet|priority|due|rok|deadline|opis|description|desc)\b.*$",
+            "",
+            cleaned,
+        ).strip(" ,.-")
+
+        # drop leading verb + entity tokens
+        if entity == "goal":
+            cleaned = re.sub(
+                r"(?i)^(create|kreiraj|napravi|dodaj)\s+(goal|cilj)\s*[:\-]?\s*",
+                "",
+                cleaned,
+            ).strip()
+        else:
+            cleaned = re.sub(
+                r"(?i)^(create|kreiraj|napravi|dodaj)\s+(task|zadatak|todo|to-do)\s*[:\-]?\s*",
+                "",
+                cleaned,
+            ).strip()
+
+        title = cleaned.strip(" ,.-")
+
+        return _ParsedFields(
+            title=title,
+            status=status.strip(" ,.-") if isinstance(status, str) and status.strip() else None,
+            priority=priority.strip(" ,.-") if isinstance(priority, str) and priority.strip() else None,
+            due=due,
+            description=description.strip() if isinstance(description, str) and description.strip() else None,
+        )
+
+    @staticmethod
+    def _extract_after_keyword(text: str, keywords: List[str]) -> Optional[str]:
+        for kw in keywords:
+            m = re.search(rf"(?i)\b{re.escape(kw)}\b\s*[: ]+\s*([^\n,;]+)", text)
+            if m:
+                return (m.group(1) or "").strip()
+        return None
+
+    @staticmethod
+    def _try_parse_date_to_iso(value: str) -> Optional[str]:
+        """
+        Accept:
+        - YYYY-MM-DD
+        - YYYY/MM/DD
+        - DD.MM.YYYY
+        Returns ISO date: YYYY-MM-DD (no time).
+        """
+        if not isinstance(value, str) or not value.strip():
+            return None
+
+        v = value.strip()
+
+        # YYYY-MM-DD or YYYY/MM/DD
+        m = re.match(r"^(\d{4})[-/](\d{2})[-/](\d{2})$", v)
+        if m:
+            y, mo, d = m.group(1), m.group(2), m.group(3)
+            return f"{y}-{mo}-{d}"
+
+        # DD.MM.YYYY
+        m = re.match(r"^(\d{2})\.(\d{2})\.(\d{4})\.?$", v)
+        if m:
+            d, mo, y = m.group(1), m.group(2), m.group(3)
+            return f"{y}-{mo}-{d}"
+
+        # best-effort: try datetime parse for common formats
+        for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%d.%m.%Y"):
+            try:
+                dt = datetime.strptime(v, fmt)
+                return dt.strftime("%Y-%m-%d")
+            except Exception:
+                continue
+
+        return None
+
+    @staticmethod
+    def _looks_like_question(text: str) -> bool:
+        t = (text or "").strip()
+        if not t:
+            return False
+        if "?" in t:
+            return True
+        if re.match(r"(?i)^(šta|sta|kako|zašto|zasto|why|how|what)\b", t):
+            return True
+        # “read/inspect” verbs
+        if re.search(r"(?i)\b(prikaži|prikazi|pogledaj|procitaj|read|show|list)\b", t):
+            return True
+        return False
+
+    @staticmethod
+    def _kv_extract(text: str, key: str) -> Optional[str]:
+        m = re.search(rf"(?i)\b{re.escape(key)}\b\s*[:=]\s*([^\n;]+)", text)
+        if not m:
+            return None
+        return (m.group(1) or "").strip()
+
+    @staticmethod
+    def _try_extract_inline_json(text: str) -> Optional[Dict[str, Any]]:
+        """
+        Ako user napiše: "... { ... }", probaj izvući zadnji JSON blok.
+        """
+        matches = list(re.finditer(r"\{.*\}", text, flags=re.DOTALL))
+        if not matches:
+            return None
+        candidate = matches[-1].group(0)
+        try:
+            data = json.loads(candidate)
+            return data if isinstance(data, dict) else None
+        except Exception:
+            return None
+
+    @staticmethod
+    def _split_goal_and_tasks(text: str) -> Tuple[Optional[str], List[str]]:
+        """
+        Minimal split:
+        - Goal title: prva linija (ili prva rečenica) prije “tasks/zadaci”
+        - Task titles: linije koje počinju sa “task:” / “zadatak:”
+        """
+        lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+        if not lines:
+            return None, []
+
+        joined = " ".join(lines)
+        # goal title heuristika: segment prije prvog "task(s)/zadaci"
+        m = re.split(r"(?i)\b(tasks|zadaci|zadatci)\b\s*[:\-]?", joined, maxsplit=1)
+        goal_part = (m[0] or "").strip(" :,-") if m else joined.strip()
+
+        # task lines
+        task_titles: List[str] = []
+        for ln in lines:
+            mm = re.match(r"(?i)^(task|zadatak)\s*[:\-]\s*(.+)$", ln)
+            if mm:
+                title = (mm.group(2) or "").strip()
+                if title:
+                    task_titles.append(title)
+
+        # fallback: bullet-ish “- something” lines after mention
+        if not task_titles:
+            after = False
+            for ln in lines:
+                if re.search(r"(?i)\b(tasks|zadaci|zadatci)\b", ln):
+                    after = True
+                    continue
+                if after:
+                    mm = re.match(r"^\s*[-*]\s*(.+)$", ln)
+                    if mm:
+                        title = (mm.group(1) or "").strip()
+                        if title:
+                            task_titles.append(title)
+
+        return (goal_part if goal_part else None, task_titles)

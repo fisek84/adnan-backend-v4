@@ -2,8 +2,10 @@
 NOTION SCHEMA REGISTRY — KANONSKI IZVOR ISTINE
 """
 
-from typing import Dict, Any, List, Optional
+from __future__ import annotations
+
 import os
+from typing import Any, Dict, List, Optional
 
 
 class NotionSchemaRegistry:
@@ -25,23 +27,20 @@ class NotionSchemaRegistry:
             "entity": "Goal",
             "write_enabled": True,
             "properties": {
-                # osnovno
                 "Name": {"type": "title", "required": True},
                 "Status": {"type": "status", "required": True},
                 "Priority": {"type": "select", "required": False},
                 "Progress": {"type": "number", "required": False},
                 "Description": {"type": "rich_text", "required": False},
-                # hijerarhija
                 "Parent Goal": {"type": "relation", "target": "goals"},
                 "Child Goals": {"type": "relation", "target": "goals"},
                 "Project": {"type": "relation", "target": "projects"},
-                # operativno
                 "Deadline": {"type": "date", "required": False},
             },
         },
+
         # =======================
-        # GOALS — DERIVED VIEWS
-        # (read-only iz perspektive OS-a)
+        # GOALS — DERIVED VIEWS (READ-ONLY)
         # =======================
         "active_goals": {
             "db_id": os.getenv("NOTION_ACTIVE_GOALS_DB_ID"),
@@ -87,10 +86,6 @@ class NotionSchemaRegistry:
                 "Related Goal": {"type": "relation", "target": "goals"},
                 "Tasks DB": {"type": "relation", "target": "tasks"},
                 "AI Agent": {"type": "people", "required": False},
-                # Napomena: dodatne rollup relacije (Goals DB — Central ...,
-                # Related back to Goal..., AI Summary DB) su izostavljene iz
-                # eksplicitnog mapiranja jer su read-only rollup/relacije koje
-                # OS neće direktno pisati.
             },
         },
         "blocked_goals": {
@@ -98,7 +93,6 @@ class NotionSchemaRegistry:
             "entity": "Goal",
             "write_enabled": False,
             "properties": {
-                # ista struktura kao active_goals; dovoljan je subset
                 "Name": {"type": "title", "required": True},
                 "Status": {"type": "status", "required": False},
                 "Priority": {"type": "select", "required": False},
@@ -116,6 +110,7 @@ class NotionSchemaRegistry:
                 "Priority": {"type": "select", "required": False},
             },
         },
+
         # =======================
         # TASKS
         # =======================
@@ -124,18 +119,15 @@ class NotionSchemaRegistry:
             "entity": "Task",
             "write_enabled": True,
             "properties": {
-                # osnovno
                 "Name": {"type": "title", "required": True},
                 "Status": {"type": "select", "required": True},
                 "Priority": {"type": "select", "required": False},
                 "Description": {"type": "rich_text", "required": False},
                 "Due Date": {"type": "date", "required": False},
                 "Order": {"type": "number", "required": False},
-                # povezanost
                 "Goal": {"type": "relation", "target": "goals"},
                 "Project": {"type": "relation", "target": "projects"},
                 "Agent Exchange DB": {"type": "relation", "target": "agent_exchange"},
-                # operativno
                 "Goal Status": {"type": "select", "required": False},
                 "Auto Task Status": {"type": "select", "required": False},
                 "Overdue": {"type": "checkbox", "required": False},
@@ -147,6 +139,7 @@ class NotionSchemaRegistry:
                 "AI Agent": {"type": "people", "required": False},
             },
         },
+
         # =======================
         # PROJECTS
         # =======================
@@ -180,6 +173,7 @@ class NotionSchemaRegistry:
                 "Handled By": {"type": "people", "required": False},
             },
         },
+
         # =======================
         # KPI (WEEKLY KPI DB)
         # =======================
@@ -189,11 +183,11 @@ class NotionSchemaRegistry:
             "write_enabled": True,
             "properties": {
                 "Name": {"type": "title", "required": True},
-                "Period": {"type": "select", "required": True},
+                # tolerantni tip (reader očekuje select ili date)
+                "Period": {"type": "select_or_date", "required": True},
                 "Cycle": {"type": "select", "required": False},
                 "Status": {"type": "select", "required": False},
                 "KPI Type": {"type": "select", "required": False},
-                # ključne metrike (sve number)
                 "Outreach": {"type": "number", "required": False},
                 "FUCompletion": {"type": "number", "required": False},
                 "ConversionsCount": {"type": "number", "required": False},
@@ -207,7 +201,6 @@ class NotionSchemaRegistry:
                 "Alignment5KScore": {"type": "number", "required": False},
                 "Readiness700K": {"type": "number", "required": False},
                 "Alignment10M": {"type": "number", "required": False},
-                # blokatori / refleksija
                 "Blockers": {"type": "rich_text", "required": False},
                 "EcosystemReflection": {"type": "rich_text", "required": False},
                 "Meditation": {"type": "number", "required": False},
@@ -222,7 +215,6 @@ class NotionSchemaRegistry:
                 "EmotionalStability": {"type": "number", "required": False},
                 "SelfControl": {"type": "number", "required": False},
                 "PersonalReflection": {"type": "rich_text", "required": False},
-                # AI / agency metrike
                 "AIAgentsCreated": {"type": "number", "required": False},
                 "AgencyColdOutreach": {"type": "number", "required": False},
                 "AgencyScore": {"type": "number", "required": False},
@@ -237,6 +229,7 @@ class NotionSchemaRegistry:
                 "Daily Score": {"type": "number", "required": False},
             },
         },
+
         # =======================
         # AGENT EXCHANGE LAYER
         # =======================
@@ -267,6 +260,7 @@ class NotionSchemaRegistry:
                 "Version History": {"type": "rich_text", "required": False},
             },
         },
+
         "agent_projects": {
             "db_id": os.getenv("NOTION_AGENT_PROJECTS_DB_ID"),
             "entity": "AgentProject",
@@ -290,8 +284,12 @@ class NotionSchemaRegistry:
                 "Status Auto": {"type": "select", "required": False},
             },
         },
+
+        # =======================
+        # AI SUMMARY (canonical)
+        # =======================
         "ai_summary": {
-            "db_id": os.getenv("NOTION_AI_WEEKLY_SUMMARY_DB_ID"),
+            "db_id": os.getenv("NOTION_AI_SUMMARY_DB_ID") or os.getenv("NOTION_AI_WEEKLY_SUMMARY_DB_ID"),
             "entity": "AISummary",
             "write_enabled": True,
             "properties": {
@@ -302,6 +300,7 @@ class NotionSchemaRegistry:
                 "Tags": {"type": "multi_select", "required": False},
             },
         },
+
         # =======================
         # SOP BAZE (READ-ONLY)
         # =======================
@@ -309,113 +308,85 @@ class NotionSchemaRegistry:
             "db_id": os.getenv("NOTION_OUTREACH_SOP_DB_ID"),
             "entity": "SOP",
             "write_enabled": False,
-            "properties": {
-                "Name": {"type": "title", "required": True},
-            },
+            "properties": {"Name": {"type": "title", "required": True}},
         },
         "qualification_sop": {
             "db_id": os.getenv("NOTION_QUALIFICATION_SOP_DB_ID"),
             "entity": "SOP",
             "write_enabled": False,
-            "properties": {
-                "Name": {"type": "title", "required": True},
-            },
+            "properties": {"Name": {"type": "title", "required": True}},
         },
         "follow_up_sop": {
             "db_id": os.getenv("NOTION_FOLLOW_UP_SOP_DB_ID"),
             "entity": "SOP",
             "write_enabled": False,
-            "properties": {
-                "Name": {"type": "title", "required": True},
-            },
+            "properties": {"Name": {"type": "title", "required": True}},
         },
         "fsc_sop": {
             "db_id": os.getenv("NOTION_FSC_SOP_DB_ID"),
             "entity": "SOP",
             "write_enabled": False,
-            "properties": {
-                "Name": {"type": "title", "required": True},
-            },
+            "properties": {"Name": {"type": "title", "required": True}},
         },
         "flp_ops_sop": {
             "db_id": os.getenv("NOTION_FLP_OPS_SOP_DB_ID"),
             "entity": "SOP",
             "write_enabled": False,
-            "properties": {
-                "Name": {"type": "title", "required": True},
-            },
+            "properties": {"Name": {"type": "title", "required": True}},
         },
         "lss_sop": {
             "db_id": os.getenv("NOTION_LSS_SOP_DB_ID"),
             "entity": "SOP",
             "write_enabled": False,
-            "properties": {
-                "Name": {"type": "title", "required": True},
-            },
+            "properties": {"Name": {"type": "title", "required": True}},
         },
         "partner_activation_sop": {
             "db_id": os.getenv("NOTION_PARTNER_ACTIVATION_SOP_DB_ID"),
             "entity": "SOP",
             "write_enabled": False,
-            "properties": {
-                "Name": {"type": "title", "required": True},
-            },
+            "properties": {"Name": {"type": "title", "required": True}},
         },
         "partner_performance_sop": {
             "db_id": os.getenv("NOTION_PARTNER_PERFORMANCE_SOP_DB_ID"),
             "entity": "SOP",
             "write_enabled": False,
-            "properties": {
-                "Name": {"type": "title", "required": True},
-            },
+            "properties": {"Name": {"type": "title", "required": True}},
         },
         "partner_leadership_sop": {
             "db_id": os.getenv("NOTION_PARTNER_LEADERSHIP_SOP_DB_ID"),
             "entity": "SOP",
             "write_enabled": False,
-            "properties": {
-                "Name": {"type": "title", "required": True},
-            },
+            "properties": {"Name": {"type": "title", "required": True}},
         },
         "customer_onboarding_sop": {
             "db_id": os.getenv("NOTION_CUSTOMER_ONBOARDING_SOP_DB_ID"),
             "entity": "SOP",
             "write_enabled": False,
-            "properties": {
-                "Name": {"type": "title", "required": True},
-            },
+            "properties": {"Name": {"type": "title", "required": True}},
         },
         "customer_retention_sop": {
             "db_id": os.getenv("NOTION_CUSTOMER_RETENTION_SOP_DB_ID"),
             "entity": "SOP",
             "write_enabled": False,
-            "properties": {
-                "Name": {"type": "title", "required": True},
-            },
+            "properties": {"Name": {"type": "title", "required": True}},
         },
         "customer_performance_sop": {
             "db_id": os.getenv("NOTION_CUSTOMER_PERFORMANCE_SOP_DB_ID"),
             "entity": "SOP",
             "write_enabled": False,
-            "properties": {
-                "Name": {"type": "title", "required": True},
-            },
+            "properties": {"Name": {"type": "title", "required": True}},
         },
         "partner_potential_sop": {
             "db_id": os.getenv("NOTION_PARTNER_POTENTIAL_SOP_DB_ID"),
             "entity": "SOP",
             "write_enabled": False,
-            "properties": {
-                "Name": {"type": "title", "required": True},
-            },
+            "properties": {"Name": {"type": "title", "required": True}},
         },
         "sales_closing_sop": {
             "db_id": os.getenv("NOTION_SALES_CLOSING_SOP_DB_ID"),
             "entity": "SOP",
             "write_enabled": False,
-            "properties": {
-                "Name": {"type": "title", "required": True},
-            },
+            "properties": {"Name": {"type": "title", "required": True}},
         },
     }
 
@@ -430,7 +401,15 @@ class NotionSchemaRegistry:
         return cls.DATABASES[key]
 
     @classmethod
-    def validate_payload(cls, db_key: str, payload: Dict[str, Any]):
+    def validate_payload(cls, db_key: str, payload: Dict[str, Any]) -> bool:
+        """
+        Validira da payload sadrži required property-jeve i da ne šaljemo
+        property-je koji nisu definisani u registry-ju.
+
+        Napomena: dozvoljavamo special tolerantni tip "select_or_date" u registry-ju
+        (Period) — ali to ne mijenja payload shape; samo znači da reader može
+        očekivati i select i date formate u Notion response-u.
+        """
         db = cls.get_db(db_key)
         props = db["properties"]
 
@@ -469,6 +448,10 @@ class NotionSchemaRegistry:
         for prop, value in properties.items():
             p_type = db_props[prop]["type"]
 
+            # tolerant type: treat as select for writes
+            if p_type == "select_or_date":
+                p_type = "select"
+
             if p_type == "title":
                 notion_props[prop] = {"title": [{"text": {"content": str(value)}}]}
 
@@ -489,7 +472,12 @@ class NotionSchemaRegistry:
                     }
 
             elif p_type == "status":
-                notion_props[prop] = {"status": {"name": value or "Not started"}}
+                # COMPAT:
+                # Ako je u Notion bazi "Status" zapravo SELECT (ne Notion status type),
+                # onda Notion očekuje {"select": {"name": ...}}.
+                # Ovo direktno rješava error:
+                #   "Status is expected to be select."
+                notion_props[prop] = {"select": {"name": str(value or "Not started")}}
 
             elif p_type == "number":
                 notion_props[prop] = {"number": value}
@@ -502,8 +490,6 @@ class NotionSchemaRegistry:
                 notion_props[prop] = {"relation": [{"id": rid} for rid in ids]}
 
             elif p_type == "people":
-                # očekuje listu user objekata ili user_id vrijednosti;
-                # ovdje samo prosljeđujemo raw value Notion SDK-u.
                 notion_props[prop] = {"people": value}
 
             elif p_type == "checkbox":

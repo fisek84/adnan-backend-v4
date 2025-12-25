@@ -2,133 +2,42 @@ from __future__ import annotations
 
 import os
 import logging
-import hashlib
-from datetime import datetime
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Body, HTTPException, Request
 
 from services.agent_health_service import AgentHealthService
 from services.approval_state_service import get_approval_state
-from services.approval_ux_service import ApprovalUXService
 from services.cron_service import CronService
 from services.execution_orchestrator import ExecutionOrchestrator
 from services.metrics_persistence_service import MetricsPersistenceService
 from services.alert_forwarding_service import AlertForwardingService
 
-router = APIRouter(prefix="/ai-ops", tags=["AI Ops"])
-
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
-
-# ------------------------------------------------------------
-# CANON TEXT (READ-ONLY)
-# ------------------------------------------------------------
-
-CANON_VERSION = "v2"
-
-CANON_TEXT = """CANON — Adnan.AI / Evolia OS (v2)
-
-Adnan.AI is an AI Business Operating System.
-It is not a chatbot, assistant, or feature-driven AI.
-
-Fundamental Laws
-
-Initiator ≠ Owner ≠ Executor. This separation is absolute.
-
-READ and WRITE paths are strictly separated.
-
-No execution is allowed without explicit governance approval.
-
-No component may perform implicit actions or side effects.
-
-Every action has a real cost: time, authority, or resources.
-
-Intelligence may advise, but never execute.
-
-Agents execute tasks but never decide or interpret intent.
-
-Workflows orchestrate state transitions, not execution.
-
-UX reflects system truth and never invents state or intent.
-
-If intent is unclear, the system must stop.
-
-If approval is missing, the system must block.
-
-No component may exceed the authority it can control.
-
-No unbounded loops, autonomous escalation, or hidden persistence.
-
-Every decision must be traceable and auditable.
-
-Stability is prioritized over apparent intelligence.
-
-Canonical Regression Guarantee (Happy Path)
-
-The system MUST have a deterministic, executable Happy Path test.
-
-The canonical Happy Path is: Initiator → BLOCKED → APPROVED → EXECUTED.
-
-This path MUST be testable without UI, manually, or interpretation.
-
-The canonical regression test is a CLI-based test (test_happy_path.ps1).
-
-Any change to governance, orchestration, approval, or execution layers
-MUST pass the Happy Path test without modification.
-
-If the Happy Path test fails, the change is invalid and MUST be reverted.
-
-The Happy Path test is immutable and may not be adapted to fit new behavior.
-
-The system behavior must adapt to the test, never the test to the system.
-
-Absence of a passing Happy Path test means the system is non-operational.
-
-Design Constraint (Physics Rule)
-
-The system must respect physical constraints
-(time, energy, information, authority)
-before attempting intelligence or autonomy.
-
-Any violation of this canon invalidates the system design.
-"""
-
-
-def _canon_sha256() -> str:
-    return hashlib.sha256(CANON_TEXT.encode("utf-8")).hexdigest()
-
 
 # ------------------------------------------------------------
 # CANONICAL WRITE GUARDS
 # ------------------------------------------------------------
 
 def _env_true(name: str, default: str = "false") -> bool:
-    return os.getenv(name, default).strip().lower() == "true"
+    return (os.getenv(name, default) or "").strip().lower() == "true"
 
 
 def _ops_safe_mode_enabled() -> bool:
-    # Hard block writes when enabled
     return _env_true("OPS_SAFE_MODE", "false")
 
 
 def _ceo_token_enforcement_enabled() -> bool:
-    # Token is enforced ONLY when CEO_TOKEN_ENFORCEMENT=true
-    # This keeps immutable happy path working by default.
     return _env_true("CEO_TOKEN_ENFORCEMENT", "false")
 
 
 def _require_ceo_token_if_enforced(request: Request) -> None:
-    """
-    Canon: CEO-only writes (optional).
-    Compatibility: enforced ONLY when CEO_TOKEN_ENFORCEMENT=true.
-    """
     if not _ceo_token_enforcement_enabled():
         return
 
-    expected = os.getenv("CEO_APPROVAL_TOKEN", "").strip()
+    expected = (os.getenv("CEO_APPROVAL_TOKEN", "") or "").strip()
     if not expected:
-        # Fail closed if enforcement is enabled but token isn't configured.
         raise HTTPException(
             status_code=500,
             detail="CEO token enforcement enabled but CEO_APPROVAL_TOKEN is not set",
@@ -146,37 +55,32 @@ def _guard_write(request: Request) -> None:
 
 
 # ------------------------------------------------------------
-# SERVICES (CANONICAL)
+# SERVICES (singletons)
 # ------------------------------------------------------------
-
-_approval_ux = ApprovalUXService()
-_orchestrator = ExecutionOrchestrator()
 _agent_health = AgentHealthService()
-
 _metrics_persistence = MetricsPersistenceService()
 _alert_forwarder = AlertForwardingService()
+
+# Orchestrator internally uses get_approval_state() in its __init__
+# so this stays consistent with the canonical approval store.
+_orchestrator = ExecutionOrchestrator()
 
 _cron_service: Optional[CronService] = None
 
 
 def set_cron_service(cron_service: CronService) -> None:
+    # app_bootstrap.py očekuje ovu funkciju
     global _cron_service
     _cron_service = cron_service
 
 
 # ============================================================
-# CANON (READ-ONLY)
+# ROUTER
+# IMPORTANT:
+# gateway_server.py radi include_router(ai_ops_router, prefix="/api")
+# zato ovdje prefix mora biti "/ai-ops" (NE "/api/ai-ops")
 # ============================================================
-
-@router.get("/canon")
-def canon() -> Dict[str, Any]:
-    return {
-        "version": CANON_VERSION,
-        "sha256": _canon_sha256(),
-        "text": CANON_TEXT,
-        "timestamp": datetime.utcnow().isoformat(),
-        "read_only": True,
-    }
+router = APIRouter(prefix="/ai-ops", tags=["AI Ops"])
 
 
 # ============================================================
@@ -186,10 +90,8 @@ def canon() -> Dict[str, Any]:
 @router.post("/cron/run")
 def cron_run(request: Request) -> Dict[str, Any]:
     _guard_write(request)
-
     if _cron_service is None:
         raise HTTPException(500, detail="CronService not initialized")
-
     result = _cron_service.run()
     return {"ok": True, "result": result, "read_only": False}
 
@@ -202,13 +104,18 @@ def cron_status() -> Dict[str, Any]:
 
 
 # ============================================================
-# APPROVAL OPS (UX ONLY)
+# APPROVAL OPS (Happy Path CONTRACT)
+# Test očekuje:
+#   GET  /api/ai-ops/approval/pending   -> {"approvals":[...]}, svaki item ima approval_id
+#   POST /api/ai-ops/approval/approve   (body: {approval_id: ...}) -> execution_state == "COMPLETED"
 # ============================================================
 
 @router.get("/approval/pending")
 def list_pending() -> Dict[str, Any]:
     approval_state = get_approval_state()
-    return {"approvals": approval_state.list_pending(), "read_only": True}
+    pending = approval_state.list_pending()
+    # Testu je bitno da je approvals lista i da itemi imaju approval_id.
+    return {"approvals": pending, "read_only": True}
 
 
 @router.post("/approval/approve")
@@ -222,24 +129,35 @@ async def approve(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[st
     approved_by = body.get("approved_by", "unknown")
     note = body.get("note")
 
-    result = _approval_ux.approve(
-        approval_id=approval_id.strip(),
-        approved_by=approved_by if isinstance(approved_by, str) else "unknown",
-        note=note,
-    )
+    approval_state = get_approval_state()
+    try:
+        approval = approval_state.approve(
+            approval_id.strip(),
+            approved_by=approved_by if isinstance(approved_by, str) else "unknown",
+            note=note if isinstance(note, str) else None,
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Approval not found")
 
-    execution_id = result.get("execution_id")
-    if not execution_id:
-        raise HTTPException(500, detail="Approved approval has no execution_id")
+    execution_id = approval.get("execution_id")
+    if not isinstance(execution_id, str) or not execution_id.strip():
+        raise HTTPException(500, detail="Approval has no execution_id")
 
-    execution_result = await _orchestrator.resume(execution_id)
+    # Resume execution (orchestrator hard-gates approval via ApprovalStateService)
+    execution_result = await _orchestrator.resume(execution_id.strip())
 
+    # Test očekuje execution_state na rootu.
     if isinstance(execution_result, dict):
+        execution_result.setdefault("approval", approval)
         execution_result.setdefault("read_only", False)
-        execution_result.setdefault("approval", result)
         return execution_result
 
-    return {"ok": True, "execution": execution_result, "approval": result, "read_only": False}
+    return {
+        "ok": True,
+        "execution": execution_result,
+        "approval": approval,
+        "read_only": False,
+    }
 
 
 @router.post("/approval/reject")
@@ -253,21 +171,25 @@ def reject(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[str, Any]
     rejected_by = body.get("rejected_by", "unknown")
     note = body.get("note")
 
-    result = _approval_ux.reject(
-        approval_id=approval_id.strip(),
-        rejected_by=rejected_by if isinstance(rejected_by, str) else "unknown",
-        note=note,
-    )
+    approval_state = get_approval_state()
+    try:
+        approval = approval_state.reject(
+            approval_id.strip(),
+            rejected_by=rejected_by if isinstance(rejected_by, str) else "unknown",
+            note=note if isinstance(note, str) else None,
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Approval not found")
 
-    if isinstance(result, dict):
-        result.setdefault("read_only", False)
-        return result
+    if isinstance(approval, dict):
+        approval.setdefault("read_only", False)
+        return approval
 
-    return {"ok": True, "approval": result, "read_only": False}
+    return {"ok": True, "approval": approval, "read_only": False}
 
 
 # ============================================================
-# AGENT HEALTH (READ-ONLY)
+# HEALTH (READ-ONLY)
 # ============================================================
 
 @router.get("/agents/health")
@@ -276,7 +198,7 @@ def agents_health() -> Dict[str, Any]:
 
 
 # ============================================================
-# METRICS OPS (WRITE TO NOTION)
+# METRICS OPS (WRITE)
 # ============================================================
 
 @router.post("/metrics/persist")
@@ -287,7 +209,7 @@ def persist_metrics_snapshot(request: Request) -> Dict[str, Any]:
 
 
 # ============================================================
-# ALERTS OPS (WRITE TO NOTION)
+# ALERTS OPS (WRITE)
 # ============================================================
 
 @router.post("/alerts/forward")
@@ -297,4 +219,5 @@ def forward_alerts(request: Request) -> Dict[str, Any]:
     return {"ok": True, "result": result, "read_only": False}
 
 
+# Export name expected by gateway_server.py
 ai_ops_router = router

@@ -12,6 +12,10 @@ Uloga:
 Garantuje:
 - jednokratnu inicijalizaciju
 - ARCH_LOCK enforcement
+
+FAZA 4 napomena:
+- adnan_ai_router je READ/PROPOSE ONLY wrapper (ne izvršava)
+- canonical chat endpoint (/api/chat) se wira u gateway_server.py
 """
 
 from services.coo_translation_service import COOTranslationService
@@ -36,7 +40,6 @@ def bootstrap_application() -> None:
     Wire core AI services into routers.
     Must be called ONCE during application startup.
     """
-
     global _BOOTSTRAPPED
 
     if _BOOTSTRAPPED:
@@ -67,12 +70,14 @@ def bootstrap_application() -> None:
     set_cron_service(cron_service)
 
     # ---------------------------------------------------------
-    # Inject into AI router (CANONICAL)
+    # Inject into AdnanAI legacy router (READ/PROPOSE ONLY)
     # ---------------------------------------------------------
+    # IMPORTANT: signature is positional (command_service, coo_translation, coo_conversation).
+    # Using positional args avoids keyword mismatch regressions.
     set_adnan_ai_services(
-        command_service=ai_command_service,
-        coo_translation=coo_translation_service,
-        coo_conversation=coo_conversation_service,
+        ai_command_service,
+        coo_translation_service,
+        coo_conversation_service,
     )
 
     _BOOTSTRAPPED = True
