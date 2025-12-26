@@ -64,7 +64,9 @@ def _guard_write_bulk(request: Request) -> None:
     # - respect OPS_SAFE_MODE
     # - optional CEO token
     if _ops_safe_mode():
-        raise HTTPException(status_code=403, detail="OPS_SAFE_MODE enabled (writes blocked)")
+        raise HTTPException(
+            status_code=403, detail="OPS_SAFE_MODE enabled (writes blocked)"
+        )
     _require_ceo_token_if_enforced(request)
 
 
@@ -88,7 +90,9 @@ def _append_boot_error(msg: str) -> None:
 # ================================================================
 # PATHS (repo-root aware)
 # ================================================================
-REPO_ROOT = Path(__file__).resolve().parents[1]  # .../gateway/gateway_server.py -> repo root
+REPO_ROOT = (
+    Path(__file__).resolve().parents[1]
+)  # .../gateway/gateway_server.py -> repo root
 FRONTEND_DIR = REPO_ROOT / "gateway" / "frontend"
 
 
@@ -152,7 +156,9 @@ from services.notion_service import NotionService, set_notion_service
 
 set_notion_service(
     NotionService(
-        api_key=(os.getenv("NOTION_API_KEY") or os.getenv("NOTION_TOKEN") or "").strip(),
+        api_key=(
+            os.getenv("NOTION_API_KEY") or os.getenv("NOTION_TOKEN") or ""
+        ).strip(),
         goals_db_id=(os.getenv("NOTION_GOALS_DB_ID") or "").strip(),
         tasks_db_id=(os.getenv("NOTION_TASKS_DB_ID") or "").strip(),
         projects_db_id=(os.getenv("NOTION_PROJECTS_DB_ID") or "").strip(),
@@ -328,10 +334,14 @@ def _filter_ai_command_payload(data: Dict[str, Any]) -> Dict[str, Any]:
         return {
             "command": data.get("command"),
             "intent": data.get("intent"),
-            "params": data.get("params") if isinstance(data.get("params"), dict) else {},
+            "params": data.get("params")
+            if isinstance(data.get("params"), dict)
+            else {},
             "initiator": data.get("initiator") or "ceo",
             "read_only": bool(data.get("read_only", False)),
-            "metadata": data.get("metadata") if isinstance(data.get("metadata"), dict) else {},
+            "metadata": data.get("metadata")
+            if isinstance(data.get("metadata"), dict)
+            else {},
             "execution_id": data.get("execution_id"),
             "approval_id": data.get("approval_id"),
         }
@@ -384,8 +394,12 @@ async def lifespan(_: FastAPI):
         try:
             hook = getattr(ai_ops_router_module, "set_ai_ops_services", None)
             if callable(hook):
-                hook(orchestrator=_execution_orchestrator, approvals=get_approval_state())
-                logger.info("AI Ops router services injected (shared orchestrator/approvals)")
+                hook(
+                    orchestrator=_execution_orchestrator, approvals=get_approval_state()
+                )
+                logger.info(
+                    "AI Ops router services injected (shared orchestrator/approvals)"
+                )
         except Exception as exc:  # noqa: BLE001
             _append_boot_error(f"ai_ops_injection_failed:{exc}")
             logger.warning("AI Ops services injection failed: %s", exc)
@@ -473,7 +487,9 @@ class ExecuteInput(BaseModel):
 class ExecuteRawInput(BaseModel):
     command: str
     intent: str
-    params: Dict[str, Any] = {}  # kept for backward compatibility; safe enough if not mutated
+    params: Dict[
+        str, Any
+    ] = {}  # kept for backward compatibility; safe enough if not mutated
 
 
 class CeoCommandInput(BaseModel):
@@ -485,7 +501,9 @@ class CeoCommandInput(BaseModel):
 class ProposalExecuteInput(BaseModel):
     proposal: ProposedCommand
     initiator: str = "ceo"
-    metadata: Dict[str, Any] = {}  # kept for backward compatibility; safe enough if not mutated
+    metadata: Dict[
+        str, Any
+    ] = {}  # kept for backward compatibility; safe enough if not mutated
 
 
 # NOTE: If you want the strict-safe version, replace the two dict defaults above with:
@@ -494,7 +512,9 @@ class ProposalExecuteInput(BaseModel):
 # metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
-def _preprocess_ceo_nl_input(raw_text: str, smart_context: Optional[Dict[str, Any]]) -> str:
+def _preprocess_ceo_nl_input(
+    raw_text: str, smart_context: Optional[Dict[str, Any]]
+) -> str:
     text = (raw_text or "").strip()
     if not text:
         return text
@@ -536,7 +556,11 @@ def _derive_legacy_goal_task_summaries_from_ceo_snapshot(
     tasks_summary: List[Dict[str, Any]] = []
 
     try:
-        dashboard = ceo_dash_snapshot.get("dashboard") if isinstance(ceo_dash_snapshot, dict) else None
+        dashboard = (
+            ceo_dash_snapshot.get("dashboard")
+            if isinstance(ceo_dash_snapshot, dict)
+            else None
+        )
         if not isinstance(dashboard, dict):
             return {"goals_summary": goals_summary, "tasks_summary": tasks_summary}
 
@@ -585,7 +609,9 @@ async def execute_command(payload: ExecuteInput):
         context={"mode": "execute"},
     )
     if not ai_command:
-        raise HTTPException(status_code=400, detail="Could not translate input to command")
+        raise HTTPException(
+            status_code=400, detail="Could not translate input to command"
+        )
 
     if not getattr(ai_command, "initiator", None):
         ai_command.initiator = "ceo"
@@ -602,7 +628,9 @@ async def execute_command(payload: ExecuteInput):
     )
     approval_id = approval.get("approval_id")
     if not approval_id:
-        raise HTTPException(status_code=500, detail="Approval create failed: missing approval_id")
+        raise HTTPException(
+            status_code=500, detail="Approval create failed: missing approval_id"
+        )
 
     _ensure_trace_on_command(ai_command, approval_id=approval_id)
     _execution_registry.register(ai_command)
@@ -648,7 +676,9 @@ async def execute_raw_command(payload: ExecuteRawInput2):
     )
     approval_id = approval.get("approval_id")
     if not approval_id:
-        raise HTTPException(status_code=500, detail="Approval create failed: missing approval_id")
+        raise HTTPException(
+            status_code=500, detail="Approval create failed: missing approval_id"
+        )
 
     _ensure_trace_on_command(ai_command, approval_id=approval_id)
     _execution_registry.register(ai_command)
@@ -658,7 +688,9 @@ async def execute_raw_command(payload: ExecuteRawInput2):
         "execution_state": "BLOCKED",
         "approval_id": approval_id,
         "execution_id": execution_id,
-        "command": ai_command.model_dump() if hasattr(ai_command, "model_dump") else _to_serializable(ai_command),
+        "command": ai_command.model_dump()
+        if hasattr(ai_command, "model_dump")
+        else _to_serializable(ai_command),
     }
 
 
@@ -684,7 +716,9 @@ async def execute_proposal(payload: ProposalExecuteInput):
     if proposal.command == "ceo.command.propose":
         prompt = args.get("prompt")
         if not isinstance(prompt, str) or not prompt.strip():
-            raise HTTPException(status_code=400, detail="ceo.command.propose requires args.prompt")
+            raise HTTPException(
+                status_code=400, detail="ceo.command.propose requires args.prompt"
+            )
 
         ai_command = coo_translation_service.translate(
             raw_input=prompt.strip(),
@@ -692,7 +726,9 @@ async def execute_proposal(payload: ProposalExecuteInput):
             context={"mode": "execute", "via": "proposal_promotion"},
         )
         if not ai_command:
-            raise HTTPException(status_code=400, detail="Could not translate proposal prompt to command")
+            raise HTTPException(
+                status_code=400, detail="Could not translate proposal prompt to command"
+            )
 
         ai_command.initiator = initiator
 
@@ -723,7 +759,9 @@ async def execute_proposal(payload: ProposalExecuteInput):
         )
         approval_id = approval.get("approval_id")
         if not approval_id:
-            raise HTTPException(status_code=500, detail="Approval create failed: missing approval_id")
+            raise HTTPException(
+                status_code=500, detail="Approval create failed: missing approval_id"
+            )
 
         _ensure_trace_on_command(ai_command, approval_id=approval_id)
         _execution_registry.register(ai_command)
@@ -764,9 +802,15 @@ async def execute_proposal(payload: ProposalExecuteInput):
         )
 
     filtered = _filter_ai_command_payload(ai_cmd_payload)
-    if not isinstance(filtered.get("command"), str) or not str(filtered.get("command")).strip():
+    if (
+        not isinstance(filtered.get("command"), str)
+        or not str(filtered.get("command")).strip()
+    ):
         raise HTTPException(status_code=400, detail="ai_command.command is required")
-    if not isinstance(filtered.get("intent"), str) or not str(filtered.get("intent")).strip():
+    if (
+        not isinstance(filtered.get("intent"), str)
+        or not str(filtered.get("intent")).strip()
+    ):
         raise HTTPException(status_code=400, detail="ai_command.intent is required")
 
     filtered.setdefault("initiator", initiator)
@@ -801,7 +845,9 @@ async def execute_proposal(payload: ProposalExecuteInput):
     )
     approval_id2 = approval2.get("approval_id")
     if not approval_id2:
-        raise HTTPException(status_code=500, detail="Approval create failed: missing approval_id")
+        raise HTTPException(
+            status_code=500, detail="Approval create failed: missing approval_id"
+        )
 
     _ensure_trace_on_command(ai_command2, approval_id=approval_id2)
     _execution_registry.register(ai_command2)
@@ -849,7 +895,9 @@ def _validate_bulk_items(items: Any) -> List[Dict[str, Any]]:
             raise HTTPException(status_code=400, detail="each item must be an object")
         t = it.get("type")
         if not isinstance(t, str) or not t.strip():
-            raise HTTPException(status_code=400, detail="each item must have non-empty 'type'")
+            raise HTTPException(
+                status_code=400, detail="each item must have non-empty 'type'"
+            )
         tt = t.strip().lower()
         if tt not in _ALLOWED_BULK_TYPES:
             raise HTTPException(status_code=400, detail=f"invalid type: {t}")
@@ -1056,7 +1104,9 @@ async def ready_check():
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     logger.exception("GLOBAL ERROR")
-    return JSONResponse(status_code=500, content={"status": "error", "message": str(exc)})
+    return JSONResponse(
+        status_code=500, content={"status": "error", "message": str(exc)}
+    )
 
 
 app.add_middleware(
