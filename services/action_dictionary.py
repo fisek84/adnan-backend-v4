@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Callable, Dict, Optional, Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from services.notion_service import NotionService
+    pass
 
 
 # ------------------------------------------
