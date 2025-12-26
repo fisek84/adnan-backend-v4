@@ -311,7 +311,7 @@ async def _ceo_advice_via_agent_router(
         },
     )
 
-    out: AgentOutput = _agent_router.route(agent_input)
+    out: AgentOutput = await _agent_router.route(agent_input)
 
     # Defense-in-depth
     out.read_only = True
