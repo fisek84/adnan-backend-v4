@@ -29,11 +29,19 @@ def build_chat_router(agent_router: AgentRouterService) -> APIRouter:
 
     def _enforce_input_read_only(payload: AgentInput) -> None:
         md = _ensure_dict(getattr(payload, "metadata", None))
+
         # Hard-enforce read-only semantics at the boundary.
         md["read_only"] = True
         md["endpoint"] = "/api/chat"
         md["canon"] = "read_propose_only"
         payload.metadata = md  # type: ignore[assignment]
+
+        # Defense-in-depth: if model has a read_only field, force it too.
+        if hasattr(payload, "read_only"):
+            try:
+                payload.read_only = True  # type: ignore[attr-defined]
+            except Exception:
+                pass
 
     def _enforce_output_read_only(out: AgentOutput) -> AgentOutput:
         # Final hard gate (defense-in-depth)

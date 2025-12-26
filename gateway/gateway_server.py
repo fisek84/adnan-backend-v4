@@ -36,6 +36,35 @@ def _ops_safe_mode() -> bool:
     return _env_true("OPS_SAFE_MODE", "false")
 
 
+def _ceo_token_enforcement_enabled() -> bool:
+    return _env_true("CEO_TOKEN_ENFORCEMENT", "false")
+
+
+def _require_ceo_token_if_enforced(request: Request) -> None:
+    if not _ceo_token_enforcement_enabled():
+        return
+
+    expected = (os.getenv("CEO_APPROVAL_TOKEN") or "").strip()
+    if not expected:
+        raise HTTPException(
+            status_code=500,
+            detail="CEO token enforcement enabled but CEO_APPROVAL_TOKEN is not set",
+        )
+
+    provided = (request.headers.get("X-CEO-Token") or "").strip()
+    if provided != expected:
+        raise HTTPException(status_code=403, detail="CEO token required")
+
+
+def _guard_write_bulk(request: Request) -> None:
+    # Minimal Canon guard for legacy bulk endpoints in this file:
+    # - respect OPS_SAFE_MODE
+    # - optional CEO token
+    if _ops_safe_mode():
+        raise HTTPException(status_code=403, detail="OPS_SAFE_MODE enabled (writes blocked)")
+    _require_ceo_token_if_enforced(request)
+
+
 OS_ENABLED = _env_true("OS_ENABLED", "true")
 
 _BOOT_READY = False
@@ -660,10 +689,6 @@ async def execute_proposal(payload: ProposalExecuteInput):
 
     args = proposal.args if isinstance(getattr(proposal, "args", None), dict) else {}
 
-    # ------------------------------------------------------------
-    # Path 1 (canonical for existing agents):
-    # proposal.command == "ceo.command.propose" with args.prompt (NL)
-    # ------------------------------------------------------------
     if proposal.command == "ceo.command.propose":
         prompt = args.get("prompt")
         if not isinstance(prompt, str) or not prompt.strip():
@@ -724,17 +749,11 @@ async def execute_proposal(payload: ProposalExecuteInput):
             result.setdefault("status", "BLOCKED")
         return result
 
-    # ------------------------------------------------------------
-    # Path 2: args.ai_command (already structured AICommand dict)
-    # ------------------------------------------------------------
     ai_cmd_payload: Optional[Dict[str, Any]] = None
     maybe_ai = args.get("ai_command")
     if isinstance(maybe_ai, dict):
         ai_cmd_payload = dict(maybe_ai)
 
-    # ------------------------------------------------------------
-    # Path 3: raw command spec: args.command + args.intent + args.params
-    # ------------------------------------------------------------
     if ai_cmd_payload is None:
         raw_command = args.get("command")
         raw_intent = args.get("intent")
@@ -863,7 +882,9 @@ def _validate_bulk_items(items: Any) -> List[Dict[str, Any]]:
 
 
 @app.post("/notion-ops/bulk/create")
-async def notion_bulk_create(payload: Dict[str, Any] = Body(...)):
+async def notion_bulk_create(request: Request, payload: Dict[str, Any] = Body(...)):
+    _guard_write_bulk(request)
+
     items = _validate_bulk_items(payload.get("items"))
 
     created: List[Dict[str, Any]] = []
@@ -882,7 +903,9 @@ async def notion_bulk_create(payload: Dict[str, Any] = Body(...)):
 
 
 @app.post("/notion-ops/bulk/update")
-async def notion_bulk_update(payload: Dict[str, Any] = Body(...)):
+async def notion_bulk_update(request: Request, payload: Dict[str, Any] = Body(...)):
+    _guard_write_bulk(request)
+
     items = _validate_bulk_items(payload.get("items"))
 
     updated: List[Dict[str, Any]] = []

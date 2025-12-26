@@ -28,7 +28,28 @@ class AgentRouterService:
     def __init__(self, registry: AgentRegistryService) -> None:
         self.registry = registry
 
+    def _enforce_input_read_only(self, agent_input: AgentInput) -> None:
+        """
+        Defense-in-depth:
+        - čak i ako neki drugi caller pozove router direktno, ulaz se tretira kao read-only.
+        """
+        md = getattr(agent_input, "metadata", None)
+        if not isinstance(md, dict):
+            md = {}
+        md["read_only"] = True
+        md.setdefault("canon", "read_propose_only")
+        agent_input.metadata = md  # type: ignore[assignment]
+
+        if hasattr(agent_input, "read_only"):
+            try:
+                agent_input.read_only = True  # type: ignore[attr-defined]
+            except Exception:
+                pass
+
     async def route(self, agent_input: AgentInput) -> AgentOutput:
+        # Hard boundary (defense-in-depth)
+        self._enforce_input_read_only(agent_input)
+
         agents = self.registry.list_agents(enabled_only=True)
         if not agents:
             return AgentOutput(
@@ -481,7 +502,6 @@ def _try_properties(snapshot: Dict[str, Any], *, kind: str, item_id: str) -> str
     if not isinstance(found, dict):
         return f"Nisam našao {kind} sa id={item_id} u trenutnom snapshot-u."
 
-    # Prefer normalized text values if present, otherwise fall back to raw Notion property dicts.
     props_text = found.get("properties_text")
     props_raw = found.get("properties")
 
@@ -744,9 +764,7 @@ def ceo_clone_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> AgentOutput
             },
         )
 
-    # NOTE (FAZA 5): prošireno da pokrije i ENG write verbe.
     write_markers = [
-        # BHS
         "kreiraj",
         "napravi",
         "dodaj",
@@ -754,7 +772,6 @@ def ceo_clone_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> AgentOutput
         "ažuriraj",
         "promijeni",
         "obrisi",
-        # ENG
         "create",
         "add",
         "update",

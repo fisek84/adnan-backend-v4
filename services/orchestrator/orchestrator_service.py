@@ -1,54 +1,45 @@
+# services/orchestrator/orchestrator_service.py
+
 from __future__ import annotations
 
-import asyncio
-import time
+import inspect
+import logging
 from typing import Any, Dict, Optional
 
-from services.queue.queue_service import QueueService, Job
-from services.memory_service import MemoryService
-from services.write_gateway.write_gateway import WriteGateway
-from services.agent_router.agent_router import AgentRouter
+from services.approval_flow import require_approval_or_block
+from services.queue.queue_service import Job, QueueService
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 
 class OrchestratorService:
     """
-    ORCHESTRATOR SSOT (Level 1): in-process worker that claims queue jobs and executes them.
+    ORCHESTRATOR SERVICE (Queue worker)
+
+    Uloga:
+    - prima jobove (submit/enqueue)
+    - deterministički dispatch po job_type
+    - prije bilo kakvog side-effect: require_approval_or_block()
+
+    Canon:
+    - Ovdje se NE kreira approval; samo se verifikuje.
+    - approval_id se očekuje u job.payload ili u payload.command ili u njihovim metadata.
     """
 
-    def __init__(
-        self,
-        *,
-        queue: Optional[QueueService] = None,
-        memory: Optional[MemoryService] = None,
-        agent_router: Optional[AgentRouter] = None,
-        write_gateway: Optional[WriteGateway] = None,
-        poll_timeout_seconds: float = 1.0,
-    ) -> None:
-        self.queue = queue or QueueService()
-        self.memory = memory or MemoryService()
-        self.agent_router = agent_router or AgentRouter()
-        self.write_gateway = write_gateway or WriteGateway()
+    def __init__(self, queue: QueueService) -> None:
+        self.queue = queue
 
-        self._poll_timeout = float(poll_timeout_seconds)
-        self._stop = asyncio.Event()
-        self._worker_task: Optional[asyncio.Task] = None
+        # Optional executor (ako postoji u projektu)
+        self._action_executor = None
+        try:
+            from services.action_execution_service import (  # type: ignore
+                ActionExecutionService,
+            )
 
-    async def start(self) -> None:
-        if self._worker_task and not self._worker_task.done():
-            return
-        self._stop.clear()
-        self._worker_task = asyncio.create_task(
-            self._worker_loop(), name="orchestrator_worker"
-        )
-
-    async def stop(self) -> None:
-        self._stop.set()
-        if self._worker_task and not self._worker_task.done():
-            self._worker_task.cancel()
-            try:
-                await self._worker_task
-            except Exception:
-                pass
+            self._action_executor = ActionExecutionService()
+        except Exception:
+            self._action_executor = None
 
     async def submit(
         self,
@@ -57,122 +48,147 @@ class OrchestratorService:
         payload: Dict[str, Any],
         execution_id: Optional[str] = None,
         max_attempts: int = 1,
-        wait: bool = False,
-        wait_timeout_seconds: float = 30.0,
-    ) -> Dict[str, Any]:
-        job = await self.queue.enqueue(
+    ) -> Job:
+        return await self.queue.enqueue(
             job_type=job_type,
             payload=payload,
             execution_id=execution_id,
             max_attempts=max_attempts,
         )
 
-        resp: Dict[str, Any] = {
-            "ok": True,
-            "job_id": job.job_id,
-            "execution_id": job.execution_id,
-            "status": job.status,
-            "queued": True,
-        }
+    async def process_once(
+        self, *, timeout_seconds: float = 1.0
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Obradi jedan job (ako postoji). Vraća result dict ili None (nema posla).
+        """
+        job = await self.queue.claim(timeout_seconds=timeout_seconds)
+        if not job:
+            return None
 
-        if not wait:
-            return resp
+        try:
+            result = await self._dispatch(job)
+            if not isinstance(result, dict):
+                result = {"ok": True, "result": result}
+            await self.queue.ack(job.job_id, result)
+            return result
 
-        deadline = time.time() + float(wait_timeout_seconds)
-        while time.time() < deadline:
-            current = await self.queue.get_job(job.job_id)
-            if not current:
-                return {"ok": False, "reason": "job_not_found", "job_id": job.job_id}
+        except PermissionError as e:
+            # Expected path for unapproved actions — do not spam traceback
+            msg = str(e)
+            logger.warning(
+                "Job blocked (approval gate) job_id=%s type=%s error=%s",
+                job.job_id,
+                job.job_type,
+                msg,
+            )
+            await self.queue.nack(job.job_id, msg)
+            return {"ok": False, "error": msg, "blocked": True}
 
-            if current.status in ("succeeded", "failed", "cancelled"):
-                return {
-                    "ok": current.status == "succeeded",
-                    "job_id": current.job_id,
-                    "execution_id": current.execution_id,
-                    "status": current.status,
-                    "result": current.result,
-                    "error": current.last_error,
-                }
+        except Exception as e:  # noqa: BLE001
+            err = repr(e)
+            logger.exception(
+                "Job failed job_id=%s type=%s error=%s",
+                job.job_id,
+                job.job_type,
+                err,
+            )
+            await self.queue.nack(job.job_id, err)
+            return {"ok": False, "error": err}
 
-            await asyncio.sleep(0.15)
-
-        return {
-            "ok": False,
-            "job_id": job.job_id,
-            "execution_id": job.execution_id,
-            "status": "processing",
-            "reason": "timeout_waiting_for_result",
-        }
-
-    async def _worker_loop(self) -> None:
-        while not self._stop.is_set():
-            job = await self.queue.claim(timeout_seconds=self._poll_timeout)
-            if job is None:
-                continue
-
-            try:
-                result = await self._execute_job(job)
-                await self.queue.ack(job.job_id, result)
-
-                # Memory append-only outcome (Phase 4 SSOT)
-                self.memory.store_decision_outcome(
-                    decision_type="execution",
-                    context_type="system",
-                    target=job.job_type,
-                    success=True,
-                    metadata={
-                        "job_id": job.job_id,
-                        "execution_id": job.execution_id,
-                        "result_summary": self._summarize(result),
-                    },
-                )
-
-            except Exception as e:
-                err = f"{type(e).__name__}:{str(e)}"
-                await self.queue.nack(job.job_id, err)
-
-                self.memory.store_decision_outcome(
-                    decision_type="execution",
-                    context_type="system",
-                    target=job.job_type,
-                    success=False,
-                    metadata={
-                        "job_id": job.job_id,
-                        "execution_id": job.execution_id,
-                        "error": err,
-                    },
-                )
-
-    async def _execute_job(self, job: Job) -> Dict[str, Any]:
-        # -----------------------------
-        # AGENT JOB
-        # -----------------------------
+    async def _dispatch(self, job: Job) -> Dict[str, Any]:
         if job.job_type == "agent_execute":
-            cmd = job.payload.get("command")
-            if not cmd:
-                raise ValueError("agent_execute requires payload.command")
+            return await self._handle_agent_execute(job)
 
-            return await self.agent_router.execute(
-                {
-                    "command": cmd,
-                    "payload": job.payload.get("payload", {}) or {},
-                    "execution_id": job.execution_id,
-                }
+        raise ValueError(f"Unknown job_type: {job.job_type}")
+
+    @staticmethod
+    def _coalesce_approval_id(payload: Dict[str, Any]) -> Optional[str]:
+        """
+        SSOT extraction: vrati approval_id iz prvog validnog mjesta:
+
+        - payload["approval_id"]
+        - payload["metadata"]["approval_id"]
+        - payload["command"]["approval_id"]
+        - payload["command"]["metadata"]["approval_id"]
+
+        Vraća None ako ništa nije nađeno ili je prazno.
+        """
+        # 1) payload.approval_id
+        v = payload.get("approval_id")
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+
+        # 2) payload.metadata.approval_id
+        md = payload.get("metadata")
+        if isinstance(md, dict):
+            v = md.get("approval_id")
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+
+        # 3) payload.command.approval_id
+        cmd = payload.get("command")
+        if isinstance(cmd, dict):
+            v = cmd.get("approval_id")
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+
+            # 4) payload.command.metadata.approval_id
+            cmd_md = cmd.get("metadata")
+            if isinstance(cmd_md, dict):
+                v = cmd_md.get("approval_id")
+                if isinstance(v, str) and v.strip():
+                    return v.strip()
+
+        return None
+
+    @classmethod
+    def _extract_approval_context(cls, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Context shape za services.approval_flow:
+
+        approval_flow.check_approval() očekuje context["approval_id"] (flat).
+        Zato ovdje uvijek vraćamo: {"approval_id": "..."} kad postoji.
+        """
+        ctx: Dict[str, Any] = {}
+        approval_id = cls._coalesce_approval_id(payload)
+        if approval_id:
+            ctx["approval_id"] = approval_id
+        return ctx
+
+    async def _handle_agent_execute(self, job: Job) -> Dict[str, Any]:
+        payload = job.payload if isinstance(job.payload, dict) else {}
+        cmd = payload.get("command")
+        if not isinstance(cmd, dict):
+            raise ValueError("agent_execute requires payload.command (dict)")
+
+        command_id = str(cmd.get("id") or "agent_execute")
+        command_type = str(cmd.get("type") or "agent_execute")
+
+        # HARD GATE: prije side-effect
+        approval_ctx = self._extract_approval_context(payload)
+        require_approval_or_block(
+            command_id=command_id,
+            command_type=command_type,
+            context=approval_ctx,
+        )
+
+        # Izvršenje: best-effort (zavisi od ActionExecutionService API-ja)
+        if self._action_executor is None:
+            raise RuntimeError(
+                "ActionExecutionService not available (cannot execute agent_execute)"
             )
 
-        # -----------------------------
-        # WRITE JOB (via WriteGateway)
-        # -----------------------------
-        if job.job_type == "write_execute":
-            # expects payload already in WriteGateway envelope shape
-            envelope = dict(job.payload or {})
-            envelope.setdefault("execution_id", job.execution_id)
-            return await self.write_gateway.write(envelope)
+        for meth in ("execute", "run", "dispatch"):
+            fn = getattr(self._action_executor, meth, None)
+            if fn and callable(fn):
+                out = fn(cmd)
+                if inspect.isawaitable(out):
+                    out = await out
+                if isinstance(out, dict):
+                    return out
+                return {"ok": True, "result": out}
 
-        raise ValueError(f"unknown_job_type:{job.job_type}")
-
-    def _summarize(self, result: Dict[str, Any]) -> Dict[str, Any]:
-        if not isinstance(result, dict):
-            return {"type": str(type(result))}
-        keys = list(result.keys())
-        return {"keys": keys[:20]}
+        raise RuntimeError(
+            "ActionExecutionService has no compatible execute/run/dispatch method"
+        )

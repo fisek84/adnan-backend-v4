@@ -134,7 +134,7 @@ class ExecutionGovernanceService:
                 approval_id=None,
             )
 
-        if not self.approvals.is_fully_approved(approval_id_norm):
+        if self.approvals.is_fully_approved(approval_id_norm) is not True:
             return self._block(
                 reason="approval_not_granted",
                 ts=ts,
@@ -172,15 +172,14 @@ class ExecutionGovernanceService:
         directive: str,
         approval_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        resp: Dict[str, Any] = {
+        # Determinističan response shape (uvijek isti ključevi)
+        return {
             "allowed": False,
             "reason": reason,
             "execution_id": execution_id,
+            "approval_id": approval_id,  # može biti None; namjerno
             "context_type": context_type,
             "directive": directive,
             "timestamp": ts,
             "governance": self._governance_limits,
         }
-        if approval_id:
-            resp["approval_id"] = approval_id
-        return resp

@@ -1,18 +1,4 @@
 # routers/notion_ops_router.py
-#
-# CANONICAL PATCH (FAZA 4 / CANON WRITE GUARD)
-# - bulk/create i bulk/update su WRITE-surface i MORAJU biti guarded
-# - bulk/query je READ-only i može ostati bez write-guard
-#
-# Kompatibilnost:
-# - zadržava minimalni shape koji testovi očekuju:
-#   - /bulk/create: 200 + {"created":[...]} za validne tipove, 400 za invalid type
-#   - /bulk/update: 200 + {"updated": payload.updates}
-#   - /bulk/query: 200 + {"results": []} kad je prazno
-#
-# Canon:
-# - writes blokirani kad je OPS_SAFE_MODE=true
-# - optional CEO token enforcement kad je CEO_TOKEN_ENFORCEMENT=true
 
 from __future__ import annotations
 
@@ -24,13 +10,14 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
-logger = logging.getLogger(__name__)
+from services.approval_flow import require_approval_or_block
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/notion-ops", tags=["Notion Bulk Ops"])
 
 
 # ------------------------------------------------------------
-# CANONICAL WRITE GUARDS (same semantics as ai_ops_router)
+# CANONICAL WRITE GUARDS (ENV + approval_flow)
 # ------------------------------------------------------------
 def _env_true(name: str, default: str = "false") -> bool:
     return os.getenv(name, default).strip().lower() == "true"
@@ -60,16 +47,30 @@ def _require_ceo_token_if_enforced(request: Request) -> None:
         raise HTTPException(status_code=403, detail="CEO token required")
 
 
-def _guard_write(request: Request) -> None:
+def _guard_write(request: Request, command_type: str) -> None:
+    """
+    Kombinuje:
+    - globalni blok (OPS_SAFE_MODE)
+    - CEO token zaštitu
+    - approval_flow granularnu kontrolu
+    """
     if _ops_safe_mode_enabled():
         raise HTTPException(
             status_code=403, detail="OPS_SAFE_MODE enabled (writes blocked)"
         )
+
     _require_ceo_token_if_enforced(request)
+
+    # Canon granular approval check
+    require_approval_or_block(
+        command_id="notion_bulk_write",
+        command_type=command_type,
+        context={"source": "notion_ops_router"},
+    )
 
 
 # -------------------------------
-# MODELS
+# MODELI
 # -------------------------------
 class BulkCreateItem(BaseModel):
     type: str = Field(..., min_length=1)
@@ -90,19 +91,11 @@ class BulkQueryPayload(BaseModel):
 
 
 # -------------------------------
-# ROUTES
+# RUTE
 # -------------------------------
 @router.post("/bulk/create")
 async def bulk_create(request: Request, payload: BulkCreatePayload) -> Dict[str, Any]:
-    """
-    Minimalna implementacija da zadovolji test_bulk_ops:
-    - 200 + {"created": [...]} za validne tipove ("goal", "task")
-    - 400 za nepoznat type
-
-    CANON:
-    - write surface => guarded
-    """
-    _guard_write(request)
+    _guard_write(request, command_type="create_task")
 
     if not payload.items:
         return {"created": []}
@@ -130,29 +123,12 @@ async def bulk_create(request: Request, payload: BulkCreatePayload) -> Dict[str,
 
 @router.post("/bulk/update")
 async def bulk_update(request: Request, payload: BulkUpdatePayload) -> Dict[str, Any]:
-    """
-    Test očekuje:
-    - 200
-    - {"updated": []} kad je payload.updates == []
-
-    CANON:
-    - write surface => guarded
-    """
-    _guard_write(request)
+    _guard_write(request, command_type="update_task")
     return {"updated": payload.updates}
 
 
 @router.post("/bulk/query")
 async def bulk_query(payload: BulkQueryPayload) -> Dict[str, Any]:
-    """
-    READ-only endpoint.
-
-    Test očekuje:
-    - 200
-    - {"results": []} kad je payload.queries == []
-    """
     if not payload.queries:
         return {"results": []}
-
-    # Placeholder; real query bi morao biti read-only ili kroz governance ako radi side-effect.
     return {"results": [{} for _ in payload.queries]}

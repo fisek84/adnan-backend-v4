@@ -44,7 +44,6 @@ class COOTranslationService:
 
     READ_ONLY_COMMAND = "system_query"
 
-    # “Known top-level directives” (minimal SSOT; real SSOT može biti action_dictionary/rbac, ali ovo je safe default)
     _KNOWN_COMMANDS: set[str] = {
         "goal_task_workflow",
         "notion_write",
@@ -63,51 +62,43 @@ class COOTranslationService:
         source: str = "user",
         context: Optional[Dict[str, Any]] = None,
     ) -> Optional[AICommand]:
-        """
-        Primarni prevod:
-        - pokušaj structured payload (JSON / dict-like)
-        - pokušaj eksplicitni “command:” format
-        - pokušaj workflow format (goal+tasks)
-        - pokušaj goal/task NL
-        - fallback: system_query (read-only) ako izgleda kao pitanje / query
-        """
         text = (raw_input or "").strip()
         ctx = context or {}
 
         if not text:
             return None
 
-        # 0) Explicit structured payload in context (ako UI šalje već parsirano)
+        # 0) Explicit structured payload in context
         cmd_from_ctx = self._translate_from_context(ctx)
         if cmd_from_ctx is not None:
             return cmd_from_ctx
 
-        # 1) JSON payload u tekstu
+        # 1) JSON payload in text
         cmd = self._translate_from_json_text(text, source=source, context=ctx)
         if cmd is not None:
             return cmd
 
-        # 2) “command=..., intent=...” ili “directive: ...”
+        # 2) Explicit kv format
         cmd = self._translate_from_explicit_kv(text, source=source, context=ctx)
         if cmd is not None:
             return cmd
 
-        # 3) workflow (goal_task_workflow) ako se prepozna multi-entity
+        # 3) Workflow (goal + tasks, including “Dan 1: ...” plan, KPI weekly summary)
         cmd = self._translate_goal_task_workflow(text, source=source, context=ctx)
         if cmd is not None:
             return cmd
 
-        # 4) single goal
+        # 4) Single goal
         cmd = self._translate_goal(text, source=source, context=ctx)
         if cmd is not None:
             return cmd
 
-        # 5) single task
+        # 5) Single task
         cmd = self._translate_task(text, source=source, context=ctx)
         if cmd is not None:
             return cmd
 
-        # 6) read-only query fallback (sigurno)
+        # 6) Read-only question fallback
         if self._looks_like_question(text):
             return AICommand(
                 command=self.READ_ONLY_COMMAND,
@@ -133,26 +124,19 @@ class COOTranslationService:
     # CONTEXT-BASED TRANSLATION
     # ------------------------------------------------------------
     def _translate_from_context(self, ctx: Dict[str, Any]) -> Optional[AICommand]:
-        """
-        Podrži “smart_context” pattern iz CEO UI-a ili slične integracije.
-        Ne “izmišljamo” komandu: mora biti deterministična i sigurna.
-        """
         if not isinstance(ctx, dict) or not ctx:
             return None
 
-        # 1) Ako je eksplicitno dat command payload
         payload = ctx.get("ai_command") or ctx.get("command_payload")
         if isinstance(payload, dict):
             return self._ai_command_from_dict(payload, fallback_ctx=ctx)
 
-        # 2) CEO UI: command_type + goal/task polja
         command_type = ctx.get("command_type")
         if command_type == "create_goal":
             goal = ctx.get("goal") or {}
             if isinstance(goal, dict):
                 name = (goal.get("name") or "").strip()
                 if name:
-                    # map minimal fields to property_specs
                     specs: Dict[str, Any] = {"Name": {"type": "title", "text": name}}
                     prio = (goal.get("priority") or "").strip()
                     status = (goal.get("status") or "").strip()
@@ -184,12 +168,6 @@ class COOTranslationService:
     def _translate_from_json_text(
         self, text: str, *, source: str, context: Dict[str, Any]
     ) -> Optional[AICommand]:
-        """
-        Ako je user zalijepio JSON, podrži:
-        - {"command":"notion_write","intent":"create_page","params":{...}}
-        - {"directive":"goal_task_workflow",...}
-        - {"command":{"command":"notion_write","intent":"create_page","params":{...}}}
-        """
         t = text.strip()
         if not (t.startswith("{") and t.endswith("}")):
             return None
@@ -214,12 +192,10 @@ class COOTranslationService:
         if not isinstance(data, dict) or not data:
             return None
 
-        # top-level directive support
         if "command" not in data and isinstance(data.get("directive"), str):
             data = dict(data)
             data["command"] = data.get("directive")
 
-        # nested command dict support
         inner = data.get("command")
         if isinstance(inner, dict):
             merged = dict(data)
@@ -240,7 +216,6 @@ class COOTranslationService:
         if not cmd_name:
             return None
 
-        # allow system_query always, and known set otherwise
         if cmd_name != self.READ_ONLY_COMMAND and not self.is_valid_command(cmd_name):
             return None
 
@@ -256,13 +231,10 @@ class COOTranslationService:
             metadata["context_type"] = str(fallback_ctx.get("context_type") or "ux")
         metadata.setdefault("source", source)
 
-        # approval_id/execution_id će AICommand normalize_ids srediti ako fali
         try:
             return AICommand(
                 command=cmd_name,
-                intent=str(intent)
-                if isinstance(intent, str) and intent.strip()
-                else None,
+                intent=str(intent) if isinstance(intent, str) and intent.strip() else None,
                 read_only=read_only,
                 params=params,
                 initiator=initiator,
@@ -272,13 +244,9 @@ class COOTranslationService:
                 approval_id=data.get("approval_id"),
             )
         except Exception:
-            # ako payload ima ekstra polja, AICommand(extra=forbid) bi pukao,
-            # pa se držimo minimalnog seta
             return AICommand(
                 command=cmd_name,
-                intent=str(intent)
-                if isinstance(intent, str) and intent.strip()
-                else None,
+                intent=str(intent) if isinstance(intent, str) and intent.strip() else None,
                 read_only=read_only,
                 params=params,
                 initiator=initiator,
@@ -292,10 +260,6 @@ class COOTranslationService:
     def _translate_from_explicit_kv(
         self, text: str, *, source: str, context: Dict[str, Any]
     ) -> Optional[AICommand]:
-        """
-        Podrži “operator friendly” input:
-        - command: notion_write; intent: create_page; db: tasks; name: ...
-        """
         lower = text.lower()
         if "command" not in lower and "directive" not in lower:
             return None
@@ -312,7 +276,6 @@ class COOTranslationService:
         read_only = self._kv_extract(text, "read_only")
         ro_flag = str(read_only or "").strip().lower() in ("1", "true", "yes")
 
-        # minimal params extraction for notion_write
         params: Dict[str, Any] = {}
         if cmd == "notion_write":
             db_key = self._kv_extract(text, "db") or self._kv_extract(text, "db_key")
@@ -324,9 +287,7 @@ class COOTranslationService:
 
         return AICommand(
             command=cmd,
-            intent=intent.strip()
-            if isinstance(intent, str) and intent.strip()
-            else None,
+            intent=intent.strip() if isinstance(intent, str) and intent.strip() else None,
             read_only=ro_flag,
             params=params,
             initiator=initiator,
@@ -340,81 +301,23 @@ class COOTranslationService:
     def _translate_goal_task_workflow(
         self, text: str, *, source: str, context: Dict[str, Any]
     ) -> Optional[AICommand]:
-        """
-        Detekcija za workflow:
-        - eksplicitno “goal_task_workflow”
-        - ili obrazac: “goal: ...; tasks: ...” / multi-line with “tasks”
-        """
         t = text.strip()
 
-        if "goal_task_workflow" in t:
-            # očekujemo da je user dao barem nekakav structured segment
-            payload = self._try_extract_inline_json(t)
-            if isinstance(payload, dict):
-                goal = payload.get("goal")
-                tasks = payload.get("tasks")
-                if isinstance(goal, dict) and isinstance(tasks, list) and tasks:
-                    return AICommand(
-                        command="goal_task_workflow",
-                        intent=None,
-                        read_only=False,
-                        params={"goal": goal, "tasks": tasks},
-                        initiator=str(context.get("initiator") or "ceo"),
-                        validated=True,
-                        metadata={"context_type": "workflow", "source": source},
-                    )
-
-        # heuristic: “goal” + “task(s)” in same text
-        if re.search(r"\b(goal|cilj)\b", t, flags=re.IGNORECASE) and re.search(
-            r"\b(task|tasks|zadatak|zadaci)\b", t, flags=re.IGNORECASE
-        ):
-            # minimal parse:
-            # - first line / sentence is goal title
-            # - subsequent “task:” lines become tasks
-            goal_title, task_titles = self._split_goal_and_tasks(t)
-            if goal_title and task_titles:
-                goal_specs = {
-                    "db_key": "goals",
-                    "property_specs": {
-                        "Name": {"type": "title", "text": goal_title},
-                        "Status": {"type": "status", "name": "Not started"},
-                    },
-                }
-                tasks_specs: List[Dict[str, Any]] = []
-                for tt in task_titles:
-                    tasks_specs.append(
-                        {
-                            "db_key": "tasks",
-                            "property_specs": {
-                                "Name": {"type": "title", "text": tt},
-                                "Status": {"type": "select", "name": "Not started"},
-                            },
-                        }
-                    )
-
-                return AICommand(
-                    command="goal_task_workflow",
-                    intent=None,
-                    read_only=False,
-                    params={"goal": goal_specs, "tasks": tasks_specs},
-                    initiator=str(context.get("initiator") or "ceo"),
-                    validated=True,
-                    metadata={"context_type": "workflow", "source": source},
-                )
-
-        # KPI weekly summary “special workflow” (mapirano u ExecutionOrchestrator)
-        #
-        # FIX: test koristi riječ "rezime", a ranije je matcher tražio samo summary/sažetak.
-        # Podržimo i: rezime, rezime/rezimé varijante bez dijakritike, pregled.
+        # =========================================================
+        # KPI WEEKLY SUMMARY (SPECIAL WORKFLOW)
+        # Trigger example (tests): "kpi weekly summary", "kpi sedmični rezime", "kpi tjedni pregled", ...
+        # =========================================================
         if (
             re.search(r"\bkpi\b", t, flags=re.IGNORECASE)
-            and re.search(r"\b(weekly|sedmic|tjedn)\b", t, flags=re.IGNORECASE)
+            and re.search(r"\b(weekly|sedmic|sedmič|tjedn)\b", t, flags=re.IGNORECASE)
             and re.search(
-                r"\b(summary|sažetak|sazetak|rezime|pregled)\b", t, flags=re.IGNORECASE
+                r"\b(summary|sažetak|sazetak|rezime|pregled|izvjestaj|izveštaj|report)\b",
+                t,
+                flags=re.IGNORECASE,
             )
         ):
             time_scope = "this_week"
-            if re.search(r"\b(last|prosla|prošla)\b", t, flags=re.IGNORECASE):
+            if re.search(r"\b(last|prosla|prošla|zadnja|prethodna)\b", t, flags=re.IGNORECASE):
                 time_scope = "last_week"
 
             return AICommand(
@@ -431,7 +334,181 @@ class COOTranslationService:
                 metadata={"context_type": "workflow", "source": source},
             )
 
-        return None
+        # explicit “goal_task_workflow” with inline JSON
+        if "goal_task_workflow" in t:
+            payload = self._try_extract_inline_json(t)
+            if isinstance(payload, dict):
+                goal = payload.get("goal")
+                tasks = payload.get("tasks")
+                if isinstance(goal, dict) and isinstance(tasks, list) and tasks:
+                    return AICommand(
+                        command="goal_task_workflow",
+                        intent=None,
+                        read_only=False,
+                        params={"goal": goal, "tasks": tasks},
+                        initiator=str(context.get("initiator") or "ceo"),
+                        validated=True,
+                        metadata={"context_type": "workflow", "source": source},
+                    )
+
+        # heuristic triggers for goal+tasks / day-plan
+        has_goal_word = bool(re.search(r"\b(goal|cilj)\b", t, flags=re.IGNORECASE))
+        has_task_word = bool(
+            re.search(r"\b(task|tasks|zadatak|zadaci|zadatci)\b", t, flags=re.IGNORECASE)
+        )
+        has_day_plan = bool(re.search(r"\bDan\s*\d+\s*:", t, flags=re.IGNORECASE))
+        mentions_7day = bool(
+            re.search(r"\b(7\s*[- ]?\s*dnevni|7\s*day)\b", t, flags=re.IGNORECASE)
+        )
+        mentions_14day = bool(
+            re.search(r"\b(14\s*[- ]?\s*dnevni|14\s*day)\b", t, flags=re.IGNORECASE)
+        )
+
+        if not (has_goal_word and (has_task_word or has_day_plan or mentions_7day or mentions_14day)):
+            return None
+
+        goal_title = self._extract_goal_title(t)
+
+        day_tasks = self._extract_day_plan_tasks(t)
+        subgoal_tasks = self._extract_subgoals_as_tasks(t)
+        _, fallback_task_titles = self._split_goal_and_tasks(t)
+
+        tasks_compound: List[Tuple[str, Optional[str]]] = []
+        tasks_compound.extend(subgoal_tasks)
+        tasks_compound.extend(day_tasks)
+
+        if not tasks_compound and fallback_task_titles:
+            tasks_compound = [(x, None) for x in fallback_task_titles if x.strip()]
+
+        if not goal_title or not tasks_compound:
+            return None
+
+        goal_specs = {
+            "db_key": "goals",
+            "property_specs": {
+                "Name": {"type": "title", "text": goal_title},
+                "Status": {"type": "status", "name": "Not started"},
+            },
+        }
+
+        tasks_specs: List[Dict[str, Any]] = []
+        for title, prio in tasks_compound:
+            if not title.strip():
+                continue
+            prop: Dict[str, Any] = {
+                "Name": {"type": "title", "text": title.strip()},
+                "Status": {"type": "select", "name": "Not started"},
+            }
+            if prio:
+                prop["Priority"] = {"type": "select", "name": prio}
+            tasks_specs.append({"db_key": "tasks", "property_specs": prop})
+
+        if not tasks_specs:
+            return None
+
+        return AICommand(
+            command="goal_task_workflow",
+            intent=None,
+            read_only=False,
+            params={"goal": goal_specs, "tasks": tasks_specs},
+            initiator=str(context.get("initiator") or "ceo"),
+            validated=True,
+            metadata={"context_type": "workflow", "source": source},
+        )
+
+    def _extract_goal_title(self, text: str) -> Optional[str]:
+        t = (text or "").strip()
+        if not t:
+            return None
+
+        m = re.search(
+            r"(?i)\b(?:kreiraj|napravi|dodaj|create)\s+(?:cilj|goal)\s*[:\-]\s*(.+)",
+            t,
+        )
+        if m:
+            rest = (m.group(1) or "").strip()
+            rest = re.split(r"[\n\r\.]", rest, maxsplit=1)[0].strip(" ,:-")
+            if rest:
+                return rest
+
+        fields = self._parse_common_fields(t, entity="goal")
+        title = (fields.title or "").strip()
+        return title or None
+
+    def _extract_day_plan_tasks(self, text: str) -> List[Tuple[str, Optional[str]]]:
+        t = (text or "").strip()
+        if not t:
+            return []
+
+        out: List[Tuple[str, Optional[str]]] = []
+
+        matches = list(re.finditer(r"(?i)\bDan\s*(\d{1,2})\s*:\s*", t))
+        if not matches:
+            return out
+
+        for i, m in enumerate(matches):
+            start = m.end()
+            end = matches[i + 1].start() if i + 1 < len(matches) else len(t)
+            seg = t[start:end].strip()
+            seg = seg.splitlines()[0].strip() if seg else seg
+
+            prio = None
+            pm = re.search(r"\(([^)]+)\)", seg)
+            if pm:
+                prio_candidate = (pm.group(1) or "").strip()
+                prio_candidate = prio_candidate.split(",")[0].strip()
+                prio_candidate = prio_candidate.split(";")[0].strip()
+                if prio_candidate:
+                    prio = prio_candidate
+                seg = re.sub(r"\s*\([^)]+\)\s*", " ", seg).strip()
+
+            seg = re.sub(r"(?i)^\s*(task|zadatak)\s*\d*\s*[:\-]\s*", "", seg).strip()
+            seg = seg.strip(" .,-")
+
+            if seg:
+                out.append((seg, prio))
+
+        return out
+
+    def _extract_subgoals_as_tasks(self, text: str) -> List[Tuple[str, Optional[str]]]:
+        t = (text or "").strip()
+        if not t:
+            return []
+
+        if not re.search(r"(?i)\bpodcilj\b", t):
+            return []
+
+        out: List[Tuple[str, Optional[str]]] = []
+
+        m = re.search(r"(?i)\bpodcilj(?:a|e|i)?\b\s*[:\-]?\s*(.+)", t)
+        if not m:
+            return out
+
+        tail = (m.group(1) or "").strip()
+        tail = re.split(
+            r"(?i)\b(7\s*[- ]?\s*dnevni|14\s*[- ]?\s*dnevni|plan|Dan\s*\d+\s*:|task|zadatak)\b",
+            tail,
+        )[0].strip()
+
+        parts = [p.strip() for p in tail.split(",") if p.strip()]
+        for p in parts:
+            prio = None
+            pm = re.search(r"(?i)\bprioritet\b\s*([^\)\.\n,;]+)", p)
+            if pm:
+                pr = (pm.group(1) or "").strip()
+                pr = pr.split(",")[0].strip()
+                pr = pr.split(";")[0].strip()
+                prio = pr or None
+
+            title = re.sub(r"\([^)]+\)", " ", p)
+            title = re.sub(r"(?i)\bprioritet\b\s*[^\.\n,;]+", " ", title)
+            title = re.sub(r"(?i)\bpodcilj\b", "", title)
+            title = re.sub(r"\s+", " ", title).strip(" :.-")
+
+            if title:
+                out.append((f"Podcilj: {title}", prio))
+
+        return out
 
     # ------------------------------------------------------------
     # GOAL TRANSLATION
@@ -441,7 +518,6 @@ class COOTranslationService:
     ) -> Optional[AICommand]:
         t = text.strip()
 
-        # “list goals”
         if re.search(
             r"\b(list\s+goals|prikaži\s+ciljeve|prikazi\s+ciljeve)\b",
             t,
@@ -457,7 +533,6 @@ class COOTranslationService:
                 metadata={"context_type": "ux", "source": source},
             )
 
-        # create goal (EN/BS)
         if not re.search(r"^(create|kreiraj|napravi|dodaj)\s+", t, re.IGNORECASE):
             return None
         if not re.search(r"\b(goal|cilj)\b", t, re.IGNORECASE):
@@ -467,11 +542,7 @@ class COOTranslationService:
         if not fields.title:
             return None
 
-        specs: Dict[str, Any] = {
-            "Name": {"type": "title", "text": fields.title},
-        }
-
-        # goals schema uses Status as status-type in registry; safe default
+        specs: Dict[str, Any] = {"Name": {"type": "title", "text": fields.title}}
         specs["Status"] = {"type": "status", "name": fields.status or "Not started"}
 
         if fields.priority:
@@ -504,7 +575,6 @@ class COOTranslationService:
         if not re.search(r"^(create|kreiraj|napravi|dodaj)\s+", t, re.IGNORECASE):
             return None
 
-        # task-ish keyword
         if not re.search(r"\b(task|zadatak|todo|to-do)\b", t, re.IGNORECASE):
             return None
 
@@ -540,25 +610,25 @@ class COOTranslationService:
     # PARSING HELPERS
     # ------------------------------------------------------------
     def _parse_common_fields(self, text: str, *, entity: str) -> _ParsedFields:
-        """
-        Minimal deterministic parsing:
-        - title: ostatak teksta bez “create/kreiraj ... task/goal”
-        - status: “status X”
-        - priority: “priority X” / “prioritet X”
-        - due: “due YYYY-MM-DD” / “rok YYYY-MM-DD” / “deadline YYYY-MM-DD”
-        - description: “opis ...” ili trailing segment nakon “desc/description”
-        """
         raw = text.strip()
 
-        # status
-        status = self._extract_after_keyword(raw, ["status"])
-        priority = self._extract_after_keyword(raw, ["prioritet", "priority"])
-        due_raw = self._extract_after_keyword(raw, ["due", "rok", "deadline"])
+        status = self._extract_field_value(raw, "status")
+        priority = self._extract_field_value(raw, "prioritet") or self._extract_field_value(
+            raw, "priority"
+        )
+        due_raw = (
+            self._extract_field_value(raw, "due")
+            or self._extract_field_value(raw, "rok")
+            or self._extract_field_value(raw, "deadline")
+        )
         due = self._try_parse_date_to_iso(due_raw) if due_raw else None
 
-        description = self._extract_after_keyword(raw, ["opis", "description", "desc"])
+        description = (
+            self._extract_field_value(raw, "opis")
+            or self._extract_field_value(raw, "description")
+            or self._extract_field_value(raw, "desc")
+        )
 
-        # remove the fields segments from title candidate
         cleaned = raw
         cleaned = re.sub(
             r"(?i)\b(status|prioritet|priority|due|rok|deadline|opis|description|desc)\b.*$",
@@ -566,7 +636,6 @@ class COOTranslationService:
             cleaned,
         ).strip(" ,.-")
 
-        # drop leading verb + entity tokens
         if entity == "goal":
             cleaned = re.sub(
                 r"(?i)^(create|kreiraj|napravi|dodaj)\s+(goal|cilj)\s*[:\-]?\s*",
@@ -584,53 +653,61 @@ class COOTranslationService:
 
         return _ParsedFields(
             title=title,
-            status=status.strip(" ,.-")
-            if isinstance(status, str) and status.strip()
-            else None,
-            priority=priority.strip(" ,.-")
-            if isinstance(priority, str) and priority.strip()
-            else None,
+            status=status.strip(" ,.-") if isinstance(status, str) and status.strip() else None,
+            priority=priority.strip(" ,.-") if isinstance(priority, str) and priority.strip() else None,
             due=due,
-            description=description.strip()
-            if isinstance(description, str) and description.strip()
-            else None,
+            description=description.strip() if isinstance(description, str) and description.strip() else None,
         )
 
     @staticmethod
-    def _extract_after_keyword(text: str, keywords: List[str]) -> Optional[str]:
-        for kw in keywords:
-            m = re.search(rf"(?i)\b{re.escape(kw)}\b\s*[: ]+\s*([^\n,;]+)", text)
-            if m:
-                return (m.group(1) or "").strip()
-        return None
+    def _extract_field_value(text: str, key: str) -> Optional[str]:
+        """
+        Robust extractor that stops at punctuation or next directive keywords.
+        Fixes the Notion select/status issue: prevents capturing full sentences.
+        """
+        if not text or not key:
+            return None
+
+        m = re.search(rf"(?i)\b{re.escape(key)}\b\s*[: ]+\s*", text)
+        if not m:
+            return None
+
+        tail = text[m.end() :].strip()
+        if not tail:
+            return None
+
+        stop_re = re.compile(
+            r"(?i)([\n\r,;\.])|(\b(prioritet|priority|due|rok|deadline|opis|description|desc|kreiraj|napravi|dodaj|create|plan|dan|task|tasks|zadatak|zadaci|podcilj|subgoal)\b)"
+        )
+
+        stop = stop_re.search(tail)
+        if stop:
+            tail = tail[: stop.start()].strip()
+
+        tail = tail.strip().strip('"').strip("'").strip()
+
+        if "," in tail:
+            tail = tail.split(",")[0].strip()
+
+        return tail or None
 
     @staticmethod
     def _try_parse_date_to_iso(value: str) -> Optional[str]:
-        """
-        Accept:
-        - YYYY-MM-DD
-        - YYYY/MM/DD
-        - DD.MM.YYYY
-        Returns ISO date: YYYY-MM-DD (no time).
-        """
         if not isinstance(value, str) or not value.strip():
             return None
 
         v = value.strip()
 
-        # YYYY-MM-DD or YYYY/MM/DD
         m = re.match(r"^(\d{4})[-/](\d{2})[-/](\d{2})$", v)
         if m:
             y, mo, d = m.group(1), m.group(2), m.group(3)
             return f"{y}-{mo}-{d}"
 
-        # DD.MM.YYYY
         m = re.match(r"^(\d{2})\.(\d{2})\.(\d{4})\.?$", v)
         if m:
             d, mo, y = m.group(1), m.group(2), m.group(3)
             return f"{y}-{mo}-{d}"
 
-        # best-effort: try datetime parse for common formats
         for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%d.%m.%Y"):
             try:
                 dt = datetime.strptime(v, fmt)
@@ -649,7 +726,6 @@ class COOTranslationService:
             return True
         if re.match(r"(?i)^(šta|sta|kako|zašto|zasto|why|how|what)\b", t):
             return True
-        # “read/inspect” verbs
         if re.search(r"(?i)\b(prikaži|prikazi|pogledaj|procitaj|read|show|list)\b", t):
             return True
         return False
@@ -663,9 +739,6 @@ class COOTranslationService:
 
     @staticmethod
     def _try_extract_inline_json(text: str) -> Optional[Dict[str, Any]]:
-        """
-        Ako user napiše: "... { ... }", probaj izvući zadnji JSON blok.
-        """
         matches = list(re.finditer(r"\{.*\}", text, flags=re.DOTALL))
         if not matches:
             return None
@@ -678,21 +751,14 @@ class COOTranslationService:
 
     @staticmethod
     def _split_goal_and_tasks(text: str) -> Tuple[Optional[str], List[str]]:
-        """
-        Minimal split:
-        - Goal title: prva linija (ili prva rečenica) prije “tasks/zadaci”
-        - Task titles: linije koje počinju sa “task:” / “zadatak:”
-        """
         lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
         if not lines:
             return None, []
 
         joined = " ".join(lines)
-        # goal title heuristika: segment prije prvog "task(s)/zadaci"
         m = re.split(r"(?i)\b(tasks|zadaci|zadatci)\b\s*[:\-]?", joined, maxsplit=1)
         goal_part = (m[0] or "").strip(" :,-") if m else joined.strip()
 
-        # task lines
         task_titles: List[str] = []
         for ln in lines:
             mm = re.match(r"(?i)^(task|zadatak)\s*[:\-]\s*(.+)$", ln)
@@ -701,7 +767,6 @@ class COOTranslationService:
                 if title:
                     task_titles.append(title)
 
-        # fallback: bullet-ish “- something” lines after mention
         if not task_titles:
             after = False
             for ln in lines:
