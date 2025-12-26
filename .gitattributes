@@ -1,0 +1,4 @@
+Set-Content -Path .gitattributes -Value @"
+*.yml  text eol=lf
+*.yaml text eol=lf
+"@
