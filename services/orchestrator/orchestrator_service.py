@@ -25,10 +25,26 @@ class OrchestratorService:
     Canon:
     - Ovdje se NE kreira approval; samo se verifikuje.
     - approval_id se očekuje u job.payload ili u payload.command ili u njihovim metadata.
+
+    Napomena (kompatibilnost):
+    - dependencies.py (ili wiring) može proslijediti memory/agent_router/write_gateway.
+      Orchestrator ih trenutno NE koristi, ali ih prihvatamo da mypy i runtime wiring budu stabilni.
     """
 
-    def __init__(self, queue: QueueService) -> None:
+    def __init__(
+        self,
+        queue: QueueService,
+        *,
+        memory: Optional[Any] = None,
+        agent_router: Optional[Any] = None,
+        write_gateway: Optional[Any] = None,
+    ) -> None:
         self.queue = queue
+
+        # Optional wiring (trenutno nije u upotrebi u ovom workeru, ali čuvamo kompatibilnost)
+        self.memory = memory
+        self.agent_router = agent_router
+        self.write_gateway = write_gateway
 
         # Optional executor (ako postoji u projektu)
         self._action_executor = None
@@ -72,9 +88,8 @@ class OrchestratorService:
                 result = {"ok": True, "result": result}
             await self.queue.ack(job.job_id, result)
             return result
-
         except PermissionError as e:
-            # Expected path for unapproved actions — do not spam traceback
+            # Approval gate: ovo nije "crash" biznis logike; jasno logujemo i vraćamo blokadu.
             msg = str(e)
             logger.warning(
                 "Job blocked (approval gate) job_id=%s type=%s error=%s",
@@ -83,15 +98,11 @@ class OrchestratorService:
                 msg,
             )
             await self.queue.nack(job.job_id, msg)
-            return {"ok": False, "error": msg, "blocked": True}
-
+            return {"ok": False, "error": msg}
         except Exception as e:  # noqa: BLE001
             err = repr(e)
             logger.exception(
-                "Job failed job_id=%s type=%s error=%s",
-                job.job_id,
-                job.job_type,
-                err,
+                "Job failed job_id=%s type=%s error=%s", job.job_id, job.job_type, err
             )
             await self.queue.nack(job.job_id, err)
             return {"ok": False, "error": err}
@@ -114,26 +125,22 @@ class OrchestratorService:
 
         Vraća None ako ništa nije nađeno ili je prazno.
         """
-        # 1) payload.approval_id
         v = payload.get("approval_id")
         if isinstance(v, str) and v.strip():
             return v.strip()
 
-        # 2) payload.metadata.approval_id
         md = payload.get("metadata")
         if isinstance(md, dict):
             v = md.get("approval_id")
             if isinstance(v, str) and v.strip():
                 return v.strip()
 
-        # 3) payload.command.approval_id
         cmd = payload.get("command")
         if isinstance(cmd, dict):
             v = cmd.get("approval_id")
             if isinstance(v, str) and v.strip():
                 return v.strip()
 
-            # 4) payload.command.metadata.approval_id
             cmd_md = cmd.get("metadata")
             if isinstance(cmd_md, dict):
                 v = cmd_md.get("approval_id")
@@ -146,15 +153,10 @@ class OrchestratorService:
     def _extract_approval_context(cls, payload: Dict[str, Any]) -> Dict[str, Any]:
         """
         Context shape za services.approval_flow:
-
         approval_flow.check_approval() očekuje context["approval_id"] (flat).
-        Zato ovdje uvijek vraćamo: {"approval_id": "..."} kad postoji.
         """
-        ctx: Dict[str, Any] = {}
         approval_id = cls._coalesce_approval_id(payload)
-        if approval_id:
-            ctx["approval_id"] = approval_id
-        return ctx
+        return {"approval_id": approval_id} if approval_id else {}
 
     async def _handle_agent_execute(self, job: Job) -> Dict[str, Any]:
         payload = job.payload if isinstance(job.payload, dict) else {}
@@ -165,7 +167,6 @@ class OrchestratorService:
         command_id = str(cmd.get("id") or "agent_execute")
         command_type = str(cmd.get("type") or "agent_execute")
 
-        # HARD GATE: prije side-effect
         approval_ctx = self._extract_approval_context(payload)
         require_approval_or_block(
             command_id=command_id,
@@ -173,7 +174,6 @@ class OrchestratorService:
             context=approval_ctx,
         )
 
-        # Izvršenje: best-effort (zavisi od ActionExecutionService API-ja)
         if self._action_executor is None:
             raise RuntimeError(
                 "ActionExecutionService not available (cannot execute agent_execute)"

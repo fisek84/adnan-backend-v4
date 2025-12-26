@@ -1,3 +1,5 @@
+# ruff: noqa: E402
+
 # tests/test_orchestrator_approval_gate.py
 from __future__ import annotations
 
