@@ -63,7 +63,9 @@ def _sorted_keys_dict(d: Dict[str, Any]) -> Dict[str, Any]:
     (JSON object order is not semantically meaningful, but stable ordering helps diffing/tests.)
     """
     try:
-        return {k: d[k] for k in sorted(d.keys(), key=lambda x: (str(x).lower(), str(x)))}
+        return {
+            k: d[k] for k in sorted(d.keys(), key=lambda x: (str(x).lower(), str(x)))
+        }
     except Exception:
         # fail-soft
         return dict(d)
@@ -381,7 +383,9 @@ class CeoConsoleSnapshotService:
         version = cls._env_first("NOTION_VERSION") or DEFAULT_NOTION_VERSION
 
         include_properties = _env_true("CEO_SNAPSHOT_INCLUDE_PROPERTIES", "true")
-        include_properties_text = _env_true("CEO_SNAPSHOT_INCLUDE_PROPERTIES_TEXT", "true")
+        include_properties_text = _env_true(
+            "CEO_SNAPSHOT_INCLUDE_PROPERTIES_TEXT", "true"
+        )
         include_raw_pages = _env_true("CEO_SNAPSHOT_INCLUDE_RAW_PAGES", "false")
 
         cfg = _NotionConfig(
@@ -391,36 +395,50 @@ class CeoConsoleSnapshotService:
             tasks_db_id=tasks_db_id,
             approvals_db_id=approvals_db_id,
             sop_db_id=cls._env_first("NOTION_SOP_DATABASE_ID", "NOTION_SOP_DB_ID"),
-            plans_db_id=cls._env_first("NOTION_PLANS_DATABASE_ID", "NOTION_PLANS_DB_ID"),
+            plans_db_id=cls._env_first(
+                "NOTION_PLANS_DATABASE_ID", "NOTION_PLANS_DB_ID"
+            ),
             time_management_page_id=cls._env_first("NOTION_TIME_MANAGEMENT_PAGE_ID"),
             goal_name_prop=cls._env_first("NOTION_GOAL_NAME_PROP") or "Name",
             goal_status_prop=cls._env_first("NOTION_GOAL_STATUS_PROP") or "Status",
-            goal_priority_prop=cls._env_first("NOTION_GOAL_PRIORITY_PROP") or "Priority",
-            goal_deadline_prop=cls._env_first("NOTION_GOAL_DEADLINE_PROP") or "Deadline",
+            goal_priority_prop=cls._env_first("NOTION_GOAL_PRIORITY_PROP")
+            or "Priority",
+            goal_deadline_prop=cls._env_first("NOTION_GOAL_DEADLINE_PROP")
+            or "Deadline",
             task_title_prop=cls._env_first("NOTION_TASK_TITLE_PROP") or "Name",
             task_status_prop=cls._env_first("NOTION_TASK_STATUS_PROP") or "Status",
-            task_priority_prop=cls._env_first("NOTION_TASK_PRIORITY_PROP") or "Priority",
+            task_priority_prop=cls._env_first("NOTION_TASK_PRIORITY_PROP")
+            or "Priority",
             task_due_date_prop=cls._env_first("NOTION_TASK_DUE_PROP") or "Due",
             task_lead_prop=cls._env_first("NOTION_TASK_LEAD_PROP") or "Lead",
-            approval_status_prop=cls._env_first("NOTION_APPROVAL_STATUS_PROP") or "Status",
+            approval_status_prop=cls._env_first("NOTION_APPROVAL_STATUS_PROP")
+            or "Status",
             approval_last_change_prop=cls._env_first("NOTION_APPROVAL_LAST_CHANGE_PROP")
             or "Last change",
             priority_window_days=cls._env_int("CEO_PRIORITY_WINDOW_DAYS", 7),
-            http_timeout_sec=cls._env_int("NOTION_HTTP_TIMEOUT_SEC", DEFAULT_HTTP_TIMEOUT_SEC),
+            http_timeout_sec=cls._env_int(
+                "NOTION_HTTP_TIMEOUT_SEC", DEFAULT_HTTP_TIMEOUT_SEC
+            ),
             max_rows=cls._env_int("CEO_SNAPSHOT_MAX_ROWS", DEFAULT_MAX_ROWS),
-            excerpt_lines=cls._env_int("CEO_SNAPSHOT_EXCERPT_LINES", DEFAULT_EXCERPT_LINES),
+            excerpt_lines=cls._env_int(
+                "CEO_SNAPSHOT_EXCERPT_LINES", DEFAULT_EXCERPT_LINES
+            ),
             include_properties=include_properties,
             include_properties_text=include_properties_text,
             include_raw_pages=include_raw_pages,
             max_text_value_chars=cls._env_int(
                 "CEO_SNAPSHOT_MAX_TEXT_VALUE_CHARS", DEFAULT_MAX_TEXT_VALUE_CHARS
             ),
-            max_list_items=cls._env_int("CEO_SNAPSHOT_MAX_LIST_ITEMS", DEFAULT_MAX_LIST_ITEMS),
+            max_list_items=cls._env_int(
+                "CEO_SNAPSHOT_MAX_LIST_ITEMS", DEFAULT_MAX_LIST_ITEMS
+            ),
         )
 
         high_values_env = cls._env_first("CEO_PRIORITY_HIGH_VALUES")
         if high_values_env:
-            cfg.priority_high_values = [v.strip() for v in high_values_env.split(",") if v.strip()]
+            cfg.priority_high_values = [
+                v.strip() for v in high_values_env.split(",") if v.strip()
+            ]
 
         return cls(notion_client=_NotionClient(cfg), config=cfg)
 
@@ -588,7 +606,9 @@ class CeoConsoleSnapshotService:
             )
             items: List[Dict[str, Any]] = []
             for row in rows:
-                props: Dict[str, Any] = row.get("properties", {}) if isinstance(row, dict) else {}
+                props: Dict[str, Any] = (
+                    row.get("properties", {}) if isinstance(row, dict) else {}
+                )
                 title = self._extract_title(props.get(title_prop)) or "(untitled)"
                 items.append({"id": row.get("id", ""), "title": title})
             out["available"] = True
@@ -670,12 +690,16 @@ class CeoConsoleSnapshotService:
 
         rows = self._safe_query_with_optional_sort(
             self._cfg.goals_db_id,
-            sorts=[{"property": self._cfg.goal_deadline_prop, "direction": "ascending"}],
+            sorts=[
+                {"property": self._cfg.goal_deadline_prop, "direction": "ascending"}
+            ],
         )
 
         goals: List[CeoGoal] = []
         for row in rows:
-            props: Dict[str, Any] = row.get("properties", {}) if isinstance(row, dict) else {}
+            props: Dict[str, Any] = (
+                row.get("properties", {}) if isinstance(row, dict) else {}
+            )
 
             name = self._extract_title(props.get(self._cfg.goal_name_prop))
             status = self._extract_select(props.get(self._cfg.goal_status_prop))
@@ -690,7 +714,9 @@ class CeoConsoleSnapshotService:
                 if self._cfg.include_properties_text:
                     text_props, type_map = self._normalize_properties(props)
 
-            raw_obj: Optional[Dict[str, Any]] = row if self._cfg.include_raw_pages else None
+            raw_obj: Optional[Dict[str, Any]] = (
+                row if self._cfg.include_raw_pages else None
+            )
 
             goals.append(
                 CeoGoal(
@@ -712,18 +738,24 @@ class CeoConsoleSnapshotService:
 
         rows = self._safe_query_with_optional_sort(
             self._cfg.tasks_db_id,
-            sorts=[{"property": self._cfg.task_due_date_prop, "direction": "ascending"}],
+            sorts=[
+                {"property": self._cfg.task_due_date_prop, "direction": "ascending"}
+            ],
         )
 
         tasks: List[CeoTask] = []
         for row in rows:
-            props: Dict[str, Any] = row.get("properties", {}) if isinstance(row, dict) else {}
+            props: Dict[str, Any] = (
+                row.get("properties", {}) if isinstance(row, dict) else {}
+            )
 
             title = self._extract_title(props.get(self._cfg.task_title_prop))
             status = self._extract_select(props.get(self._cfg.task_status_prop))
             priority = self._extract_select(props.get(self._cfg.task_priority_prop))
             due = self._extract_date(props.get(self._cfg.task_due_date_prop))
-            lead = self._extract_people_or_rich_text(props.get(self._cfg.task_lead_prop))
+            lead = self._extract_people_or_rich_text(
+                props.get(self._cfg.task_lead_prop)
+            )
 
             raw_props: Dict[str, Any] = {}
             text_props: Dict[str, Any] = {}
@@ -733,7 +765,9 @@ class CeoConsoleSnapshotService:
                 if self._cfg.include_properties_text:
                     text_props, type_map = self._normalize_properties(props)
 
-            raw_obj: Optional[Dict[str, Any]] = row if self._cfg.include_raw_pages else None
+            raw_obj: Optional[Dict[str, Any]] = (
+                row if self._cfg.include_raw_pages else None
+            )
 
             tasks.append(
                 CeoTask(
@@ -811,9 +845,13 @@ class CeoConsoleSnapshotService:
         pending = approved_today = completed = errors = 0
 
         for row in rows:
-            props: Dict[str, Any] = row.get("properties", {}) if isinstance(row, dict) else {}
+            props: Dict[str, Any] = (
+                row.get("properties", {}) if isinstance(row, dict) else {}
+            )
             status = self._extract_select(props.get(self._cfg.approval_status_prop))
-            last_change_date = self._extract_date(props.get(self._cfg.approval_last_change_prop))
+            last_change_date = self._extract_date(
+                props.get(self._cfg.approval_last_change_prop)
+            )
             if not status:
                 continue
 
@@ -824,7 +862,11 @@ class CeoConsoleSnapshotService:
                 completed += 1
                 if last_change_date and last_change_date == today:
                     approved_today += 1
-            elif "executed" in normalized or "done" in normalized or "completed" in normalized:
+            elif (
+                "executed" in normalized
+                or "done" in normalized
+                or "completed" in normalized
+            ):
                 completed += 1
             elif "error" in normalized or "failed" in normalized:
                 errors += 1
@@ -836,7 +878,9 @@ class CeoConsoleSnapshotService:
             errors=errors,
         )
 
-    def _normalize_properties(self, props: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, str]]:
+    def _normalize_properties(
+        self, props: Dict[str, Any]
+    ) -> Tuple[Dict[str, Any], Dict[str, str]]:
         """
         Returns:
           - text_map: {prop_name: normalized_value}
@@ -889,20 +933,37 @@ class CeoConsoleSnapshotService:
         if not isinstance(t, str) or not t:
             # best-effort heuristic
             if "title" in prop:
-                return _truncate_text(
-                    self._extract_title(prop) or "", self._cfg.max_text_value_chars
-                ) or None
+                return (
+                    _truncate_text(
+                        self._extract_title(prop) or "", self._cfg.max_text_value_chars
+                    )
+                    or None
+                )
             if "rich_text" in prop:
-                return _truncate_text(
-                    self._extract_rich_text(prop) or "", self._cfg.max_text_value_chars
-                ) or None
+                return (
+                    _truncate_text(
+                        self._extract_rich_text(prop) or "",
+                        self._cfg.max_text_value_chars,
+                    )
+                    or None
+                )
             return None
 
         if t == "title":
-            return _truncate_text(self._extract_title(prop) or "", self._cfg.max_text_value_chars) or None
+            return (
+                _truncate_text(
+                    self._extract_title(prop) or "", self._cfg.max_text_value_chars
+                )
+                or None
+            )
 
         if t == "rich_text":
-            return _truncate_text(self._extract_rich_text(prop) or "", self._cfg.max_text_value_chars) or None
+            return (
+                _truncate_text(
+                    self._extract_rich_text(prop) or "", self._cfg.max_text_value_chars
+                )
+                or None
+            )
 
         if t in ("select", "status"):
             return self._extract_select(prop)
@@ -996,14 +1057,18 @@ class CeoConsoleSnapshotService:
                     ft = f.get("type")
                     entry: Dict[str, Any] = {}
                     if isinstance(name, str) and name:
-                        entry["name"] = _truncate_text(name, self._cfg.max_text_value_chars)
+                        entry["name"] = _truncate_text(
+                            name, self._cfg.max_text_value_chars
+                        )
                     if isinstance(ft, str) and ft:
                         entry["type"] = ft
                         inner = f.get(ft)
                         if isinstance(inner, dict):
                             url = inner.get("url")
                             if isinstance(url, str) and url:
-                                entry["url"] = _truncate_text(url, self._cfg.max_text_value_chars)
+                                entry["url"] = _truncate_text(
+                                    url, self._cfg.max_text_value_chars
+                                )
                     if entry:
                         out.append(entry)
             return out
@@ -1063,7 +1128,9 @@ class CeoConsoleSnapshotService:
                 out = {}
                 for kk, vv in list(candidate.items())[:20]:
                     if isinstance(vv, str):
-                        out[str(kk)] = _truncate_text(vv, self._cfg.max_text_value_chars)
+                        out[str(kk)] = _truncate_text(
+                            vv, self._cfg.max_text_value_chars
+                        )
                     elif isinstance(vv, (int, float, bool)) or vv is None:
                         out[str(kk)] = vv
                     else:
@@ -1137,7 +1204,9 @@ class CeoConsoleSnapshotService:
         except Exception:
             return None
 
-    def _extract_people_or_rich_text(self, prop: Optional[Dict[str, Any]]) -> Optional[str]:
+    def _extract_people_or_rich_text(
+        self, prop: Optional[Dict[str, Any]]
+    ) -> Optional[str]:
         """
         Best-effort extraction for "Lead" or similar fields.
         Bounded by cfg.max_list_items and cfg.max_text_value_chars.
@@ -1150,7 +1219,9 @@ class CeoConsoleSnapshotService:
         max_chars = DEFAULT_MAX_TEXT_VALUE_CHARS
         if self._cfg is not None:
             max_items = int(self._cfg.max_list_items or DEFAULT_MAX_LIST_ITEMS)
-            max_chars = int(self._cfg.max_text_value_chars or DEFAULT_MAX_TEXT_VALUE_CHARS)
+            max_chars = int(
+                self._cfg.max_text_value_chars or DEFAULT_MAX_TEXT_VALUE_CHARS
+            )
 
         if "people" in prop:
             people = prop.get("people") or []

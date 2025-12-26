@@ -63,7 +63,8 @@ class ProposedCommand(_AllowExtraBaseModel):
 
     # Optional canon fields (FAZA 5)
     scope: Optional[str] = Field(
-        default=None, description="Opcionalni scope (npr. notion/tasks, api_execute_raw)."
+        default=None,
+        description="Opcionalni scope (npr. notion/tasks, api_execute_raw).",
     )
     payload_summary: Optional[Dict[str, Any]] = Field(
         default=None,

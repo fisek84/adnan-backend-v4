@@ -608,7 +608,15 @@ def ceo_clone_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> AgentOutput
     ):
         extra = _dig(snap, ("knowledge_snapshot", "extra_databases"))
         lines = ["Baze (best-effort iz snapshot-a):"]
-        core = ["goals", "tasks", "projects", "kpi", "leads", "agent_exchange", "ai_summary"]
+        core = [
+            "goals",
+            "tasks",
+            "projects",
+            "kpi",
+            "leads",
+            "agent_exchange",
+            "ai_summary",
+        ]
         lines.append(f"- core: {', '.join(core)}")
         if isinstance(extra, dict) and extra:
             names = sorted(list(extra.keys()))[:200]
@@ -631,7 +639,10 @@ def ceo_clone_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> AgentOutput
     status = _parse_filter(msg, "status")
     priority = _parse_filter(msg, "priority") or _parse_filter(msg, "prioritet")
 
-    if any(x in lower_ascii for x in ["pokazi ciljeve", "pokaži ciljeve", "ciljevi", "goals"]):
+    if any(
+        x in lower_ascii
+        for x in ["pokazi ciljeve", "pokaži ciljeve", "ciljevi", "goals"]
+    ):
         base = _extract_goals(snap)
         goals = _filter_items(base, status=status, priority=priority)
         if base and not goals and (status or priority):
@@ -657,7 +668,10 @@ def ceo_clone_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> AgentOutput
             },
         )
 
-    if any(x in lower_ascii for x in ["pokazi taskove", "pokaži taskove", "taskovi", "tasks"]):
+    if any(
+        x in lower_ascii
+        for x in ["pokazi taskove", "pokaži taskove", "taskovi", "tasks"]
+    ):
         base = _extract_tasks(snap)
         tasks = _filter_items(base, status=status, priority=priority)
         if base and not tasks and (status or priority):
@@ -699,7 +713,10 @@ def ceo_clone_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> AgentOutput
             },
         )
 
-    if any(x in lower_ascii for x in ["pokazi projekte", "pokaži projekte", "projekti", "projects"]):
+    if any(
+        x in lower_ascii
+        for x in ["pokazi projekte", "pokaži projekte", "projekti", "projects"]
+    ):
         base = _extract_projects(snap)
         projects = _filter_items(base, status=status, priority=priority)
         if base and not projects and (status or priority):
@@ -709,7 +726,9 @@ def ceo_clone_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> AgentOutput
                 f"(ukupno u snapshotu: {len(base)})"
             )
         else:
-            text = "Projekti (snapshot):\n" + _render_items(projects, "projects", limit=limit)
+            text = "Projekti (snapshot):\n" + _render_items(
+                projects, "projects", limit=limit
+            )
         return AgentOutput(
             text=text,
             proposed_commands=[],
@@ -780,7 +799,9 @@ def ceo_clone_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> AgentOutput
     )
 
 
-def specialist_notion_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> AgentOutput:
+def specialist_notion_agent(
+    agent_input: AgentInput, ctx: Dict[str, Any]
+) -> AgentOutput:
     msg = (agent_input.message or "").strip()
     lower = msg.lower()
     lower_ascii = _normalize_ascii(lower)

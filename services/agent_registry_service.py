@@ -472,7 +472,9 @@ class AgentRegistryService:
             return {
                 agent_id: {
                     "agent_id": self._agents[agent_id].get("agent_id"),
-                    "capabilities": list(self._agents[agent_id].get("capabilities") or []),
+                    "capabilities": list(
+                        self._agents[agent_id].get("capabilities") or []
+                    ),
                     "status": self._agents[agent_id].get("status"),
                     "version": self._agents[agent_id].get("version"),
                     "metadata": deepcopy(self._agents[agent_id].get("metadata", {})),
