@@ -4,27 +4,22 @@
 
 from __future__ import annotations
 
-import os
 import logging
-import uuid
+import os
 import re
-from pathlib import Path
+import uuid
 from contextlib import asynccontextmanager
-from typing import Dict, Any, Optional, List
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, Request, HTTPException, Body
-from fastapi.responses import JSONResponse, FileResponse
-from fastapi.staticfiles import StaticFiles
-from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
+from fastapi import Body, FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from system_version import (
-    SYSTEM_NAME,
-    VERSION,
-    ARCH_LOCK,
-    RELEASE_CHANNEL,
-)
+from system_version import ARCH_LOCK, RELEASE_CHANNEL, SYSTEM_NAME, VERSION
 
 # ================================================================
 # ENV / BOOTSTRAP
@@ -99,20 +94,22 @@ logger = logging.getLogger("gateway")
 # ================================================================
 # CORE SERVICES
 # ================================================================
-from services.ai_command_service import AICommandService
-from services.coo_translation_service import COOTranslationService
-from services.coo_conversation_service import COOConversationService
-from services.approval_state_service import get_approval_state
-from services.execution_registry import ExecutionRegistry
-from services.execution_orchestrator import ExecutionOrchestrator
+from models.agent_contract import ProposedCommand
 from models.ai_command import AICommand
+from routers.chat_router import build_chat_router
+from services.ai_command_service import AICommandService
+from services.approval_state_service import get_approval_state
+from services.coo_conversation_service import COOConversationService
+from services.coo_translation_service import COOTranslationService
+from services.execution_orchestrator import ExecutionOrchestrator
+from services.execution_registry import ExecutionRegistry
 
 # ================================================================
 # IDENTITY / MODE / STATE
 # ================================================================
-from services.identity_loader import load_identity
 from services.adnan_mode_service import load_mode
 from services.adnan_state_service import load_state
+from services.identity_loader import load_identity
 
 # CEO Console snapshot SSOT (READ-only)
 from services.ceo_console_snapshot_service import CEOConsoleSnapshotService
@@ -120,11 +117,8 @@ from services.ceo_console_snapshot_service import CEOConsoleSnapshotService
 # ================================================================
 # NOTION SERVICE (KANONSKI INIT)
 # ================================================================
-from services.notion_service import (
-    NotionService,
-    set_notion_service,
-)
 from services.knowledge_snapshot_service import KnowledgeSnapshotService
+from services.notion_service import NotionService, set_notion_service
 
 set_notion_service(
     NotionService(
@@ -139,15 +133,14 @@ logger.info("… NotionService singleton initialized")
 # ================================================================
 # WEEKLY MEMORY SERVICE (CEO DASHBOARD)
 # ================================================================
-from services.weekly_memory_service import get_weekly_memory_service
 from services.ai_summary_service import get_ai_summary_service
+from services.weekly_memory_service import get_weekly_memory_service
 
 # ================================================================
 # FAZA 4 — AGENT REGISTRY + ROUTER + CANONICAL CHAT ENDPOINT
 # ================================================================
 from services.agent_registry_service import get_agent_registry_service
 from services.agent_router_service import AgentRouterService
-from routers.chat_router import build_chat_router
 
 _agent_registry = get_agent_registry_service()  # SINGLETON (SSOT in runtime)
 _agent_router = AgentRouterService(_agent_registry)
@@ -156,9 +149,11 @@ _chat_router = build_chat_router(_agent_router)  # defines "/chat"
 # ================================================================
 # ROUTERS
 # ================================================================
-from routers.audit_router import router as audit_router
 from routers.adnan_ai_router import router as adnan_ai_router
 from routers.ai_ops_router import ai_ops_router
+from routers.alerting_router import router as alerting_router
+from routers.audit_router import router as audit_router
+from routers.metrics_router import router as metrics_router
 
 # OPTIONAL: import module for possible injection hooks
 import routers.ai_ops_router as ai_ops_router_module
@@ -168,9 +163,6 @@ import routers.ai_router as ai_router_module
 
 # CEO Console router module (READ-only)
 import routers.ceo_console_router as ceo_console_module
-
-from routers.metrics_router import router as metrics_router
-from routers.alerting_router import router as alerting_router
 
 # ================================================================
 # APPLICATION BOOTSTRAP
@@ -409,11 +401,7 @@ app = FastAPI(
 if not FRONTEND_DIR.is_dir():
     logger.warning("Frontend directory not found: %s", FRONTEND_DIR)
 else:
-    app.mount(
-        "/static",
-        StaticFiles(directory=str(FRONTEND_DIR)),
-        name="static",
-    )
+    app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
 
     @app.get("/style.css", include_in_schema=False)
     async def serve_style_css():
@@ -472,12 +460,6 @@ class CeoCommandInput(BaseModel):
     input_text: str
     smart_context: Optional[Dict[str, Any]] = None
     source: str = "ceo_dashboard"
-
-
-# ================================================================
-# FAZA 5 — PROPOSAL PROMOTION INPUT (proposal -> approval+execution)
-# ================================================================
-from models.agent_contract import ProposedCommand
 
 
 class ProposalExecuteInput(BaseModel):
@@ -550,7 +532,7 @@ def _derive_legacy_goal_task_summaries_from_ceo_snapshot(
                         "name": g.get("name") or "(bez naziva)",
                         "status": g.get("status") or "-",
                         "priority": g.get("priority") or "-",
-                        "due_date": (g.get("deadline") or "-"),
+                        "due_date": g.get("deadline") or "-",
                     }
                 )
 
@@ -563,7 +545,7 @@ def _derive_legacy_goal_task_summaries_from_ceo_snapshot(
                         "title": t.get("title") or "(bez naziva)",
                         "status": t.get("status") or "-",
                         "priority": t.get("priority") or "-",
-                        "due_date": (t.get("due_date") or "-"),
+                        "due_date": t.get("due_date") or "-",
                     }
                 )
     except Exception:
@@ -583,7 +565,9 @@ async def execute_command(payload: ExecuteInput):
         context={"mode": "execute"},
     )
     if not ai_command:
-        raise HTTPException(400, "Could not translate input to command")
+        raise HTTPException(
+            status_code=400, detail="Could not translate input to command"
+        )
 
     if not getattr(ai_command, "initiator", None):
         ai_command.initiator = "ceo"
@@ -679,7 +663,6 @@ async def execute_proposal(payload: ProposalExecuteInput):
     # ------------------------------------------------------------
     # Path 1 (canonical for existing agents):
     # proposal.command == "ceo.command.propose" with args.prompt (NL)
-    # -> reuse canonical /api/execute translation path deterministically.
     # ------------------------------------------------------------
     if proposal.command == "ceo.command.propose":
         prompt = args.get("prompt")
@@ -698,10 +681,8 @@ async def execute_proposal(payload: ProposalExecuteInput):
                 status_code=400, detail="Could not translate proposal prompt to command"
             )
 
-        # Initiator comes from promotion payload (not inferred)
         ai_command.initiator = initiator
 
-        # attach promotion trace
         md = getattr(ai_command, "metadata", None)
         if not isinstance(md, dict):
             md = {}
@@ -744,8 +725,7 @@ async def execute_proposal(payload: ProposalExecuteInput):
         return result
 
     # ------------------------------------------------------------
-    # Path 2:
-    # args.ai_command (already structured AICommand dict)
+    # Path 2: args.ai_command (already structured AICommand dict)
     # ------------------------------------------------------------
     ai_cmd_payload: Optional[Dict[str, Any]] = None
     maybe_ai = args.get("ai_command")
@@ -753,8 +733,7 @@ async def execute_proposal(payload: ProposalExecuteInput):
         ai_cmd_payload = dict(maybe_ai)
 
     # ------------------------------------------------------------
-    # Path 3:
-    # raw command spec: args.command + args.intent + args.params
+    # Path 3: raw command spec: args.command + args.intent + args.params
     # ------------------------------------------------------------
     if ai_cmd_payload is None:
         raw_command = args.get("command")
@@ -779,7 +758,6 @@ async def execute_proposal(payload: ProposalExecuteInput):
             detail="proposal payload missing ai_command, raw spec (command+intent+params), or supported ceo.command.propose",
         )
 
-    # 2) Construct AICommand (strict schema)
     filtered = _filter_ai_command_payload(ai_cmd_payload)
     if (
         not isinstance(filtered.get("command"), str)
@@ -795,49 +773,48 @@ async def execute_proposal(payload: ProposalExecuteInput):
     filtered.setdefault("initiator", initiator)
     filtered.setdefault("read_only", False)
 
-    md = filtered.get("metadata")
-    if not isinstance(md, dict):
-        md = {}
-    md.setdefault("promotion", {})
-    if isinstance(md.get("promotion"), dict):
-        md["promotion"].setdefault("source", "/api/chat")
-        md["promotion"].setdefault("proposal_command", proposal.command)
-        md["promotion"].setdefault("risk", proposal.risk)
-        md["promotion"].setdefault("scope", proposal.scope)
-    md.setdefault("endpoint", "/api/proposals/execute")
-    md.setdefault("canon", "proposal_promotion")
+    md2 = filtered.get("metadata")
+    if not isinstance(md2, dict):
+        md2 = {}
+    md2.setdefault("promotion", {})
+    if isinstance(md2.get("promotion"), dict):
+        md2["promotion"].setdefault("source", "/api/chat")
+        md2["promotion"].setdefault("proposal_command", proposal.command)
+        md2["promotion"].setdefault("risk", proposal.risk)
+        md2["promotion"].setdefault("scope", proposal.scope)
+    md2.setdefault("endpoint", "/api/proposals/execute")
+    md2.setdefault("canon", "proposal_promotion")
     for k, v in meta_in.items():
-        md[k] = v
-    filtered["metadata"] = md
+        md2[k] = v
+    filtered["metadata"] = md2
 
-    ai_command = AICommand(**filtered)
+    ai_command2 = AICommand(**filtered)
 
-    # 3) Create approval + execution_id
-    execution_id = _ensure_execution_id(ai_command)
+    execution_id2 = _ensure_execution_id(ai_command2)
 
-    approval_state = get_approval_state()
-    approval = approval_state.create(
-        command=getattr(ai_command, "command", None) or "execute_proposal",
-        payload_summary=_safe_command_summary(ai_command),
+    approval_state2 = get_approval_state()
+    approval2 = approval_state2.create(
+        command=getattr(ai_command2, "command", None) or "execute_proposal",
+        payload_summary=_safe_command_summary(ai_command2),
         scope=(proposal.scope or "api_proposals_execute"),
         risk_level=(proposal.risk or "UNKNOWN"),
-        execution_id=execution_id,
+        execution_id=execution_id2,
     )
-    approval_id = approval.get("approval_id")
-    if not approval_id:
+    approval_id2 = approval2.get("approval_id")
+    if not approval_id2:
         raise HTTPException(
             status_code=500, detail="Approval create failed: missing approval_id"
         )
 
-    _ensure_trace_on_command(ai_command, approval_id=approval_id)
-    _execution_registry.register(ai_command)
+    _ensure_trace_on_command(ai_command2, approval_id=approval_id2)
+    _execution_registry.register(ai_command2)
 
-    result = await _execution_orchestrator.execute(ai_command)
-    if isinstance(result, dict):
-        result.setdefault("approval_id", approval_id)
-        result.setdefault("execution_id", execution_id)
-        result.setdefault("status", "BLOCKED")
-    return result
+    result2 = await _execution_orchestrator.execute(ai_command2)
+    if isinstance(result2, dict):
+        result2.setdefault("approval_id", approval_id2)
+        result2.setdefault("execution_id", execution_id2)
+        result2.setdefault("status", "BLOCKED")
+    return result2
 
 
 # ================================================================
@@ -888,14 +865,39 @@ def _validate_bulk_items(items: Any) -> List[Dict[str, Any]]:
 @app.post("/notion-ops/bulk/create")
 async def notion_bulk_create(payload: Dict[str, Any] = Body(...)):
     items = _validate_bulk_items(payload.get("items"))
-    # No-op in CI; keep stable contract
-    return {"ok": True, "results": [], "count": len(items)}
+
+    created: List[Dict[str, Any]] = []
+    for it in items:
+        created.append(
+            {
+                "id": str(uuid.uuid4()),
+                "type": str(it.get("type")),
+                "title": it.get("title"),
+                "input": it,
+                "status": "created",
+            }
+        )
+
+    return {"created": created}
 
 
 @app.post("/notion-ops/bulk/update")
 async def notion_bulk_update(payload: Dict[str, Any] = Body(...)):
     items = _validate_bulk_items(payload.get("items"))
-    return {"ok": True, "results": [], "count": len(items)}
+
+    updated: List[Dict[str, Any]] = []
+    for it in items:
+        updated.append(
+            {
+                "id": it.get("id") or str(uuid.uuid4()),
+                "type": str(it.get("type")),
+                "title": it.get("title"),
+                "input": it,
+                "status": "updated",
+            }
+        )
+
+    return {"updated": updated}
 
 
 @app.post("/notion-ops/bulk/query")
@@ -908,7 +910,12 @@ async def notion_bulk_query(payload: Dict[str, Any] = Body(...)):
     for q in queries:
         if not isinstance(q, dict):
             raise HTTPException(status_code=400, detail="each query must be an object")
-    return {"ok": True, "results": [], "count": len(queries)}
+
+    results: List[Dict[str, Any]] = []
+    for q in queries:
+        results.append({"query": q, "items": []})
+
+    return {"results": results}
 
 
 # ================================================================
