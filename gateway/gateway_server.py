@@ -61,7 +61,9 @@ def _guard_write_bulk(request: Request) -> None:
     # - respect OPS_SAFE_MODE
     # - optional CEO token
     if _ops_safe_mode():
-        raise HTTPException(status_code=403, detail="OPS_SAFE_MODE enabled (writes blocked)")
+        raise HTTPException(
+            status_code=403, detail="OPS_SAFE_MODE enabled (writes blocked)"
+        )
     _require_ceo_token_if_enforced(request)
 
 

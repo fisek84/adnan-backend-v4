@@ -29,7 +29,12 @@ class _FakeApprovals:
 
 class _DummyExecutor:
     def execute(self, cmd: dict) -> dict:
-        return {"ok": True, "executed": True, "cmd_id": cmd.get("id"), "cmd_type": cmd.get("type")}
+        return {
+            "ok": True,
+            "executed": True,
+            "cmd_id": cmd.get("id"),
+            "cmd_type": cmd.get("type"),
+        }
 
 
 async def _run() -> None:
@@ -48,12 +53,20 @@ async def _run() -> None:
         job_type="agent_execute",
         execution_id="exec_not_approved",
         payload={
-            "command": {"id": "cmd-1", "type": "agent_execute", "approval_id": approval_id}
+            "command": {
+                "id": "cmd-1",
+                "type": "agent_execute",
+                "approval_id": approval_id,
+            }
         },
     )
     r1 = await orch.process_once(timeout_seconds=0.1)
-    assert isinstance(r1, dict) and r1.get("ok") is False, f"Expected blocked, got: {r1}"
-    assert "not approved" in str(r1.get("error", "")).lower(), f"Expected approval error, got: {r1}"
+    assert (
+        isinstance(r1, dict) and r1.get("ok") is False
+    ), f"Expected blocked, got: {r1}"
+    assert (
+        "not approved" in str(r1.get("error", "")).lower()
+    ), f"Expected approval error, got: {r1}"
 
     # CASE B: APPROVED -> allowed
     fake.approve(approval_id)
@@ -62,14 +75,20 @@ async def _run() -> None:
         job_type="agent_execute",
         execution_id="exec_approved",
         payload={
-            "command": {"id": "cmd-2", "type": "agent_execute", "approval_id": approval_id}
+            "command": {
+                "id": "cmd-2",
+                "type": "agent_execute",
+                "approval_id": approval_id,
+            }
         },
     )
     r2 = await orch.process_once(timeout_seconds=0.1)
     assert isinstance(r2, dict) and r2.get("ok") is True, f"Expected success, got: {r2}"
     assert r2.get("executed") is True, f"Expected executed=True, got: {r2}"
 
-    print("TEST PASSED: orchestrator approval gate works (blocked -> approved -> execute).")
+    print(
+        "TEST PASSED: orchestrator approval gate works (blocked -> approved -> execute)."
+    )
 
 
 if __name__ == "__main__":

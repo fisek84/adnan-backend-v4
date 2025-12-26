@@ -234,7 +234,9 @@ class COOTranslationService:
         try:
             return AICommand(
                 command=cmd_name,
-                intent=str(intent) if isinstance(intent, str) and intent.strip() else None,
+                intent=str(intent)
+                if isinstance(intent, str) and intent.strip()
+                else None,
                 read_only=read_only,
                 params=params,
                 initiator=initiator,
@@ -246,7 +248,9 @@ class COOTranslationService:
         except Exception:
             return AICommand(
                 command=cmd_name,
-                intent=str(intent) if isinstance(intent, str) and intent.strip() else None,
+                intent=str(intent)
+                if isinstance(intent, str) and intent.strip()
+                else None,
                 read_only=read_only,
                 params=params,
                 initiator=initiator,
@@ -287,7 +291,9 @@ class COOTranslationService:
 
         return AICommand(
             command=cmd,
-            intent=intent.strip() if isinstance(intent, str) and intent.strip() else None,
+            intent=intent.strip()
+            if isinstance(intent, str) and intent.strip()
+            else None,
             read_only=ro_flag,
             params=params,
             initiator=initiator,
@@ -317,7 +323,9 @@ class COOTranslationService:
             )
         ):
             time_scope = "this_week"
-            if re.search(r"\b(last|prosla|prošla|zadnja|prethodna)\b", t, flags=re.IGNORECASE):
+            if re.search(
+                r"\b(last|prosla|prošla|zadnja|prethodna)\b", t, flags=re.IGNORECASE
+            ):
                 time_scope = "last_week"
 
             return AICommand(
@@ -354,7 +362,9 @@ class COOTranslationService:
         # heuristic triggers for goal+tasks / day-plan
         has_goal_word = bool(re.search(r"\b(goal|cilj)\b", t, flags=re.IGNORECASE))
         has_task_word = bool(
-            re.search(r"\b(task|tasks|zadatak|zadaci|zadatci)\b", t, flags=re.IGNORECASE)
+            re.search(
+                r"\b(task|tasks|zadatak|zadaci|zadatci)\b", t, flags=re.IGNORECASE
+            )
         )
         has_day_plan = bool(re.search(r"\bDan\s*\d+\s*:", t, flags=re.IGNORECASE))
         mentions_7day = bool(
@@ -364,7 +374,10 @@ class COOTranslationService:
             re.search(r"\b(14\s*[- ]?\s*dnevni|14\s*day)\b", t, flags=re.IGNORECASE)
         )
 
-        if not (has_goal_word and (has_task_word or has_day_plan or mentions_7day or mentions_14day)):
+        if not (
+            has_goal_word
+            and (has_task_word or has_day_plan or mentions_7day or mentions_14day)
+        ):
             return None
 
         goal_title = self._extract_goal_title(t)
@@ -613,9 +626,9 @@ class COOTranslationService:
         raw = text.strip()
 
         status = self._extract_field_value(raw, "status")
-        priority = self._extract_field_value(raw, "prioritet") or self._extract_field_value(
-            raw, "priority"
-        )
+        priority = self._extract_field_value(
+            raw, "prioritet"
+        ) or self._extract_field_value(raw, "priority")
         due_raw = (
             self._extract_field_value(raw, "due")
             or self._extract_field_value(raw, "rok")
@@ -653,10 +666,16 @@ class COOTranslationService:
 
         return _ParsedFields(
             title=title,
-            status=status.strip(" ,.-") if isinstance(status, str) and status.strip() else None,
-            priority=priority.strip(" ,.-") if isinstance(priority, str) and priority.strip() else None,
+            status=status.strip(" ,.-")
+            if isinstance(status, str) and status.strip()
+            else None,
+            priority=priority.strip(" ,.-")
+            if isinstance(priority, str) and priority.strip()
+            else None,
             due=due,
-            description=description.strip() if isinstance(description, str) and description.strip() else None,
+            description=description.strip()
+            if isinstance(description, str) and description.strip()
+            else None,
         )
 
     @staticmethod
