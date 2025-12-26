@@ -54,7 +54,9 @@ class AgentRouterService:
 
         # Execute agent callable (read-only; no tools). Allow sync or async agent implementations.
         try:
-            routed = callable_fn(agent_input, {"registry_entry": selected, "trace": trace})
+            routed = callable_fn(
+                agent_input, {"registry_entry": selected, "trace": trace}
+            )
             if inspect.isawaitable(routed):
                 routed = await routed
             out = routed
@@ -145,7 +147,9 @@ class AgentRouterService:
         mod = importlib.import_module(module_path)
         fn = getattr(mod, fn_name, None)
         if fn is None or not callable(fn):
-            raise ValueError(f"Invalid agent entrypoint; callable not found: {entrypoint}")
+            raise ValueError(
+                f"Invalid agent entrypoint; callable not found: {entrypoint}"
+            )
         return fn
 
 
@@ -185,14 +189,18 @@ def _safe_get_ceo_system_snapshot() -> Dict[str, Any]:
     out: Dict[str, Any] = {}
 
     try:
-        from services.ceo_console_snapshot_service import CEOConsoleSnapshotService  # type: ignore
+        from services.ceo_console_snapshot_service import (  # type: ignore
+            CEOConsoleSnapshotService,
+        )
 
         out["ceo_notion_snapshot"] = CEOConsoleSnapshotService().snapshot()
     except Exception:
         out["ceo_notion_snapshot"] = {"available": False}
 
     try:
-        from services.knowledge_snapshot_service import KnowledgeSnapshotService  # type: ignore
+        from services.knowledge_snapshot_service import (  # type: ignore
+            KnowledgeSnapshotService,
+        )
 
         out["knowledge_snapshot"] = KnowledgeSnapshotService.get_snapshot()
     except Exception:
@@ -217,7 +225,9 @@ def _dig(snapshot: Dict[str, Any], path: Tuple[str, ...]) -> Any:
     return cur
 
 
-def _extract_list(snapshot: Dict[str, Any], candidates: List[Tuple[str, ...]]) -> List[Dict[str, Any]]:
+def _extract_list(
+    snapshot: Dict[str, Any], candidates: List[Tuple[str, ...]]
+) -> List[Dict[str, Any]]:
     for path in candidates:
         v = _dig(snapshot, path)
         if isinstance(v, list):
@@ -357,7 +367,9 @@ def _parse_filter(text: str, key: str) -> Optional[str]:
     return None
 
 
-def _filter_items(items: List[Dict[str, Any]], *, status: Optional[str], priority: Optional[str]) -> List[Dict[str, Any]]:
+def _filter_items(
+    items: List[Dict[str, Any]], *, status: Optional[str], priority: Optional[str]
+) -> List[Dict[str, Any]]:
     out = items
     if status:
         s = status.strip().lower()
@@ -380,14 +392,18 @@ def _render_items(items: List[Dict[str, Any]], kind: str, *, limit: int) -> str:
             status = str(x.get("status") or "-").strip()
             prio = str(x.get("priority") or "-").strip()
             due = str(x.get("deadline") or x.get("due_date") or "-").strip()
-            lines.append(f"- {name} | id: {_id} | status: {status} | prioritet: {prio} | deadline: {due}")
+            lines.append(
+                f"- {name} | id: {_id} | status: {status} | prioritet: {prio} | deadline: {due}"
+            )
         elif kind == "tasks":
             title = str(x.get("title") or x.get("name") or "(bez naziva)").strip()
             _id = str(x.get("id") or "-").strip()
             status = str(x.get("status") or "-").strip()
             prio = str(x.get("priority") or "-").strip()
             due = str(x.get("due_date") or x.get("deadline") or "-").strip()
-            lines.append(f"- {title} | id: {_id} | status: {status} | prioritet: {prio} | due: {due}")
+            lines.append(
+                f"- {title} | id: {_id} | status: {status} | prioritet: {prio} | due: {due}"
+            )
         elif kind == "kpis":
             name = str(x.get("name") or x.get("title") or "(bez naziva)").strip()
             val = str(x.get("value") or x.get("current") or "-").strip()
@@ -477,7 +493,9 @@ def _try_properties(snapshot: Dict[str, Any], *, kind: str, item_id: str) -> str
             lines.append(f"- {k}: {_stringify_value(v, 500)}")
         remaining = len(props_text) - len(keys)
         if remaining > 0:
-            lines.append(f"(+ još {remaining} properties; koristi limit_fields u agentu ako bude implementirano)")
+            lines.append(
+                f"(+ još {remaining} properties; koristi limit_fields u agentu ako bude implementirano)"
+            )
         return "\n".join(lines)
 
     if isinstance(props_raw, dict) and props_raw:
@@ -488,7 +506,9 @@ def _try_properties(snapshot: Dict[str, Any], *, kind: str, item_id: str) -> str
             lines.append(f"- {k}: {_stringify_value(v, 500)}")
         remaining = len(props_raw) - len(keys)
         if remaining > 0:
-            lines.append(f"(+ još {remaining} properties; koristi limit_fields u agentu ako bude implementirano)")
+            lines.append(
+                f"(+ još {remaining} properties; koristi limit_fields u agentu ako bude implementirano)"
+            )
         return "\n".join(lines)
 
     avail = sorted([k for k in found.keys() if isinstance(k, str)])
@@ -511,13 +531,28 @@ def ceo_clone_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> AgentOutput
 
     proposed: List[ProposedCommand] = []
 
-    if any(x in lower_ascii for x in ["inventory", "sta imas", "šta imaš", "what do you have", "help", "pomoc", "pomoć"]):
+    if any(
+        x in lower_ascii
+        for x in [
+            "inventory",
+            "sta imas",
+            "šta imaš",
+            "what do you have",
+            "help",
+            "pomoc",
+            "pomoć",
+        ]
+    ):
         return AgentOutput(
             text=_inventory(snap),
             proposed_commands=[],
             agent_id="ceo_clone",
             read_only=True,
-            trace={"agent": "ceo_clone", "intent": "inventory", **(ctx.get("trace") or {})},
+            trace={
+                "agent": "ceo_clone",
+                "intent": "inventory",
+                **(ctx.get("trace") or {}),
+            },
         )
 
     if any(x in lower_ascii for x in ["ko si ti", "tko si ti", "who are you", "ko si"]):
@@ -531,7 +566,11 @@ def ceo_clone_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> AgentOutput
             proposed_commands=[],
             agent_id="ceo_clone",
             read_only=True,
-            trace={"agent": "ceo_clone", "intent": "who_am_i", **(ctx.get("trace") or {})},
+            trace={
+                "agent": "ceo_clone",
+                "intent": "who_am_i",
+                **(ctx.get("trace") or {}),
+            },
         )
 
     m_props = re.search(
@@ -556,7 +595,17 @@ def ceo_clone_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> AgentOutput
             },
         )
 
-    if any(x in lower_ascii for x in ["pokazi baze", "pokaži baze", "databases", "baze", "db list", "lista baza"]):
+    if any(
+        x in lower_ascii
+        for x in [
+            "pokazi baze",
+            "pokaži baze",
+            "databases",
+            "baze",
+            "db list",
+            "lista baza",
+        ]
+    ):
         extra = _dig(snap, ("knowledge_snapshot", "extra_databases"))
         lines = ["Baze (best-effort iz snapshot-a):"]
         core = ["goals", "tasks", "projects", "kpi", "leads", "agent_exchange", "ai_summary"]
@@ -571,7 +620,11 @@ def ceo_clone_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> AgentOutput
             proposed_commands=[],
             agent_id="ceo_clone",
             read_only=True,
-            trace={"agent": "ceo_clone", "intent": "list_databases", **(ctx.get("trace") or {})},
+            trace={
+                "agent": "ceo_clone",
+                "intent": "list_databases",
+                **(ctx.get("trace") or {}),
+            },
         )
 
     limit = _parse_limit(msg, default=25, max_limit=100)
@@ -638,7 +691,12 @@ def ceo_clone_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> AgentOutput
             proposed_commands=[],
             agent_id="ceo_clone",
             read_only=True,
-            trace={"agent": "ceo_clone", "intent": "show_kpis", "limit": limit, **(ctx.get("trace") or {})},
+            trace={
+                "agent": "ceo_clone",
+                "intent": "show_kpis",
+                "limit": limit,
+                **(ctx.get("trace") or {}),
+            },
         )
 
     if any(x in lower_ascii for x in ["pokazi projekte", "pokaži projekte", "projekti", "projects"]):
@@ -667,7 +725,26 @@ def ceo_clone_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> AgentOutput
             },
         )
 
-    write_markers = ["kreiraj", "napravi", "dodaj", "update", "ažuriraj", "azuriraj", "obrisi", "delete", "promijeni"]
+    # NOTE (FAZA 5): prošireno da pokrije i ENG write verbe.
+    write_markers = [
+        # BHS
+        "kreiraj",
+        "napravi",
+        "dodaj",
+        "azuriraj",
+        "ažuriraj",
+        "promijeni",
+        "obrisi",
+        # ENG
+        "create",
+        "add",
+        "update",
+        "delete",
+        "remove",
+        "edit",
+        "set",
+        "change",
+    ]
     if any(m in lower_ascii for m in write_markers):
         proposed.append(
             ProposedCommand(
@@ -695,7 +772,11 @@ def ceo_clone_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> AgentOutput
         proposed_commands=proposed,
         agent_id="ceo_clone",
         read_only=True,
-        trace={"agent": "ceo_clone", "intent": "general_advice", **(ctx.get("trace") or {})},
+        trace={
+            "agent": "ceo_clone",
+            "intent": "general_advice",
+            **(ctx.get("trace") or {}),
+        },
     )
 
 
@@ -708,7 +789,16 @@ def specialist_notion_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> Age
 
     is_notion_topic = ("notion" in lower_ascii) or any(
         x in lower_ascii
-        for x in ["database", "page", "property", "schema", "workspace", "db", "tablica", "baza"]
+        for x in [
+            "database",
+            "page",
+            "property",
+            "schema",
+            "workspace",
+            "db",
+            "tablica",
+            "baza",
+        ]
     )
 
     if is_notion_topic:

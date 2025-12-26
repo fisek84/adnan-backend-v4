@@ -36,27 +36,89 @@ class _AllowExtraBaseModel(BaseModel):
 class ProposedCommand(_AllowExtraBaseModel):
     """
     "Proposal-only" komanda: chat endpoint je nikad ne izvršava.
+
+    FAZA 5 canon:
+      - stable fields:
+          command, args(params alias), dry_run, requires_approval, risk, reason
+      - optional:
+          scope, payload_summary
     """
 
     command: str = Field(..., description="Kanonski naziv komande/operacije.")
+
+    # Canon: args is the SSOT payload. Input may provide `params` as alias.
     args: Dict[str, Any] = Field(default_factory=dict, description="Argumenti komande.")
+
     reason: Optional[str] = Field(
         default=None, description="Zašto se predlaže ova komanda."
     )
+
     dry_run: bool = Field(default=True, description="Uvijek True za /api/chat.")
+
     requires_approval: bool = Field(
         default=True, description="Da li bi u write toku tražilo approval."
     )
+
     risk: str = Field(default="LOW", description="LOW/MED/HIGH - heuristika.")
+
+    # Optional canon fields (FAZA 5)
+    scope: Optional[str] = Field(
+        default=None, description="Opcionalni scope (npr. notion/tasks, api_execute_raw)."
+    )
+    payload_summary: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Opcionalni sažetak payload-a (siguran za log/UX).",
+    )
 
     # ---- normalization guards ----
     if _is_pydantic_v2():
-        from pydantic import field_validator  # type: ignore
+        from pydantic import field_validator, model_validator  # type: ignore
+
+        @model_validator(mode="before")
+        @classmethod
+        def _normalize_params_alias(cls, data: Any):
+            """
+            Accept input shape where payload is provided as `params` instead of `args`.
+            Canon output uses `args` as SSOT.
+
+            Rules:
+              - if args missing/None and params is dict -> args = params
+              - if args empty dict and params dict provided -> merge (args wins)
+            """
+            if not isinstance(data, dict):
+                return data
+
+            args = data.get("args")
+            params = data.get("params")
+
+            args_dict = args if isinstance(args, dict) else {}
+            params_dict = params if isinstance(params, dict) else {}
+
+            if not isinstance(args, dict) and params_dict:
+                data["args"] = params_dict
+                return data
+
+            if isinstance(args, dict) and not args_dict and params_dict:
+                merged = dict(params_dict)
+                merged.update(args_dict)  # args wins
+                data["args"] = merged
+                return data
+
+            if args is None:
+                data["args"] = {}
+            return data
 
         @field_validator("args", mode="before")
         @classmethod
         def _args_none_to_dict(cls, v):
             return v or {}
+
+        @field_validator("payload_summary", mode="before")
+        @classmethod
+        def _payload_summary_none_to_dict_or_none(cls, v):
+            if v is None:
+                return None
+            return v if isinstance(v, dict) else None
 
         @field_validator("risk", mode="before")
         @classmethod
@@ -70,11 +132,42 @@ class ProposedCommand(_AllowExtraBaseModel):
         def _dry_run_hard_true(cls, v):
             return True
     else:
-        from pydantic import validator  # type: ignore
+        from pydantic import root_validator, validator  # type: ignore
+
+        @root_validator(pre=True)
+        def _normalize_params_alias(cls, values):
+            if not isinstance(values, dict):
+                return values
+
+            args = values.get("args")
+            params = values.get("params")
+
+            args_dict = args if isinstance(args, dict) else {}
+            params_dict = params if isinstance(params, dict) else {}
+
+            if not isinstance(args, dict) and params_dict:
+                values["args"] = params_dict
+                return values
+
+            if isinstance(args, dict) and not args_dict and params_dict:
+                merged = dict(params_dict)
+                merged.update(args_dict)  # args wins
+                values["args"] = merged
+                return values
+
+            if args is None:
+                values["args"] = {}
+            return values
 
         @validator("args", pre=True, always=True)
         def _args_none_to_dict(cls, v):
             return v or {}
+
+        @validator("payload_summary", pre=True, always=True)
+        def _payload_summary_none_to_dict_or_none(cls, v):
+            if v is None:
+                return None
+            return v if isinstance(v, dict) else None
 
         @validator("risk", pre=True, always=True)
         def _risk_upper(cls, v):

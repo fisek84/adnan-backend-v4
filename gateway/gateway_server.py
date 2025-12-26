@@ -294,6 +294,27 @@ def _to_serializable(obj: Any) -> Any:
     return str(obj)
 
 
+def _filter_ai_command_payload(data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    AICommand je strict (extra=forbid). Zato filterujemo samo poznata polja.
+    """
+    if not isinstance(data, dict):
+        return {}
+    fields = _ai_command_field_names()
+    if not fields:
+        return {
+            "command": data.get("command"),
+            "intent": data.get("intent"),
+            "params": data.get("params") if isinstance(data.get("params"), dict) else {},
+            "initiator": data.get("initiator") or "ceo",
+            "read_only": bool(data.get("read_only", False)),
+            "metadata": data.get("metadata") if isinstance(data.get("metadata"), dict) else {},
+            "execution_id": data.get("execution_id"),
+            "approval_id": data.get("approval_id"),
+        }
+    return {k: v for k, v in data.items() if k in fields}
+
+
 # ================================================================
 # LIFESPAN
 # ================================================================
@@ -442,6 +463,18 @@ class CeoCommandInput(BaseModel):
     input_text: str
     smart_context: Optional[Dict[str, Any]] = None
     source: str = "ceo_dashboard"
+
+
+# ================================================================
+# FAZA 5 — PROPOSAL PROMOTION INPUT (proposal -> approval+execution)
+# ================================================================
+from models.agent_contract import ProposedCommand
+
+
+class ProposalExecuteInput(BaseModel):
+    proposal: ProposedCommand
+    initiator: str = "ceo"
+    metadata: Dict[str, Any] = {}
 
 
 def _preprocess_ceo_nl_input(raw_text: str, smart_context: Optional[Dict[str, Any]]) -> str:
@@ -601,6 +634,177 @@ async def execute_raw_command(payload: ExecuteRawInput):
         "execution_id": execution_id,
         "command": ai_command.model_dump() if hasattr(ai_command, "model_dump") else _to_serializable(ai_command),
     }
+
+
+# ================================================================
+# FAZA 5 — PROPOSAL PROMOTION ENDPOINT
+# /api/proposals/execute
+# ================================================================
+@app.post("/api/proposals/execute")
+async def execute_proposal(payload: ProposalExecuteInput):
+    """
+    CANON:
+      - Accept one proposal (from /api/chat).
+      - Create approval + execution_id.
+      - Register execution for orchestrator.resume().
+      - Return BLOCKED.
+    """
+    proposal = payload.proposal
+    initiator = (payload.initiator or "ceo").strip() or "ceo"
+    meta_in = payload.metadata if isinstance(payload.metadata, dict) else {}
+
+    args = proposal.args if isinstance(getattr(proposal, "args", None), dict) else {}
+
+    # ------------------------------------------------------------
+    # Path 1 (canonical for existing agents):
+    # proposal.command == "ceo.command.propose" with args.prompt (NL)
+    # -> reuse canonical /api/execute translation path deterministically.
+    # ------------------------------------------------------------
+    if proposal.command == "ceo.command.propose":
+        prompt = args.get("prompt")
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise HTTPException(status_code=400, detail="ceo.command.propose requires args.prompt")
+
+        ai_command = coo_translation_service.translate(
+            raw_input=prompt.strip(),
+            source="system",
+            context={"mode": "execute", "via": "proposal_promotion"},
+        )
+        if not ai_command:
+            raise HTTPException(status_code=400, detail="Could not translate proposal prompt to command")
+
+        # Initiator comes from promotion payload (not inferred)
+        ai_command.initiator = initiator
+
+        # attach promotion trace
+        md = getattr(ai_command, "metadata", None)
+        if not isinstance(md, dict):
+            md = {}
+        md.setdefault("promotion", {})
+        if isinstance(md.get("promotion"), dict):
+            md["promotion"].setdefault("source", "/api/chat")
+            md["promotion"].setdefault("proposal_command", proposal.command)
+            md["promotion"].setdefault("risk", proposal.risk)
+            md["promotion"].setdefault("scope", proposal.scope)
+        md.setdefault("endpoint", "/api/proposals/execute")
+        md.setdefault("canon", "proposal_promotion")
+        for k, v in meta_in.items():
+            md[k] = v
+        ai_command.metadata = md
+
+        execution_id = _ensure_execution_id(ai_command)
+
+        approval_state = get_approval_state()
+        approval = approval_state.create(
+            command=getattr(ai_command, "command", None) or "execute_proposal",
+            payload_summary=_safe_command_summary(ai_command),
+            scope=(proposal.scope or "api_proposals_execute"),
+            risk_level=(proposal.risk or "UNKNOWN"),
+            execution_id=execution_id,
+        )
+        approval_id = approval.get("approval_id")
+        if not approval_id:
+            raise HTTPException(status_code=500, detail="Approval create failed: missing approval_id")
+
+        _ensure_trace_on_command(ai_command, approval_id=approval_id)
+        _execution_registry.register(ai_command)
+
+        # execute() returns BLOCKED (governance requires approval); this matches canonical pipeline
+        result = await _execution_orchestrator.execute(ai_command)
+        if isinstance(result, dict):
+            result.setdefault("approval_id", approval_id)
+            result.setdefault("execution_id", execution_id)
+            result.setdefault("status", "BLOCKED")
+        return result
+
+    # ------------------------------------------------------------
+    # Path 2:
+    # args.ai_command (already structured AICommand dict)
+    # ------------------------------------------------------------
+    ai_cmd_payload: Optional[Dict[str, Any]] = None
+    maybe_ai = args.get("ai_command")
+    if isinstance(maybe_ai, dict):
+        ai_cmd_payload = dict(maybe_ai)
+
+    # ------------------------------------------------------------
+    # Path 3:
+    # raw command spec: args.command + args.intent + args.params
+    # ------------------------------------------------------------
+    if ai_cmd_payload is None:
+        raw_command = args.get("command")
+        raw_intent = args.get("intent")
+        raw_params = args.get("params")
+
+        if (
+            isinstance(raw_command, str)
+            and raw_command.strip()
+            and isinstance(raw_intent, str)
+            and raw_intent.strip()
+        ):
+            ai_cmd_payload = {
+                "command": raw_command.strip(),
+                "intent": raw_intent.strip(),
+                "params": raw_params if isinstance(raw_params, dict) else {},
+            }
+
+    if ai_cmd_payload is None:
+        raise HTTPException(
+            status_code=400,
+            detail="proposal payload missing ai_command, raw spec (command+intent+params), or supported ceo.command.propose",
+        )
+
+    # 2) Construct AICommand (strict schema)
+    filtered = _filter_ai_command_payload(ai_cmd_payload)
+    if not isinstance(filtered.get("command"), str) or not str(filtered.get("command")).strip():
+        raise HTTPException(status_code=400, detail="ai_command.command is required")
+    if not isinstance(filtered.get("intent"), str) or not str(filtered.get("intent")).strip():
+        raise HTTPException(status_code=400, detail="ai_command.intent is required")
+
+    filtered.setdefault("initiator", initiator)
+    filtered.setdefault("read_only", False)
+
+    md = filtered.get("metadata")
+    if not isinstance(md, dict):
+        md = {}
+    md.setdefault("promotion", {})
+    if isinstance(md.get("promotion"), dict):
+        md["promotion"].setdefault("source", "/api/chat")
+        md["promotion"].setdefault("proposal_command", proposal.command)
+        md["promotion"].setdefault("risk", proposal.risk)
+        md["promotion"].setdefault("scope", proposal.scope)
+    md.setdefault("endpoint", "/api/proposals/execute")
+    md.setdefault("canon", "proposal_promotion")
+    for k, v in meta_in.items():
+        md[k] = v
+    filtered["metadata"] = md
+
+    ai_command = AICommand(**filtered)
+
+    # 3) Create approval + execution_id
+    execution_id = _ensure_execution_id(ai_command)
+
+    approval_state = get_approval_state()
+    approval = approval_state.create(
+        command=getattr(ai_command, "command", None) or "execute_proposal",
+        payload_summary=_safe_command_summary(ai_command),
+        scope=(proposal.scope or "api_proposals_execute"),
+        risk_level=(proposal.risk or "UNKNOWN"),
+        execution_id=execution_id,
+    )
+    approval_id = approval.get("approval_id")
+    if not approval_id:
+        raise HTTPException(status_code=500, detail="Approval create failed: missing approval_id")
+
+    _ensure_trace_on_command(ai_command, approval_id=approval_id)
+    _execution_registry.register(ai_command)
+
+    # Execute to obtain deterministic BLOCKED decision
+    result = await _execution_orchestrator.execute(ai_command)
+    if isinstance(result, dict):
+        result.setdefault("approval_id", approval_id)
+        result.setdefault("execution_id", execution_id)
+        result.setdefault("status", "BLOCKED")
+    return result
 
 
 # ================================================================
