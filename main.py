@@ -1,6 +1,9 @@
+# main.py
+from __future__ import annotations
+
+import logging
 import os
 import sys
-import logging
 
 from dotenv import load_dotenv
 from uvicorn import run
@@ -13,7 +16,10 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 if BASE_DIR not in sys.path:
     sys.path.append(BASE_DIR)
 
-load_dotenv()
+# On Render (or any managed runtime), environment variables should come from the platform,
+# not from a baked-in .env file. Keep dotenv for local dev only.
+if os.getenv("RENDER") != "true":
+    load_dotenv(override=False)
 
 # ============================================================
 # LOGGING
@@ -30,17 +36,24 @@ logging.basicConfig(
 # ============================================================
 
 REQUIRED_ENV_VARS = [
+    # OpenAI
     "OPENAI_API_KEY",
+    # Notion
+    "NOTION_API_KEY",
+    "NOTION_GOALS_DB_ID",
+    "NOTION_TASKS_DB_ID",
+    "NOTION_PROJECTS_DB_ID",
+    # Ops assistant / internal
     "NOTION_OPS_ASSISTANT_ID",
 ]
 
 
 def validate_runtime_env_or_raise() -> None:
-    missing = [v for v in REQUIRED_ENV_VARS if not (os.getenv(v) or "").strip()]
+    missing = [k for k in REQUIRED_ENV_VARS if not (os.getenv(k) or "").strip()]
     if missing:
-        logger.critical("❌ Missing ENV vars: %s", ", ".join(missing))
+        logger.critical("Missing ENV vars: %s", ", ".join(missing))
         raise RuntimeError(f"Missing ENV vars: {', '.join(missing)}")
-    logger.info("✅ Environment variables validated.")
+    logger.info("Environment variables validated.")
 
 
 # ============================================================
@@ -53,7 +66,7 @@ def validate_runtime_env_or_raise() -> None:
 # - gateway/gateway_server.py owns boot sequence (including agents.json load).
 from gateway.gateway_server import app  # noqa: E402
 
-logger.info("✅ FastAPI gateway app loaded (SSOT: gateway/gateway_server.py).")
+logger.info("FastAPI gateway app loaded (SSOT: gateway/gateway_server.py).")
 
 # ============================================================
 # START UVICORN
@@ -62,8 +75,8 @@ logger.info("✅ FastAPI gateway app loaded (SSOT: gateway/gateway_server.py).")
 if __name__ == "__main__":
     validate_runtime_env_or_raise()
 
-    port = int(os.environ.get("PORT", 8000))
-    logger.info("🚀 Starting Uvicorn on port %s", port)
+    port = int(os.getenv("PORT", "8000"))
+    logger.info("Starting Uvicorn on port %s", port)
 
     run(
         app,

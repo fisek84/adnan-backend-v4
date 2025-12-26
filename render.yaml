@@ -4,27 +4,21 @@ services:
     env: docker
     plan: starter
     region: frankfurt
+    autoDeploy: true
 
     dockerfilePath: Dockerfile
     dockerContext: .
 
-    # FORCE CLEAN BUILD EVERY TIME (fix for stale Docker cache)
-    buildCommand: |
-      docker build --no-cache -t adnan-backend-v4 .
-
-    autoDeploy: true
-
     # ============================
-    # HEALTH CHECK
+    # HEALTH / READINESS
     # ============================
-    healthCheckPath: "/health"
+    healthCheckPath: "/ready"
     healthCheckInterval: 30
-    healthCheckTimeout: 10     # Render max allowed
+    healthCheckTimeout: 10
 
     # ============================
     # RUNTIME SETTINGS
     # ============================
-    serviceTimeout: 500        # enough for long requests
     numInstances: 1
 
     resources:
@@ -35,23 +29,44 @@ services:
     # ENVIRONMENT VARIABLES
     # ============================
     envVars:
+      # --- runtime marker (koristiš u kodu da ne load_dotenv na Renderu)
+      - key: RENDER
+        value: "true"
+
+      # --- OpenAI
+      - key: OPENAI_API_KEY
+        sync: false
+
+      # --- Notion core
       - key: NOTION_API_KEY
         sync: false
 
       - key: NOTION_GOALS_DB_ID
         sync: false
-
       - key: NOTION_TASKS_DB_ID
         sync: false
-
       - key: NOTION_PROJECTS_DB_ID
         sync: false
 
-      - key: NOTION_AGENT_EXCHANGE_DB_ID
+      # --- Ops assistant / internal
+      - key: NOTION_OPS_ASSISTANT_ID
         sync: false
 
-      - key: NOTION_AGENT_PROJECTS_DB_ID
-        sync: false
+      # --- Agent registry (opcionalno, ali preporučeno eksplicitno)
+      - key: AGENTS_JSON_PATH
+        value: "/app/config/agents.json"
+
+      # --- Safety controls (opcionalno)
+      - key: OPS_SAFE_MODE
+        value: "false"
+      - key: CEO_TOKEN_ENFORCEMENT
+        value: "false"
+      # - key: CEO_APPROVAL_TOKEN
+      #   sync: false  # set only if CEO_TOKEN_ENFORCEMENT=true
+
+      # --- OS switch (opcionalno)
+      - key: OS_ENABLED
+        value: "true"
 
     # ============================
     # DEPLOY TRIGGER SETTINGS
@@ -62,11 +77,13 @@ services:
         - requirements.txt
         - render.yaml
         - main.py
+        - gateway/**
         - routers/**
         - services/**
         - models/**
         - ext/**
         - dependencies.py
+        - config/**
 
     autoRetry:
       enabled: true
