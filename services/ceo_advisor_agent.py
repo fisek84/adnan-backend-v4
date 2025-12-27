@@ -188,7 +188,11 @@ class CEOAdvisorAgent:
             "CEOAdvisorAgent.advise: running ceo_command "
             "(snapshot_available=%s, extra_ctx_keys=%s)",
             bool(snapshot),
-            [k for k in safe_context.keys() if k not in ("channel", "ceo_input", "system_snapshot")],
+            [
+                k
+                for k in safe_context.keys()
+                if k not in ("channel", "ceo_input", "system_snapshot")
+            ],
         )
 
         # --------------------------------------------------------------
