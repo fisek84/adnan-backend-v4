@@ -38,13 +38,27 @@ def _pick_text(result: Any) -> str:
     Prefer summary/text fields; fallback to string.
     """
     if isinstance(result, dict):
-        for k in ("text", "summary", "assistant_text", "message", "output_text", "response"):
+        for k in (
+            "text",
+            "summary",
+            "assistant_text",
+            "message",
+            "output_text",
+            "response",
+        ):
             v = result.get(k)
             if isinstance(v, str) and v.strip():
                 return v.strip()
         raw = result.get("raw")
         if isinstance(raw, dict):
-            for k in ("text", "summary", "assistant_text", "message", "output_text", "response"):
+            for k in (
+                "text",
+                "summary",
+                "assistant_text",
+                "message",
+                "output_text",
+                "response",
+            ):
                 v = raw.get(k)
                 if isinstance(v, str) and v.strip():
                     return v.strip()
@@ -76,12 +90,14 @@ def _format_enforcer(user_text: str) -> str:
         "PRAVILA:\n"
         "- Koristi isključivo podatke iz snapshot-a.\n"
         "- Ako nema dovoljno (3 cilja ili 5 taskova), ispiši koliko postoji i dodaj liniju: "
-        "\"NEMA DOVOLJNO PODATAKA U SNAPSHOT-U\".\n"
+        '"NEMA DOVOLJNO PODATAKA U SNAPSHOT-U".\n'
         "- Ne piši opšti opis bez liste stavki.\n"
     )
 
 
-async def create_ceo_advisor_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> AgentOutput:
+async def create_ceo_advisor_agent(
+    agent_input: AgentInput, ctx: Dict[str, Any]
+) -> AgentOutput:
     """
     ENTRYPOINT za AgentRouterService.
     Mora potpis: (AgentInput, ctx) -> AgentOutput (sync ili async).
@@ -96,7 +112,9 @@ async def create_ceo_advisor_agent(agent_input: AgentInput, ctx: Dict[str, Any])
     safe_context: Dict[str, Any] = {
         "canon": {"read_only": True, "no_tools": True, "no_side_effects": True},
         "snapshot": snapshot,
-        "metadata": agent_input.metadata if isinstance(agent_input.metadata, dict) else {},
+        "metadata": agent_input.metadata
+        if isinstance(agent_input.metadata, dict)
+        else {},
     }
 
     # Inject strict output format into prompt
@@ -126,7 +144,7 @@ async def create_ceo_advisor_agent(agent_input: AgentInput, ctx: Dict[str, Any])
 
     # Required trace signals
     trace["agent_output_text_len"] = len(text_out)
-    trace["agent_router_empty_text"] = (len(text_out) == 0)
+    trace["agent_router_empty_text"] = len(text_out) == 0
 
     # Return both summary + text if your AgentOutput model supports it:
     # - If AgentOutput does not have "summary", keep it in text only.

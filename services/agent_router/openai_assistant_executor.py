@@ -195,7 +195,12 @@ def _safe_dumps_for_openai(payload: Dict[str, Any]) -> tuple[str, Dict[str, Any]
         }
 
     trimmed = compact[: _MAX_OPENAI_CONTENT_CHARS - 20] + "...(hard_trim)"
-    return trimmed, {"shrunk": True, "from": len(raw), "to": len(trimmed), "strategy": "hard_trim"}
+    return trimmed, {
+        "shrunk": True,
+        "from": len(raw),
+        "to": len(trimmed),
+        "strategy": "hard_trim",
+    }
 
 
 def _format_identity_knowledge_for_prompt(user_text: str, max_items: int = 6) -> str:
@@ -228,7 +233,9 @@ def _format_identity_knowledge_for_prompt(user_text: str, max_items: int = 6) ->
 
         return s
 
-    ranked = sorted([e for e in entries if isinstance(e, dict)], key=score, reverse=True)[: max(1, int(max_items))]
+    ranked = sorted(
+        [e for e in entries if isinstance(e, dict)], key=score, reverse=True
+    )[: max(1, int(max_items))]
     if not ranked:
         return ""
 
@@ -267,7 +274,9 @@ def _extract_goals_tasks_block(text: str) -> str:
 
     # Normalize header casing
     block = re.sub(r"^GOALS\s*\(top\s*3\)", "GOALS (top 3)", block, flags=re.IGNORECASE)
-    block = re.sub(r"(^|\n)TASKS\s*\(top\s*5\)", r"\1TASKS (top 5)", block, flags=re.IGNORECASE)
+    block = re.sub(
+        r"(^|\n)TASKS\s*\(top\s*5\)", r"\1TASKS (top 5)", block, flags=re.IGNORECASE
+    )
 
     return block.strip()
 
@@ -300,7 +309,11 @@ def _ensure_contract(parsed: Dict[str, Any]) -> Dict[str, Any]:
     raw = parsed.get("raw")
 
     # If assistant returned plain text only
-    if isinstance(raw, str) and raw.strip() and ("summary" not in parsed and "text" not in parsed):
+    if (
+        isinstance(raw, str)
+        and raw.strip()
+        and ("summary" not in parsed and "text" not in parsed)
+    ):
         extracted = _extract_goals_tasks_block(raw)
         if extracted:
             parsed = {
@@ -325,9 +338,15 @@ def _ensure_contract(parsed: Dict[str, Any]) -> Dict[str, Any]:
 
     # Ensure keys exist
     if "summary" not in parsed or not isinstance(parsed.get("summary"), str):
-        parsed["summary"] = str(raw) if raw is not None else "LLM odgovor nema 'summary'."
+        parsed["summary"] = (
+            str(raw) if raw is not None else "LLM odgovor nema 'summary'."
+        )
 
-    if "text" not in parsed or not isinstance(parsed.get("text"), str) or not str(parsed.get("text")).strip():
+    if (
+        "text" not in parsed
+        or not isinstance(parsed.get("text"), str)
+        or not str(parsed.get("text")).strip()
+    ):
         parsed["text"] = (parsed.get("summary") or "").strip()
 
     if not isinstance(parsed.get("questions"), list):
@@ -395,7 +414,9 @@ class OpenAIAssistantExecutor:
 
     async def _cancel_run_best_effort(self, *, thread_id: str, run_id: str) -> None:
         try:
-            await self._to_thread(self.client.beta.threads.runs.cancel, thread_id=thread_id, run_id=run_id)
+            await self._to_thread(
+                self.client.beta.threads.runs.cancel, thread_id=thread_id, run_id=run_id
+            )
         except Exception:
             return
 
@@ -423,15 +444,25 @@ class OpenAIAssistantExecutor:
 
             if status == "requires_action":
                 if not allow_tools:
-                    await self._cancel_run_best_effort(thread_id=thread_id, run_id=run_id)
-                    raise RuntimeError("Tool calls are not allowed for CEO advisory (read-only)")
+                    await self._cancel_run_best_effort(
+                        thread_id=thread_id, run_id=run_id
+                    )
+                    raise RuntimeError(
+                        "Tool calls are not allowed for CEO advisory (read-only)"
+                    )
 
                 required_action = getattr(run_status, "required_action", None)
-                submit = getattr(required_action, "submit_tool_outputs", None) if required_action else None
+                submit = (
+                    getattr(required_action, "submit_tool_outputs", None)
+                    if required_action
+                    else None
+                )
                 tool_calls = getattr(submit, "tool_calls", None) if submit else None
 
                 if not tool_calls:
-                    raise RuntimeError("Assistant requires_action but has no tool calls")
+                    raise RuntimeError(
+                        "Assistant requires_action but has no tool calls"
+                    )
 
                 tool_outputs = []
                 for call in tool_calls:
@@ -455,7 +486,9 @@ class OpenAIAssistantExecutor:
                     tool_outputs.append(
                         {
                             "tool_call_id": call.id,
-                            "output": json.dumps(result, ensure_ascii=False, default=_json_default),
+                            "output": json.dumps(
+                                result, ensure_ascii=False, default=_json_default
+                            ),
                         }
                     )
 
@@ -475,9 +508,13 @@ class OpenAIAssistantExecutor:
             await asyncio.sleep(self._poll_interval_s)
 
     async def _get_final_assistant_message_text(self, *, thread_id: str) -> str:
-        messages = await self._to_thread(self.client.beta.threads.messages.list, thread_id=thread_id)
+        messages = await self._to_thread(
+            self.client.beta.threads.messages.list, thread_id=thread_id
+        )
         data = getattr(messages, "data", None) or []
-        assistant_messages = [m for m in data if getattr(m, "role", None) == "assistant"]
+        assistant_messages = [
+            m for m in data if getattr(m, "role", None) == "assistant"
+        ]
 
         if not assistant_messages:
             raise RuntimeError("Assistant produced no response")
@@ -509,7 +546,9 @@ class OpenAIAssistantExecutor:
         t = (text or "").strip()
         if not t:
             return t
-        m = re.match(r"^```(?:json)?\s*(.*?)\s*```$", t, flags=re.DOTALL | re.IGNORECASE)
+        m = re.match(
+            r"^```(?:json)?\s*(.*?)\s*```$", t, flags=re.DOTALL | re.IGNORECASE
+        )
         if m:
             return (m.group(1) or "").strip()
         return t
@@ -538,12 +577,18 @@ class OpenAIAssistantExecutor:
 
         executor = task.get("executor") or task.get("agent") or task.get("role")
         if executor and str(executor).lower() in {"ceo_advisor", "ceo", "advisor"}:
-            raise RuntimeError("CEO advisory cannot run execute() (side-effects forbidden)")
+            raise RuntimeError(
+                "CEO advisory cannot run execute() (side-effects forbidden)"
+            )
 
         assistant_id = self._get_execution_assistant_id_or_raise()
         thread = await self._to_thread(self.client.beta.threads.create)
 
-        execution_contract = {"type": "agent_execution", "command": command.strip(), "payload": payload}
+        execution_contract = {
+            "type": "agent_execution",
+            "command": command.strip(),
+            "payload": payload,
+        }
         content, shrink_trace = _safe_dumps_for_openai(execution_contract)
 
         await self._to_thread(
@@ -559,7 +604,9 @@ class OpenAIAssistantExecutor:
             assistant_id=assistant_id,
         )
 
-        await self._wait_for_run_completion(thread_id=thread.id, run_id=run.id, allow_tools=True)
+        await self._wait_for_run_completion(
+            thread_id=thread.id, run_id=run.id, allow_tools=True
+        )
 
         final_text = await self._get_final_assistant_message_text(thread_id=thread.id)
         parsed = self._safe_json_parse(final_text)
@@ -567,10 +614,16 @@ class OpenAIAssistantExecutor:
         return {
             "agent": assistant_id,
             "result": parsed,
-            "trace": {"thread_id": thread.id, "run_id": run.id, "shrink_trace": shrink_trace},
+            "trace": {
+                "thread_id": thread.id,
+                "run_id": run.id,
+                "shrink_trace": shrink_trace,
+            },
         }
 
-    async def ceo_command(self, *, text: str, context: Dict[str, Any]) -> Dict[str, Any]:
+    async def ceo_command(
+        self, *, text: str, context: Dict[str, Any]
+    ) -> Dict[str, Any]:
         t = (text or "").strip()
         if not t:
             raise ValueError("text is required")
@@ -582,7 +635,9 @@ class OpenAIAssistantExecutor:
             return {
                 "summary": "LLM executor nije konfigurisan (nema Assistant ID).",
                 "text": "LLM executor nije konfigurisan (nema Assistant ID).",
-                "questions": ["Postavi Assistant ID (CEO_ADVISOR_ASSISTANT_ID ili NOTION_OPS_ASSISTANT_ID)."],
+                "questions": [
+                    "Postavi Assistant ID (CEO_ADVISOR_ASSISTANT_ID ili NOTION_OPS_ASSISTANT_ID)."
+                ],
                 "plan": ["Konfiguriši LLM executor i ponovi CEO Command."],
                 "options": [],
                 "proposed_commands": [],
@@ -606,7 +661,12 @@ class OpenAIAssistantExecutor:
             "type": "ceo_advice",
             "text": t,
             "context": safe_context,
-            "constraints": {"read_only": True, "no_tools": True, "no_side_effects": True, "return_json": True},
+            "constraints": {
+                "read_only": True,
+                "no_tools": True,
+                "no_side_effects": True,
+                "return_json": True,
+            },
             "output_schema": {
                 "summary": "string",
                 "text": "string",
@@ -637,8 +697,12 @@ class OpenAIAssistantExecutor:
 
         t0 = time.monotonic()
         try:
-            await self._wait_for_run_completion(thread_id=thread.id, run_id=run.id, allow_tools=False)
-            final_text = await self._get_final_assistant_message_text(thread_id=thread.id)
+            await self._wait_for_run_completion(
+                thread_id=thread.id, run_id=run.id, allow_tools=False
+            )
+            final_text = await self._get_final_assistant_message_text(
+                thread_id=thread.id
+            )
             parsed = self._safe_json_parse(final_text)
             parsed = _ensure_contract(parsed)
         except Exception as exc:  # noqa: BLE001
@@ -646,7 +710,9 @@ class OpenAIAssistantExecutor:
             return {
                 "summary": "CEO advisory nije mogao sigurno završiti (read-only guard).",
                 "text": "CEO advisory nije mogao sigurno završiti (read-only guard).",
-                "questions": ["Da li želiš da preformulišem upit kao čisti READ zahtjev bez tool poziva?"],
+                "questions": [
+                    "Da li želiš da preformulišem upit kao čisti READ zahtjev bez tool poziva?"
+                ],
                 "plan": [
                     "Provjeri da li CEO Advisor Assistant ima instrukcije da nikad ne traži tool pozive.",
                     "Ako je upit write-intent, koristi approval pipeline (proposed_commands) umjesto direktnog izvršenja.",
@@ -681,9 +747,17 @@ class OpenAIAssistantExecutor:
 
         # Hard guarantee: always return 'text' and 'summary'
         picked = _pick_text(parsed)
-        if picked and isinstance(parsed.get("text"), str) and not parsed["text"].strip():
+        if (
+            picked
+            and isinstance(parsed.get("text"), str)
+            and not parsed["text"].strip()
+        ):
             parsed["text"] = picked
-        if picked and isinstance(parsed.get("summary"), str) and not parsed["summary"].strip():
+        if (
+            picked
+            and isinstance(parsed.get("summary"), str)
+            and not parsed["summary"].strip()
+        ):
             parsed["summary"] = picked
 
         return parsed

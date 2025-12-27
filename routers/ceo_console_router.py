@@ -63,10 +63,18 @@ class CEOCommandRequest(BaseModel):
 
 class ProposedAICommand(BaseModel):
     command_type: str = Field(..., description="Type/name of the proposed command.")
-    payload: Dict[str, Any] = Field(default_factory=dict, description="Command payload.")
-    status: str = Field(default="BLOCKED", description="Always BLOCKED at proposal time.")
-    required_approval: bool = Field(default=True, description="Always true for side-effects.")
-    cost_hint: Optional[str] = Field(default=None, description="Human-readable estimate.")
+    payload: Dict[str, Any] = Field(
+        default_factory=dict, description="Command payload."
+    )
+    status: str = Field(
+        default="BLOCKED", description="Always BLOCKED at proposal time."
+    )
+    required_approval: bool = Field(
+        default=True, description="Always true for side-effects."
+    )
+    cost_hint: Optional[str] = Field(
+        default=None, description="Human-readable estimate."
+    )
     risk_hint: Optional[str] = Field(default=None, description="Human-readable risks.")
 
 
@@ -205,7 +213,11 @@ def _compact_dashboard_snapshot(
     Produce a deterministic, bounded snapshot for LLM prompts.
     """
     if not isinstance(snap, dict):
-        return {"available": False, "source": "llm_compact", "error": "snapshot_not_dict"}
+        return {
+            "available": False,
+            "source": "llm_compact",
+            "error": "snapshot_not_dict",
+        }
 
     dashboard = snap.get("dashboard") if isinstance(snap.get("dashboard"), dict) else {}
 
@@ -220,8 +232,12 @@ def _compact_dashboard_snapshot(
         "dashboard": {
             "approvals": dashboard.get("approvals", {}),
             "weekly_priority": dashboard.get("weekly_priority", []),
-            "goals": [_compact_item(g) for g in goals if isinstance(g, dict)][:max_goals],
-            "tasks": [_compact_item(t) for t in tasks if isinstance(t, dict)][:max_tasks],
+            "goals": [_compact_item(g) for g in goals if isinstance(g, dict)][
+                :max_goals
+            ],
+            "tasks": [_compact_item(t) for t in tasks if isinstance(t, dict)][
+                :max_tasks
+            ],
         },
     }
 
@@ -229,8 +245,12 @@ def _compact_dashboard_snapshot(
     try:
         s = json.dumps(out, ensure_ascii=False)
         if len(s) > max_chars:
-            out["dashboard"]["goals"] = out["dashboard"]["goals"][: max(3, max_goals // 2)]
-            out["dashboard"]["tasks"] = out["dashboard"]["tasks"][: max(3, max_tasks // 2)]
+            out["dashboard"]["goals"] = out["dashboard"]["goals"][
+                : max(3, max_goals // 2)
+            ]
+            out["dashboard"]["tasks"] = out["dashboard"]["tasks"][
+                : max(3, max_tasks // 2)
+            ]
             out["_note"] = "snapshot_compacted_due_to_size"
     except Exception:
         out["_note"] = "snapshot_compaction_json_failed"
@@ -259,8 +279,12 @@ async def _build_context(req: CEOCommandRequest) -> Dict[str, Any]:
     snapshotter = _safe_import_snapshotter()
     if snapshotter is None:
         fallback = _try_load_core_snapshot_fallback()
-        fallback["reason"] = "No snapshotter available; using fallback snapshot (READ-only)."
-        ctx["snapshot"] = _compact_dashboard_snapshot(fallback) if isinstance(fallback, dict) else {}
+        fallback["reason"] = (
+            "No snapshotter available; using fallback snapshot (READ-only)."
+        )
+        ctx["snapshot"] = (
+            _compact_dashboard_snapshot(fallback) if isinstance(fallback, dict) else {}
+        )
         ctx["snapshot_meta"] = {
             "snapshotter": None,
             "available": False,
@@ -322,7 +346,9 @@ async def _build_context(req: CEOCommandRequest) -> Dict[str, Any]:
     return ctx
 
 
-def _map_agent_proposals_to_ceo_commands(proposed: List[ProposedCommand]) -> List[ProposedAICommand]:
+def _map_agent_proposals_to_ceo_commands(
+    proposed: List[ProposedCommand],
+) -> List[ProposedAICommand]:
     out: List[ProposedAICommand] = []
     for pc in proposed or []:
         cmd_type = (pc.command or "").strip()
@@ -342,13 +368,17 @@ def _map_agent_proposals_to_ceo_commands(proposed: List[ProposedCommand]) -> Lis
     return out
 
 
-async def _ceo_advice_via_openai_executor(text: str, context: Dict[str, Any]) -> Dict[str, Any]:
+async def _ceo_advice_via_openai_executor(
+    text: str, context: Dict[str, Any]
+) -> Dict[str, Any]:
     """
     Read-only fallback path if agent router returns empty.
     Uses OpenAIAssistantExecutor.ceo_command (already guarded: no tools / no side effects).
     """
     try:
-        from services.agent_router.openai_assistant_executor import OpenAIAssistantExecutor  # type: ignore
+        from services.agent_router.openai_assistant_executor import (
+            OpenAIAssistantExecutor,
+        )  # type: ignore
     except Exception:
         return {
             "summary": "Fallback nije dostupan (OpenAIAssistantExecutor import failed).",
@@ -386,14 +416,18 @@ async def _ceo_advice_via_openai_executor(text: str, context: Dict[str, Any]) ->
         }
 
 
-async def _ceo_advice_via_agent_router(text: str, context: Dict[str, Any]) -> Dict[str, Any]:
+async def _ceo_advice_via_agent_router(
+    text: str, context: Dict[str, Any]
+) -> Dict[str, Any]:
     """
     READ-ONLY advisory via FAZA 4 agentic layer.
     If agent returns empty, fallback to OpenAI executor.
     """
     _ensure_registry_loaded()
 
-    snapshot = context.get("snapshot") if isinstance(context.get("snapshot"), dict) else {}
+    snapshot = (
+        context.get("snapshot") if isinstance(context.get("snapshot"), dict) else {}
+    )
 
     identity_pack: Dict[str, Any] = {
         "initiator": context.get("initiator"),
@@ -425,7 +459,11 @@ async def _ceo_advice_via_agent_router(text: str, context: Dict[str, Any]) -> Di
     trace["read_only_guard"] = True
     trace["canon_read_only_guard"] = True
 
-    snap_meta = context.get("snapshot_meta") if isinstance(context.get("snapshot_meta"), dict) else {}
+    snap_meta = (
+        context.get("snapshot_meta")
+        if isinstance(context.get("snapshot_meta"), dict)
+        else {}
+    )
     if snap_meta:
         trace["snapshot_meta"] = snap_meta
 
@@ -445,7 +483,9 @@ async def _ceo_advice_via_agent_router(text: str, context: Dict[str, Any]) -> Di
         "questions": [],
         "plan": [],
         "options": [],
-        "proposed_commands": _map_agent_proposals_to_ceo_commands(out.proposed_commands),
+        "proposed_commands": _map_agent_proposals_to_ceo_commands(
+            out.proposed_commands
+        ),
         "trace": trace,
     }
 
