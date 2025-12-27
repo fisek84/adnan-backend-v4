@@ -6,13 +6,16 @@
       "name": "CEO Advisor",
       "enabled": true,
       "priority": 100,
-      "entrypoint": "agents/ceo_advisor_agent.py",
+      "entrypoint": "services.ceo_advisor_agent:create_ceo_advisor_agent",
       "keywords": [
         "plan",
         "strategy",
         "weekly",
         "summary",
-        "proposal"
+        "proposal",
+        "ceo",
+        "advisory",
+        "leadership"
       ]
     },
     {
@@ -20,7 +23,7 @@
       "name": "Notion Ops",
       "enabled": true,
       "priority": 90,
-      "entrypoint": "agents/notion_ops_agent.py",
+      "entrypoint": "services.notion_ops_agent:NotionOpsAgent",
       "keywords": [
         "notion",
         "database",
@@ -30,7 +33,8 @@
         "update",
         "query",
         "retrieve",
-        "kpi"
+        "kpi",
+        "admin"
       ]
     },
     {
@@ -38,12 +42,14 @@
       "name": "Execution Orchestrator",
       "enabled": true,
       "priority": 80,
-      "entrypoint": "services/execution_orchestrator.py",
+      "entrypoint": "services.execution_orchestrator:ExecutionOrchestrator",
       "keywords": [
         "execute",
         "run",
         "approval",
-        "workflow"
+        "workflow",
+        "coordination",
+        "orchestrator"
       ]
     }
   ]
