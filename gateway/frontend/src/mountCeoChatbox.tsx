@@ -1,3 +1,4 @@
+// gateway/frontend/src/mountCeoChatbox.tsx
 import React from "react";
 import { createRoot } from "react-dom/client";
 import { CeoChatbox } from "./components/ceoChat/CeoChatbox";

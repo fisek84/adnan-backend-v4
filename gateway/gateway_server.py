@@ -603,16 +603,45 @@ def _derive_legacy_goal_task_summaries_from_ceo_snapshot(
 # ================================================================
 @app.post("/api/execute")
 async def execute_command(payload: ExecuteInput):
+    """
+    Canonical OS execution endpoint.
+
+    1) Pokušaj da NL → AICommand preko COOTranslationService.
+    2) Ako uspije → standardni execution_orchestrator flow (sa approvalima).
+    3) Ako NE uspije (None) → tretiraj kao CEO advisory zahtjev
+       i preusmjeri na CEO Console / CEOAdvisor (READ-ONLY).
+    """
+
+    # 1) Standardni pokušaj: prevesti u AICommand za izvršenje
     ai_command = coo_translation_service.translate(
         raw_input=payload.text,
         source="system",
         context={"mode": "execute"},
     )
+
     if not ai_command:
-        raise HTTPException(
-            status_code=400, detail="Could not translate input to command"
+        # 2) Fallback — CEO ADVISOR / CEO CONSOLE (READ-ONLY)
+        cleaned_text = _preprocess_ceo_nl_input(payload.text, smart_context=None)
+
+        req = ceo_console_module.CEOCommandRequest(
+            text=cleaned_text,
+            initiator="api_execute_fallback",
+            session_id=None,
+            context_hint={"source": "api_execute"},
         )
 
+        advice = await ceo_console_module.ceo_command(req)
+
+        # Vraćamo jasno označen advisory odgovor (bez write izvršenja).
+        return {
+            "status": "COMPLETED",
+            "execution_state": "COMPLETED",
+            "mode": "ceo_advisory",
+            "channel": "ceo_console",
+            "advisory": advice,
+        }
+
+    # 3) Normalni EXECUTION flow (kad postoji AICommand)
     if not getattr(ai_command, "initiator", None):
         ai_command.initiator = "ceo"
 

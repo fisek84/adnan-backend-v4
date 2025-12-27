@@ -7,6 +7,27 @@ function $(id) {
   return document.getElementById(id);
 }
 
+function getCeoToken() {
+  // Optional: enable CEO_TOKEN_ENFORCEMENT on backend and set token here.
+  // Priority:
+  //  1) localStorage "CEO_APPROVAL_TOKEN"
+  //  2) window.CEO_APPROVAL_TOKEN
+  try {
+    const ls = (typeof localStorage !== "undefined" && localStorage.getItem("CEO_APPROVAL_TOKEN")) || "";
+    if (ls && String(ls).trim()) return String(ls).trim();
+  } catch {}
+  const w = typeof window !== "undefined" ? window : null;
+  const t = w && w.CEO_APPROVAL_TOKEN ? String(w.CEO_APPROVAL_TOKEN).trim() : "";
+  return t || null;
+}
+
+function jsonHeadersWithCeoToken() {
+  const h = { "Content-Type": "application/json" };
+  const token = getCeoToken();
+  if (token) h["X-CEO-Token"] = token;
+  return h;
+}
+
 function setCommandStatus(chipText, text, variant) {
   const chip = $("command-status-chip");
   const label = $("command-status-text");
@@ -99,9 +120,8 @@ function clearHistory() {
 
 // --------------------------------------------------
 // CEO CONSOLE RESPONSE FORMATTER (CANON-SAFE)
-// Handles both shapes:
-//  A) { summary, questions[], plan[], options[], proposed_commands[] }
-//  B) legacy-ish { text, proposed_commands: {} } etc.
+// Handles CEO Console canonical shape:
+//  { summary, questions[], plan[], options[], proposed_commands[] }
 // Never throws.
 // --------------------------------------------------
 
@@ -127,10 +147,8 @@ function _formatBullets(title, items) {
 }
 
 function _normalizeProposedCommands(pc) {
-  // backend can return: [] or {} or null
   if (Array.isArray(pc)) return pc;
   if (pc && typeof pc === "object") {
-    // object map -> list
     const vals = Object.values(pc);
     return Array.isArray(vals) ? vals : [];
   }
@@ -179,18 +197,20 @@ function formatAdviceFromCeoConsole(data) {
       const pcLines = proposed
         .map((c) => {
           if (typeof c === "string") return c.trim();
-          const cmd = _asOneLine(c?.command || c?.name || "(command)");
-          const reason = _asOneLine(c?.reason);
-          const approval = c?.requires_approval ? " (requires approval)" : "";
-          const dry = c?.dry_run ? " [dry-run]" : "";
-          return `${cmd}${approval}${dry}${reason ? " — " + reason : ""}`.trim();
+
+          // CEO Console ProposedAICommand:
+          // { command_type, payload, status, required_approval, cost_hint, risk_hint }
+          const cmd = _asOneLine(c?.command_type || c?.command || c?.name || "(command)");
+          const risk = _asOneLine(c?.risk_hint || c?.risk || "");
+          const approval = c?.required_approval ? " (requires approval)" : "";
+          return `${cmd}${approval}${risk ? " — risk: " + risk : ""}`.trim();
         })
         .filter(Boolean)
         .map((s) => `- ${s}`);
 
       if (pcLines.length) {
         lines.push("");
-        lines.push("Proposed commands:");
+        lines.push("Proposed commands (BLOCKED):");
         lines.push(...pcLines);
       }
     }
@@ -475,6 +495,8 @@ async function sendCeoCommand() {
   setCommandStatus("PENDING", "CEO Command (READ-only): generišem savjet i plan...");
 
   try {
+    const sessionId = `ui_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+
     // CANON: advisory endpoint (no execution, no approvals)
     const res = await fetch("/api/ceo-console/command", {
       method: "POST",
@@ -482,7 +504,7 @@ async function sendCeoCommand() {
       body: JSON.stringify({
         text: text,
         initiator: "ceo_dashboard",
-        session_id: null,
+        session_id: sessionId,
         context_hint: null,
       }),
     });
@@ -532,11 +554,23 @@ async function executeLatest() {
   setCommandStatus("PENDING", "Pokrećem EXECUTION (kreiram approval)...");
 
   try {
-    // CANON: execution path (creates approval, then human must approve)
-    const res = await fetch("/api/execute", {
+    // CANON: Promote as a proposal (ceo.command.propose) so backend does:
+    // translate(prompt) -> create approval -> register execution -> BLOCKED
+    const res = await fetch("/api/proposals/execute", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: lastProposedExecuteText }),
+      headers: jsonHeadersWithCeoToken(),
+      body: JSON.stringify({
+        proposal: {
+          command: "ceo.command.propose",
+          args: { prompt: lastProposedExecuteText },
+          scope: "ceo_console",
+          risk: "UNKNOWN",
+          requires_approval: true,
+          dry_run: true,
+        },
+        initiator: "ceo",
+        metadata: { source: "ceo_dashboard" },
+      }),
     });
 
     if (!res.ok) {
@@ -586,8 +620,8 @@ async function approveLatest() {
   try {
     const res = await fetch("/api/ai-ops/approval/approve", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ approval_id: lastApprovalId }),
+      headers: jsonHeadersWithCeoToken(),
+      body: JSON.stringify({ approval_id: lastApprovalId, approved_by: "ceo_dashboard" }),
     });
 
     if (!res.ok) {
@@ -664,7 +698,6 @@ document.addEventListener("DOMContentLoaded", () => {
     });
 
     input.addEventListener("input", () => autoResizeTextarea(input));
-    // init default height
     autoResizeTextarea(input);
   }
 

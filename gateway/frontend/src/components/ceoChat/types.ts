@@ -1,3 +1,4 @@
+// gateway/frontend/src/components/ceoChat/types.ts
 export type CeoRole = "ceo" | "system";
 export type GovernanceState = "BLOCKED" | "APPROVED" | "EXECUTED";
 
@@ -29,10 +30,21 @@ export type GovernanceEventItem = ChatItemBase & {
 
 export type ChatItem = ChatMessageItem | GovernanceEventItem;
 
+/**
+ * CEO Console backend expects:
+ * POST /api/ceo-console/command
+ * {
+ *   "text": "...",
+ *   "initiator": "...",
+ *   "session_id": "...",
+ *   "context_hint": {...}
+ * }
+ */
 export type CeoCommandRequest = {
-  command: string;
-  payload?: Record<string, unknown>;
-  client_request_id?: string;
+  text: string;
+  initiator?: string;
+  session_id?: string;
+  context_hint?: Record<string, unknown>;
 };
 
 export type NormalizedConsoleResponse = {

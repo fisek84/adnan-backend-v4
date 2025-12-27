@@ -1,14 +1,15 @@
+// gateway/frontend/src/components/ceoChat/api.ts
 import type { CeoCommandRequest, NormalizedConsoleResponse } from "./types";
 import { normalizeConsoleResponse, streamTextFromResponse } from "./normalize";
 
 export type CeoConsoleApi = {
   sendCommand: (req: CeoCommandRequest, signal?: AbortSignal) => Promise<NormalizedConsoleResponse>;
-  approve: (approvalRequestId: string, signal?: AbortSignal) => Promise<NormalizedConsoleResponse>;
+  approve: (approvalId: string, signal?: AbortSignal) => Promise<NormalizedConsoleResponse>;
 };
 
 type ApiOptions = {
-  ceoCommandUrl: string; // existing CEO COMMAND endpoint
-  approveUrl?: string;   // optional; if approvals handled elsewhere, omit and use onOpenApprovals
+  ceoCommandUrl: string;
+  approveUrl?: string;
   headers?: Record<string, string>;
 };
 
@@ -32,17 +33,16 @@ export const createCeoConsoleApi = (opts: ApiOptions): CeoConsoleApi => {
 
     const stream = streamTextFromResponse(res);
     if (stream) {
-      return {
-        requestId: req.client_request_id,
-        stream,
-      };
+      return { requestId: req.client_request_id, stream };
     }
 
-    const data = await res.json().catch(async () => ({ message: await res.text().catch(() => "") }));
+    const data = await res
+      .json()
+      .catch(async () => ({ message: await res.text().catch(() => "") }));
     return normalizeConsoleResponse(data, res.headers);
   };
 
-  const approve: CeoConsoleApi["approve"] = async (approvalRequestId, signal) => {
+  const approve: CeoConsoleApi["approve"] = async (approvalId, signal) => {
     if (!opts.approveUrl) {
       throw new Error("Approve endpoint is not configured");
     }
@@ -50,7 +50,7 @@ export const createCeoConsoleApi = (opts: ApiOptions): CeoConsoleApi => {
     const res = await fetch(opts.approveUrl, {
       method: "POST",
       headers: { ...jsonHeaders, ...baseHeaders },
-      body: JSON.stringify({ approval_request_id: approvalRequestId }),
+      body: JSON.stringify({ approval_id: approvalId, approved_by: "ceo" }),
       signal,
     });
 
@@ -61,13 +61,12 @@ export const createCeoConsoleApi = (opts: ApiOptions): CeoConsoleApi => {
 
     const stream = streamTextFromResponse(res);
     if (stream) {
-      return {
-        requestId: approvalRequestId,
-        stream,
-      };
+      return { requestId: approvalId, stream };
     }
 
-    const data = await res.json().catch(async () => ({ message: await res.text().catch(() => "") }));
+    const data = await res
+      .json()
+      .catch(async () => ({ message: await res.text().catch(() => "") }));
     return normalizeConsoleResponse(data, res.headers);
   };
 
