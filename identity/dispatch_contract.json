@@ -1,0 +1,40 @@
+{
+  "version": "1.1",
+  "type": "dispatch_contract",
+  "required_fields": [
+    "target_system",
+    "executor",
+    "action",
+    "resource",
+    "payload",
+    "meta"
+  ],
+  "contract": {
+    "target_system": "notion | clickup | zapier | slack | internal",
+    "executor": "string",
+    "action": "create | update | delete | query | run_workflow",
+    "resource": {
+      "key": "string",
+      "type": "database | page | task | list | workflow | message",
+      "id": "optional-string"
+    },
+    "payload": {
+      "properties": {},
+      "content": "optional-string",
+      "filters": "optional-object",
+      "relationships": "optional-object"
+    },
+    "constraints": {
+      "read_only": false,
+      "no_delete": false,
+      "no_schema_change": true
+    },
+    "meta": {
+      "trace_id": "string",
+      "execution_id": "string",
+      "approval_id": "string",
+      "idempotency_key": "string",
+      "requested_by": "ceo_advisor"
+    }
+  }
+}
