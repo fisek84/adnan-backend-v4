@@ -2,13 +2,12 @@
 from __future__ import annotations
 
 import inspect
-import json
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Body, HTTPException
 from pydantic import BaseModel, Field
 
-from models.agent_contract import AgentInput, AgentOutput, ProposedCommand
+from models.agent_contract import AgentInput, AgentOutput
 from services.agent_registry_service import AgentRegistryService
 from services.agent_router_service import AgentRouterService
 
@@ -29,6 +28,7 @@ def _ensure_registry_loaded() -> None:
 # ======================
 # MODELS
 # ======================
+
 
 class CEOCommandRequest(BaseModel):
     text: str = Field(..., min_length=1)
@@ -62,6 +62,7 @@ class CEOCommandResponse(BaseModel):
 # HELPERS
 # ======================
 
+
 async def _maybe_await(value: Any) -> Any:
     if inspect.isawaitable(value):
         return await value
@@ -73,8 +74,15 @@ _HEAVY_KEYS = {"properties", "properties_text", "properties_types", "raw"}
 
 def _compact_item(item: Dict[str, Any]) -> Dict[str, Any]:
     keep = {
-        "id", "title", "name", "status", "priority",
-        "due_date", "lead", "project", "goal"
+        "id",
+        "title",
+        "name",
+        "status",
+        "priority",
+        "due_date",
+        "lead",
+        "project",
+        "goal",
     }
     return {k: item.get(k) for k in keep if k in item}
 
@@ -95,6 +103,7 @@ def _compact_dashboard_snapshot(snap: Dict[str, Any]) -> Dict[str, Any]:
 # ======================
 # 🔥 FIX IS HERE
 # ======================
+
 
 async def _build_context(req: CEOCommandRequest) -> Dict[str, Any]:
     ctx: Dict[str, Any] = {
@@ -120,10 +129,12 @@ async def _build_context(req: CEOCommandRequest) -> Dict[str, Any]:
     if req.context_hint and isinstance(req.context_hint, dict):
         req_snapshot = req.context_hint.get("snapshot")
         if isinstance(req_snapshot, dict):
-            ctx["snapshot"] = _compact_dashboard_snapshot({
-                "source": "request.context_hint",
-                "dashboard": req_snapshot,
-            })
+            ctx["snapshot"] = _compact_dashboard_snapshot(
+                {
+                    "source": "request.context_hint",
+                    "dashboard": req_snapshot,
+                }
+            )
             ctx["snapshot_meta"] = {
                 "snapshotter": "request",
                 "available": True,
@@ -136,6 +147,7 @@ async def _build_context(req: CEOCommandRequest) -> Dict[str, Any]:
     # ===============================
     try:
         from services.ceo_console_snapshot_service import CEOConsoleSnapshotService
+
         snapshotter = CEOConsoleSnapshotService()
         snap = snapshotter.snapshot()
         snap = await _maybe_await(snap)
@@ -160,7 +172,10 @@ async def _build_context(req: CEOCommandRequest) -> Dict[str, Any]:
 # AGENT EXECUTION
 # ======================
 
-async def _ceo_advice_via_agent_router(text: str, context: Dict[str, Any]) -> Dict[str, Any]:
+
+async def _ceo_advice_via_agent_router(
+    text: str, context: Dict[str, Any]
+) -> Dict[str, Any]:
     _ensure_registry_loaded()
 
     agent_input = AgentInput(
@@ -202,6 +217,7 @@ async def _ceo_advice_via_agent_router(text: str, context: Dict[str, Any]) -> Di
 # ======================
 # ROUTES
 # ======================
+
 
 @router.post("/command", response_model=CEOCommandResponse)
 async def ceo_command(req: CEOCommandRequest = Body(...)) -> CEOCommandResponse:
