@@ -1,31 +1,16 @@
-console.log("CEO_CHATBOX_BOOT_OK");
+// gateway/frontend/src/main.tsx
 
-import { mountCeoChatbox } from "./mountCeoChatbox";
+import React from "react";
+import ReactDOM from "react-dom/client";
 
-declare global {
-  interface Window {
-    __EVO_UI__?: {
-      ceoCommandUrl?: string;
-      approveUrl?: string;
-      headers?: Record<string, string>;
-      mountSelector?: string;
-    };
-  }
-}
+// style.css je u gateway/frontend/style.css, a ovaj fajl je u gateway/frontend/src/
+// zato ide jedan nivo gore iz src/
+import "../style.css";
 
-const cfg = window.__EVO_UI__ ?? {};
-const selector = cfg.mountSelector ?? "#root";
+import App from "./App";
 
-const el = document.querySelector(selector);
-
-// fallback URL radi na Renderu i lokalno (FastAPI prefix)
-const ceoCommandUrl = cfg.ceoCommandUrl ?? "/api/ceo/command";
-
-if (el instanceof HTMLElement) {
-  mountCeoChatbox({
-    container: el,
-    ceoCommandUrl,
-    approveUrl: cfg.approveUrl,
-    headers: cfg.headers,
-  });
-}
+ReactDOM.createRoot(document.getElementById("root")!).render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>
+);
