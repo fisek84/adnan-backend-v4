@@ -101,7 +101,7 @@ def _compact_dashboard_snapshot(snap: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # ======================
-# 🔥 FIX IS HERE
+# CONTEXT
 # ======================
 
 
@@ -217,6 +217,22 @@ async def _ceo_advice_via_agent_router(
 # ======================
 # ROUTES
 # ======================
+
+
+@router.get("/status")
+def ceo_console_status() -> Dict[str, Any]:
+    return {
+        "ok": True,
+        "read_only": True,
+        "ceo_console": "online",
+        "canon": {
+            "chat_is_read_only": True,
+            "write_requires_approval": True,
+            "commands_are_proposals": True,
+            "no_side_effects": True,
+            "no_tools": True,
+        },
+    }
 
 
 @router.post("/command", response_model=CEOCommandResponse)
