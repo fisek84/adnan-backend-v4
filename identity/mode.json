@@ -1,11 +1,26 @@
 ﻿{
+  "version": "1.1",
   "default_mode": "operational",
   "modes": {
     "operational": {
-      "description": "Standard system operating mode"
+      "description": "Standard system operating mode",
+      "policy": {
+        "allow_external_reads": true,
+        "allow_notion_read": true,
+        "allow_notion_write": true,
+        "require_approval_for_writes": true,
+        "allow_agent_dispatch": true
+      }
     },
     "restricted": {
-      "description": "Restricted execution mode with limited write and agent capabilities"
+      "description": "Restricted execution mode with limited capabilities",
+      "policy": {
+        "allow_external_reads": true,
+        "allow_notion_read": true,
+        "allow_notion_write": false,
+        "require_approval_for_writes": true,
+        "allow_agent_dispatch": true
+      }
     }
   }
 }

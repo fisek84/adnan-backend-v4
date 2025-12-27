@@ -1,52 +1,49 @@
 {
-  "version": 1,
+  "version": "1.0",
   "agents": [
     {
-      "id": "ceo_clone",
-      "name": "CEO Clone",
+      "id": "ceo_advisor",
+      "name": "CEO Advisor",
       "enabled": true,
       "priority": 100,
-      "entrypoint": "services.agent_router_service:ceo_clone_agent",
+      "entrypoint": "agents/ceo_advisor_agent.py",
       "keywords": [
-        "ceo",
-        "strategy",
         "plan",
-        "kpi",
-        "goal",
-        "goals",
-        "cilj",
-        "ciljevi",
-        "priorities",
-        "priority",
-        "task",
-        "tasks",
-        "taskove",
-        "taskovi",
-        "zadatak",
-        "zadatke",
-        "zadatci",
-        "zadatci",
-        "todo",
-        "to do"
+        "strategy",
+        "weekly",
+        "summary",
+        "proposal"
       ]
     },
     {
-      "id": "specialist_notion",
-      "name": "Notion Specialist",
+      "id": "notion_ops",
+      "name": "Notion Ops",
       "enabled": true,
       "priority": 90,
-      "entrypoint": "services.agent_router_service:specialist_notion_agent",
+      "entrypoint": "agents/notion_ops_agent.py",
       "keywords": [
         "notion",
-        "page",
         "database",
-        "db",
-        "property",
-        "properties",
-        "schema",
-        "workspace",
-        "table",
-        "tablica"
+        "page",
+        "create",
+        "delete",
+        "update",
+        "query",
+        "retrieve",
+        "kpi"
+      ]
+    },
+    {
+      "id": "execution_orchestrator",
+      "name": "Execution Orchestrator",
+      "enabled": true,
+      "priority": 80,
+      "entrypoint": "services/execution_orchestrator.py",
+      "keywords": [
+        "execute",
+        "run",
+        "approval",
+        "workflow"
       ]
     }
   ]

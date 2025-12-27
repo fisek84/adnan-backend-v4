@@ -1,18 +1,41 @@
 {
-  "notion_ops": {
-    "type": "openai_assistant",
-    "enabled": true,
-    "assistant_id": "ENV:NOTION_OPS_ASSISTANT_ID",
-    "executor": "notion_ops",
-    "capabilities": [
-      "create_task",
-      "update_task",
-      "create_database_entry",
-      "update_database_entry",
-      "query_database",
-      "create_page",
-      "retrieve_page_content",
-      "delete_page"
-    ]
+  "version": "1.1",
+  "agents": {
+    "ceo_advisor": {
+      "type": "openai_assistant",
+      "enabled": true,
+      "assistant_id": "ENV:CEO_ADVISOR_ASSISTANT_ID",
+      "executor": "ceo_advisor",
+      "capabilities": [
+        "general_chat",
+        "plan_and_propose",
+        "query_database",
+        "retrieve_page_content",
+        "dispatch_to_agent"
+      ],
+      "constraints": {
+        "notion_write": "forbidden",
+        "notion_delete": "forbidden"
+      }
+    },
+    "notion_ops": {
+      "type": "openai_assistant",
+      "enabled": true,
+      "assistant_id": "ENV:NOTION_OPS_ASSISTANT_ID",
+      "executor": "notion_ops",
+      "capabilities": [
+        "query_database",
+        "retrieve_page_content",
+        "create_task",
+        "update_task",
+        "create_database_entry",
+        "update_database_entry",
+        "create_page",
+        "delete_page"
+      ],
+      "constraints": {
+        "requires_approval_for_writes": true
+      }
+    }
   }
 }
