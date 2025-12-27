@@ -15,6 +15,7 @@ from uuid import UUID
 from openai import OpenAI
 
 from ext.notion.client import perform_notion_action
+from services.knowledge_service import KnowledgeService
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,66 @@ def _json_default(obj: Any) -> Any:
     if isinstance(obj, Decimal):
         return float(obj)
     return str(obj)
+
+
+def _format_identity_knowledge_for_prompt(user_text: str, max_items: int = 6) -> str:
+    """
+    Minimalna selekcija knowledge entries-a:
+    - Rank po priority
+    - Boost po tag match-u sa user_text
+    - Vraća kratak blok teksta koji se ubacuje u context/prompt
+
+    Namjerno jednostavno i stabilno. Kasnije se može poboljšati.
+    """
+    try:
+        ks = KnowledgeService()
+        entries = ks.entries()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("KnowledgeService load failed: %s", e)
+        return ""
+
+    text = (user_text or "").lower()
+
+    def score(entry: Dict[str, Any]) -> float:
+        s = float(entry.get("priority", 0.0) or 0.0)
+
+        tags = entry.get("tags") or []
+        tags_l = [t.lower() for t in tags if isinstance(t, str)]
+
+        # boost: ako se tag pojavljuje u upitu
+        for t in tags_l:
+            if t and t in text:
+                s += 0.5
+
+        # extra heuristic boosts (stabilno, low risk)
+        if "notion" in text and "notion" in tags_l:
+            s += 0.6
+        if "approval" in text and "approval" in tags_l:
+            s += 0.6
+        if "agent" in text and ("agents" in tags_l or "dispatch" in tags_l):
+            s += 0.4
+        if "policy" in text and ("governance" in tags_l or "safety" in tags_l):
+            s += 0.4
+
+        return s
+
+    ranked = sorted(entries, key=score, reverse=True)
+    ranked = [e for e in ranked if isinstance(e, dict)]
+    ranked = ranked[: max(1, int(max_items))]
+
+    if not ranked:
+        return ""
+
+    lines = ["IDENTITY KNOWLEDGE (canonical):"]
+    for e in ranked:
+        eid = e.get("id", "")
+        title = e.get("title", "")
+        content = e.get("content", "")
+        if not isinstance(content, str):
+            content = str(content)
+        lines.append(f"- [{eid}] {title}: {content}")
+
+    return "\n".join(lines).strip()
 
 
 class OpenAIAssistantExecutor:
@@ -135,9 +196,7 @@ class OpenAIAssistantExecutor:
                 tool_calls = getattr(submit, "tool_calls", None) if submit else None
 
                 if not tool_calls:
-                    raise RuntimeError(
-                        "Assistant requires_action but has no tool calls"
-                    )
+                    raise RuntimeError("Assistant requires_action but has no tool calls")
 
                 tool_outputs = []
 
@@ -190,9 +249,7 @@ class OpenAIAssistantExecutor:
             self.client.beta.threads.messages.list, thread_id=thread_id
         )
         data = getattr(messages, "data", None) or []
-        assistant_messages = [
-            m for m in data if getattr(m, "role", None) == "assistant"
-        ]
+        assistant_messages = [m for m in data if getattr(m, "role", None) == "assistant"]
 
         if not assistant_messages:
             raise RuntimeError("Assistant produced no response")
@@ -307,7 +364,8 @@ class OpenAIAssistantExecutor:
         Expected task:
           {
             "command": "<string>",
-            "payload": { ... }
+            "payload": { ... },
+            "executor": "notion_ops"   # recommended (for guard / trace)
           }
         """
         if not isinstance(task, dict):
@@ -320,6 +378,13 @@ class OpenAIAssistantExecutor:
             raise ValueError("Agent task requires 'command' (str)")
         if not isinstance(payload, dict):
             raise ValueError("Agent task requires 'payload' (dict)")
+
+        # HARD GUARD: CEO advisory must never execute side-effects
+        executor = task.get("executor") or task.get("agent") or task.get("role")
+        if executor and str(executor).lower() in {"ceo_advisor", "ceo", "advisor"}:
+            raise RuntimeError(
+                "CEO advisory cannot run execute() (side-effects forbidden)"
+            )
 
         assistant_id = self._get_execution_assistant_id_or_raise()
 
@@ -365,9 +430,7 @@ class OpenAIAssistantExecutor:
     # CEO ADVISORY (READ-ONLY) — used by CEO Console
     # ============================================================
 
-    async def ceo_command(
-        self, *, text: str, context: Dict[str, Any]
-    ) -> Dict[str, Any]:
+    async def ceo_command(self, *, text: str, context: Dict[str, Any]) -> Dict[str, Any]:
         """
         READ-ONLY advisory path.
         - No tools / no side-effects.
@@ -413,6 +476,11 @@ class OpenAIAssistantExecutor:
         canon["no_side_effects"] = True
         safe_context["canon"] = canon
 
+        # Inject Identity Knowledge (read-only)
+        knowledge_block = _format_identity_knowledge_for_prompt(t, max_items=6)
+        if knowledge_block:
+            safe_context["identity_knowledge"] = knowledge_block
+
         advisory_contract = {
             "type": "ceo_advice",
             "text": t,
@@ -455,9 +523,7 @@ class OpenAIAssistantExecutor:
                 run_id=run.id,
                 allow_tools=False,
             )
-            final_text = await self._get_final_assistant_message_text(
-                thread_id=thread.id
-            )
+            final_text = await self._get_final_assistant_message_text(thread_id=thread.id)
             parsed = self._safe_json_parse(final_text)
             parsed = self._normalize_ceo_advisory_payload(parsed)
         except Exception as exc:  # noqa: BLE001
@@ -494,6 +560,8 @@ class OpenAIAssistantExecutor:
         trace["read_only_guard"] = True
         trace["no_tools_guard"] = True
         trace["elapsed_ms"] = elapsed_ms
+        if knowledge_block:
+            trace["identity_knowledge_injected"] = True
         parsed["trace"] = trace
 
         return parsed
