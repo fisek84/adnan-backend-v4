@@ -7,8 +7,7 @@ class KnowledgeService:
     def __init__(self, knowledge_path: Optional[str] = None):
         # Default: identity/knowledge.json relative to project root
         self.knowledge_path = knowledge_path or os.getenv(
-            "IDENTITY_KNOWLEDGE_PATH",
-            os.path.join("identity", "knowledge.json")
+            "IDENTITY_KNOWLEDGE_PATH", os.path.join("identity", "knowledge.json")
         )
 
     def load(self) -> Dict[str, Any]:

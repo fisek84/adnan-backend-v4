@@ -1,46 +1,45 @@
-""" 
-NOTION SCHEMA REGISTRY — KANONSKI IZVOR ISTINE 
-""" 
+"""
+NOTION SCHEMA REGISTRY — KANONSKI IZVOR ISTINE
+"""
 
-from __future__ import annotations 
-import os 
-from typing import Any, Dict, List, Optional 
+from __future__ import annotations
+import os
+from typing import Any, Dict, List, Optional
 
-class NotionSchemaRegistry: 
-    """ 
-    Centralni Notion knowledge layer. 
-    Svi DB-ovi koji su dostupni OS-u moraju biti registrovani ovdje. 
+
+class NotionSchemaRegistry:
+    """
+    Centralni Notion knowledge layer.
+    Svi DB-ovi koji su dostupni OS-u moraju biti registrovani ovdje.
     """
 
-    # ============================================================ 
-    # DATABASE DEFINITIONS 
-    # ============================================================ 
+    # ============================================================
+    # DATABASE DEFINITIONS
+    # ============================================================
 
-    DATABASES: Dict[str, Dict[str, Any]] = { 
-
-        # ======================= 
-        # GOALS (PRIMARNI DB) 
-        # ======================= 
-        "goals": { 
-            "db_id": os.getenv("NOTION_GOALS_DB_ID"), 
-            "entity": "Goal", 
-            "write_enabled": True, 
-            "properties": { 
-                "Name": {"type": "title", "required": True}, 
-                "Status": {"type": "status", "required": True}, 
-                "Priority": {"type": "select", "required": False}, 
-                "Progress": {"type": "number", "required": False}, 
-                "Description": {"type": "rich_text", "required": False}, 
-                "Parent Goal": {"type": "relation", "target": "goals"}, 
-                "Child Goals": {"type": "relation", "target": "goals"}, 
-                "Project": {"type": "relation", "target": "projects"}, 
-                "Deadline": {"type": "date", "required": False}, 
-            }, 
+    DATABASES: Dict[str, Dict[str, Any]] = {
+        # =======================
+        # GOALS (PRIMARNI DB)
+        # =======================
+        "goals": {
+            "db_id": os.getenv("NOTION_GOALS_DB_ID"),
+            "entity": "Goal",
+            "write_enabled": True,
+            "properties": {
+                "Name": {"type": "title", "required": True},
+                "Status": {"type": "status", "required": True},
+                "Priority": {"type": "select", "required": False},
+                "Progress": {"type": "number", "required": False},
+                "Description": {"type": "rich_text", "required": False},
+                "Parent Goal": {"type": "relation", "target": "goals"},
+                "Child Goals": {"type": "relation", "target": "goals"},
+                "Project": {"type": "relation", "target": "projects"},
+                "Deadline": {"type": "date", "required": False},
+            },
         },
-
-        # ======================= 
-        # GOALS — DERIVED VIEWS (READ-ONLY) 
-        # ======================= 
+        # =======================
+        # GOALS — DERIVED VIEWS (READ-ONLY)
+        # =======================
         "active_goals": {
             "db_id": os.getenv("NOTION_ACTIVE_GOALS_DB_ID"),
             "entity": "Goal",
@@ -87,7 +86,6 @@ class NotionSchemaRegistry:
                 "AI Agent": {"type": "people", "required": False},
             },
         },
-
         "blocked_goals": {
             "db_id": os.getenv("NOTION_BLOCKED_GOALS_DB_ID"),
             "entity": "Goal",
@@ -99,7 +97,6 @@ class NotionSchemaRegistry:
                 "Deadline": {"type": "date", "required": False},
             },
         },
-
         "completed_goals": {
             "db_id": os.getenv("NOTION_COMPLETED_GOALS_DB_ID"),
             "entity": "Goal",
@@ -111,10 +108,9 @@ class NotionSchemaRegistry:
                 "Priority": {"type": "select", "required": False},
             },
         },
-
-        # ======================= 
-        # TASKS 
-        # ======================= 
+        # =======================
+        # TASKS
+        # =======================
         "tasks": {
             "db_id": os.getenv("NOTION_TASKS_DB_ID"),
             "entity": "Task",
@@ -140,10 +136,9 @@ class NotionSchemaRegistry:
                 "AI Agent": {"type": "people", "required": False},
             },
         },
-
-        # ======================= 
-        # PROJECTS 
-        # ======================= 
+        # =======================
+        # PROJECTS
+        # =======================
         "projects": {
             "db_id": os.getenv("NOTION_PROJECTS_DB_ID"),
             "entity": "Project",
@@ -176,9 +171,9 @@ class NotionSchemaRegistry:
         },
     }
 
-    # ============================================================ 
-    # VALIDATION 
-    # ============================================================ 
+    # ============================================================
+    # VALIDATION
+    # ============================================================
 
     @classmethod
     def get_db(cls, key: str) -> Dict[str, Any]:
@@ -192,15 +187,19 @@ class NotionSchemaRegistry:
         props = db["properties"]
         for name, spec in props.items():
             if spec.get("required") and name not in payload:
-                raise ValueError(f"Missing required Notion property '{name}' for DB '{db_key}'")
+                raise ValueError(
+                    f"Missing required Notion property '{name}' for DB '{db_key}'"
+                )
         for key in payload:
             if key not in props:
-                raise ValueError(f"Property '{key}' is not defined in schema for DB '{db_key}'")
+                raise ValueError(
+                    f"Property '{key}' is not defined in schema for DB '{db_key}'"
+                )
         return True
 
-    # ============================================================ 
-    # PAYLOAD BUILDER 
-    # ============================================================ 
+    # ============================================================
+    # PAYLOAD BUILDER
+    # ============================================================
 
     @classmethod
     def build_create_page_payload(

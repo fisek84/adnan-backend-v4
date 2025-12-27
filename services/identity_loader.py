@@ -6,6 +6,7 @@ from typing import Any, Dict
 # CORE JSON LOADER (UTF-8 BOM SAFE)
 # ============================================================
 
+
 def load_json_file(path: str) -> Dict[str, Any]:
     """
     Loads JSON file safely.
@@ -23,9 +24,11 @@ def load_json_file(path: str) -> Dict[str, Any]:
     except json.JSONDecodeError as e:
         raise ValueError(f"[IDENTITY] Invalid JSON in {path}: {e}") from e
 
+
 # ============================================================
 # PATH RESOLUTION (ENV-AGNOSTIC)
 # ============================================================
+
 
 def resolve_path(filename: str) -> str:
     """
@@ -39,9 +42,11 @@ def resolve_path(filename: str) -> str:
     identity_dir = os.path.join(project_root, "identity")  # /app/identity
     return os.path.join(identity_dir, filename)
 
+
 # ============================================================
 # VALIDATION (STRICT — FAIL FAST)
 # ============================================================
+
 
 def validate_identity_payload(
     payload: Dict[str, Any], required_keys: list, name: str
@@ -51,6 +56,7 @@ def validate_identity_payload(
     missing = [k for k in required_keys if k not in payload]
     if missing:
         raise ValueError(f"[IDENTITY] {name} missing required keys: {missing}")
+
 
 def validate_agent_definition(agent_id: str, agent: Dict[str, Any]) -> None:
     required_keys = ["type", "capabilities", "enabled"]
@@ -64,9 +70,11 @@ def validate_agent_definition(agent_id: str, agent: Dict[str, Any]) -> None:
     if not isinstance(agent["enabled"], bool):
         raise ValueError(f"[AGENTS] Agent '{agent_id}' enabled must be boolean")
 
+
 # ============================================================
 # LOADERS (CANONICAL — SOURCE OF TRUTH)
 # ============================================================
+
 
 def load_adnan_identity() -> Dict[str, Any]:
     data = load_json_file(resolve_path("identity.json"))
@@ -75,12 +83,14 @@ def load_adnan_identity() -> Dict[str, Any]:
     )
     return data
 
+
 def load_adnan_memory() -> Dict[str, Any]:
     data = load_json_file(resolve_path("memory.json"))
     validate_identity_payload(
         data, required_keys=["short_term", "long_term"], name="memory.json"
     )
     return data
+
 
 def load_adnan_kernel() -> Dict[str, Any]:
     data = load_json_file(resolve_path("kernel.json"))
@@ -89,20 +99,24 @@ def load_adnan_kernel() -> Dict[str, Any]:
     )
     return data
 
+
 def load_adnan_static_memory() -> Dict[str, Any]:
     data = load_json_file(resolve_path("static_memory.json"))
     validate_identity_payload(data, required_keys=["facts"], name="static_memory.json")
     return data
+
 
 def load_adnan_mode() -> Dict[str, Any]:
     data = load_json_file(resolve_path("mode.json"))
     validate_identity_payload(data, required_keys=["current_mode"], name="mode.json")
     return data
 
+
 def load_adnan_state() -> Dict[str, Any]:
     data = load_json_file(resolve_path("state.json"))
     validate_identity_payload(data, required_keys=["status"], name="state.json")
     return data
+
 
 def load_decision_engine_config() -> Dict[str, Any]:
     data = load_json_file(resolve_path("decision_engine.json"))
@@ -111,9 +125,11 @@ def load_decision_engine_config() -> Dict[str, Any]:
     )
     return data
 
+
 # ============================================================
 # AGENT IDENTITY & CAPABILITIES (FAZA 7 — KORAK 1)
 # ============================================================
+
 
 def load_agents_identity() -> Dict[str, Dict[str, Any]]:
     """
@@ -127,9 +143,11 @@ def load_agents_identity() -> Dict[str, Dict[str, Any]]:
         validate_agent_definition(agent_id, agent)
     return data
 
+
 # ============================================================
 # CEO IDENTITY PACK (READ-ONLY, ADVISORY-READY)
 # ============================================================
+
 
 def load_ceo_identity_pack() -> Dict[str, Any]:
     """
@@ -177,15 +195,19 @@ def load_ceo_identity_pack() -> Dict[str, Any]:
 
     return pack
 
+
 # ============================================================
 # BACKWARD COMPATIBILITY (DO NOT REMOVE)
 # ============================================================
 
+
 def load_identity() -> Dict[str, Any]:
     return load_adnan_identity()
 
+
 def load_mode() -> Dict[str, Any]:
     return load_adnan_mode()
+
 
 def load_state() -> Dict[str, Any]:
     return load_adnan_state()

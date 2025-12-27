@@ -17,6 +17,7 @@ from services.notion_schema_registry import NotionSchemaRegistry
 
 load_dotenv()
 
+
 def _get_notion_client() -> "Client":
     """Create a Notion client lazily.
     This module is imported by parts of the runtime as well as by tests.
@@ -35,9 +36,11 @@ def _get_notion_client() -> "Client":
 
     return Client(auth=api_key)
 
+
 # ============================================================
 # LOW-LEVEL WORKERS (NO LOGIC, HARD VALIDATION)
 # ============================================================
+
 
 def create_page(database_id: str, properties: Dict[str, Any]):
     try:
@@ -67,6 +70,7 @@ def create_page(database_id: str, properties: Dict[str, Any]):
             "error": str(e),
         }
 
+
 def delete_page(page_id: str):
     try:
         notion = _get_notion_client()
@@ -82,9 +86,11 @@ def delete_page(page_id: str):
             "error": str(e),
         }
 
+
 # ============================================================
 # CANONICAL DISPATCHER (KANON)
 # ============================================================
+
 
 def perform_notion_action(
     *,

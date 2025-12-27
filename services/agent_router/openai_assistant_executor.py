@@ -196,7 +196,9 @@ class OpenAIAssistantExecutor:
                 tool_calls = getattr(submit, "tool_calls", None) if submit else None
 
                 if not tool_calls:
-                    raise RuntimeError("Assistant requires_action but has no tool calls")
+                    raise RuntimeError(
+                        "Assistant requires_action but has no tool calls"
+                    )
 
                 tool_outputs = []
 
@@ -249,7 +251,9 @@ class OpenAIAssistantExecutor:
             self.client.beta.threads.messages.list, thread_id=thread_id
         )
         data = getattr(messages, "data", None) or []
-        assistant_messages = [m for m in data if getattr(m, "role", None) == "assistant"]
+        assistant_messages = [
+            m for m in data if getattr(m, "role", None) == "assistant"
+        ]
 
         if not assistant_messages:
             raise RuntimeError("Assistant produced no response")
@@ -430,7 +434,9 @@ class OpenAIAssistantExecutor:
     # CEO ADVISORY (READ-ONLY) — used by CEO Console
     # ============================================================
 
-    async def ceo_command(self, *, text: str, context: Dict[str, Any]) -> Dict[str, Any]:
+    async def ceo_command(
+        self, *, text: str, context: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """
         READ-ONLY advisory path.
         - No tools / no side-effects.
@@ -523,7 +529,9 @@ class OpenAIAssistantExecutor:
                 run_id=run.id,
                 allow_tools=False,
             )
-            final_text = await self._get_final_assistant_message_text(thread_id=thread.id)
+            final_text = await self._get_final_assistant_message_text(
+                thread_id=thread.id
+            )
             parsed = self._safe_json_parse(final_text)
             parsed = self._normalize_ceo_advisory_payload(parsed)
         except Exception as exc:  # noqa: BLE001
