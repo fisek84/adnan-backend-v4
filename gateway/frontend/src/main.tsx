@@ -1,5 +1,3 @@
-// gateway/frontend/src/main.tsx
-
 console.log("CEO_CHATBOX_BOOT_OK");
 
 import { mountCeoChatbox } from "./mountCeoChatbox";
@@ -19,10 +17,14 @@ const cfg = window.__EVO_UI__ ?? {};
 const selector = cfg.mountSelector ?? "#root";
 
 const el = document.querySelector(selector);
-if (el instanceof HTMLElement && cfg.ceoCommandUrl) {
+
+// fallback URL radi na Renderu i lokalno (FastAPI prefix)
+const ceoCommandUrl = cfg.ceoCommandUrl ?? "/api/ceo/command";
+
+if (el instanceof HTMLElement) {
   mountCeoChatbox({
     container: el,
-    ceoCommandUrl: cfg.ceoCommandUrl,
+    ceoCommandUrl,
     approveUrl: cfg.approveUrl,
     headers: cfg.headers,
   });
