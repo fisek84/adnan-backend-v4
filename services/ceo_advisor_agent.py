@@ -34,9 +34,6 @@ def _to_proposed_commands(items: Any) -> List[ProposedCommand]:
 
 
 def _pick_text(result: Any) -> str:
-    """
-    Prefer summary/text fields; fallback to string.
-    """
     if isinstance(result, dict):
         for k in (
             "text",
@@ -70,13 +67,9 @@ def _pick_text(result: Any) -> str:
 
 
 def _format_enforcer(user_text: str) -> str:
-    """
-    Hard requirement: output must list concrete items.
-    This is injected into the prompt so the assistant doesn't reply with vague prose.
-    """
     return (
         f"{user_text.strip()}\n\n"
-        "OBAVEZAN FORMAT ODGOVORA (ne preskakati):\n"
+        "OBAVEZAN FORMAT ODGOVORA:\n"
         "GOALS (top 3)\n"
         "1) <name> | <status> | <priority>\n"
         "2) <name> | <status> | <priority>\n"
@@ -88,27 +81,54 @@ def _format_enforcer(user_text: str) -> str:
         "4) <title> | <status> | <priority>\n"
         "5) <title> | <status> | <priority>\n\n"
         "PRAVILA:\n"
-        "- Koristi isključivo podatke iz snapshot-a.\n"
-        "- Ako nema dovoljno (3 cilja ili 5 taskova), ispiši koliko postoji i dodaj liniju: "
-        '"NEMA DOVOLJNO PODATAKA U SNAPSHOT-U".\n'
-        "- Ne piši opšti opis bez liste stavki.\n"
+        "- Koristi ISKLJUČIVO podatke iz snapshot-a.\n"
+        "- Ako nema dovoljno podataka, napiši: NEMA DOVOLJNO PODATAKA U SNAPSHOT-U.\n"
     )
 
 
 async def create_ceo_advisor_agent(
     agent_input: AgentInput, ctx: Dict[str, Any]
 ) -> AgentOutput:
-    """
-    ENTRYPOINT za AgentRouterService.
-    Mora potpis: (AgentInput, ctx) -> AgentOutput (sync ili async).
-    """
     base_text = (agent_input.message or "").strip()
     if not base_text:
         base_text = "Vrati stanje iz snapshot-a po kanonskom formatu."
 
     snapshot = agent_input.snapshot if isinstance(agent_input.snapshot, dict) else {}
 
-    # Canon read-only
+    # =========================================================
+    # 🔴 SNAPSHOT GUARD — AKO JE PRAZAN, NE ZOVI LLM
+    # =========================================================
+    dashboard = snapshot.get("dashboard") if isinstance(snapshot, dict) else {}
+    goals = dashboard.get("goals") if isinstance(dashboard, dict) else None
+    tasks = dashboard.get("tasks") if isinstance(dashboard, dict) else None
+
+    if not goals and not tasks:
+        return AgentOutput(
+            text=(
+                "NEMA DOVOLJNO PODATAKA U SNAPSHOT-U.\n\n"
+                "Snapshot je prazan ili ne sadrži ciljeve i taskove."
+            ),
+            proposed_commands=[
+                ProposedCommand(
+                    command="refresh_snapshot",
+                    args={"source": "ceo_dashboard"},
+                    reason="Snapshot je prazan ili nedostaje.",
+                    requires_approval=True,
+                    risk="LOW",
+                    dry_run=True,
+                )
+            ],
+            agent_id="ceo_advisor",
+            read_only=True,
+            trace={
+                "snapshot_empty": True,
+                "snapshot_source": snapshot.get("source"),
+            },
+        )
+
+    # =========================================================
+    # NORMALAN LLM PUT
+    # =========================================================
     safe_context: Dict[str, Any] = {
         "canon": {"read_only": True, "no_tools": True, "no_side_effects": True},
         "snapshot": snapshot,
@@ -117,7 +137,6 @@ async def create_ceo_advisor_agent(
         else {},
     }
 
-    # Inject strict output format into prompt
     enforced_text = _format_enforcer(base_text)
 
     executor = OpenAIAssistantExecutor()
@@ -127,27 +146,34 @@ async def create_ceo_advisor_agent(
     if not text_out:
         text_out = "CEO advisor nije vratio tekstualni output."
 
-    # Proposed commands: be tolerant to naming
     proposed_items = None
     if isinstance(result, dict):
         proposed_items = result.get("proposed_commands")
-        if proposed_items is None:
-            proposed_items = result.get("proposed_commands")
-        if proposed_items is None:
-            proposed_items = result.get("proposed_commands")
 
     proposed = _to_proposed_commands(proposed_items)
+
+    # =========================================================
+    # 🔴 DEFAULT COMMAND — FRONTEND MORA IMATI BAR JEDNU AKCIJU
+    # =========================================================
+    if not proposed:
+        proposed.append(
+            ProposedCommand(
+                command="refresh_snapshot",
+                args={"source": "ceo_dashboard"},
+                reason="No actions proposed by LLM.",
+                requires_approval=True,
+                risk="LOW",
+                dry_run=True,
+            )
+        )
 
     trace = ctx.get("trace") if isinstance(ctx, dict) else {}
     if not isinstance(trace, dict):
         trace = {}
 
-    # Required trace signals
     trace["agent_output_text_len"] = len(text_out)
-    trace["agent_router_empty_text"] = len(text_out) == 0
+    trace["agent_router_empty_text"] = False
 
-    # Return both summary + text if your AgentOutput model supports it:
-    # - If AgentOutput does not have "summary", keep it in text only.
     return AgentOutput(
         text=text_out,
         proposed_commands=proposed,
