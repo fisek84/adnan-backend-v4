@@ -3,8 +3,14 @@ import type { CeoCommandRequest, NormalizedConsoleResponse } from "./types";
 import { normalizeConsoleResponse, streamTextFromResponse } from "./normalize";
 
 export type CeoConsoleApi = {
-  sendCommand: (req: CeoCommandRequest, signal?: AbortSignal) => Promise<NormalizedConsoleResponse>;
-  approve: (approvalId: string, signal?: AbortSignal) => Promise<NormalizedConsoleResponse>;
+  sendCommand: (
+    req: CeoCommandRequest,
+    signal?: AbortSignal
+  ) => Promise<NormalizedConsoleResponse>;
+  approve: (
+    approvalId: string,
+    signal?: AbortSignal
+  ) => Promise<NormalizedConsoleResponse>;
 };
 
 type ApiOptions = {
@@ -33,12 +39,14 @@ export const createCeoConsoleApi = (opts: ApiOptions): CeoConsoleApi => {
 
     const stream = streamTextFromResponse(res);
     if (stream) {
-      return { requestId: req.client_request_id, stream };
+      // CeoCommandRequest nema client_request_id; koristimo session_id (ako je poslan)
+      return { requestId: req.session_id, stream };
     }
 
     const data = await res
       .json()
       .catch(async () => ({ message: await res.text().catch(() => "") }));
+
     return normalizeConsoleResponse(data, res.headers);
   };
 
@@ -67,6 +75,7 @@ export const createCeoConsoleApi = (opts: ApiOptions): CeoConsoleApi => {
     const data = await res
       .json()
       .catch(async () => ({ message: await res.text().catch(() => "") }));
+
     return normalizeConsoleResponse(data, res.headers);
   };
 

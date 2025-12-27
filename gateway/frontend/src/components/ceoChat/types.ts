@@ -1,4 +1,5 @@
 // gateway/frontend/src/components/ceoChat/types.ts
+
 export type CeoRole = "ceo" | "system";
 export type GovernanceState = "BLOCKED" | "APPROVED" | "EXECUTED";
 
@@ -31,6 +32,28 @@ export type GovernanceEventItem = ChatItemBase & {
 export type ChatItem = ChatMessageItem | GovernanceEventItem;
 
 /**
+ * UI Strings contract used by CeoChatbox + strings.ts
+ */
+export type UiStrings = {
+  headerTitle: string;
+  headerSubtitle: string;
+
+  processingLabel: string;
+  jumpToLatestLabel: string;
+
+  blockedLabel: string;
+  approvedLabel: string;
+  executedLabel: string;
+
+  openApprovalsLabel: string;
+  approveLabel: string;
+  retryLabel: string;
+
+  inputPlaceholder: string;
+  sendLabel: string;
+};
+
+/**
  * CEO Console backend expects:
  * POST /api/ceo-console/command
  * {
@@ -39,12 +62,17 @@ export type ChatItem = ChatMessageItem | GovernanceEventItem;
  *   "session_id": "...",
  *   "context_hint": {...}
  * }
+ *
+ * NOTE: client_request_id is supported for backward-compat with older frontend code.
  */
 export type CeoCommandRequest = {
   text: string;
   initiator?: string;
   session_id?: string;
   context_hint?: Record<string, unknown>;
+
+  // backward-compat (some code still uses this name)
+  client_request_id?: string;
 };
 
 export type NormalizedConsoleResponse = {
@@ -57,6 +85,6 @@ export type NormalizedConsoleResponse = {
     reasons?: string[];
     approvalRequestId?: string;
   };
-  // For future streaming: incremental chunks of system text
+  // For streaming: incremental chunks of system text
   stream?: AsyncIterable<string>;
 };
