@@ -5,7 +5,7 @@
       "id": "ceo_clone",
       "name": "CEO Clone (SSOT alias)",
       "enabled": true,
-      "priority": 110,
+      "priority": 90,
       "entrypoint": "services.ceo_advisor_agent:create_ceo_advisor_agent",
       "keywords": [
         "ceo_clone",
@@ -23,7 +23,7 @@
       "id": "ceo_advisor",
       "name": "CEO Advisor",
       "enabled": true,
-      "priority": 100,
+      "priority": 120,
       "entrypoint": "services.ceo_advisor_agent:create_ceo_advisor_agent",
       "keywords": [
         "plan",

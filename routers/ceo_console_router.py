@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Body, HTTPException
@@ -62,18 +63,10 @@ class CEOCommandRequest(BaseModel):
 
 class ProposedAICommand(BaseModel):
     command_type: str = Field(..., description="Type/name of the proposed command.")
-    payload: Dict[str, Any] = Field(
-        default_factory=dict, description="Command payload."
-    )
-    status: str = Field(
-        default="BLOCKED", description="Always BLOCKED at proposal time."
-    )
-    required_approval: bool = Field(
-        default=True, description="Always true for side-effects."
-    )
-    cost_hint: Optional[str] = Field(
-        default=None, description="Human-readable estimate."
-    )
+    payload: Dict[str, Any] = Field(default_factory=dict, description="Command payload.")
+    status: str = Field(default="BLOCKED", description="Always BLOCKED at proposal time.")
+    required_approval: bool = Field(default=True, description="Always true for side-effects.")
+    cost_hint: Optional[str] = Field(default=None, description="Human-readable estimate.")
     risk_hint: Optional[str] = Field(default=None, description="Human-readable risks.")
 
 
@@ -169,6 +162,82 @@ def _as_list_of_str(value: Any) -> List[str]:
     return []
 
 
+# ============================================================
+# SNAPSHOT COMPACTION (CRITICAL: avoid OpenAI content limit)
+# ============================================================
+
+_HEAVY_KEYS = {"properties", "properties_text", "properties_types", "raw"}
+
+
+def _compact_item(item: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Drop heavy Notion blobs while keeping stable CEO-relevant fields.
+    """
+    keep_keys = {
+        "id",
+        "title",
+        "name",
+        "status",
+        "priority",
+        "due_date",
+        "lead",
+        "project",
+        "goal",
+        "goal_id",
+        "project_id",
+        "created_time",
+        "last_edited_time",
+    }
+    out: Dict[str, Any] = {k: item.get(k) for k in keep_keys if k in item}
+    for hk in _HEAVY_KEYS:
+        out.pop(hk, None)
+    return out
+
+
+def _compact_dashboard_snapshot(
+    snap: Dict[str, Any],
+    *,
+    max_goals: int = 12,
+    max_tasks: int = 12,
+    max_chars: int = 160_000,
+) -> Dict[str, Any]:
+    """
+    Produce a deterministic, bounded snapshot for LLM prompts.
+    """
+    if not isinstance(snap, dict):
+        return {"available": False, "source": "llm_compact", "error": "snapshot_not_dict"}
+
+    dashboard = snap.get("dashboard") if isinstance(snap.get("dashboard"), dict) else {}
+
+    goals = dashboard.get("goals") if isinstance(dashboard.get("goals"), list) else []
+    tasks = dashboard.get("tasks") if isinstance(dashboard.get("tasks"), list) else []
+
+    out: Dict[str, Any] = {
+        "available": snap.get("available", True),
+        "source": snap.get("source", "snapshot"),
+        "kind": snap.get("kind", "dashboard_snapshot"),
+        "metadata": snap.get("metadata", {}),
+        "dashboard": {
+            "approvals": dashboard.get("approvals", {}),
+            "weekly_priority": dashboard.get("weekly_priority", []),
+            "goals": [_compact_item(g) for g in goals if isinstance(g, dict)][:max_goals],
+            "tasks": [_compact_item(t) for t in tasks if isinstance(t, dict)][:max_tasks],
+        },
+    }
+
+    # hard cap by chars (last defense)
+    try:
+        s = json.dumps(out, ensure_ascii=False)
+        if len(s) > max_chars:
+            out["dashboard"]["goals"] = out["dashboard"]["goals"][: max(3, max_goals // 2)]
+            out["dashboard"]["tasks"] = out["dashboard"]["tasks"][: max(3, max_tasks // 2)]
+            out["_note"] = "snapshot_compacted_due_to_size"
+    except Exception:
+        out["_note"] = "snapshot_compaction_json_failed"
+
+    return out
+
+
 async def _build_context(req: CEOCommandRequest) -> Dict[str, Any]:
     ctx: Dict[str, Any] = {
         "canon": {
@@ -190,10 +259,8 @@ async def _build_context(req: CEOCommandRequest) -> Dict[str, Any]:
     snapshotter = _safe_import_snapshotter()
     if snapshotter is None:
         fallback = _try_load_core_snapshot_fallback()
-        fallback["reason"] = (
-            "No snapshotter available; using fallback snapshot (READ-only)."
-        )
-        ctx["snapshot"] = fallback
+        fallback["reason"] = "No snapshotter available; using fallback snapshot (READ-only)."
+        ctx["snapshot"] = _compact_dashboard_snapshot(fallback) if isinstance(fallback, dict) else {}
         ctx["snapshot_meta"] = {
             "snapshotter": None,
             "available": False,
@@ -233,14 +300,16 @@ async def _build_context(req: CEOCommandRequest) -> Dict[str, Any]:
             meta["available"] = snap.get("available")
             meta["source"] = snap.get("source")
             meta["error"] = snap.get("error")
-            ctx["snapshot"] = snap
+
+            # IMPORTANT: compact before LLM usage
+            ctx["snapshot"] = _compact_dashboard_snapshot(snap)
         else:
             meta["available"] = True
             meta["source"] = meta["snapshotter"]
             ctx["snapshot"] = {
                 "available": True,
                 "source": meta["snapshotter"],
-                "snapshot": snap,
+                "snapshot": "non-dict snapshot omitted for LLM safety",
             }
 
     except Exception as e:
@@ -253,12 +322,9 @@ async def _build_context(req: CEOCommandRequest) -> Dict[str, Any]:
     return ctx
 
 
-def _map_agent_proposals_to_ceo_commands(
-    proposed: List[ProposedCommand],
-) -> List[ProposedAICommand]:
+def _map_agent_proposals_to_ceo_commands(proposed: List[ProposedCommand]) -> List[ProposedAICommand]:
     out: List[ProposedAICommand] = []
     for pc in proposed or []:
-        # ProposedCommand is already proposal-only; enforce BLOCKED and read-only semantics.
         cmd_type = (pc.command or "").strip()
         if not cmd_type:
             continue
@@ -276,33 +342,70 @@ def _map_agent_proposals_to_ceo_commands(
     return out
 
 
-async def _ceo_advice_via_agent_router(
-    text: str, context: Dict[str, Any]
-) -> Dict[str, Any]:
+async def _ceo_advice_via_openai_executor(text: str, context: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Read-only fallback path if agent router returns empty.
+    Uses OpenAIAssistantExecutor.ceo_command (already guarded: no tools / no side effects).
+    """
+    try:
+        from services.agent_router.openai_assistant_executor import OpenAIAssistantExecutor  # type: ignore
+    except Exception:
+        return {
+            "summary": "Fallback nije dostupan (OpenAIAssistantExecutor import failed).",
+            "questions": [],
+            "plan": [],
+            "options": [],
+            "proposed_commands": [],
+            "trace": {"fallback": "import_failed"},
+        }
+
+    try:
+        execu = OpenAIAssistantExecutor()
+        out = await execu.ceo_command(text=text, context=context)
+        if isinstance(out, dict):
+            out.setdefault("trace", {})
+            if isinstance(out.get("trace"), dict):
+                out["trace"]["fallback"] = "openai_executor"
+            return out
+        return {
+            "summary": "Fallback vratio neočekivan format.",
+            "questions": [],
+            "plan": [],
+            "options": [],
+            "proposed_commands": [],
+            "trace": {"fallback": "bad_format"},
+        }
+    except Exception as e:
+        return {
+            "summary": "CEO fallback nije uspio (OpenAI executor error).",
+            "questions": [],
+            "plan": [],
+            "options": [],
+            "proposed_commands": [],
+            "trace": {"fallback": "exception", "error": repr(e)},
+        }
+
+
+async def _ceo_advice_via_agent_router(text: str, context: Dict[str, Any]) -> Dict[str, Any]:
     """
     READ-ONLY advisory via FAZA 4 agentic layer.
-    - No tools
-    - No side effects
-    - No approvals
-    - No execution
+    If agent returns empty, fallback to OpenAI executor.
     """
     _ensure_registry_loaded()
 
-    snapshot = (
-        context.get("snapshot") if isinstance(context.get("snapshot"), dict) else {}
-    )
+    snapshot = context.get("snapshot") if isinstance(context.get("snapshot"), dict) else {}
+
     identity_pack: Dict[str, Any] = {
         "initiator": context.get("initiator"),
         "session_id": context.get("session_id"),
     }
-    # Remove None keys
     identity_pack = {k: v for k, v in identity_pack.items() if v is not None}
 
     agent_input = AgentInput(
         message=text,
         identity_pack=identity_pack,
         snapshot=snapshot,
-        preferred_agent_id="ceo_clone",  # deterministic for CEO console
+        preferred_agent_id="ceo_advisor",
         metadata={
             "endpoint": "/ceo-console/command",
             "read_only": True,
@@ -322,22 +425,27 @@ async def _ceo_advice_via_agent_router(
     trace["read_only_guard"] = True
     trace["canon_read_only_guard"] = True
 
-    snap_meta = (
-        context.get("snapshot_meta")
-        if isinstance(context.get("snapshot_meta"), dict)
-        else {}
-    )
+    snap_meta = context.get("snapshot_meta") if isinstance(context.get("snapshot_meta"), dict) else {}
     if snap_meta:
         trace["snapshot_meta"] = snap_meta
 
+    summary_text = (out.text or "").strip()
+
+    # If agent returned empty, fallback to OpenAI executor (still read-only)
+    if not summary_text:
+        fb = await _ceo_advice_via_openai_executor(text=text, context=context)
+        if isinstance(fb, dict):
+            fb_trace = fb.get("trace") if isinstance(fb.get("trace"), dict) else {}
+            fb_trace["agent_router_empty_text"] = True
+            fb["trace"] = fb_trace
+            return fb
+
     return {
-        "summary": out.text or "",
+        "summary": summary_text,
         "questions": [],
         "plan": [],
         "options": [],
-        "proposed_commands": _map_agent_proposals_to_ceo_commands(
-            out.proposed_commands
-        ),
+        "proposed_commands": _map_agent_proposals_to_ceo_commands(out.proposed_commands),
         "trace": trace,
     }
 
@@ -369,9 +477,23 @@ async def ceo_command(req: CEOCommandRequest = Body(...)) -> CEOCommandResponse:
     if not text:
         raise HTTPException(status_code=400, detail="text is required")
 
+    # fast health-check without LLM
+    if text.lower() in {"ping", "health", "healthcheck", "status"}:
+        context = await _build_context(req)
+        return CEOCommandResponse(
+            ok=True,
+            read_only=True,
+            context=context,
+            summary="pong",
+            questions=[],
+            plan=[],
+            options=[],
+            proposed_commands=[],
+            trace={"healthcheck": True},
+        )
+
     context = await _build_context(req)
 
-    # FAZA 4: Use canonical agent router (read/propose only)
     result = await _ceo_advice_via_agent_router(text=text, context=context)
 
     summary_val = result.get("summary")
@@ -380,6 +502,10 @@ async def ceo_command(req: CEOCommandRequest = Body(...)) -> CEOCommandResponse:
     else:
         summary_list = _as_list_of_str(summary_val)
         summary = "\n".join(summary_list) if summary_list else ""
+
+    # last safety: never return empty summary
+    if not summary.strip():
+        summary = "CEO advisory nije vratio tekst (fallback: empty_output)."
 
     questions_s = _as_list_of_str(result.get("questions"))
     plan_s = _as_list_of_str(result.get("plan"))
@@ -403,4 +529,5 @@ async def ceo_command(req: CEOCommandRequest = Body(...)) -> CEOCommandResponse:
     )
 
 
+# export alias (no syntax errors)
 ceo_console_router = router

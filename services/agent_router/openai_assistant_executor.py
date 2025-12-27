@@ -19,12 +19,45 @@ from services.knowledge_service import KnowledgeService
 
 logger = logging.getLogger(__name__)
 
+# OpenAI Assistants API hard limit: 256000 chars
+# Keep a safety margin for envelopes / minor growth.
+_MAX_OPENAI_CONTENT_CHARS = 240000
+
+# Defensive trimming limits for snapshot compaction
+_MAX_LIST_ITEMS = 30
+_MAX_TEXT_CHARS = 1200
+
+
+# -------------------------------------------------------------------
+# CEO ADVISORY OUTPUT CONTRACT (KANONSKI / STABILAN)
+# -------------------------------------------------------------------
+_CEO_ADVISORY_RUN_INSTRUCTIONS = """You are the CEO Advisor in a READ-ONLY mode.
+
+Hard constraints:
+- NO TOOL CALLS. NO side effects. Use only the provided snapshot/context.
+- You MUST return a single JSON object as the assistant's final message. No markdown fences.
+- The JSON MUST have exactly these keys:
+  summary (string),
+  text (string),
+  questions (array of strings),
+  plan (array of strings),
+  options (array of strings),
+  proposed_commands (array of objects),
+  trace (object).
+
+Text formatting rules:
+- text MUST start with the line: GOALS (top 3)
+- text MUST include both sections: GOALS (top 3) and TASKS (top 5)
+- Each item line MUST follow: <name/title> | <status> | <priority>
+- Do NOT include any other prose outside these sections in text.
+- Do NOT embed JSON in the 'text' field.
+
+If there are fewer than 3 goals or 5 tasks in the snapshot, list what exists and add a line:
+NEMA DOVOLJNO PODATAKA U SNAPSHOT-U
+"""
+
 
 def _json_default(obj: Any) -> Any:
-    """
-    JSON serializer for objects that are not serializable by default json.dumps.
-    This is critical for snapshot/context payloads containing datetime/UUID/etc.
-    """
     if isinstance(obj, (datetime, date)):
         return obj.isoformat()
     if isinstance(obj, UUID):
@@ -34,15 +67,138 @@ def _json_default(obj: Any) -> Any:
     return str(obj)
 
 
-def _format_identity_knowledge_for_prompt(user_text: str, max_items: int = 6) -> str:
-    """
-    Minimalna selekcija knowledge entries-a:
-    - Rank po priority
-    - Boost po tag match-u sa user_text
-    - Vraća kratak blok teksta koji se ubacuje u context/prompt
+def _trim_text(s: Any, limit: int = _MAX_TEXT_CHARS) -> Any:
+    if not isinstance(s, str):
+        return s
+    if len(s) <= limit:
+        return s
+    return s[: max(0, limit - 12)] + "...(trimmed)"
 
-    Namjerno jednostavno i stabilno. Kasnije se može poboljšati.
+
+def _compact_snapshot(snapshot: Any) -> Any:
     """
+    Reduce snapshot size deterministically:
+    - keep only high-signal fields for LLM
+    - drop heavy keys: properties / types / raw blobs
+    - cap list lengths and trim long strings
+    """
+    if snapshot is None:
+        return None
+
+    if isinstance(snapshot, str):
+        return _trim_text(snapshot)
+
+    if isinstance(snapshot, (int, float, bool)):
+        return snapshot
+
+    if isinstance(snapshot, list):
+        return [_compact_snapshot(x) for x in snapshot[:_MAX_LIST_ITEMS]]
+
+    if not isinstance(snapshot, dict):
+        return _trim_text(str(snapshot))
+
+    DROP_KEYS = {
+        "properties",
+        "properties_types",
+        "raw",
+        "raw_pages",
+        "raw_page",
+        "page_raw",
+        "content_raw",
+        "blocks_raw",
+    }
+
+    out: Dict[str, Any] = {}
+    for k, v in snapshot.items():
+        if k in DROP_KEYS:
+            continue
+
+        # dashboard is usually heavy; keep compact structure
+        if k == "dashboard" and isinstance(v, dict):
+            dash: Dict[str, Any] = {}
+            goals = v.get("goals")
+            tasks = v.get("tasks")
+            meta = v.get("metadata") or v.get("meta")
+
+            def _slim_item(it: Any) -> Any:
+                if not isinstance(it, dict):
+                    return _compact_snapshot(it)
+
+                keep = {
+                    "id",
+                    "title",
+                    "name",
+                    "status",
+                    "priority",
+                    "due_date",
+                    "deadline",
+                    "lead",
+                    "project",
+                    "goal",
+                    "goals",
+                    "task_id",
+                    "order",
+                    "properties_text",
+                }
+                slim: Dict[str, Any] = {}
+                for kk in keep:
+                    if kk in it:
+                        slim[kk] = _compact_snapshot(it.get(kk))
+                return slim
+
+            if isinstance(goals, list):
+                dash["goals"] = [_slim_item(g) for g in goals[:_MAX_LIST_ITEMS]]
+            if isinstance(tasks, list):
+                dash["tasks"] = [_slim_item(t) for t in tasks[:_MAX_LIST_ITEMS]]
+            if isinstance(meta, dict):
+                dash["metadata"] = _compact_snapshot(meta)
+
+            out["dashboard"] = dash
+            continue
+
+        out[k] = _compact_snapshot(v)
+
+    # final trim strings at top-level
+    for kk, vv in list(out.items()):
+        out[kk] = _trim_text(vv)
+
+    return out
+
+
+def _safe_dumps_for_openai(payload: Dict[str, Any]) -> tuple[str, Dict[str, Any]]:
+    """
+    Always returns content <= _MAX_OPENAI_CONTENT_CHARS.
+    Returns (content, shrink_trace).
+    """
+    raw = json.dumps(payload, ensure_ascii=False, default=_json_default)
+    if len(raw) <= _MAX_OPENAI_CONTENT_CHARS:
+        return raw, {"shrunk": False, "chars": len(raw)}
+
+    compact_payload = dict(payload)
+
+    # Most payloads have {context:{snapshot:...}} pattern
+    ctx = compact_payload.get("context")
+    if isinstance(ctx, dict):
+        ctx2 = dict(ctx)
+        snap = ctx2.get("snapshot")
+        if snap is not None:
+            ctx2["snapshot"] = _compact_snapshot(snap)
+        compact_payload["context"] = ctx2
+
+    compact = json.dumps(compact_payload, ensure_ascii=False, default=_json_default)
+    if len(compact) <= _MAX_OPENAI_CONTENT_CHARS:
+        return compact, {
+            "shrunk": True,
+            "from": len(raw),
+            "to": len(compact),
+            "strategy": "compact_snapshot",
+        }
+
+    trimmed = compact[: _MAX_OPENAI_CONTENT_CHARS - 20] + "...(hard_trim)"
+    return trimmed, {"shrunk": True, "from": len(raw), "to": len(trimmed), "strategy": "hard_trim"}
+
+
+def _format_identity_knowledge_for_prompt(user_text: str, max_items: int = 6) -> str:
     try:
         ks = KnowledgeService()
         entries = ks.entries()
@@ -54,16 +210,13 @@ def _format_identity_knowledge_for_prompt(user_text: str, max_items: int = 6) ->
 
     def score(entry: Dict[str, Any]) -> float:
         s = float(entry.get("priority", 0.0) or 0.0)
-
         tags = entry.get("tags") or []
         tags_l = [t.lower() for t in tags if isinstance(t, str)]
 
-        # boost: ako se tag pojavljuje u upitu
-        for t in tags_l:
-            if t and t in text:
+        for t2 in tags_l:
+            if t2 and t2 in text:
                 s += 0.5
 
-        # extra heuristic boosts (stabilno, low risk)
         if "notion" in text and "notion" in tags_l:
             s += 0.6
         if "approval" in text and "approval" in tags_l:
@@ -75,10 +228,7 @@ def _format_identity_knowledge_for_prompt(user_text: str, max_items: int = 6) ->
 
         return s
 
-    ranked = sorted(entries, key=score, reverse=True)
-    ranked = [e for e in ranked if isinstance(e, dict)]
-    ranked = ranked[: max(1, int(max_items))]
-
+    ranked = sorted([e for e in entries if isinstance(e, dict)], key=score, reverse=True)[: max(1, int(max_items))]
     if not ranked:
         return ""
 
@@ -89,23 +239,126 @@ def _format_identity_knowledge_for_prompt(user_text: str, max_items: int = 6) ->
         content = e.get("content", "")
         if not isinstance(content, str):
             content = str(content)
-        lines.append(f"- [{eid}] {title}: {content}")
+        lines.append(f"- [{eid}] {title}: {_trim_text(content, 600)}")
 
     return "\n".join(lines).strip()
 
 
+def _extract_goals_tasks_block(text: str) -> str:
+    """
+    Extract canonical GOALS/TASKS block from any mixed assistant output.
+    If not found or incomplete, return empty string.
+    """
+    t = (text or "").strip()
+    if not t:
+        return ""
+
+    # Find GOALS header
+    m = re.search(r"(^|\n)GOALS\s*\(top\s*3\)\s*\n", t, flags=re.IGNORECASE)
+    if not m:
+        return ""
+
+    start = m.start() if (m.group(1) == "") else (m.start() + 1)
+    block = t[start:].strip()
+
+    # Must contain TASKS header
+    if not re.search(r"(^|\n)TASKS\s*\(top\s*5\)\s*\n", block, flags=re.IGNORECASE):
+        return ""
+
+    # Normalize header casing
+    block = re.sub(r"^GOALS\s*\(top\s*3\)", "GOALS (top 3)", block, flags=re.IGNORECASE)
+    block = re.sub(r"(^|\n)TASKS\s*\(top\s*5\)", r"\1TASKS (top 5)", block, flags=re.IGNORECASE)
+
+    return block.strip()
+
+
+def _pick_text(parsed: Dict[str, Any]) -> str:
+    """
+    Prefer parsed['text'], fallback to summary/raw.
+    """
+    if not isinstance(parsed, dict):
+        return ""
+    for k in ("text", "summary"):
+        v = parsed.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    raw = parsed.get("raw")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    return ""
+
+
+def _ensure_contract(parsed: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Ensure canonical CEO advisory result:
+      summary, text, questions, plan, options, proposed_commands, trace
+    And enforce 'text' to be GOALS/TASKS block where possible.
+    """
+    if not isinstance(parsed, dict):
+        parsed = {"raw": str(parsed)}
+
+    raw = parsed.get("raw")
+
+    # If assistant returned plain text only
+    if isinstance(raw, str) and raw.strip() and ("summary" not in parsed and "text" not in parsed):
+        extracted = _extract_goals_tasks_block(raw)
+        if extracted:
+            parsed = {
+                "summary": "CEO advisor output extracted from raw text (fallback normalization).",
+                "text": extracted,
+                "questions": [],
+                "plan": [],
+                "options": [],
+                "proposed_commands": [],
+                "trace": {"llm": "raw_text_extracted"},
+            }
+        else:
+            parsed = {
+                "summary": raw.strip(),
+                "text": raw.strip(),
+                "questions": [],
+                "plan": [],
+                "options": [],
+                "proposed_commands": [],
+                "trace": {"llm": "raw_text_mapped"},
+            }
+
+    # Ensure keys exist
+    if "summary" not in parsed or not isinstance(parsed.get("summary"), str):
+        parsed["summary"] = str(raw) if raw is not None else "LLM odgovor nema 'summary'."
+
+    if "text" not in parsed or not isinstance(parsed.get("text"), str) or not str(parsed.get("text")).strip():
+        parsed["text"] = (parsed.get("summary") or "").strip()
+
+    if not isinstance(parsed.get("questions"), list):
+        parsed["questions"] = []
+    if not isinstance(parsed.get("plan"), list):
+        parsed["plan"] = []
+    if not isinstance(parsed.get("options"), list):
+        parsed["options"] = []
+    if not isinstance(parsed.get("proposed_commands"), list):
+        parsed["proposed_commands"] = []
+    if not isinstance(parsed.get("trace"), dict):
+        parsed["trace"] = {}
+
+    parsed["questions"] = [x for x in parsed["questions"] if isinstance(x, str)]
+    parsed["plan"] = [x for x in parsed["plan"] if isinstance(x, str)]
+    parsed["options"] = [x for x in parsed["options"] if isinstance(x, str)]
+
+    # Enforce that text is exactly the GOALS/TASKS block if we can extract it
+    extracted2 = _extract_goals_tasks_block(parsed.get("text", ""))
+    if extracted2:
+        parsed["text"] = extracted2
+    else:
+        # If cannot extract a valid block, mark it explicitly for debugging, but DO NOT kill the response here.
+        tr = parsed.get("trace") if isinstance(parsed.get("trace"), dict) else {}
+        tr["format_fallback"] = True
+        parsed["trace"] = tr
+
+    return parsed
+
+
 class OpenAIAssistantExecutor:
-    """
-    OPENAI ASSISTANT EXECUTION ADAPTER — KANONSKI
-
-    CANON:
-    - Ovaj adapter se koristi za agent execution (sa tool pozivima) I za CEO advisory (READ-only).
-    - CEO advisory NIKAD ne smije izvršiti tool poziv / side-effect.
-      Ako Assistant zatraži tool u ceo_command, to je policy violation i mora fail-soft (ne rušiti UI).
-    - Agent execute: side-effects su dozvoljeni (tool calls allowed). Greške se propagiraju (raise),
-      jer orchestrator treba da upravlja failure handlingom.
-    """
-
     def __init__(
         self,
         *,
@@ -120,16 +373,10 @@ class OpenAIAssistantExecutor:
 
         self._execution_assistant_id_env = execution_assistant_id_env
         self._advisory_assistant_id_env = advisory_assistant_id_env
-
         self._poll_interval_s = float(poll_interval_s)
         self._max_wait_s = float(max_wait_s)
 
-        # NOTE: OpenAI client je sync; u async flow-u pozive šaljemo kroz asyncio.to_thread.
         self.client = OpenAI(api_key=api_key)
-
-    # ============================================================
-    # INTERNALS (sync OpenAI calls wrapped for async)
-    # ============================================================
 
     async def _to_thread(self, fn, *args, **kwargs):
         return await asyncio.to_thread(fn, *args, **kwargs)
@@ -141,7 +388,6 @@ class OpenAIAssistantExecutor:
         return assistant_id
 
     def _get_advisory_assistant_id(self) -> Optional[str]:
-        # Prefer dedicated advisory assistant, fallback to execution assistant id if present.
         assistant_id = os.getenv(self._advisory_assistant_id_env)
         if assistant_id:
             return assistant_id
@@ -149,9 +395,7 @@ class OpenAIAssistantExecutor:
 
     async def _cancel_run_best_effort(self, *, thread_id: str, run_id: str) -> None:
         try:
-            await self._to_thread(
-                self.client.beta.threads.runs.cancel, thread_id=thread_id, run_id=run_id
-            )
+            await self._to_thread(self.client.beta.threads.runs.cancel, thread_id=thread_id, run_id=run_id)
         except Exception:
             return
 
@@ -179,29 +423,17 @@ class OpenAIAssistantExecutor:
 
             if status == "requires_action":
                 if not allow_tools:
-                    # CEO advisory path: tool calls are forbidden
-                    await self._cancel_run_best_effort(
-                        thread_id=thread_id, run_id=run_id
-                    )
-                    raise RuntimeError(
-                        "Tool calls are not allowed for CEO advisory (read-only)"
-                    )
+                    await self._cancel_run_best_effort(thread_id=thread_id, run_id=run_id)
+                    raise RuntimeError("Tool calls are not allowed for CEO advisory (read-only)")
 
                 required_action = getattr(run_status, "required_action", None)
-                submit = (
-                    getattr(required_action, "submit_tool_outputs", None)
-                    if required_action
-                    else None
-                )
+                submit = getattr(required_action, "submit_tool_outputs", None) if required_action else None
                 tool_calls = getattr(submit, "tool_calls", None) if submit else None
 
                 if not tool_calls:
-                    raise RuntimeError(
-                        "Assistant requires_action but has no tool calls"
-                    )
+                    raise RuntimeError("Assistant requires_action but has no tool calls")
 
                 tool_outputs = []
-
                 for call in tool_calls:
                     fn = getattr(call, "function", None)
                     fn_name = getattr(fn, "name", None) if fn else None
@@ -218,15 +450,12 @@ class OpenAIAssistantExecutor:
                     if not isinstance(args, dict):
                         raise RuntimeError("Tool arguments must be a JSON object")
 
-                    # NOTE: ext.notion.client.perform_notion_action je sync.
                     result = await self._to_thread(perform_notion_action, **args)
 
                     tool_outputs.append(
                         {
                             "tool_call_id": call.id,
-                            "output": json.dumps(
-                                result, ensure_ascii=False, default=_json_default
-                            ),
+                            "output": json.dumps(result, ensure_ascii=False, default=_json_default),
                         }
                     )
 
@@ -243,22 +472,16 @@ class OpenAIAssistantExecutor:
             elif status in {"failed", "cancelled", "expired"}:
                 raise RuntimeError(f"Assistant run failed with status: {status}")
 
-            # queued / in_progress / unknown -> keep polling
             await asyncio.sleep(self._poll_interval_s)
 
     async def _get_final_assistant_message_text(self, *, thread_id: str) -> str:
-        messages = await self._to_thread(
-            self.client.beta.threads.messages.list, thread_id=thread_id
-        )
+        messages = await self._to_thread(self.client.beta.threads.messages.list, thread_id=thread_id)
         data = getattr(messages, "data", None) or []
-        assistant_messages = [
-            m for m in data if getattr(m, "role", None) == "assistant"
-        ]
+        assistant_messages = [m for m in data if getattr(m, "role", None) == "assistant"]
 
         if not assistant_messages:
             raise RuntimeError("Assistant produced no response")
 
-        # Deterministic: pick newest assistant message by created_at if present.
         def _created_at(msg: Any) -> int:
             ca = getattr(msg, "created_at", None)
             return int(ca) if isinstance(ca, int) else 0
@@ -269,7 +492,6 @@ class OpenAIAssistantExecutor:
         if not content:
             raise RuntimeError("Assistant response has empty content")
 
-        # SDK content is a list; concatenate all text chunks for robustness.
         chunks: list[str] = []
         for part in content:
             text_obj = getattr(part, "text", None)
@@ -284,17 +506,10 @@ class OpenAIAssistantExecutor:
         return value
 
     def _strip_code_fences(self, text: str) -> str:
-        """
-        Assistants sometimes wrap JSON in ```json ... ``` fences.
-        We strip one outer fence layer if present.
-        """
         t = (text or "").strip()
         if not t:
             return t
-
-        m = re.match(
-            r"^```(?:json)?\s*(.*?)\s*```$", t, flags=re.DOTALL | re.IGNORECASE
-        )
+        m = re.match(r"^```(?:json)?\s*(.*?)\s*```$", t, flags=re.DOTALL | re.IGNORECASE)
         if m:
             return (m.group(1) or "").strip()
         return t
@@ -309,69 +524,7 @@ class OpenAIAssistantExecutor:
         except Exception:
             return {"raw": cleaned}
 
-    def _normalize_ceo_advisory_payload(self, parsed: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Hardening layer for CEO advisory:
-        - If assistant returns plain text (or non-schema JSON), map it into the expected schema.
-        - Always return stable fields with stable types.
-        """
-        raw = parsed.get("raw")
-
-        # 1) Plain text -> summary
-        if isinstance(raw, str) and raw.strip():
-            parsed = {
-                "summary": raw.strip(),
-                "questions": [],
-                "plan": [],
-                "options": [],
-                "proposed_commands": [],
-                "trace": {"llm": "raw_text_mapped"},
-            }
-
-        # 2) Ensure summary exists
-        if "summary" not in parsed:
-            if raw is not None:
-                parsed["summary"] = str(raw)
-            else:
-                parsed["summary"] = (
-                    "LLM odgovor nije imao 'summary' polje (fallback normalization)."
-                )
-
-        # 3) Stabilize list fields
-        if not isinstance(parsed.get("questions"), list):
-            parsed["questions"] = []
-        if not isinstance(parsed.get("plan"), list):
-            parsed["plan"] = []
-        if not isinstance(parsed.get("options"), list):
-            parsed["options"] = []
-        if not isinstance(parsed.get("proposed_commands"), list):
-            parsed["proposed_commands"] = []
-
-        # 4) Ensure trace dict
-        if not isinstance(parsed.get("trace"), dict):
-            parsed["trace"] = {}
-
-        # 5) Ensure list elements are strings (defensive)
-        parsed["questions"] = [x for x in parsed["questions"] if isinstance(x, str)]
-        parsed["plan"] = [x for x in parsed["plan"] if isinstance(x, str)]
-        parsed["options"] = [x for x in parsed["options"] if isinstance(x, str)]
-
-        return parsed
-
-    # ============================================================
-    # EXECUTION (WRITE PATH) — used by orchestrator/agent layer
-    # ============================================================
-
     async def execute(self, task: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        EXECUTION PATH (side-effects allowed, tool calls allowed).
-        Expected task:
-          {
-            "command": "<string>",
-            "payload": { ... },
-            "executor": "notion_ops"   # recommended (for guard / trace)
-          }
-        """
         if not isinstance(task, dict):
             raise ValueError("Agent task must be a dict")
 
@@ -383,30 +536,21 @@ class OpenAIAssistantExecutor:
         if not isinstance(payload, dict):
             raise ValueError("Agent task requires 'payload' (dict)")
 
-        # HARD GUARD: CEO advisory must never execute side-effects
         executor = task.get("executor") or task.get("agent") or task.get("role")
         if executor and str(executor).lower() in {"ceo_advisor", "ceo", "advisor"}:
-            raise RuntimeError(
-                "CEO advisory cannot run execute() (side-effects forbidden)"
-            )
+            raise RuntimeError("CEO advisory cannot run execute() (side-effects forbidden)")
 
         assistant_id = self._get_execution_assistant_id_or_raise()
-
         thread = await self._to_thread(self.client.beta.threads.create)
 
-        execution_contract = {
-            "type": "agent_execution",
-            "command": command.strip(),
-            "payload": payload,
-        }
+        execution_contract = {"type": "agent_execution", "command": command.strip(), "payload": payload}
+        content, shrink_trace = _safe_dumps_for_openai(execution_contract)
 
         await self._to_thread(
             self.client.beta.threads.messages.create,
             thread_id=thread.id,
             role="user",
-            content=json.dumps(
-                execution_contract, ensure_ascii=False, default=_json_default
-            ),
+            content=content,
         )
 
         run = await self._to_thread(
@@ -415,11 +559,7 @@ class OpenAIAssistantExecutor:
             assistant_id=assistant_id,
         )
 
-        await self._wait_for_run_completion(
-            thread_id=thread.id,
-            run_id=run.id,
-            allow_tools=True,
-        )
+        await self._wait_for_run_completion(thread_id=thread.id, run_id=run.id, allow_tools=True)
 
         final_text = await self._get_final_assistant_message_text(thread_id=thread.id)
         parsed = self._safe_json_parse(final_text)
@@ -427,35 +567,13 @@ class OpenAIAssistantExecutor:
         return {
             "agent": assistant_id,
             "result": parsed,
-            "trace": {"thread_id": thread.id, "run_id": run.id},
+            "trace": {"thread_id": thread.id, "run_id": run.id, "shrink_trace": shrink_trace},
         }
 
-    # ============================================================
-    # CEO ADVISORY (READ-ONLY) — used by CEO Console
-    # ============================================================
-
-    async def ceo_command(
-        self, *, text: str, context: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """
-        READ-ONLY advisory path.
-        - No tools / no side-effects.
-        - If assistant requests_action (tool call), we fail-soft with policy_violation response.
-
-        Expected return shape (dict):
-          {
-            "summary": str,
-            "questions": [str],
-            "plan": [str],
-            "options": [str],
-            "proposed_commands": [ ... optional ... ],
-            "trace": { ... }
-          }
-        """
+    async def ceo_command(self, *, text: str, context: Dict[str, Any]) -> Dict[str, Any]:
         t = (text or "").strip()
         if not t:
             raise ValueError("text is required")
-
         if not isinstance(context, dict):
             context = {}
 
@@ -463,9 +581,8 @@ class OpenAIAssistantExecutor:
         if not assistant_id:
             return {
                 "summary": "LLM executor nije konfigurisan (nema Assistant ID).",
-                "questions": [
-                    "Postavi Assistant ID (CEO_ADVISOR_ASSISTANT_ID ili NOTION_OPS_ASSISTANT_ID)."
-                ],
+                "text": "LLM executor nije konfigurisan (nema Assistant ID).",
+                "questions": ["Postavi Assistant ID (CEO_ADVISOR_ASSISTANT_ID ili NOTION_OPS_ASSISTANT_ID)."],
                 "plan": ["Konfiguriši LLM executor i ponovi CEO Command."],
                 "options": [],
                 "proposed_commands": [],
@@ -474,7 +591,6 @@ class OpenAIAssistantExecutor:
 
         thread = await self._to_thread(self.client.beta.threads.create)
 
-        # Force canon constraints into contract, regardless of caller input
         safe_context = dict(context)
         canon = dict(safe_context.get("canon") or {})
         canon["read_only"] = True
@@ -482,7 +598,6 @@ class OpenAIAssistantExecutor:
         canon["no_side_effects"] = True
         safe_context["canon"] = canon
 
-        # Inject Identity Knowledge (read-only)
         knowledge_block = _format_identity_knowledge_for_prompt(t, max_items=6)
         if knowledge_block:
             safe_context["identity_knowledge"] = knowledge_block
@@ -491,14 +606,10 @@ class OpenAIAssistantExecutor:
             "type": "ceo_advice",
             "text": t,
             "context": safe_context,
-            "constraints": {
-                "read_only": True,
-                "no_tools": True,
-                "no_side_effects": True,
-                "return_json": True,
-            },
+            "constraints": {"read_only": True, "no_tools": True, "no_side_effects": True, "return_json": True},
             "output_schema": {
                 "summary": "string",
+                "text": "string",
                 "questions": "list[string]",
                 "plan": "list[string]",
                 "options": "list[string]",
@@ -507,41 +618,35 @@ class OpenAIAssistantExecutor:
             },
         }
 
+        content, shrink_trace = _safe_dumps_for_openai(advisory_contract)
+
         await self._to_thread(
             self.client.beta.threads.messages.create,
             thread_id=thread.id,
             role="user",
-            content=json.dumps(
-                advisory_contract, ensure_ascii=False, default=_json_default
-            ),
+            content=content,
         )
 
+        # Enforce contract via run-level instructions (most stable)
         run = await self._to_thread(
             self.client.beta.threads.runs.create,
             thread_id=thread.id,
             assistant_id=assistant_id,
+            instructions=_CEO_ADVISORY_RUN_INSTRUCTIONS,
         )
 
         t0 = time.monotonic()
         try:
-            await self._wait_for_run_completion(
-                thread_id=thread.id,
-                run_id=run.id,
-                allow_tools=False,
-            )
-            final_text = await self._get_final_assistant_message_text(
-                thread_id=thread.id
-            )
+            await self._wait_for_run_completion(thread_id=thread.id, run_id=run.id, allow_tools=False)
+            final_text = await self._get_final_assistant_message_text(thread_id=thread.id)
             parsed = self._safe_json_parse(final_text)
-            parsed = self._normalize_ceo_advisory_payload(parsed)
+            parsed = _ensure_contract(parsed)
         except Exception as exc:  # noqa: BLE001
             elapsed_ms = int((time.monotonic() - t0) * 1000)
-            # Fail-soft: UI mora dobiti stabilan odgovor
             return {
                 "summary": "CEO advisory nije mogao sigurno završiti (read-only guard).",
-                "questions": [
-                    "Da li želiš da preformulišem upit kao čisti READ zahtjev bez tool poziva?",
-                ],
+                "text": "CEO advisory nije mogao sigurno završiti (read-only guard).",
+                "questions": ["Da li želiš da preformulišem upit kao čisti READ zahtjev bez tool poziva?"],
                 "plan": [
                     "Provjeri da li CEO Advisor Assistant ima instrukcije da nikad ne traži tool pozive.",
                     "Ako je upit write-intent, koristi approval pipeline (proposed_commands) umjesto direktnog izvršenja.",
@@ -556,6 +661,7 @@ class OpenAIAssistantExecutor:
                     "no_tools_guard": True,
                     "error": repr(exc),
                     "elapsed_ms": elapsed_ms,
+                    "shrink_trace": shrink_trace,
                 },
             }
 
@@ -568,8 +674,16 @@ class OpenAIAssistantExecutor:
         trace["read_only_guard"] = True
         trace["no_tools_guard"] = True
         trace["elapsed_ms"] = elapsed_ms
+        trace["shrink_trace"] = shrink_trace
         if knowledge_block:
             trace["identity_knowledge_injected"] = True
         parsed["trace"] = trace
+
+        # Hard guarantee: always return 'text' and 'summary'
+        picked = _pick_text(parsed)
+        if picked and isinstance(parsed.get("text"), str) and not parsed["text"].strip():
+            parsed["text"] = picked
+        if picked and isinstance(parsed.get("summary"), str) and not parsed["summary"].strip():
+            parsed["summary"] = picked
 
         return parsed

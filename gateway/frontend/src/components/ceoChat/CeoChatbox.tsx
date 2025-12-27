@@ -183,13 +183,12 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
     abortRef.current = controller;
 
     try {
-      // Backend CEO Console expects: { text, initiator, session_id, context_hint }
-      const req = {
-        text: trimmed,
-        initiator: "ceo_dashboard",
-        session_id: clientRequestId,
-        context_hint: {},
-      } as unknown as CeoCommandRequest;
+      // Gateway expects: { input_text, smart_context, source }
+      const req: CeoCommandRequest = {
+        input_text: trimmed,
+        smart_context: {},
+        source: "ceo_dashboard",
+      };
 
       const resp = await api.sendCommand(req, controller.signal);
 

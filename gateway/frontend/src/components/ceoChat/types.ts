@@ -54,24 +54,27 @@ export type UiStrings = {
 };
 
 /**
- * CEO Console backend expects:
- * POST /api/ceo-console/command
+ * Gateway backend expects:
+ * POST /api/ceo/command
  * {
- *   "text": "...",
- *   "initiator": "...",
- *   "session_id": "...",
- *   "context_hint": {...}
+ *   "input_text": "...",
+ *   "smart_context": {...},
+ *   "source": "ceo_dashboard"
  * }
  *
- * NOTE: client_request_id is supported for backward-compat with older frontend code.
+ * NOTE: Keeping legacy fields optional for backward-compat during migration.
  */
 export type CeoCommandRequest = {
-  text: string;
+  // NEW (gateway)
+  input_text: string;
+  smart_context?: Record<string, unknown> | null;
+  source?: string;
+
+  // LEGACY (older frontend / older backend)
+  text?: string;
   initiator?: string;
   session_id?: string;
   context_hint?: Record<string, unknown>;
-
-  // backward-compat (some code still uses this name)
   client_request_id?: string;
 };
 
