@@ -695,6 +695,12 @@ class NotionService:
                 "blocks": blocks_resp.get("results", []),
             }
 
+        # ----------------------------
+        # refresh_snapshot (read-only)
+        # ----------------------------
+        if intent == "refresh_snapshot":
+            return await self.sync_knowledge_snapshot()
+
         raise RuntimeError(f"Unsupported intent: {command.intent}")
 
     # --------------------------------------------------
