@@ -1,13 +1,11 @@
-<!doctype html>
-<html lang="bs">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Adnan.AI / Evolia OS — CEO Control Center</title>
-  </head>
+<script>
+  window.CEO_CHATBOX_CONFIG = {
+    // OBAVEZNO u produkciji ako frontend nije na istom originu kao backend:
+    apiOrigin: "http://localhost:8000",
 
-  <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
-  </body>
-</html>
+    // opcionalno override-uj rute ako su drugačije kod tebe:
+    ceoCommandUrl: "/api/ceo-console/command",
+    approveUrl: "/api/ai-ops/approval/approve",
+    proposalsExecuteUrl: "/api/proposals/execute"
+  };
+</script>

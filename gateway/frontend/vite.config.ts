@@ -1,16 +1,16 @@
-// C:\adnan-backend-v4\gateway\frontend\vite.config.ts
+// gateway/frontend/vite.config.ts
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
-import { resolve } from "path";
 
 export default defineConfig({
   plugins: [react()],
-  base: "/",
-  build: {
-    outDir: "dist",
-    emptyOutDir: true,
-    rollupOptions: {
-      input: resolve(__dirname, "index.html"),
+  server: {
+    proxy: {
+      "/api": {
+        target: "http://localhost:8000",
+        changeOrigin: true,
+        secure: false,
+      },
     },
   },
 });

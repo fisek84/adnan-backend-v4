@@ -1,717 +1,103 @@
 // gateway/frontend/script.js
 
 let lastApprovalId = null;
-let lastProposedExecuteText = null;
+let lastProposalId = null;
 
-function $(id) {
-  return document.getElementById(id);
-}
+(function () {
+  // Read config from window
+  const cfg = (window.CEO_CHATBOX_CONFIG || window.CEO_DASHBOARD_CONFIG || {});
 
-function getCeoToken() {
-  // Optional: enable CEO_TOKEN_ENFORCEMENT on backend and set token here.
-  // Priority:
-  //  1) localStorage "CEO_APPROVAL_TOKEN"
-  //  2) window.CEO_APPROVAL_TOKEN
-  try {
-    const ls = (typeof localStorage !== "undefined" && localStorage.getItem("CEO_APPROVAL_TOKEN")) || "";
-    if (ls && String(ls).trim()) return String(ls).trim();
-  } catch {}
-  const w = typeof window !== "undefined" ? window : null;
-  const t = w && w.CEO_APPROVAL_TOKEN ? String(w.CEO_APPROVAL_TOKEN).trim() : "";
-  return t || null;
-}
+  // Allow absolute base for API in production
+  // Example: apiOrigin: "http://localhost:8000"
+  const apiOrigin = (cfg.apiOrigin || cfg.apiBase || "").toString().trim();
 
-function jsonHeadersWithCeoToken() {
-  const h = { "Content-Type": "application/json" };
-  const token = getCeoToken();
-  if (token) h["X-CEO-Token"] = token;
-  return h;
-}
+  function resolveUrl(pathOrUrl) {
+    if (!pathOrUrl) return pathOrUrl;
+    const u = String(pathOrUrl);
 
-function setCommandStatus(chipText, text, variant) {
-  const chip = $("command-status-chip");
-  const label = $("command-status-text");
+    // already absolute
+    if (/^https?:\/\//i.test(u)) return u;
 
-  if (chip) {
-    chip.textContent = chipText || "";
-    chip.style.visibility = chipText ? "visible" : "hidden";
-    if (variant === "error") {
-      chip.style.background = "rgba(127,29,29,0.5)";
-      chip.style.borderColor = "rgba(248,113,113,0.9)";
-    } else {
-      chip.style.background = "";
-      chip.style.borderColor = "";
-    }
+    // if apiOrigin provided, prefix it
+    if (apiOrigin) return apiOrigin.replace(/\/$/, "") + u;
+
+    // fallback: relative (works only if same-origin or dev proxy)
+    return u;
   }
 
-  if (label) {
-    label.textContent = text || "";
-  }
-}
+  const ceoCommandUrl = resolveUrl(cfg.ceoCommandUrl || "/api/ceo-console/command");
+  const approveUrl = resolveUrl(cfg.approveUrl || "/api/ai-ops/approval/approve");
+  const proposalsExecuteUrl = resolveUrl(cfg.proposalsExecuteUrl || "/api/proposals/execute");
 
-// ChatGPT-style message append
-function appendHistoryMessage(role, text) {
-  const history = $("ceo-history");
-  if (!history) return null;
-
-  const placeholder = history.querySelector(".ceo-chat-empty");
-  if (placeholder) placeholder.remove();
-
-  const wrap = document.createElement("div");
-  wrap.classList.add("ceo-chat-msg");
-
-  const avatar = document.createElement("div");
-  avatar.classList.add("ceo-chat-avatar");
-  const isUser = role === "user";
-  if (isUser) {
-    avatar.classList.add("ceo");
-    avatar.textContent = "CEO";
-  } else {
-    avatar.classList.add("sys");
-    avatar.textContent = "SYS";
+  function getAuthToken() {
+    // Priority:
+    //  1) localStorage "CEO_APPROVAL_TOKEN"
+    //  2) cfg.token
+    //  3) empty
+    return (
+      (typeof localStorage !== "undefined" && localStorage.getItem("CEO_APPROVAL_TOKEN")) ||
+      cfg.token ||
+      ""
+    );
   }
 
-  const bubble = document.createElement("div");
-  bubble.classList.add("ceo-chat-bubble");
-
-  const meta = document.createElement("div");
-  meta.classList.add("meta");
-
-  const roleSpan = document.createElement("span");
-  roleSpan.classList.add("role");
-  roleSpan.textContent = isUser ? "CEO" : "SYSTEM";
-
-  const timeSpan = document.createElement("span");
-  const now = new Date();
-  timeSpan.textContent = now.toLocaleTimeString(undefined, {
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-
-  meta.appendChild(roleSpan);
-  meta.appendChild(timeSpan);
-
-  const body = document.createElement("div");
-  body.classList.add("text");
-  body.textContent = text == null ? "" : String(text);
-
-  bubble.appendChild(meta);
-  bubble.appendChild(body);
-
-  wrap.appendChild(avatar);
-  wrap.appendChild(bubble);
-
-  history.appendChild(wrap);
-  history.scrollTop = history.scrollHeight;
-
-  return wrap;
-}
-
-function clearHistory() {
-  const history = $("ceo-history");
-  if (!history) return;
-
-  history.innerHTML = "";
-  const empty = document.createElement("div");
-  empty.className = "ceo-chat-empty";
-  empty.textContent = "History je očišćen. Unesi novu CEO komandu.";
-  history.appendChild(empty);
-}
-
-// --------------------------------------------------
-// CEO CONSOLE RESPONSE FORMATTER (CANON-SAFE)
-// Handles CEO Console canonical shape:
-//  { summary, questions[], plan[], options[], proposed_commands[] }
-// Never throws.
-// --------------------------------------------------
-
-function _asOneLine(v) {
-  if (v == null) return "";
-  if (typeof v === "string") return v.trim();
-  if (typeof v === "number" || typeof v === "boolean") return String(v);
-  try {
-    return JSON.stringify(v);
-  } catch {
-    return String(v);
-  }
-}
-
-function _formatBullets(title, items) {
-  if (!Array.isArray(items) || items.length === 0) return "";
-  const lines = items
-    .map((x) => _asOneLine(x))
-    .filter(Boolean)
-    .map((s) => `- ${s}`);
-  if (lines.length === 0) return "";
-  return `${title}\n${lines.join("\n")}`;
-}
-
-function _normalizeProposedCommands(pc) {
-  if (Array.isArray(pc)) return pc;
-  if (pc && typeof pc === "object") {
-    const vals = Object.values(pc);
-    return Array.isArray(vals) ? vals : [];
-  }
-  return [];
-}
-
-function formatAdviceFromCeoConsole(data) {
-  try {
-    const lines = [];
-
-    const summary =
-      (typeof data?.summary === "string" && data.summary.trim()) ||
-      (typeof data?.text === "string" && data.text.trim()) ||
-      "";
-
-    const questions = Array.isArray(data?.questions) ? data.questions : [];
-    const plan = Array.isArray(data?.plan) ? data.plan : [];
-    const options = Array.isArray(data?.options) ? data.options : [];
-
-    if (summary) {
-      lines.push(summary);
-    } else {
-      lines.push("CEO Command je vratio savjet (READ-only).");
-    }
-
-    const qBlock = _formatBullets("Pitanja za razjašnjenje:", questions);
-    if (qBlock) {
-      lines.push("");
-      lines.push(qBlock);
-    }
-
-    const pBlock = _formatBullets("Predloženi plan:", plan);
-    if (pBlock) {
-      lines.push("");
-      lines.push(pBlock);
-    }
-
-    const oBlock = _formatBullets("Opcije:", options);
-    if (oBlock) {
-      lines.push("");
-      lines.push(oBlock);
-    }
-
-    const proposed = _normalizeProposedCommands(data?.proposed_commands);
-    if (proposed.length) {
-      const pcLines = proposed
-        .map((c) => {
-          if (typeof c === "string") return c.trim();
-
-          // CEO Console ProposedAICommand:
-          // { command_type, payload, status, required_approval, cost_hint, risk_hint }
-          const cmd = _asOneLine(c?.command_type || c?.command || c?.name || "(command)");
-          const risk = _asOneLine(c?.risk_hint || c?.risk || "");
-          const approval = c?.required_approval ? " (requires approval)" : "";
-          return `${cmd}${approval}${risk ? " — risk: " + risk : ""}`.trim();
-        })
-        .filter(Boolean)
-        .map((s) => `- ${s}`);
-
-      if (pcLines.length) {
-        lines.push("");
-        lines.push("Proposed commands (BLOCKED):");
-        lines.push(...pcLines);
-      }
-    }
-
-    return lines.join("\n");
-  } catch (e) {
-    console.error("formatAdviceFromCeoConsole failed", e, data);
-    return "(UI parse error) Pogledaj console log.";
-  }
-}
-
-function attachInlineActionsToSystemMessage(msgEl, { canExecute }) {
-  if (!msgEl) return;
-
-  const bubble = msgEl.querySelector(".ceo-chat-bubble");
-  if (!bubble) return;
-
-  const meta = bubble.querySelector(".meta");
-  if (!meta) return;
-
-  const actions = document.createElement("div");
-  actions.style.display = "inline-flex";
-  actions.style.gap = "8px";
-  actions.style.marginLeft = "12px";
-
-  if (canExecute) {
-    const execBtn = document.createElement("button");
-    execBtn.type = "button";
-    execBtn.textContent = "EXECUTE";
-    execBtn.className = "btn btn-primary";
-    execBtn.style.padding = "6px 10px";
-    execBtn.style.fontSize = "12px";
-    execBtn.addEventListener("click", executeLatest);
-    actions.appendChild(execBtn);
+  function buildHeaders() {
+    const headers = { "Content-Type": "application/json" };
+    const token = getAuthToken();
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+    return headers;
   }
 
-  meta.appendChild(actions);
-}
-
-// --------------------------------------------------
-// SNAPSHOT
-// --------------------------------------------------
-async function loadSnapshot() {
-  try {
-    const res = await fetch("/ceo/console/snapshot");
-    if (!res.ok) throw new Error(`Snapshot HTTP ${res.status}`);
-    const data = await res.json();
-
-    const osPill = $("os-status-pill");
-    if (osPill) {
-      const bootReady = data.system?.boot_ready;
-      const osEnabled = data.system?.os_enabled;
-      if (osEnabled && bootReady) {
-        osPill.textContent = "OS ONLINE";
-        osPill.classList.add("status-pill-online");
-      } else {
-        osPill.textContent = "OS OFFLINE";
-        osPill.classList.remove("status-pill-online");
-      }
-    }
-
-    const approvals = data.approvals || {};
-    const pending = $("pending-count-pill");
-    const approvedToday = $("approved-today-pill");
-    const executedTotal = $("executed-total-pill");
-    const errorsTotal = $("errors-total-pill");
-
-    if (pending) pending.textContent = approvals.pending_count ?? 0;
-    if (approvedToday) approvedToday.textContent = approvals.approved_count ?? 0;
-    if (executedTotal) executedTotal.textContent = approvals.completed_count ?? 0;
-    if (errorsTotal) {
-      errorsTotal.textContent =
-        (approvals.failed_count ?? 0) + (approvals.rejected_count ?? 0);
-    }
-
-    renderGoals(data.goals_summary);
-    renderTasks(data.tasks_summary);
-
-    const lastSync = data.knowledge_snapshot?.last_sync || "n/a";
-    const footer = $("footer-status");
-    if (footer) footer.textContent = `Last sync: ${lastSync}`;
-  } catch (err) {
-    console.error("Failed to load snapshot", err);
-    renderGoals(null, "Greška pri učitavanju ciljeva.");
-    renderTasks(null, "Greška pri učitavanju taskova.");
-  }
-}
-
-function renderGoals(goals, errorMsg) {
-  const tbody = $("goals-table-body");
-  if (!tbody) return;
-
-  tbody.innerHTML = "";
-
-  if (errorMsg) {
-    const tr = document.createElement("tr");
-    const td = document.createElement("td");
-    td.colSpan = 4;
-    td.className = "placeholder-text";
-    td.textContent = errorMsg;
-    tr.appendChild(td);
-    tbody.appendChild(tr);
-    return;
-  }
-
-  if (!goals || !goals.length) {
-    const tr = document.createElement("tr");
-    const td = document.createElement("td");
-    td.colSpan = 4;
-    td.className = "placeholder-text";
-    td.textContent = "Nema ciljeva u snapshotu.";
-    tr.appendChild(td);
-    tbody.appendChild(tr);
-    return;
-  }
-
-  const totalPill = $("goals-total-pill");
-  const activePill = $("goals-active-pill");
-  if (totalPill) totalPill.textContent = `Ukupno: ${goals.length}`;
-  if (activePill) {
-    activePill.textContent = `Aktivni: ${
-      goals.filter((g) =>
-        String(g.status || "").toLowerCase().includes("aktiv")
-      ).length
-    }`;
-  }
-
-  for (const g of goals) {
-    const tr = document.createElement("tr");
-    const cols = [
-      g.name ?? g.title ?? "(bez naziva)",
-      g.status ?? "-",
-      g.priority ?? "-",
-      g.due_date ?? g.deadline ?? "-",
-    ];
-    for (const c of cols) {
-      const td = document.createElement("td");
-      td.textContent = c;
-      tr.appendChild(td);
-    }
-    tbody.appendChild(tr);
-  }
-}
-
-function renderTasks(tasks, errorMsg) {
-  const tbody = $("tasks-table-body");
-  if (!tbody) return;
-
-  tbody.innerHTML = "";
-
-  if (errorMsg) {
-    const tr = document.createElement("tr");
-    const td = document.createElement("td");
-    td.colSpan = 4;
-    td.className = "placeholder-text";
-    td.textContent = errorMsg;
-    tr.appendChild(td);
-    tbody.appendChild(tr);
-    return;
-  }
-
-  if (!tasks || !tasks.length) {
-    const tr = document.createElement("tr");
-    const td = document.createElement("td");
-    td.colSpan = 4;
-    td.className = "placeholder-text";
-    td.textContent = "Nema taskova u snapshotu.";
-    tr.appendChild(td);
-    tbody.appendChild(tr);
-    return;
-  }
-
-  const totalPill = $("tasks-total-pill");
-  const activePill = $("tasks-active-pill");
-  if (totalPill) totalPill.textContent = `Ukupno: ${tasks.length}`;
-  if (activePill) {
-    activePill.textContent = `Aktivni: ${
-      tasks.filter((t) => {
-        const s = String(t.status || "").toLowerCase();
-        return s.includes("to do") || s.includes("aktiv");
-      }).length
-    }`;
-  }
-
-  for (const t of tasks) {
-    const tr = document.createElement("tr");
-    const cols = [
-      t.title ?? t.name ?? "(bez naziva)",
-      t.status ?? "-",
-      t.priority ?? "-",
-      t.due_date ?? t.deadline ?? "-",
-    ];
-    for (const c of cols) {
-      const td = document.createElement("td");
-      td.textContent = c;
-      tr.appendChild(td);
-    }
-    tbody.appendChild(tr);
-  }
-}
-
-// --------------------------------------------------
-// WEEKLY PRIORITY
-// --------------------------------------------------
-async function loadWeeklyPriority() {
-  const tbody = $("weekly-priority-body");
-  if (!tbody) return;
-
-  tbody.innerHTML = `
-    <tr><td colspan="5" class="placeholder-text">
-      Učitavanje weekly priority liste...
-    </td></tr>
-  `;
-
-  try {
-    const res = await fetch("/ceo/weekly-priority-memory");
-    if (!res.ok) throw new Error(`Weekly HTTP ${res.status}`);
-    const data = await res.json();
-    const items = data.items || [];
-
-    tbody.innerHTML = "";
-
-    if (!items.length) {
-      const tr = document.createElement("tr");
-      const td = document.createElement("td");
-      td.colSpan = 5;
-      td.className = "placeholder-text";
-      td.textContent = "Nema podataka za ovu sedmicu.";
-      tr.appendChild(td);
-      tbody.appendChild(tr);
-      return;
-    }
-
-    for (const i of items) {
-      const tr = document.createElement("tr");
-      const cols = [
-        i.type || "-",
-        i.name || "-",
-        i.status || "-",
-        i.priority || "-",
-        i.period || i.week || "-",
-      ];
-      for (const c of cols) {
-        const td = document.createElement("td");
-        td.textContent = c;
-        tr.appendChild(td);
-      }
-      tbody.appendChild(tr);
-    }
-  } catch (err) {
-    console.error("Failed to load weekly priority", err);
-    tbody.innerHTML = `
-      <tr><td colspan="5" class="placeholder-text">
-        Greška pri učitavanju weekly priority liste.
-      </td></tr>
-    `;
-  }
-}
-
-// --------------------------------------------------
-// CEO COMMAND (READ-ONLY) + EXECUTION (EXPLICIT)
-// --------------------------------------------------
-async function sendCeoCommand() {
-  const inputEl = $("ceo-command-input");
-  if (!inputEl) return;
-
-  const text = inputEl.value.trim();
-  if (!text) return;
-
-  appendHistoryMessage("user", text);
-
-  // Reset state for a new advisory cycle
-  lastApprovalId = null;
-  lastProposedExecuteText = text;
-
-  const lastIdEl = $("last-approval-id");
-  if (lastIdEl) lastIdEl.textContent = "–";
-
-  const approveBtn = $("approve-latest-btn");
-  if (approveBtn) approveBtn.disabled = true;
-
-  setCommandStatus("PENDING", "CEO Command (READ-only): generišem savjet i plan...");
-
-  try {
-    const sessionId = `ui_${Date.now()}_${Math.random().toString(16).slice(2)}`;
-
-    // CANON: advisory endpoint (no execution, no approvals)
-    const res = await fetch("/api/ceo-console/command", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        text: text,
-        initiator: "ceo_dashboard",
-        session_id: sessionId,
-        context_hint: null,
-      }),
-    });
-
-    if (!res.ok) {
-      const detailText = await res.text();
-      setCommandStatus(
-        "ERROR",
-        `Greška: ${res.status} — ${detailText || "CEO Command nije uspio."}`,
-        "error"
-      );
-      return;
-    }
-
-    const data = await res.json();
-
-    let adviceText = "";
+  async function safeJson(resp) {
+    const txt = await resp.text();
     try {
-      adviceText = formatAdviceFromCeoConsole(data);
-    } catch (e) {
-      console.error("formatAdviceFromCeoConsole failed", e, data);
-      adviceText = "(UI parse error) Pogledaj console log.";
+      return JSON.parse(txt);
+    } catch {
+      return { ok: false, parse_error: true, raw: txt, status: resp.status };
     }
-
-    const sysMsgEl = appendHistoryMessage("system", adviceText);
-    attachInlineActionsToSystemMessage(sysMsgEl, { canExecute: true });
-
-    setCommandStatus(
-      "ADVICE",
-      "Savjet je spreman. Ako želiš izvršenje, klikni EXECUTE (onda ide u BLOCKED → APPROVE)."
-    );
-
-    inputEl.value = "";
-    autoResizeTextarea(inputEl);
-  } catch (err) {
-    console.error("ceo-console/command failed", err);
-    setCommandStatus("ERROR", "Greška pri slanju CEO komande.", "error");
-  }
-}
-
-async function executeLatest() {
-  if (!lastProposedExecuteText) {
-    setCommandStatus("INFO", "Nema komande spremne za EXECUTE.", "error");
-    return;
   }
 
-  setCommandStatus("PENDING", "Pokrećem EXECUTION (kreiram approval)...");
-
-  try {
-    // CANON: Promote as a proposal (ceo.command.propose) so backend does:
-    // translate(prompt) -> create approval -> register execution -> BLOCKED
-    const res = await fetch("/api/proposals/execute", {
+  async function postJson(url, body) {
+    const resp = await fetch(url, {
       method: "POST",
-      headers: jsonHeadersWithCeoToken(),
-      body: JSON.stringify({
-        proposal: {
-          command: "ceo.command.propose",
-          args: { prompt: lastProposedExecuteText },
-          scope: "ceo_console",
-          risk: "UNKNOWN",
-          requires_approval: true,
-          dry_run: true,
-        },
-        initiator: "ceo",
-        metadata: { source: "ceo_dashboard" },
-      }),
+      headers: buildHeaders(),
+      body: JSON.stringify(body || {}),
+      // If you use cookies/session auth, uncomment:
+      // credentials: "include",
+      mode: "cors",
     });
-
-    if (!res.ok) {
-      const detail = await res.text();
-      setCommandStatus(
-        "ERROR",
-        `Greška pri EXECUTE: ${res.status} — ${detail || ""}`,
-        "error"
-      );
-      return;
-    }
-
-    const data = await res.json();
-    lastApprovalId = data.approval_id || null;
-
-    const lastIdEl = $("last-approval-id");
-    if (lastIdEl) lastIdEl.textContent = lastApprovalId || "–";
-
-    const approveBtn = $("approve-latest-btn");
-    if (approveBtn) approveBtn.disabled = !lastApprovalId;
-
-    appendHistoryMessage(
-      "system",
-      lastApprovalId
-        ? `Execution je BLOCKED. Approval ID: ${lastApprovalId}. Klikni APPROVE da se izvrši.`
-        : "Execution je pokrenut, ali approval_id nije vraćen (neočekivano)."
-    );
-
-    setCommandStatus(
-      "BLOCKED",
-      "Execution je BLOCKED. Odobri zahtjev da bi se izvršio."
-    );
-
-    await loadSnapshot();
-  } catch (err) {
-    console.error("executeLatest failed", err);
-    setCommandStatus("ERROR", "Greška pri pokretanju EXECUTE.", "error");
-  }
-}
-
-async function approveLatest() {
-  if (!lastApprovalId) {
-    setCommandStatus("INFO", "Nema pending zahtjeva iz ove sesije.", "error");
-    return;
+    const data = await safeJson(resp);
+    return { status: resp.status, data };
   }
 
-  try {
-    const res = await fetch("/api/ai-ops/approval/approve", {
-      method: "POST",
-      headers: jsonHeadersWithCeoToken(),
-      body: JSON.stringify({ approval_id: lastApprovalId, approved_by: "ceo_dashboard" }),
-    });
+  // Expose API for UI code that already exists in this file
+  window.CEO_CHATBOX_API = {
+    async sendCommand(payload) {
+      const { status, data } = await postJson(ceoCommandUrl, payload);
+      // Capture approval/proposal IDs if present
+      if (data && data.context && data.context.last_approval_id) lastApprovalId = data.context.last_approval_id;
+      if (data && data.last_approval_id) lastApprovalId = data.last_approval_id;
+      if (data && data.last_proposal_id) lastProposalId = data.last_proposal_id;
+      return { status, data };
+    },
 
-    if (!res.ok) {
-      const detail = await res.text();
-      setCommandStatus(
-        "ERROR",
-        `Greška pri odobravanju: ${res.status} — ${detail || ""}`,
-        "error"
-      );
-      return;
-    }
+    async approve(approval_id) {
+      const id = approval_id || lastApprovalId;
+      if (!id) return { status: 400, data: { ok: false, error: "Missing approval_id" } };
+      return postJson(approveUrl, { approval_id: id });
+    },
 
-    const approveBtn = $("approve-latest-btn");
-    if (approveBtn) approveBtn.disabled = true;
+    async executeProposal(proposal_id) {
+      const id = proposal_id || lastProposalId;
+      if (!id) return { status: 400, data: { ok: false, error: "Missing proposal_id" } };
+      return postJson(proposalsExecuteUrl, { proposal_id: id });
+    },
 
-    const lastExecEl = $("last-execution-state");
-    if (lastExecEl) lastExecEl.textContent = "EXECUTED";
-
-    setCommandStatus(
-      "EXECUTED",
-      "Zahtjev odobren. Execution će biti vidljiv u metrikama."
-    );
-
-    lastApprovalId = null;
-
-    await loadSnapshot();
-  } catch (err) {
-    console.error("approveLatest failed", err);
-    setCommandStatus("ERROR", "Greška pri odobravanju zahtjeva.", "error");
-  }
-}
-
-// Auto-resize textarea
-function autoResizeTextarea(el) {
-  if (!el) return;
-  el.style.height = "42px";
-  const max = 160;
-  const newH = Math.min(el.scrollHeight, max);
-  el.style.height = newH + "px";
-}
-
-// --------------------------------------------------
-// INIT
-// --------------------------------------------------
-document.addEventListener("DOMContentLoaded", () => {
-  const sendBtn = $("send-command-btn");
-  if (sendBtn) sendBtn.addEventListener("click", sendCeoCommand);
-
-  const snapBtn = $("refresh-snapshot-btn");
-  if (snapBtn) snapBtn.addEventListener("click", loadSnapshot);
-
-  const weeklyBtn = $("refresh-weekly-btn");
-  if (weeklyBtn) weeklyBtn.addEventListener("click", loadWeeklyPriority);
-
-  const approveBtn = $("approve-latest-btn");
-  if (approveBtn) approveBtn.addEventListener("click", approveLatest);
-
-  const clearBtn = $("clear-history-btn");
-  if (clearBtn) clearBtn.addEventListener("click", clearHistory);
-
-  const input = $("ceo-command-input");
-  if (input) {
-    input.addEventListener("keydown", (e) => {
-      if (
-        e.key === "Enter" &&
-        !e.shiftKey &&
-        !e.ctrlKey &&
-        !e.altKey &&
-        !e.metaKey
-      ) {
-        e.preventDefault();
-        sendCeoCommand();
-      }
-    });
-
-    input.addEventListener("input", () => autoResizeTextarea(input));
-    autoResizeTextarea(input);
-  }
-
-  // Voice button stub
-  const voiceBtn = $("ceo-voice-btn");
-  if (voiceBtn) {
-    voiceBtn.addEventListener("click", () => {
-      console.log("[VOICE] TODO: implement Web Speech API / audio capture.");
-      setCommandStatus("VOICE", "Voice input još nije implementiran (stub).");
-    });
-  }
-
-  if (approveBtn) approveBtn.disabled = !lastApprovalId;
-
-  loadSnapshot();
-  loadWeeklyPriority();
-});
+    _debug: {
+      ceoCommandUrl,
+      approveUrl,
+      proposalsExecuteUrl,
+      apiOrigin,
+    },
+  };
+})();

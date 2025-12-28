@@ -6,9 +6,17 @@
 
     const cfg = (window.__EVO_UI__ = window.__EVO_UI__ || {});
     const mountSelector = cfg.mountSelector || "#ceo-left-panel";
-    const ceoCommandUrl = cfg.ceoCommandUrl || "/ceo/command";
-    const approveUrl = cfg.approveUrl || "/api/ai-ops/approval/approve";
-    const headers = Object.assign({ "Content-Type": "application/json" }, cfg.headers || {});
+
+    // CEO Console canonical endpoints (backend router prefix: /api/ceo-console/*)
+    const ceoCommandUrl = cfg.ceoCommandUrl || "/api/ceo-console/command";
+    const ceoStatusUrl = cfg.ceoStatusUrl || "/api/ceo-console/status";
+
+    // NOTE: CEO Console flow is read-only; it returns proposed_commands (BLOCKED) without approval_id.
+    // approveUrl is intentionally not used here to avoid misleading UX.
+    const headers = Object.assign(
+      { "Content-Type": "application/json" },
+      cfg.headers || {}
+    );
 
     const host = document.querySelector(mountSelector);
     if (!host) return;
@@ -24,7 +32,8 @@
 
     const empty = document.createElement("div");
     empty.className = "ceo-chatbox-empty";
-    empty.textContent = "Napiši CEO komandu ispod. History je scroll, input je fiksno na dnu.";
+    empty.textContent =
+      "Napiši CEO komandu ispod. History je scroll, input je fiksno na dnu.";
     history.appendChild(empty);
 
     const scrollBtn = document.createElement("button");
@@ -42,18 +51,22 @@
 
     const textarea = document.createElement("textarea");
     textarea.className = "ceo-chatbox-textarea";
-    textarea.placeholder = "Unesi CEO COMMAND… (Enter = pošalji, Shift+Enter = novi red)";
+    textarea.placeholder =
+      "Unesi CEO COMMAND… (Enter = pošalji, Shift+Enter = novi red)";
 
     const sendBtn = document.createElement("button");
     sendBtn.className = "ceo-chatbox-btn primary";
     sendBtn.type = "button";
     sendBtn.textContent = "Pošalji";
 
+    // Approve button removed/disabled intentionally (CEO Console returns proposals, not approvals)
     const approveBtn = document.createElement("button");
     approveBtn.className = "ceo-chatbox-btn";
     approveBtn.type = "button";
     approveBtn.textContent = "Odobri";
     approveBtn.disabled = true;
+    approveBtn.title =
+      "CEO Console je read-only. Nema approval_id u ovom flow-u (samo proposed_commands = BLOCKED).";
 
     composer.appendChild(textarea);
     composer.appendChild(sendBtn);
@@ -65,13 +78,15 @@
     root.appendChild(composer);
     host.appendChild(root);
 
-    let lastApprovalId = null;
     let busy = false;
     let lastRole = null;
 
     function isNearBottom() {
       const threshold = 120;
-      return history.scrollHeight - (history.scrollTop + history.clientHeight) < threshold;
+      return (
+        history.scrollHeight - (history.scrollTop + history.clientHeight) <
+        threshold
+      );
     }
 
     function scrollToBottom(force = false) {
@@ -108,7 +123,7 @@
       row.appendChild(badge);
       row.appendChild(msg);
 
-      if (meta && (meta.state || meta.approval_id)) {
+      if (meta && (meta.state || meta.extra)) {
         const metaRow = document.createElement("div");
         metaRow.className = "ceo-chatbox-meta";
 
@@ -118,10 +133,10 @@
           pill.innerHTML = `<strong>Status:</strong> ${meta.state}`;
           metaRow.appendChild(pill);
         }
-        if (meta.approval_id) {
+        if (meta.extra) {
           const pill = document.createElement("span");
           pill.className = "ceo-chatbox-pill";
-          pill.innerHTML = `<strong>approval_id:</strong> ${meta.approval_id}`;
+          pill.innerHTML = meta.extra;
           metaRow.appendChild(pill);
         }
 
@@ -141,7 +156,8 @@
       sendBtn.disabled = next;
       textarea.disabled = next;
       typing.style.display = next ? "block" : "none";
-      if (next) approveBtn.disabled = true;
+      // approve always disabled in this flow
+      approveBtn.disabled = true;
     }
 
     function autosize() {
@@ -152,24 +168,61 @@
     textarea.addEventListener("input", autosize);
 
     textarea.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
+      if (
+        e.key === "Enter" &&
+        !e.shiftKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        !e.metaKey
+      ) {
         e.preventDefault();
         sendBtn.click();
       }
     });
 
-    async function readErrorBody(res) {
-      const ct = (res.headers.get("content-type") || "").toLowerCase();
-      try {
-        if (ct.includes("application/json")) {
-          const j = await res.json();
-          return JSON.stringify(j, null, 2);
-        }
-      } catch {}
+    async function readBodyAsText(res) {
       try {
         return await res.text();
       } catch {
-        return "N/A";
+        return "";
+      }
+    }
+
+    function safeJsonParse(text) {
+      try {
+        return JSON.parse(text);
+      } catch {
+        return null;
+      }
+    }
+
+    function formatProposedCommands(proposed) {
+      if (!Array.isArray(proposed) || proposed.length === 0) return "";
+      const lines = proposed
+        .map((p, i) => {
+          const cmd = p && (p.command_type || p.command || "");
+          const status = (p && p.status) || "BLOCKED";
+          const risk = (p && (p.risk_hint || p.risk)) || "";
+          return `${i + 1}) ${cmd || "unknown_command"} | ${status}${
+            risk ? ` | risk=${risk}` : ""
+          }`;
+        })
+        .join("\n");
+      return `\n\nProposed commands (BLOCKED)\n${lines}`;
+    }
+
+    async function pingStatus() {
+      try {
+        const res = await fetch(ceoStatusUrl, { method: "GET", headers });
+        if (!res.ok) return;
+        const t = await readBodyAsText(res);
+        const j = safeJsonParse(t);
+        if (j && j.ok) {
+          // optional: show status once
+          // addMessage("sys", "CEO Console: online", { state: "OK" });
+        }
+      } catch {
+        // ignore
       }
     }
 
@@ -181,75 +234,54 @@
       setBusy(true);
 
       try {
+        const payload = {
+          text,
+          initiator: cfg.initiator || "ceo_dashboard",
+          // session_id is optional; if you have one in cfg, include it
+          session_id: cfg.session_id || undefined,
+          // context_hint is optional; backend will fallback to server snapshot if not provided
+          context_hint: cfg.context_hint || undefined,
+        };
+
         const res = await fetch(ceoCommandUrl, {
           method: "POST",
           headers,
-          body: JSON.stringify({
-            input_text: text,
-            smart_context: null,
-            source: "ceo_dashboard",
-          }),
+          body: JSON.stringify(payload),
         });
 
+        const raw = await readBodyAsText(res);
         if (!res.ok) {
-          const detail = await readErrorBody(res);
-          addMessage("sys", `Greška: ${res.status}\n${detail || "N/A"}`, { state: "ERROR" });
+          addMessage(
+            "sys",
+            `Greška: ${res.status}\n${raw || "N/A"}`,
+            { state: "ERROR" }
+          );
           return;
         }
 
-        const data = await res.json();
-        lastApprovalId = data.approval_id || null;
+        const data = safeJsonParse(raw) || {};
+        const summary =
+          (typeof data.summary === "string" && data.summary.trim()) ||
+          (typeof data.text === "string" && data.text.trim()) ||
+          (raw && raw.trim()) ||
+          "Nema odgovora.";
 
-        addMessage(
-          "sys",
-          "Zahtjev je u BLOCKED stanju i čeka eksplicitno odobrenje.",
-          { state: "BLOCKED", approval_id: lastApprovalId || "–" }
-        );
+        const proposed = data.proposed_commands || [];
+        const extra = formatProposedCommands(proposed);
 
-        approveBtn.disabled = !lastApprovalId;
+        addMessage("sys", summary + extra, { state: "OK" });
 
         textarea.value = "";
         autosize();
 
+        // If page has a snapshot refresh button, trigger it (optional)
         const snapBtn = document.getElementById("refresh-snapshot-btn");
         if (snapBtn) snapBtn.click();
       } catch (err) {
-        addMessage("sys", "Greška pri slanju naredbe.", { state: "ERROR" });
-      } finally {
-        setBusy(false);
-        textarea.focus();
-      }
-    }
-
-    async function approveLatest() {
-      if (!lastApprovalId || busy) return;
-      setBusy(true);
-
-      try {
-        const res = await fetch(approveUrl, {
-          method: "POST",
-          headers,
-          body: JSON.stringify({ approval_id: lastApprovalId }),
+        const msg = err instanceof Error ? err.message : String(err);
+        addMessage("sys", `Greška pri slanju naredbe.\n${msg}`, {
+          state: "ERROR",
         });
-
-        if (!res.ok) {
-          const detail = await readErrorBody(res);
-          addMessage("sys", `Greška pri odobravanju: ${res.status}\n${detail || ""}`, { state: "ERROR" });
-          return;
-        }
-
-        addMessage(
-          "sys",
-          "Zahtjev je odobren. Snapshot i KPI će prikazati rezultat.",
-          { state: "APPROVED/EXECUTED", approval_id: lastApprovalId }
-        );
-
-        approveBtn.disabled = true;
-
-        const snapBtn = document.getElementById("refresh-snapshot-btn");
-        if (snapBtn) snapBtn.click();
-      } catch (err) {
-        addMessage("sys", "Greška pri odobravanju zahtjeva.", { state: "ERROR" });
       } finally {
         setBusy(false);
         textarea.focus();
@@ -257,13 +289,17 @@
     }
 
     sendBtn.addEventListener("click", sendCommand);
-    approveBtn.addEventListener("click", approveLatest);
 
     // start
     autosize();
     setTimeout(() => textarea.focus(), 60);
+    setTimeout(pingStatus, 50);
 
-    console.log("[CEO_CHATBOX] mounted", { mountSelector, ceoCommandUrl, approveUrl });
+    console.log("[CEO_CHATBOX] mounted", {
+      mountSelector,
+      ceoCommandUrl,
+      ceoStatusUrl,
+    });
   } catch (e) {
     console.error("[CEO_CHATBOX] init failed", e);
   }
