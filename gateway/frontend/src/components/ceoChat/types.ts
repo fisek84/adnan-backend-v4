@@ -1,26 +1,26 @@
 // gateway/frontend/src/components/ceoChat/types.ts
 
-export type CeoRole = "ceo" | "system";
-export type GovernanceState = "BLOCKED" | "APPROVED" | "EXECUTED";
+export type BusyState = "idle" | "submitting" | "streaming" | "error";
 
-export type ChatItemKind = "message" | "governance";
+export type ChatStatus = "delivered" | "streaming" | "final" | "error";
+export type ChatRole = "ceo" | "system";
 
-export type ChatItemBase = {
+export type ChatMessageItem = {
   id: string;
-  kind: ChatItemKind;
-  createdAt: number; // epoch ms
-};
-
-export type ChatMessageItem = ChatItemBase & {
   kind: "message";
-  role: CeoRole;
+  role: ChatRole;
   content: string;
-  status?: "sending" | "delivered" | "streaming" | "final" | "error";
+  status: ChatStatus;
+  createdAt: number;
   requestId?: string;
 };
 
-export type GovernanceEventItem = ChatItemBase & {
+export type GovernanceState = "BLOCKED" | "APPROVED" | "EXECUTED" | string;
+
+export type GovernanceEventItem = {
+  id: string;
   kind: "governance";
+  createdAt: number;
   state: GovernanceState;
   title?: string;
   summary?: string;
@@ -31,15 +31,13 @@ export type GovernanceEventItem = ChatItemBase & {
 
 export type ChatItem = ChatMessageItem | GovernanceEventItem;
 
-/**
- * UI Strings contract used by CeoChatbox + strings.ts
- */
 export type UiStrings = {
   headerTitle: string;
   headerSubtitle: string;
-
   processingLabel: string;
   jumpToLatestLabel: string;
+  inputPlaceholder: string;
+  sendLabel: string;
 
   blockedLabel: string;
   approvedLabel: string;
@@ -47,47 +45,61 @@ export type UiStrings = {
 
   openApprovalsLabel: string;
   approveLabel: string;
-  retryLabel: string;
 
-  inputPlaceholder: string;
-  sendLabel: string;
+  retryLabel: string;
 };
 
-/**
- * Gateway backend expects:
- * POST /api/ceo/command
- * {
- *   "input_text": "...",
- *   "smart_context": {...},
- *   "source": "ceo_dashboard"
- * }
- *
- * NOTE: Keeping legacy fields optional for backward-compat during migration.
- */
 export type CeoCommandRequest = {
-  // NEW (gateway)
-  input_text: string;
-  smart_context?: Record<string, unknown> | null;
-  source?: string;
-
-  // LEGACY (older frontend / older backend)
-  text?: string;
+  // Preferirano (tvoj FastAPI router očekuje ovo):
+  text: string;
   initiator?: string;
   session_id?: string;
-  context_hint?: Record<string, unknown>;
-  client_request_id?: string;
+  context_hint?: Record<string, any>;
+
+  // Legacy polja (ako negdje u kodu još postoji):
+  input_text?: string;
+  smart_context?: Record<string, any>;
+  source?: string;
+};
+
+export type GovernanceCard = {
+  state: GovernanceState;
+  title?: string;
+  summary?: string;
+  reasons?: string[];
+  approvalRequestId?: string;
 };
 
 export type NormalizedConsoleResponse = {
   requestId?: string;
+
+  // preferirano polje koje CeoChatbox koristi
   systemText?: string;
-  governance?: {
-    state: GovernanceState;
-    title?: string;
-    summary?: string;
-    reasons?: string[];
-    approvalRequestId?: string;
-  };
-  // For streaming: incremental chunks of system text
+
+  // kompatibilnost (da build nikad ne padne ako se negdje koristi)
+  summary?: string;
+  text?: string;
+
+  governance?: GovernanceCard;
+
+  // opciono za streaming (ako ikad dodaš)
   stream?: AsyncIterable<string>;
+};
+
+// Backend shape (CEOCommandResponse iz FastAPI)
+export type RawCeoConsoleResponse = {
+  ok?: boolean;
+  read_only?: boolean;
+  context?: any;
+  summary?: string;
+  text?: string; // fallback ako nekad vrati
+  proposed_commands?: Array<{
+    command_type?: string;
+    payload?: Record<string, any>;
+    status?: string;
+    required_approval?: boolean;
+    cost_hint?: string | null;
+    risk_hint?: string | null;
+  }>;
+  trace?: Record<string, any>;
 };

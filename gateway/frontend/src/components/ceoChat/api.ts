@@ -1,192 +1,148 @@
 // gateway/frontend/src/components/ceoChat/api.ts
-import type { CeoCommandRequest, NormalizedConsoleResponse } from "./types";
-import { normalizeConsoleResponse, streamTextFromResponse } from "./normalize";
+
+import type {
+  CeoCommandRequest,
+  NormalizedConsoleResponse,
+  RawCeoConsoleResponse,
+} from "./types";
 
 export type CeoConsoleApi = {
   sendCommand: (
     req: CeoCommandRequest,
     signal?: AbortSignal
   ) => Promise<NormalizedConsoleResponse>;
+
   approve: (
     approvalId: string,
     signal?: AbortSignal
   ) => Promise<NormalizedConsoleResponse>;
 };
 
-type ApiOptions = {
+type CreateApiArgs = {
   ceoCommandUrl: string;
   approveUrl?: string;
   headers?: Record<string, string>;
-  /** hard timeout (ms) to avoid hanging requests */
-  timeoutMs?: number;
 };
 
-const jsonHeaders = { "Content-Type": "application/json" };
+const jsonHeaders = (extra?: Record<string, string>) => ({
+  "Content-Type": "application/json",
+  ...(extra ?? {}),
+});
 
-/**
- * Normalize request payload so backend always gets the CEO Console contract:
- *   { text, initiator?, session_id?, context_hint? }
- *
- * Supports legacy shapes too (e.g. { input_text, source }).
- */
-function buildCeoConsolePayload(req: any): Record<string, any> {
-  // Preferred: new contract already present
-  if (typeof req?.text === "string" && req.text.trim()) {
-    const initiator =
-      typeof req?.initiator === "string" && req.initiator.trim()
-        ? req.initiator.trim()
-        : typeof req?.source === "string" && req.source.trim()
-          ? req.source.trim()
-          : "ceo_dashboard";
+function normalizeResponse(raw: RawCeoConsoleResponse): NormalizedConsoleResponse {
+  const systemText = (raw.summary ?? raw.text ?? "").toString();
 
+  const proposed = Array.isArray(raw.proposed_commands) ? raw.proposed_commands : [];
+  const hasProposals = proposed.length > 0;
+
+  // Napomena: backend trenutno NE vraća approval_id ovdje, nego samo "proposal".
+  // Zato approvalRequestId ostaje undefined (da UI ne prikazuje "Approve" dugme bez pravog ID-a).
+  const governance = hasProposals
+    ? {
+        state: (proposed[0]?.status ?? "BLOCKED") as string,
+        title: `Proposals ready (${(proposed[0]?.status ?? "BLOCKED").toString()})`,
+        summary:
+          proposed.length === 1
+            ? `- ${proposed[0]?.command_type ?? "unknown_command"}`
+            : proposed
+                .map((p) => `- ${p.command_type ?? "unknown_command"}`)
+                .join("\n"),
+        reasons: [],
+        approvalRequestId: undefined as string | undefined,
+      }
+    : undefined;
+
+  return {
+    systemText,
+    // kompatibilnost: ako negdje neko čita summary/text direktno
+    summary: raw.summary,
+    text: raw.text,
+    governance,
+  };
+}
+
+function toBackendPayload(req: CeoCommandRequest): Record<string, any> {
+  // Preferirano: {text, initiator, ...}
+  if (typeof req.text === "string" && req.text.trim().length > 0) {
     return {
-      ...req,
       text: req.text,
-      initiator,
+      initiator: req.initiator ?? "ceo",
+      session_id: req.session_id,
+      context_hint: req.context_hint,
     };
   }
 
-  // Legacy contract: input_text / source
-  const inputText =
-    (typeof req?.input_text === "string" && req.input_text) ||
-    (typeof req?.message === "string" && req.message) ||
-    "";
+  // Legacy fallback: {input_text,...}
+  const text = (req.input_text ?? "").toString();
+  return {
+    text,
+    initiator: (req.source ?? req.initiator ?? "ceo").toString(),
+    context_hint: req.smart_context ? { snapshot: req.smart_context } : undefined,
+  };
+}
 
-  const initiator =
-    (typeof req?.source === "string" && req.source.trim()) ||
-    (typeof req?.initiator === "string" && req.initiator.trim()) ||
-    "ceo_dashboard";
-
-  const sessionId =
-    (typeof req?.session_id === "string" && req.session_id) ||
-    (typeof req?.requestId === "string" && req.requestId) ||
-    undefined;
-
-  // keep context_hint if caller provides it (snapshot override)
-  const contextHint =
-    req?.context_hint && typeof req.context_hint === "object"
-      ? req.context_hint
-      : undefined;
+export function createCeoConsoleApi(args: CreateApiArgs): CeoConsoleApi {
+  const { ceoCommandUrl, approveUrl, headers } = args;
 
   return {
-    text: String(inputText || "").trim(),
-    initiator,
-    session_id: sessionId,
-    context_hint: contextHint,
-  };
-}
+    sendCommand: async (req, signal) => {
+      const payload = toBackendPayload(req);
 
-async function safeReadText(res: Response): Promise<string> {
-  try {
-    return await res.text();
-  } catch {
-    return "";
-  }
-}
-
-function mergeSignals(a?: AbortSignal, b?: AbortSignal): AbortSignal | undefined {
-  if (!a) return b;
-  if (!b) return a;
-
-  // If either aborts => merged aborts.
-  const ctrl = new AbortController();
-  const onAbort = () => ctrl.abort();
-  if (a.aborted || b.aborted) {
-    ctrl.abort();
-    return ctrl.signal;
-  }
-  a.addEventListener("abort", onAbort, { once: true });
-  b.addEventListener("abort", onAbort, { once: true });
-  return ctrl.signal;
-}
-
-export const createCeoConsoleApi = (opts: ApiOptions): CeoConsoleApi => {
-  const baseHeaders = { ...opts.headers };
-  const timeoutMs = typeof opts.timeoutMs === "number" ? opts.timeoutMs : 60000;
-
-  const sendCommand: CeoConsoleApi["sendCommand"] = async (req, signal) => {
-    const payload = buildCeoConsolePayload(req);
-
-    if (!payload.text) {
-      throw new Error("text required");
-    }
-
-    // Timeout controller
-    const timeoutCtrl = new AbortController();
-    const t = window.setTimeout(() => timeoutCtrl.abort(), timeoutMs);
-    const mergedSignal = mergeSignals(signal, timeoutCtrl.signal);
-
-    try {
-      const res = await fetch(opts.ceoCommandUrl, {
+      const r = await fetch(ceoCommandUrl, {
         method: "POST",
-        headers: { ...jsonHeaders, ...baseHeaders },
+        headers: jsonHeaders(headers),
         body: JSON.stringify(payload),
-        signal: mergedSignal,
+        signal,
       });
 
-      if (!res.ok) {
-        const text = await safeReadText(res);
-        throw new Error(text || `HTTP ${res.status}`);
+      if (!r.ok) {
+        const body = await r.text().catch(() => "");
+        throw new Error(`CEO command failed (${r.status}): ${body || r.statusText}`);
       }
 
-      // Streaming?
-      const stream = streamTextFromResponse(res);
-      if (stream) {
-        return { requestId: payload.session_id, stream };
+      const data = (await r.json()) as RawCeoConsoleResponse;
+      return normalizeResponse(data);
+    },
+
+    approve: async (approvalId, signal) => {
+      if (!approveUrl) {
+        return {
+          systemText: "",
+          governance: {
+            state: "BLOCKED",
+            title: "Approval required",
+            summary: "Approve endpoint nije konfigurisan u UI (approveUrl).",
+            reasons: [],
+            approvalRequestId: approvalId,
+          },
+        };
       }
 
-      // Normal JSON path with robust fallback
-      const rawText = await safeReadText(res);
-      try {
-        const data = rawText ? JSON.parse(rawText) : {};
-        return normalizeConsoleResponse(data, res.headers);
-      } catch {
-        // Backend returned non-JSON; treat as summary text
-        return normalizeConsoleResponse({ summary: rawText || "" }, res.headers);
-      }
-    } finally {
-      window.clearTimeout(t);
-    }
-  };
-
-  const approve: CeoConsoleApi["approve"] = async (approvalId, signal) => {
-    if (!opts.approveUrl) {
-      throw new Error("Approve endpoint is not configured");
-    }
-
-    const timeoutCtrl = new AbortController();
-    const t = window.setTimeout(() => timeoutCtrl.abort(), timeoutMs);
-    const mergedSignal = mergeSignals(signal, timeoutCtrl.signal);
-
-    try {
-      const res = await fetch(opts.approveUrl, {
+      const r = await fetch(approveUrl, {
         method: "POST",
-        headers: { ...jsonHeaders, ...baseHeaders },
-        body: JSON.stringify({ approval_id: approvalId, approved_by: "ceo" }),
-        signal: mergedSignal,
+        headers: jsonHeaders(headers),
+        body: JSON.stringify({ approval_id: approvalId }),
+        signal,
       });
 
-      if (!res.ok) {
-        const text = await safeReadText(res);
-        throw new Error(text || `HTTP ${res.status}`);
+      if (!r.ok) {
+        const body = await r.text().catch(() => "");
+        throw new Error(`Approve failed (${r.status}): ${body || r.statusText}`);
       }
 
-      const stream = streamTextFromResponse(res);
-      if (stream) {
-        return { requestId: approvalId, stream };
-      }
+      // Approve endpoint ti trenutno vraća execution result; mi ga prikazujemo kao systemText
+      const data = (await r.json()) as any;
 
-      const rawText = await safeReadText(res);
-      try {
-        const data = rawText ? JSON.parse(rawText) : {};
-        return normalizeConsoleResponse(data, res.headers);
-      } catch {
-        return normalizeConsoleResponse({ summary: rawText || "" }, res.headers);
-      }
-    } finally {
-      window.clearTimeout(t);
-    }
+      const text =
+        typeof data?.summary === "string"
+          ? data.summary
+          : typeof data?.text === "string"
+          ? data.text
+          : JSON.stringify(data, null, 2);
+
+      return {
+        systemText: text,
+      };
+    },
   };
-
-  return { sendCommand, approve };
-};
+}
