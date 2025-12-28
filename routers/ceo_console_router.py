@@ -305,9 +305,15 @@ def _coerce_proposed_commands(agent_output: Any) -> List[ProposedAICommand]:
 
 @router.get("/status")
 async def ceo_console_status() -> Dict[str, Any]:
+    """
+    Contract (tests expect):
+    - ok: true
+    - read_only: true/false (key MUST exist)
+    """
     _ensure_registry_loaded()
     return {
         "ok": True,
+        "read_only": True,  # IMPORTANT: required by contract test
         "registry_agents": len(_agent_registry.list_agents() or []),
         "ts": _now_iso(),
     }
