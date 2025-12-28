@@ -1,11 +1,23 @@
-<script>
-  window.CEO_CHATBOX_CONFIG = {
-    // OBAVEZNO u produkciji ako frontend nije na istom originu kao backend:
-    apiOrigin: "http://localhost:8000",
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Adnan.ai</title>
+  </head>
+  <body>
+    <div id="root"></div>
 
-    // opcionalno override-uj rute ako su drugačije kod tebe:
-    ceoCommandUrl: "/api/ceo-console/command",
-    approveUrl: "/api/ai-ops/approval/approve",
-    proposalsExecuteUrl: "/api/proposals/execute"
-  };
-</script>
+    <!-- Runtime config: backend može kasnije injectati prave vrijednosti preko /api/config -->
+    <script>
+      window.CEO_CHATBOX_CONFIG = window.CEO_CHATBOX_CONFIG || {
+        apiOrigin: "",
+        ceoCommandUrl: "/api/ceo/command",
+        approveUrl: "/api/ai-ops/approval/approve",
+        proposalsExecuteUrl: "/api/proposals/execute",
+      };
+    </script>
+
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
