@@ -1,55 +1,27 @@
 # routers/ceo_console_router.py
-
 from __future__ import annotations
 
-import os
 import inspect
-import re
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Body, HTTPException
 from pydantic import BaseModel, Field
 
 from models.agent_contract import AgentInput, AgentOutput
-from services.agent_registry_service import get_agent_registry_service
+from services.agent_registry_service import AgentRegistryService
 from services.agent_router_service import AgentRouterService
-from system_version import SYSTEM_NAME, VERSION
 
 router = APIRouter(prefix="/ceo-console", tags=["CEO Console"])
 
-# IMPORTANT:
-# - Do NOT create a new AgentRegistryService() here.
-# - Use SSOT singleton (same instance as gateway_server.py uses).
-_agent_registry = get_agent_registry_service()
+_agent_registry = AgentRegistryService()
 _agent_router = AgentRouterService(_agent_registry)
 
 
-def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[1]
-
-
-def _agents_json_path() -> str:
-    # mirror gateway_server.py behavior
-    p = (os.getenv("AGENTS_JSON_PATH") or "").strip()
-    if p:
-        return p
-    p2 = (os.getenv("AGENTS_REGISTRY_PATH") or "").strip()
-    if p2:
-        return p2
-    return str(_repo_root() / "config" / "agents.json")
-
-
 def _ensure_registry_loaded() -> None:
-    """
-    Ensure agents.json is loaded into the singleton registry.
-    Safe to call multiple times.
-    """
     try:
         if not _agent_registry.list_agents():
-            _agent_registry.load_from_agents_json(_agents_json_path(), clear=True)
+            _agent_registry.load_from_agents_json("config/agents.json", clear=True)
     except Exception:
-        # do not crash API on load issues; agent router will handle
         pass
 
 
@@ -67,7 +39,7 @@ class CEOCommandRequest(BaseModel):
 
 class ProposedAICommand(BaseModel):
     command_type: str
-    payload: Dict[str, Any] = Field(default_factory=dict)
+    payload: Dict[str, Any] = {}
     status: str = "BLOCKED"
     required_approval: bool = True
     cost_hint: Optional[str] = None
@@ -77,18 +49,13 @@ class ProposedAICommand(BaseModel):
 class CEOCommandResponse(BaseModel):
     ok: bool = True
     read_only: bool = True
-    context: Dict[str, Any] = Field(default_factory=dict)
-
-    # IMPORTANT: frontend very often expects "text"
-    # We keep "summary" too for backward compatibility.
-    text: str = ""
+    context: Dict[str, Any] = {}
     summary: str = ""
-
-    questions: List[str] = Field(default_factory=list)
-    plan: List[str] = Field(default_factory=list)
-    options: List[str] = Field(default_factory=list)
-    proposed_commands: List[ProposedAICommand] = Field(default_factory=list)
-    trace: Dict[str, Any] = Field(default_factory=dict)
+    questions: List[str] = []
+    plan: List[str] = []
+    options: List[str] = []
+    proposed_commands: List[ProposedAICommand] = []
+    trace: Dict[str, Any] = {}
 
 
 # ======================
@@ -102,32 +69,130 @@ async def _maybe_await(value: Any) -> Any:
     return value
 
 
+def _prop_text(item: Dict[str, Any], candidates: List[str]) -> Optional[str]:
+    """
+    Supports:
+      - compact Notion pages: {"properties": {"Name": "...", "Status": "...", ...}}
+      - fallback structures where fields are top-level.
+    """
+    if not isinstance(item, dict):
+        return None
+
+    # 1) top-level direct
+    for k in candidates:
+        v = item.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+
+    # 2) properties dict (canonical from NotionService._compact_page)
+    props = item.get("properties")
+    if isinstance(props, dict):
+        # exact match
+        for k in candidates:
+            v = props.get(k)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+
+        # case-insensitive match
+        lower_map = {str(pk).lower(): pv for pk, pv in props.items()}
+        for k in candidates:
+            v = lower_map.get(str(k).lower())
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+
+    return None
+
+
 def _compact_item(item: Dict[str, Any]) -> Dict[str, Any]:
-    keep = {
-        "id",
-        "title",
-        "name",
-        "status",
-        "priority",
-        "due_date",
-        "lead",
-        "project",
-        "goal",
-    }
-    return {k: item.get(k) for k in keep if k in item}
+    """
+    Normalizes a Notion compact page into what CEO Advisor expects.
+    Ensures required fields exist (title/status/priority) to prevent LLM fallbacks
+    leaking into structured output.
+    """
+    title = _prop_text(item, ["title", "name", "Name", "Title", "Naziv", "Ime"])
+    status = _prop_text(item, ["status", "Status"])
+    priority = _prop_text(item, ["priority", "Priority", "Prioritet"])
+
+    out: Dict[str, Any] = {"id": item.get("id")}
+
+    # Always include fields with safe defaults
+    out["title"] = title or "NEMA PODATAKA"
+    out["name"] = out["title"]  # compatibility
+    out["status"] = status or "NEMA PODATAKA"
+    out["priority"] = priority or "NEMA PODATAKA"
+
+    if item.get("url"):
+        out["url"] = item.get("url")
+
+    return out
 
 
 def _compact_dashboard_snapshot(snap: Dict[str, Any]) -> Dict[str, Any]:
-    dashboard = snap.get("dashboard", {})
-    return {
+    dashboard = snap.get("dashboard", {}) if isinstance(snap, dict) else {}
+    goals_raw = dashboard.get("goals", []) if isinstance(dashboard, dict) else []
+    tasks_raw = dashboard.get("tasks", []) if isinstance(dashboard, dict) else []
+
+    if not isinstance(goals_raw, list):
+        goals_raw = []
+    if not isinstance(tasks_raw, list):
+        tasks_raw = []
+
+    out: Dict[str, Any] = {
         "available": True,
         "source": snap.get("source"),
         "kind": "dashboard_snapshot",
         "dashboard": {
-            "goals": [_compact_item(g) for g in (dashboard.get("goals", []) or [])],
-            "tasks": [_compact_item(t) for t in (dashboard.get("tasks", []) or [])],
+            "goals": [_compact_item(g) for g in goals_raw if isinstance(g, dict)],
+            "tasks": [_compact_item(t) for t in tasks_raw if isinstance(t, dict)],
         },
     }
+
+    # Optional extras (safe to attach)
+    identity_pack = snap.get("identity_pack")
+    if isinstance(identity_pack, dict):
+        out["identity_pack"] = identity_pack
+
+    if "knowledge_ready" in snap:
+        out["knowledge_ready"] = bool(snap.get("knowledge_ready"))
+    if snap.get("knowledge_last_sync") is not None:
+        out["knowledge_last_sync"] = snap.get("knowledge_last_sync")
+
+    return out
+
+
+def _build_dashboard_from_system_snapshot(sys_snap: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    SystemReadExecutor.snapshot() -> { "knowledge_snapshot": { "databases": {goals,tasks,...} }, "ceo_notion_snapshot": {...} }
+    Prefer KnowledgeSnapshotService data (populated by refresh_snapshot).
+    """
+    dashboard: Dict[str, Any] = {"goals": [], "tasks": []}
+
+    ks = sys_snap.get("knowledge_snapshot") if isinstance(sys_snap, dict) else None
+    dbs = (ks or {}).get("databases") if isinstance(ks, dict) else None
+
+    if isinstance(dbs, dict):
+        goals = dbs.get("goals") or []
+        tasks = dbs.get("tasks") or []
+        if isinstance(goals, list):
+            dashboard["goals"] = goals
+        if isinstance(tasks, list):
+            dashboard["tasks"] = tasks
+
+    # If knowledge snapshot has nothing, try ceo_notion_snapshot as a legacy fallback
+    if not dashboard["goals"] and not dashboard["tasks"]:
+        ceo_ns = (
+            sys_snap.get("ceo_notion_snapshot") if isinstance(sys_snap, dict) else None
+        )
+        if isinstance(ceo_ns, dict) and isinstance(ceo_ns.get("dashboard"), dict):
+            d = ceo_ns.get("dashboard") or {}
+            goals2 = d.get("goals") or []
+            tasks2 = d.get("tasks") or []
+            if isinstance(goals2, list):
+                dashboard["goals"] = goals2
+            if isinstance(tasks2, list):
+                dashboard["tasks"] = tasks2
+
+    return dashboard
 
 
 # ======================
@@ -160,30 +225,58 @@ async def _build_context(req: CEOCommandRequest) -> Dict[str, Any]:
         req_snapshot = req.context_hint.get("snapshot")
         if isinstance(req_snapshot, dict):
             ctx["snapshot"] = _compact_dashboard_snapshot(
-                {"source": "request.context_hint", "dashboard": req_snapshot}
+                {
+                    "source": "request.context_hint",
+                    "dashboard": req_snapshot,
+                }
             )
             ctx["snapshot_meta"] = {
                 "snapshotter": "request",
                 "available": True,
                 "source": "request.context_hint",
             }
-            return ctx  # do not call server snapshotter
+            return ctx  # do not call server snapshot
 
     # ===============================
-    # FALLBACK: SERVER SNAPSHOT
+    # FALLBACK: CANONICAL SERVER SNAPSHOT (SystemReadExecutor)
     # ===============================
     try:
-        from services.ceo_console_snapshot_service import CEOConsoleSnapshotService
+        from services.system_read_executor import SystemReadExecutor
 
-        snapshotter = CEOConsoleSnapshotService()
-        snap = snapshotter.snapshot()
-        snap = await _maybe_await(snap)
-        ctx["snapshot"] = _compact_dashboard_snapshot(snap)
+        sys_exec = SystemReadExecutor()
+        sys_snap = sys_exec.snapshot()
+        sys_snap = await _maybe_await(sys_snap)
+
+        dashboard = _build_dashboard_from_system_snapshot(sys_snap)
+
+        identity_pack = (
+            sys_snap.get("identity_pack") if isinstance(sys_snap, dict) else None
+        )
+        ks = sys_snap.get("knowledge_snapshot") if isinstance(sys_snap, dict) else None
+
+        compact = _compact_dashboard_snapshot(
+            {
+                "source": "SystemReadExecutor",
+                "dashboard": dashboard,
+                "identity_pack": identity_pack
+                if isinstance(identity_pack, dict)
+                else {},
+                "knowledge_ready": bool(ks.get("ready"))
+                if isinstance(ks, dict)
+                else False,
+                "knowledge_last_sync": ks.get("last_sync")
+                if isinstance(ks, dict)
+                else None,
+            }
+        )
+
+        ctx["snapshot"] = compact
         ctx["snapshot_meta"] = {
-            "snapshotter": "CEOConsoleSnapshotService",
+            "snapshotter": "SystemReadExecutor",
             "available": True,
             "source": "server",
         }
+
     except Exception as e:
         ctx["snapshot"] = {"available": False, "error": str(e)}
         ctx["snapshot_meta"] = {
@@ -193,28 +286,6 @@ async def _build_context(req: CEOCommandRequest) -> Dict[str, Any]:
         }
 
     return ctx
-
-
-# ======================
-# DETERMINISTIC FALLBACKS (NO GUESSING)
-# ======================
-
-
-_IDENTITY_RE = re.compile(
-    r"^\s*(ko\s*si\s*ti|ko\s*si|šta\s*si|sta\s*si|who\s*are\s*you)\s*\??\s*$",
-    re.IGNORECASE,
-)
-
-
-def _identity_answer() -> str:
-    return (
-        f"Ja sam {SYSTEM_NAME} CEO Advisor (read-only) servis. "
-        f"Verzija: {VERSION}. "
-        "Mogu: (1) dati sažetak dashboard snapshot-a, (2) predložiti komande kao PROPOSALS "
-        "koje idu kroz approval flow, i (3) objasniti status sistema. "
-        "Ako želiš akciju, napiši konkretno: npr. 'kreiraj cilj X', 'prikaži top 5 taskova', "
-        "'predloži plan za KPI OS'."
-    )
 
 
 # ======================
@@ -231,30 +302,33 @@ async def _ceo_advice_via_agent_router(
         message=text,
         snapshot=context.get("snapshot"),
         preferred_agent_id="ceo_advisor",
-        metadata={
-            "read_only": True,
-            # give the agent a chance to answer the question,
-            # but keep system safe:
-            "mode": "ceo_console_read_only",
-        },
+        metadata={"read_only": True},
     )
 
     out: AgentOutput = await _agent_router.route(agent_input)
 
-    summary = (out.text or "").strip()
-    if not summary:
-        summary = "Nema dostupnih podataka u snapshotu."
+    if not out.text:
+        out.text = "Nema dostupnih podataka u snapshotu."
 
-    proposed = [
-        ProposedAICommand(
-            command_type=p.command,
-            payload=p.args or {},
+    proposed: List[ProposedAICommand] = []
+    for p in out.proposed_commands or []:
+        if not p.command:
+            continue
+
+        payload = p.args or {}
+        # FIX: ensure refresh_snapshot proposal has a usable payload
+        if p.command == "refresh_snapshot" and (
+            not isinstance(payload, dict) or not payload
+        ):
+            payload = {"source": "ceo_dashboard"}
+
+        proposed.append(
+            ProposedAICommand(
+                command_type=p.command,
+                payload=payload if isinstance(payload, dict) else {},
+            )
         )
-        for p in (out.proposed_commands or [])
-        if getattr(p, "command", None)
-    ]
 
-    # Always ensure at least 1 proposed command exists (your requirement)
     if not proposed:
         proposed.append(
             ProposedAICommand(
@@ -264,7 +338,7 @@ async def _ceo_advice_via_agent_router(
         )
 
     return {
-        "summary": summary,
+        "summary": out.text,
         "proposed_commands": proposed,
         "trace": out.trace or {},
     }
@@ -293,41 +367,18 @@ def ceo_console_status() -> Dict[str, Any]:
 
 @router.post("/command", response_model=CEOCommandResponse)
 async def ceo_command(req: CEOCommandRequest = Body(...)) -> CEOCommandResponse:
-    text_in = (req.text or "").strip()
-    if not text_in:
+    text = req.text.strip()
+    if not text:
         raise HTTPException(status_code=400, detail="text required")
 
     context = await _build_context(req)
-
-    # Deterministic identity answer (no dependence on LLM prompt)
-    if _IDENTITY_RE.match(text_in):
-        summary = _identity_answer()
-        proposed = [
-            ProposedAICommand(
-                command_type="refresh_snapshot",
-                payload={"source": "ceo_console"},
-            )
-        ]
-        return CEOCommandResponse(
-            ok=True,
-            read_only=True,
-            context=context,
-            text=summary,
-            summary=summary,
-            proposed_commands=proposed,
-            trace={"path": "deterministic_identity"},
-        )
-
-    # Normal path: agent router
-    result = await _ceo_advice_via_agent_router(text_in, context)
-    summary = (result.get("summary") or "").strip()
+    result = await _ceo_advice_via_agent_router(text, context)
 
     return CEOCommandResponse(
         ok=True,
         read_only=True,
         context=context,
-        text=summary,  # IMPORTANT for frontend
-        summary=summary,
+        summary=result.get("summary", ""),
         proposed_commands=result.get("proposed_commands", []),
         trace=result.get("trace", {}),
     )
