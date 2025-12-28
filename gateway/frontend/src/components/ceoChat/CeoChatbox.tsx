@@ -6,7 +6,6 @@ import type {
   GovernanceEventItem,
   NormalizedConsoleResponse,
   UiStrings,
-  CeoCommandRequest,
 } from "./types";
 import type { CeoConsoleApi } from "./api";
 import { createCeoConsoleApi } from "./api";
@@ -28,8 +27,8 @@ const formatTime = (ms: number) => {
 
 type CeoChatboxProps = {
   ceoCommandUrl: string;
-  approveUrl?: string; // if not provided, we fall back to /api/ai-ops/approval/approve
-  executeRawUrl?: string; // if not provided, we fall back to /api/execute/raw
+  approveUrl?: string; // POST { approval_id }
+  executeRawUrl?: string; // POST { command,intent,params,initiator,read_only,metadata }
   headers?: Record<string, string>;
   strings?: Partial<UiStrings>;
   onOpenApprovals?: (approvalRequestId?: string) => void;
@@ -51,23 +50,21 @@ const makeSystemProcessingItem = (requestId?: string): ChatMessageItem => ({
 const toGovernanceCard = (
   resp: NormalizedConsoleResponse
 ): GovernanceEventItem | null => {
-  if (!resp.governance) return null;
+  const gov = (resp as any)?.governance;
+  if (!gov) return null;
   return {
     id: uid(),
     kind: "governance",
     createdAt: now(),
-    state: resp.governance.state,
-    title: resp.governance.title,
-    summary: resp.governance.summary,
-    reasons: resp.governance.reasons,
-    approvalRequestId: resp.governance.approvalRequestId,
-    requestId: resp.requestId,
+    state: gov.state,
+    title: gov.title,
+    summary: gov.summary,
+    reasons: gov.reasons,
+    approvalRequestId: gov.approvalRequestId,
+    requestId: (resp as any)?.requestId,
   };
 };
 
-// ---------
-// EXTRA: extract proposed_commands from normalized response (defensive)
-// ---------
 type ProposedCmd = {
   command_type: string;
   payload: Record<string, any>;
@@ -115,18 +112,11 @@ const _extractProposedCommands = (resp: any): ProposedCmd[] => {
 };
 
 const _pickText = (x: any): string => {
+  if (typeof x === "string") return x.trim();
   if (!x || typeof x !== "object") return "";
-  const keys = [
-    "systemText",
-    "summary",
-    "text",
-    "message",
-    "output_text",
-    "outputText",
-    "assistant_text",
-  ];
+  const keys = ["summary", "text", "message", "output_text", "outputText"];
   for (const k of keys) {
-    const v = (x as any)[k];
+    const v = x[k];
     if (typeof v === "string" && v.trim()) return v.trim();
   }
   return "";
@@ -171,9 +161,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
   const updateItem = useCallback((id: string, patch: Partial<ChatItem>) => {
     setItems((prev) =>
       prev.map((x) =>
-        x.id === id
-          ? ({ ...x, ...(patch as any) } as ChatItem) // <- HARD TS FIX (no runtime change)
-          : x
+        x.id === id ? ({ ...x, ...(patch as any) } as ChatItem) : x
       )
     );
   }, []);
@@ -186,13 +174,14 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
 
   const flushResponseToUi = useCallback(
     async (placeholderId: string, resp: NormalizedConsoleResponse) => {
-      if (resp.stream) {
+      // If your api layer supports streaming, keep it.
+      if ((resp as any).stream) {
         setBusy("streaming");
         updateItem(placeholderId, { content: "", status: "streaming" });
 
         let acc = "";
         try {
-          for await (const chunk of resp.stream) {
+          for await (const chunk of (resp as any).stream) {
             acc += chunk;
             updateItem(placeholderId, { content: acc, status: "streaming" });
             if (isPinnedToBottom) scrollToBottom(false);
@@ -210,13 +199,14 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         return;
       }
 
-      // non-stream response: prefer systemText, otherwise pick from raw-ish fields defensively
+      // IMPORTANT: backend returns { summary: "...", proposed_commands: [...] }
       const sysText =
-        resp.systemText && resp.systemText.trim()
-          ? resp.systemText
-          : _pickText(resp as any);
+        (resp as any).systemText ??
+        (resp as any).summary ??
+        (resp as any).text ??
+        "";
 
-      updateItem(placeholderId, { content: sysText ?? "", status: "final" });
+      updateItem(placeholderId, { content: sysText, status: "final" });
 
       const gov = toGovernanceCard(resp);
       if (gov) appendItem(gov);
@@ -227,9 +217,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
     [appendItem, updateItem, isPinnedToBottom, scrollToBottom]
   );
 
-  // ---------
-  // AUTO EXECUTION: execute/raw + approve, based on proposed_commands
-  // ---------
+  // Optional: auto execute only refresh_snapshot
   const autoExecuteFirstProposed = useCallback(
     async (resp: NormalizedConsoleResponse, signal: AbortSignal) => {
       const proposed = _extractProposedCommands(resp as any);
@@ -238,7 +226,6 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       const first = proposed[0];
       const cmd = first.command_type;
 
-      // We only auto-execute if it's a safe expected command (extend later)
       if (cmd !== "refresh_snapshot") return null;
 
       const execUrl = executeRawUrl ?? "/api/execute/raw";
@@ -247,7 +234,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       const execBody = {
         command: cmd,
         intent: cmd,
-        params: first.payload || { source: "ceo_dashboard" },
+        params: { source: "ceo_dashboard", ...(first.payload || {}) },
         initiator: "ceo",
         read_only: false,
         metadata: { origin: "ceo_chatbox_auto" },
@@ -284,10 +271,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
           ? execJson.approval_id
           : null;
 
-      if (!approvalId) {
-        // Some commands might not require approval; we return raw executor result
-        return execJson;
-      }
+      if (!approvalId) return execJson;
 
       const approveRes = await fetch(appUrl, {
         method: "POST",
@@ -345,20 +329,22 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
     abortRef.current = controller;
 
     try {
-      // Backend CEO Console expects: { text, initiator?, session_id?, context_hint? }
-      const req: CeoCommandRequest = {
+      // CRITICAL FIX:
+      // Backend ceo_console_router expects: { text, initiator, session_id?, context_hint? }
+      const req: any = {
         text: trimmed,
-        initiator: "ceo",
+        initiator: "ceo_dashboard",
+        context_hint: {},
       };
 
       const resp = await api.sendCommand(req, controller.signal);
 
       abortRef.current = null;
 
-      // 1) show advisor response first
+      // show advisor response
       await flushResponseToUi(placeholder.id, resp);
 
-      // 2) auto-exec safe proposal (refresh_snapshot)
+      // auto-exec (only refresh_snapshot)
       try {
         const execResult = await autoExecuteFirstProposed(resp, controller.signal);
         if (execResult) {
@@ -384,12 +370,15 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
           id: uid(),
           kind: "message",
           role: "system",
-          content: `Ne mogu automatski izvršiti proposal.\n${msg}`,
+          content: `Auto-exec nije uspio.\n${msg}`,
           status: "final",
           createdAt: now(),
           requestId: clientRequestId,
         } as ChatMessageItem);
       }
+
+      setBusy("idle");
+      setLastError(null);
     } catch (e) {
       abortRef.current = null;
       const msg = e instanceof Error ? e.message : String(e);
@@ -654,14 +643,6 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
   );
 };
 
-/**
- * HARD FIX (local, file-level):
- * Ako TypeScript u projektu trenutno nema React JSX types, VSCode prijavi:
- * "no interface JSX.IntrinsicElements exists" i podcrta SVE JSX elemente.
- * Ovaj blok uklanja tu blokadu da fajl kompilira odmah.
- *
- * (Kad središ dependency/tsconfig kasnije, ovaj blok možeš obrisati.)
- */
 declare global {
   // eslint-disable-next-line @typescript-eslint/no-namespace
   namespace JSX {
