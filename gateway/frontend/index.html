@@ -8,14 +8,27 @@
   <body>
     <div id="root"></div>
 
-    <!-- Runtime config: backend može kasnije injectati prave vrijednosti preko /api/config -->
+    <!-- Runtime config (PROD SAFE):
+         - apiOrigin MUST be same-origin in production (Render)
+         - In dev (Vite), it will still be http://localhost:5173 and you can proxy if needed
+    -->
     <script>
-      window.CEO_CHATBOX_CONFIG = window.CEO_CHATBOX_CONFIG || {
-        apiOrigin: "",
-        ceoCommandUrl: "/api/ceo/command",
-        approveUrl: "/api/ai-ops/approval/approve",
-        proposalsExecuteUrl: "/api/proposals/execute",
-      };
+      (function () {
+        const origin = window.location.origin; // e.g. https://adnan-backend-v4.onrender.com
+
+        // If something already injected config, keep it, but enforce apiOrigin sanity.
+        const existing = window.CEO_CHATBOX_CONFIG || {};
+
+        window.CEO_CHATBOX_CONFIG = {
+          // CRITICAL FIX: never default to localhost in production
+          apiOrigin: existing.apiOrigin && existing.apiOrigin.trim() ? existing.apiOrigin : origin,
+
+          // Canon endpoints
+          ceoCommandUrl: existing.ceoCommandUrl || "/api/ceo/command",
+          approveUrl: existing.approveUrl || "/api/ai-ops/approval/approve",
+          proposalsExecuteUrl: existing.proposalsExecuteUrl || "/api/proposals/execute",
+        };
+      })();
     </script>
 
     <script type="module" src="/src/main.tsx"></script>
