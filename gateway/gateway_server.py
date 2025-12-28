@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import Body, FastAPI, HTTPException, Request
+from fastapi import Body, FastAPI, HTTPException, Request, Response
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
@@ -466,8 +466,6 @@ cors_origins: List[str] = [
 ]
 cors_origins += _parse_origins(os.getenv("CORS_ORIGINS", ""))
 
-# If you do NOT use cookies/sessions, you can set allow_credentials=False.
-# Keeping True here because your earlier setup implied approvals may need auth.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
@@ -481,74 +479,18 @@ app.add_middleware(
 # ================================================================
 app.include_router(audit_router, prefix="/api")
 app.include_router(adnan_ai_router, prefix="/api")
-
-# AI UX entrypoint (/api/ai/run)
-app.include_router(ai_router_module.router, prefix="/api")
-
-# AI OPS (approvals + agents registry/health)
+app.include_router(ai_router_module.router, prefix="/api")  # /api/ai/run
 app.include_router(ai_ops_router, prefix="/api")
-
-# CEO Console (READ-only)
-app.include_router(ceo_console_module.router, prefix="/api")
-
+app.include_router(
+    ceo_console_module.router, prefix="/api"
+)  # READ-only CEO console router
 app.include_router(metrics_router, prefix="/api")
 app.include_router(alerting_router, prefix="/api")
-
-# FAZA 4: Canonical Chat endpoint — /api/chat
-app.include_router(_chat_router, prefix="/api")
-
-# ================================================================
-# REACT FRONTEND (PROD BUILD) — SERVE dist/
-# ================================================================
-if not FRONTEND_DIST_DIR.is_dir():
-    logger.warning("React dist directory not found: %s", FRONTEND_DIST_DIR)
-else:
-    # Serve /assets/* (Vite default)
-    if FRONTEND_ASSETS_DIR.is_dir():
-        app.mount(
-            "/assets",
-            StaticFiles(directory=str(FRONTEND_ASSETS_DIR)),
-            name="assets",
-        )
-
-    @app.get("/", include_in_schema=False)
-    async def serve_frontend_index():
-        index_path = FRONTEND_DIST_DIR / "index.html"
-        if not index_path.is_file():
-            raise HTTPException(
-                status_code=404,
-                detail="React frontend not built (dist/index.html missing)",
-            )
-        return FileResponse(str(index_path))
-
-    # SPA fallback for deep links (non-API paths)
-    @app.get("/{full_path:path}", include_in_schema=False)
-    async def spa_fallback(full_path: str):
-        # Don't hijack API, assets, or docs endpoints
-        if (
-            full_path.startswith("api/")
-            or full_path.startswith("assets/")
-            or full_path in ("docs", "redoc", "openapi.json", "health", "ready")
-        ):
-            raise HTTPException(status_code=404, detail="Not found")
-
-        # Serve static files if they exist (favicon, manifest, etc.)
-        maybe_file = FRONTEND_DIST_DIR / full_path
-        if maybe_file.is_file():
-            return FileResponse(str(maybe_file))
-
-        index_path = FRONTEND_DIST_DIR / "index.html"
-        if not index_path.is_file():
-            raise HTTPException(
-                status_code=404,
-                detail="React frontend not built (dist/index.html missing)",
-            )
-        return FileResponse(str(index_path))
+app.include_router(_chat_router, prefix="/api")  # /api/chat
 
 
 # ================================================================
 # REQUEST MODELS
-# IMPORTANT: avoid mutable defaults ({}). Use default_factory instead.
 # ================================================================
 class ExecuteInput(BaseModel):
     text: str
@@ -557,7 +499,7 @@ class ExecuteInput(BaseModel):
 class ExecuteRawInput(BaseModel):
     command: str
     intent: str
-    params: Dict[str, Any] = Field(default_factory=dict)  # safe default
+    params: Dict[str, Any] = Field(default_factory=dict)
 
 
 class CeoCommandInput(BaseModel):
@@ -569,7 +511,7 @@ class CeoCommandInput(BaseModel):
 class ProposalExecuteInput(BaseModel):
     proposal: ProposedCommand
     initiator: str = "ceo"
-    metadata: Dict[str, Any] = Field(default_factory=dict)  # safe default
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 def _preprocess_ceo_nl_input(
@@ -663,14 +605,6 @@ def _derive_legacy_goal_task_summaries_from_ceo_snapshot(
 # ================================================================
 @app.post("/api/execute")
 async def execute_command(payload: ExecuteInput):
-    """
-    Canonical OS execution endpoint.
-
-    1) Pokušaj da NL → AICommand preko COOTranslationService.
-    2) Ako uspije → standardni execution_orchestrator flow (sa approvalima).
-    3) Ako NE uspije (None) → tretiraj kao CEO advisory zahtjev
-       i preusmjeri na CEO Console / CEOAdvisor (READ-ONLY).
-    """
     ai_command = coo_translation_service.translate(
         raw_input=payload.text,
         source="system",
@@ -784,13 +718,6 @@ async def execute_raw_command(payload: ExecuteRawInput2):
 # ================================================================
 @app.post("/api/proposals/execute")
 async def execute_proposal(payload: ProposalExecuteInput):
-    """
-    CANON:
-      - Accept one proposal (from /api/chat).
-      - Create approval + execution_id.
-      - Register execution for orchestrator.resume().
-      - Return BLOCKED.
-    """
     proposal = payload.proposal
     initiator = (payload.initiator or "ceo").strip() or "ceo"
     meta_in = payload.metadata if isinstance(payload.metadata, dict) else {}
@@ -1069,10 +996,9 @@ async def ceo_dashboard_command_api(payload: CeoCommandInput):
         result["text"] = result.get("summary") or ""
 
     tr = result.get("trace")
-    if isinstance(tr, dict):
-        if result.get("text"):
-            tr["agent_router_empty_text"] = False
-            tr["agent_output_text_len"] = len(str(result.get("text") or ""))
+    if isinstance(tr, dict) and result.get("text"):
+        tr["agent_router_empty_text"] = False
+        tr["agent_output_text_len"] = len(str(result.get("text") or ""))
 
     return JSONResponse(content=result, media_type="application/json; charset=utf-8")
 
@@ -1161,7 +1087,7 @@ async def ceo_weekly_priority_memory():
 
 
 # ================================================================
-# HEALTH / READY
+# HEALTH / READY  (MORA BITI IZNAD SPA FALLBACK-A)
 # ================================================================
 @app.get("/health")
 async def health_check():
@@ -1195,3 +1121,53 @@ async def global_exception_handler(_: Request, exc: Exception):
     return JSONResponse(
         status_code=500, content={"status": "error", "message": str(exc)}
     )
+
+
+# ================================================================
+# REACT FRONTEND (PROD BUILD) — SERVE dist/
+#  - STAVLJENO NA KRAJ da ne “pojede” /health i /ready
+#  - Dodan HEAD / da Render probe ne dobije 405
+# ================================================================
+if not FRONTEND_DIST_DIR.is_dir():
+    logger.warning("React dist directory not found: %s", FRONTEND_DIST_DIR)
+else:
+    if FRONTEND_ASSETS_DIR.is_dir():
+        app.mount(
+            "/assets", StaticFiles(directory=str(FRONTEND_ASSETS_DIR)), name="assets"
+        )
+
+    @app.head("/", include_in_schema=False)
+    async def head_root():
+        return Response(status_code=200)
+
+    @app.get("/", include_in_schema=False)
+    async def serve_frontend_index():
+        index_path = FRONTEND_DIST_DIR / "index.html"
+        if not index_path.is_file():
+            raise HTTPException(
+                status_code=404,
+                detail="React frontend not built (dist/index.html missing)",
+            )
+        return FileResponse(str(index_path))
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def spa_fallback(full_path: str):
+        # Don't hijack API, assets, docs, or health endpoints
+        if (
+            full_path.startswith("api/")
+            or full_path.startswith("assets/")
+            or full_path in ("docs", "redoc", "openapi.json", "health", "ready")
+        ):
+            raise HTTPException(status_code=404, detail="Not found")
+
+        maybe_file = FRONTEND_DIST_DIR / full_path
+        if maybe_file.is_file():
+            return FileResponse(str(maybe_file))
+
+        index_path = FRONTEND_DIST_DIR / "index.html"
+        if not index_path.is_file():
+            raise HTTPException(
+                status_code=404,
+                detail="React frontend not built (dist/index.html missing)",
+            )
+        return FileResponse(str(index_path))
