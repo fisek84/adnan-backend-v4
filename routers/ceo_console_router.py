@@ -39,7 +39,7 @@ class CEOCommandRequest(BaseModel):
 
 class ProposedAICommand(BaseModel):
     command_type: str
-    payload: Dict[str, Any] = {}
+    payload: Dict[str, Any] = Field(default_factory=dict)
     status: str = "BLOCKED"
     required_approval: bool = True
     cost_hint: Optional[str] = None
@@ -49,13 +49,18 @@ class ProposedAICommand(BaseModel):
 class CEOCommandResponse(BaseModel):
     ok: bool = True
     read_only: bool = True
-    context: Dict[str, Any] = {}
+
+    # IMPORTANT: frontend contract — many UIs render "text"
+    # Keep summary as canonical, but always mirror into text.
+    text: str = ""
+
+    context: Dict[str, Any] = Field(default_factory=dict)
     summary: str = ""
-    questions: List[str] = []
-    plan: List[str] = []
-    options: List[str] = []
-    proposed_commands: List[ProposedAICommand] = []
-    trace: Dict[str, Any] = {}
+    questions: List[str] = Field(default_factory=list)
+    plan: List[str] = Field(default_factory=list)
+    options: List[str] = Field(default_factory=list)
+    proposed_commands: List[ProposedAICommand] = Field(default_factory=list)
+    trace: Dict[str, Any] = Field(default_factory=dict)
 
 
 # ======================
@@ -195,7 +200,7 @@ async def _ceo_advice_via_agent_router(
             command_type=p.command,
             payload=p.args or {},
         )
-        for p in out.proposed_commands or []
+        for p in (out.proposed_commands or [])
         if p.command
     ]
 
@@ -237,18 +242,25 @@ def ceo_console_status() -> Dict[str, Any]:
 
 @router.post("/command", response_model=CEOCommandResponse)
 async def ceo_command(req: CEOCommandRequest = Body(...)) -> CEOCommandResponse:
-    text = req.text.strip()
-    if not text:
+    text_in = (req.text or "").strip()
+    if not text_in:
         raise HTTPException(status_code=400, detail="text required")
 
     context = await _build_context(req)
-    result = await _ceo_advice_via_agent_router(text, context)
+    result = await _ceo_advice_via_agent_router(text_in, context)
+
+    summary = (result.get("summary") or "").strip()
+
+    # CRITICAL: frontend contract (white screen fix)
+    # Always provide "text" (mirror of summary).
+    text_out = summary
 
     return CEOCommandResponse(
         ok=True,
         read_only=True,
+        text=text_out,
         context=context,
-        summary=result.get("summary", ""),
+        summary=summary,
         proposed_commands=result.get("proposed_commands", []),
         trace=result.get("trace", {}),
     )
