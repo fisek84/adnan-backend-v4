@@ -202,7 +202,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         return;
       }
 
-      const sysText = resp.systemText ?? resp.summary ?? resp.text ?? "";
+      const sysText = resp.systemText ?? "";
       updateItem(placeholderId, { content: sysText, status: "final" });
 
       const gov = toGovernanceCard(resp);
