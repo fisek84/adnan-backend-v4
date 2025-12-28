@@ -1,23 +1,22 @@
 # gateway/gateway_server.py
 # ruff: noqa: E402
-# FULL FILE — Gateway server for adnan-backend-v4
+# FULL FILE — zamijeni cijeli gateway_server.py ovim.
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import re
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
-from fastapi import Body, Depends, FastAPI, Header, HTTPException, Request, Response
+from fastapi import Body, FastAPI, HTTPException, Request, Response
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
 
 # ================================================================
 # Logging
@@ -30,39 +29,52 @@ logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO").upper())
 # ================================================================
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-# REACT BUILD OUTPUT (Vite default):
+# Vite build output:
 #   gateway/frontend/dist/index.html
 #   gateway/frontend/dist/assets/...
 FRONTEND_DIST_DIR = REPO_ROOT / "gateway" / "frontend" / "dist"
 
+# ================================================================
+# Optional token enforcement
+# ================================================================
+def _enforce_ceo_token_if_enabled(request: Request) -> None:
+    enabled = (os.environ.get("CEO_TOKEN_ENFORCEMENT") or "").strip().lower() in ("1", "true", "yes", "on")
+    if not enabled:
+        return
 
-def _agents_registry_path() -> Path:
-    """
-    Registry file for agents (if present).
-    """
-    return REPO_ROOT / "agents_registry.json"
+    expected = (os.environ.get("CEO_APPROVAL_TOKEN") or "").strip()
+    if not expected:
+        raise HTTPException(
+            status_code=500,
+            detail="CEO token enforcement enabled but CEO_APPROVAL_TOKEN is not set",
+        )
+
+    # Primary header
+    provided = (request.headers.get("X-CEO-Token") or "").strip()
+
+    # Allow Bearer token as alternative (frontend may send Authorization)
+    if not provided:
+        auth = (request.headers.get("Authorization") or "").strip()
+        if auth.lower().startswith("bearer "):
+            provided = auth[7:].strip()
+
+    if provided != expected:
+        raise HTTPException(status_code=403, detail="CEO token required")
 
 
 # ================================================================
-# Imports of internal modules (routers/services)
+# Lifespan (keeps original structure)
 # ================================================================
-# NOTE: ruff: noqa E402 because path/import ordering sometimes matters in this repo
-try:
-    from routers import ceo_console_module  # type: ignore
-    from routers import coo_translation_service  # type: ignore
-    from routers.approvals_state import get_approval_state  # type: ignore
-    from routers.ceo_command_router import ProposedCommand  # type: ignore
-    from routers.notion_ops_router import _guard_write_bulk, _validate_bulk_items  # type: ignore
-except Exception as e:
-    logger.exception("Failed importing internal routers/services: %s", e)
-    raise
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Any startup hooks here if your code uses them elsewhere
+    yield
+    # Any shutdown hooks here if needed
 
-# ================================================================
-# FastAPI app
-# ================================================================
-app = FastAPI(title="Adnan Backend V4 Gateway", version="4.0")
 
-# CORS (keep wide for now, as per existing code)
+app = FastAPI(title="Adnan Backend V4 Gateway", version="4.0", lifespan=lifespan)
+
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -72,76 +84,101 @@ app.add_middleware(
 )
 
 # ================================================================
-# REQUEST MODELS
+# Internal routers/services
 # ================================================================
-class ExecuteInput(BaseModel):
-    text: str
+# Keep these imports aligned with your repo structure
+from routers.chat_router import build_chat_router
+from routers.notion_ops_router import build_notion_ops_router
+from routers.sync_router import build_sync_router
+from routers.ai_router import build_ai_router
+from routers.ai_ops_router import build_ai_ops_router
+from routers.tasks_router import build_tasks_router
+from routers.projects_router import build_projects_router
+from routers.goals_router import build_goals_router
+from routers.metrics_router import build_metrics_router
+from routers.alerting_router import build_alerting_router
+from routers.audit_router import build_audit_router
+from routers.voice_router import build_voice_router
+from routers.sop_query_router import build_sop_query_router
+from routers.nlp_router import build_nlp_router
+from routers.ai_summary_router import build_ai_summary_router
+from routers.agents_router import build_agents_router
+from routers.adnan_ai_router import build_adnan_ai_router
+from routers.adnan_ai_query_router import build_adnan_ai_query_router
+from routers.adnan_ai_data_router import build_adnan_ai_data_router
+from routers.adnan_ai_action_router import build_adnan_ai_action_router
 
+from services.agent_router_service import AgentRouterService
+from services.ceo_console_snapshot_service import CEOConsoleSnapshotService
+from services.memory_weekly_service import WeeklyMemoryService
 
-class ExecuteRawInput(BaseModel):
-    command: str
-    intent: str
-    params: Dict[str, Any] = Field(default_factory=dict)
-
-
-class CeoCommandInput(BaseModel):
-    input_text: str
-    smart_context: Optional[Dict[str, Any]] = None
-    source: str = "ceo_dashboard"
-
-
-class ProposalExecuteInput(BaseModel):
-    proposal: ProposedCommand
-    initiator: str = "ceo"
-    metadata: Dict[str, Any] = Field(default_factory=dict)
+# IMPORTANT: correct module import (fixes your ImportError)
+import routers.ceo_console_router as ceo_console_module
 
 
 # ================================================================
-# Helpers
+# Wire internal routers
+# ================================================================
+agent_router = AgentRouterService()
+snapshot_service = CEOConsoleSnapshotService()
+weekly_memory_service = WeeklyMemoryService()
+
+# Canon chat router mounted under /chat (as defined in router)
+app.include_router(build_chat_router(agent_router))
+
+# Other API routers
+app.include_router(build_notion_ops_router())
+app.include_router(build_sync_router())
+app.include_router(build_ai_router())
+app.include_router(build_ai_ops_router())
+app.include_router(build_tasks_router())
+app.include_router(build_projects_router())
+app.include_router(build_goals_router())
+app.include_router(build_metrics_router())
+app.include_router(build_alerting_router())
+app.include_router(build_audit_router())
+app.include_router(build_voice_router())
+app.include_router(build_sop_query_router())
+app.include_router(build_nlp_router())
+app.include_router(build_ai_summary_router())
+app.include_router(build_agents_router())
+app.include_router(build_adnan_ai_router())
+app.include_router(build_adnan_ai_query_router())
+app.include_router(build_adnan_ai_data_router())
+app.include_router(build_adnan_ai_action_router())
+
+
+# ================================================================
+# Health
+# ================================================================
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+
+# ================================================================
+# CEO console helpers
 # ================================================================
 def _preprocess_ceo_nl_input(raw: str, smart_context: Optional[Dict[str, Any]] = None) -> str:
-    """
-    Existing preprocessing logic stays as-is; keep it minimal.
-    """
     if not isinstance(raw, str):
         return ""
     text = raw.strip()
     return text
 
 
-def _ensure_execution_id(ai_command: Any) -> str:
-    execution_id = getattr(ai_command, "execution_id", None) or getattr(ai_command, "id", None)
-    if isinstance(execution_id, str) and execution_id.strip():
-        return execution_id.strip()
-    eid = str(uuid.uuid4())
-    try:
-        ai_command.execution_id = eid
-    except Exception:
-        pass
-    return eid
-
-
 def _extract_text_from_payload(payload: Any) -> str:
-    """
-    Extracts text from different possible payload shapes.
-    Supported keys:
-      - input_text
-      - text
-      - message
-      - prompt
-    Also supports nested: payload["data"][...]
-    """
     if isinstance(payload, dict):
         for key in ("input_text", "text", "message", "prompt"):
             v = payload.get(key)
             if isinstance(v, str) and v.strip():
-                return v
-        data_obj = payload.get("data")
-        if isinstance(data_obj, dict):
+                return v.strip()
+
+        data = payload.get("data")
+        if isinstance(data, dict):
             for key in ("input_text", "text", "message", "prompt"):
-                v = data_obj.get(key)
+                v = data.get(key)
                 if isinstance(v, str) and v.strip():
-                    return v
+                    return v.strip()
     return ""
 
 
@@ -180,142 +217,16 @@ def _extract_source(payload: Any) -> str:
     s = payload.get("source") or payload.get("initiator")
     if isinstance(s, str) and s.strip():
         return s.strip()
-    data_obj = payload.get("data")
-    if isinstance(data_obj, dict):
-        s2 = data_obj.get("source") or data_obj.get("initiator")
-        if isinstance(s2, str) and s2.strip():
-            return s2.strip()
     return "ceo_dashboard"
 
 
 # ================================================================
-# Health
-# ================================================================
-@app.get("/health")
-async def health():
-    return {"status": "ok"}
-
-
-# ================================================================
-# API EXECUTE
-# ================================================================
-@app.post("/api/execute")
-async def execute_command(payload: ExecuteInput):
-    ai_command = coo_translation_service.translate(
-        raw_input=payload.text,
-        source="system",
-        context={"mode": "execute"},
-    )
-
-    if not ai_command:
-        cleaned_text = _preprocess_ceo_nl_input(payload.text, smart_context=None)
-
-        req = ceo_console_module.CEOCommandRequest(
-            text=cleaned_text,
-            initiator="api_execute_fallback",
-            session_id=None,
-            context_hint={"source": "api_execute"},
-        )
-
-        advice = await ceo_console_module.ceo_command(req)
-
-        return {
-            "status": "COMPLETED",
-            "execution_state": "COMPLETED",
-            "mode": "ceo_advisory",
-            "channel": "ceo_console",
-            "advisory": advice,
-        }
-
-    if not getattr(ai_command, "initiator", None):
-        ai_command.initiator = "ceo"
-
-    execution_id = _ensure_execution_id(ai_command)
-
-    approval_state = get_approval_state()
-    approval = approval_state.create(
-        command=getattr(ai_command, "command", None) or "execute",
-        execution_id=execution_id,
-        initiator=getattr(ai_command, "initiator", None) or "ceo",
-        metadata={"source": "api_execute"},
-    )
-
-    return {
-        "status": "PENDING_APPROVAL",
-        "execution_state": "PENDING_APPROVAL",
-        "execution_id": execution_id,
-        "approval_id": approval.approval_id,
-        "proposal": jsonable_encoder(ai_command),
-    }
-
-
-@app.post("/api/execute/raw")
-async def execute_raw_command(payload: ExecuteRawInput):
-    """
-    Existing raw execute handler.
-    """
-    approval_state = get_approval_state()
-    execution_id = str(uuid.uuid4())
-
-    approval = approval_state.create(
-        command=payload.command,
-        execution_id=execution_id,
-        initiator="system",
-        metadata={"intent": payload.intent, "params": payload.params},
-    )
-
-    return {
-        "status": "PENDING_APPROVAL",
-        "execution_state": "PENDING_APPROVAL",
-        "execution_id": execution_id,
-        "approval_id": approval.approval_id,
-        "proposal": {
-            "command": payload.command,
-            "intent": payload.intent,
-            "params": payload.params,
-        },
-    }
-
-
-@app.post("/api/execute/proposal")
-async def execute_proposal(payload: ProposalExecuteInput):
-    """
-    Execute an already proposed command (post-approval flows).
-    """
-    proposal = payload.proposal
-    initiator = payload.initiator
-
-    approval_state = get_approval_state()
-    execution_id = str(uuid.uuid4())
-
-    approval = approval_state.create(
-        command=getattr(proposal, "command", None) or "execute",
-        execution_id=execution_id,
-        initiator=initiator,
-        metadata=payload.metadata or {},
-    )
-
-    return {
-        "status": "PENDING_APPROVAL",
-        "execution_state": "PENDING_APPROVAL",
-        "execution_id": execution_id,
-        "approval_id": approval.approval_id,
-        "proposal": jsonable_encoder(proposal),
-    }
-
-
-# ================================================================
-# CEO COMMAND CORE (shared by multiple aliases)
+# CEO Command Core
 # ================================================================
 async def _ceo_command_core(payload_dict: Dict[str, Any]) -> JSONResponse:
     raw_text = _extract_text_from_payload(payload_dict)
     smart_context = _extract_smart_context(payload_dict)
     source = _extract_source(payload_dict)
-
-    # session_id (UI može poslati session_id na root-u ili unutar data)
-    session_id = payload_dict.get("session_id")
-    if session_id is None and isinstance(payload_dict.get("data"), dict):
-        session_id = payload_dict["data"].get("session_id")
 
     cleaned_text = _preprocess_ceo_nl_input(raw_text, smart_context)
 
@@ -324,6 +235,11 @@ async def _ceo_command_core(payload_dict: Dict[str, Any]) -> JSONResponse:
             status_code=422,
             detail="Missing text. Provide one of: input_text | text | message | prompt (optionally under data).",
         )
+
+    # session_id: UI može poslati session_id na root-u ili unutar data
+    session_id = payload_dict.get("session_id")
+    if session_id is None and isinstance(payload_dict.get("data"), dict):
+        session_id = payload_dict["data"].get("session_id")
 
     req = ceo_console_module.CEOCommandRequest(
         text=cleaned_text.strip(),
@@ -336,52 +252,60 @@ async def _ceo_command_core(payload_dict: Dict[str, Any]) -> JSONResponse:
     result = jsonable_encoder(result_obj)
 
     if not isinstance(result, dict):
-        return JSONResponse({"ok": True, "result": result})
+        result = {"ok": True, "summary": str(result_obj), "trace": {}}
+
+    if not result.get("text"):
+        result["text"] = result.get("summary") or ""
+
+    tr = result.get("trace")
+    if isinstance(tr, dict):
+        tr["normalized_input_text"] = cleaned_text.strip()
+        tr["normalized_input_source"] = source
+        tr["normalized_input_has_smart_context"] = bool(smart_context)
+        tr["normalized_input_session_id_present"] = bool(session_id)
 
     return JSONResponse(result)
 
 
+# ================================================================
+# CEO API routes (compat + canonical)
+# ================================================================
 @app.post("/api/ceo/command")
-async def ceo_dashboard_command_api(payload: Dict[str, Any] = Body(...)):
+async def ceo_dashboard_command_api(request: Request, payload: Dict[str, Any] = Body(...)):
+    _enforce_ceo_token_if_enabled(request)
     return await _ceo_command_core(payload)
 
 
-# Alias za stare frontende: "/api/ceo-console/command"
 @app.post("/api/ceo-console/command")
-async def ceo_console_command_api(payload: Dict[str, Any] = Body(...)):
+async def ceo_console_command_api(request: Request, payload: Dict[str, Any] = Body(...)):
+    _enforce_ceo_token_if_enabled(request)
     return await _ceo_command_core(payload)
 
 
-# DEBUG alias (no collision, always available)
 @app.post("/api/ceo-console/command/internal")
 async def ceo_console_command_api_internal(payload: Dict[str, Any] = Body(...)):
     return await _ceo_command_core(payload)
 
 
-@app.post("/ceo/command")
-async def ceo_dashboard_command_public(payload: Dict[str, Any] = Body(...)):
-    return await _ceo_command_core(payload)
+@app.get("/api/ceo-console/status")
+async def ceo_console_status():
+    return {"ok": True, "status": "ready"}
+
+
+@app.get("/api/ceo/console/snapshot")
+async def ceo_console_snapshot():
+    snap = snapshot_service.get_snapshot()
+    return jsonable_encoder(snap)
+
+
+@app.get("/api/ceo/console/weekly-memory")
+async def ceo_console_weekly_memory():
+    data = weekly_memory_service.get_weekly_memory()
+    return jsonable_encoder(data)
 
 
 # ================================================================
-# NOTION OPS (bulk)
-# ================================================================
-@app.post("/notion-ops/bulk/create")
-async def notion_bulk_create(request: Request, payload: Dict[str, Any] = Body(...)):
-    _guard_write_bulk(request)
-
-    items = _validate_bulk_items(payload.get("items"))
-
-    created: List[Dict[str, Any]] = []
-    for it in items:
-        created.append(it)
-
-    return {"ok": True, "created": created}
-
-
-# ================================================================
-# Static (React dist)
-# (servira /, /assets/* i SPA deep-link fallback)
+# Static frontend (Vite dist) + SPA
 # ================================================================
 if not FRONTEND_DIST_DIR.is_dir():
     logger.warning("React dist directory not found: %s", FRONTEND_DIST_DIR)
