@@ -18,6 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from system_version import ARCH_LOCK, RELEASE_CHANNEL, SYSTEM_NAME, VERSION
 
@@ -1115,6 +1116,15 @@ async def ready_check():
 # ================================================================
 # GLOBAL ERROR HANDLER
 # ================================================================
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(_: Request, exc: StarletteHTTPException):
+    # Preserve HTTP status codes (404/403/422/...) instead of turning them into 500.
+    detail = getattr(exc, "detail", None)
+    return JSONResponse(
+        status_code=exc.status_code, content={"status": "error", "message": detail}
+    )
+
+
 @app.exception_handler(Exception)
 async def global_exception_handler(_: Request, exc: Exception):
     logger.exception("GLOBAL ERROR")
@@ -1127,13 +1137,16 @@ async def global_exception_handler(_: Request, exc: Exception):
 # REACT FRONTEND (PROD BUILD) — SERVE dist/
 #  - STAVLJENO NA KRAJ da ne “pojede” /health i /ready
 #  - Dodan HEAD / da Render probe ne dobije 405
+#  - HARD FIX: spa_fallback eksplicitno vraća /health i /ready umjesto 404
 # ================================================================
 if not FRONTEND_DIST_DIR.is_dir():
     logger.warning("React dist directory not found: %s", FRONTEND_DIST_DIR)
 else:
     if FRONTEND_ASSETS_DIR.is_dir():
         app.mount(
-            "/assets", StaticFiles(directory=str(FRONTEND_ASSETS_DIR)), name="assets"
+            "/assets",
+            StaticFiles(directory=str(FRONTEND_ASSETS_DIR)),
+            name="assets",
         )
 
     @app.head("/", include_in_schema=False)
@@ -1152,18 +1165,31 @@ else:
 
     @app.get("/{full_path:path}", include_in_schema=False)
     async def spa_fallback(full_path: str):
-        # Don't hijack API, assets, docs, or health endpoints
+        # HARD FIX: ako bilo šta “presretne” /health ili /ready, vrati prave odgovore
+        if full_path == "health":
+            return await health_check()
+        if full_path == "ready":
+            return await ready_check()
+
+        # Don't hijack API, assets, or docs endpoints
         if (
             full_path.startswith("api/")
             or full_path.startswith("assets/")
-            or full_path in ("docs", "redoc", "openapi.json", "health", "ready")
+            or full_path
+            in (
+                "docs",
+                "redoc",
+                "openapi.json",
+            )
         ):
             raise HTTPException(status_code=404, detail="Not found")
 
+        # Serve static files if they exist (favicon, manifest, etc.)
         maybe_file = FRONTEND_DIST_DIR / full_path
         if maybe_file.is_file():
             return FileResponse(str(maybe_file))
 
+        # Otherwise serve SPA index.html (deep links)
         index_path = FRONTEND_DIST_DIR / "index.html"
         if not index_path.is_file():
             raise HTTPException(
