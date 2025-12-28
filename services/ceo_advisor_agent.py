@@ -86,23 +86,89 @@ def _format_enforcer(user_text: str) -> str:
     )
 
 
+def _needs_structured_snapshot_answer(user_text: str) -> bool:
+    """
+    Heuristika: samo kad korisnik traži dashboard/operativno stanje,
+    forsiramo format i snapshot-only pravila.
+
+    Sve ostalo (npr. "ko si ti", "kako radi", "šta misliš") je normalan chat.
+    """
+    t = (user_text or "").strip().lower()
+    if not t:
+        return True
+
+    keywords = (
+        "dashboard",
+        "snapshot",
+        "stanje",
+        "status",
+        "cilj",
+        "ciljevi",
+        "goal",
+        "goals",
+        "task",
+        "tasks",
+        "zadaci",
+        "prioritet",
+        "kpi",
+        "leads",
+        "leadovi",
+        "plan",
+        "planovi",
+        "weekly",
+        "sedmica",
+        "nedelja",
+        "nedjelja",
+        "top 3",
+        "top 5",
+        "prikaži",
+        "prikazi",
+        "pokaži",
+        "pokazi",
+        "izlistaj",
+        "sažetak",
+        "sazetak",
+    )
+    return any(k in t for k in keywords)
+
+
+def _extract_goals_tasks(snapshot: Dict[str, Any]) -> tuple[Any, Any]:
+    """
+    Podržava oba oblika:
+      - snapshot.dashboard.goals/tasks
+      - snapshot.goals/tasks
+    """
+    dashboard = snapshot.get("dashboard") if isinstance(snapshot, dict) else {}
+    goals = None
+    tasks = None
+
+    if isinstance(dashboard, dict):
+        goals = dashboard.get("goals")
+        tasks = dashboard.get("tasks")
+
+    if goals is None:
+        goals = snapshot.get("goals") if isinstance(snapshot, dict) else None
+    if tasks is None:
+        tasks = snapshot.get("tasks") if isinstance(snapshot, dict) else None
+
+    return goals, tasks
+
+
 async def create_ceo_advisor_agent(
     agent_input: AgentInput, ctx: Dict[str, Any]
 ) -> AgentOutput:
     base_text = (agent_input.message or "").strip()
     if not base_text:
-        base_text = "Vrati stanje iz snapshot-a po kanonskom formatu."
+        base_text = "Reci ukratko šta možeš i kako mogu tražiti akciju."
 
     snapshot = agent_input.snapshot if isinstance(agent_input.snapshot, dict) else {}
+    structured_mode = _needs_structured_snapshot_answer(base_text)
 
     # =========================================================
-    # 🔴 SNAPSHOT GUARD — AKO JE PRAZAN, NE ZOVI LLM
+    # SNAPSHOT GUARD — samo za structured/dashboard upite
     # =========================================================
-    dashboard = snapshot.get("dashboard") if isinstance(snapshot, dict) else {}
-    goals = dashboard.get("goals") if isinstance(dashboard, dict) else None
-    tasks = dashboard.get("tasks") if isinstance(dashboard, dict) else None
-
-    if not goals and not tasks:
+    goals, tasks = _extract_goals_tasks(snapshot)
+    if structured_mode and not goals and not tasks:
         return AgentOutput(
             text=(
                 "NEMA DOVOLJNO PODATAKA U SNAPSHOT-U.\n\n"
@@ -123,11 +189,12 @@ async def create_ceo_advisor_agent(
             trace={
                 "snapshot_empty": True,
                 "snapshot_source": snapshot.get("source"),
+                "structured_mode": True,
             },
         )
 
     # =========================================================
-    # NORMALAN LLM PUT
+    # LLM PUT (read-only)
     # =========================================================
     safe_context: Dict[str, Any] = {
         "canon": {"read_only": True, "no_tools": True, "no_side_effects": True},
@@ -137,25 +204,28 @@ async def create_ceo_advisor_agent(
         else {},
     }
 
-    enforced_text = _format_enforcer(base_text)
+    if structured_mode:
+        prompt_text = _format_enforcer(base_text)
+    else:
+        # Normalan chat: bez prisilnog formata.
+        prompt_text = (
+            f"{base_text}\n\n"
+            "Odgovori prirodno i kratko (kao chatbot). "
+            "Ne forsiraj GOALS/TASKS format osim ako te to eksplicitno ne pitam."
+        )
 
     executor = OpenAIAssistantExecutor()
-    result = await executor.ceo_command(text=enforced_text, context=safe_context)
+    result = await executor.ceo_command(text=prompt_text, context=safe_context)
 
-    text_out = _pick_text(result)
-    if not text_out:
-        text_out = "CEO advisor nije vratio tekstualni output."
+    text_out = _pick_text(result) or "CEO advisor nije vratio tekstualni output."
 
-    proposed_items = None
-    if isinstance(result, dict):
-        proposed_items = result.get("proposed_commands")
-
+    proposed_items = (
+        result.get("proposed_commands") if isinstance(result, dict) else None
+    )
     proposed = _to_proposed_commands(proposed_items)
 
-    # =========================================================
-    # 🔴 DEFAULT COMMAND — FRONTEND MORA IMATI BAR JEDNU AKCIJU
-    # =========================================================
-    if not proposed:
+    # Samo u structured modu dodaj default akciju (da UI ima šta ponuditi)
+    if structured_mode and not proposed:
         proposed.append(
             ProposedCommand(
                 command="refresh_snapshot",
@@ -170,9 +240,8 @@ async def create_ceo_advisor_agent(
     trace = ctx.get("trace") if isinstance(ctx, dict) else {}
     if not isinstance(trace, dict):
         trace = {}
-
     trace["agent_output_text_len"] = len(text_out)
-    trace["agent_router_empty_text"] = False
+    trace["structured_mode"] = structured_mode
 
     return AgentOutput(
         text=text_out,
