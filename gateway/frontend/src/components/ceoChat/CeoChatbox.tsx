@@ -28,7 +28,8 @@ const formatTime = (ms: number) => {
 
 type CeoChatboxProps = {
   ceoCommandUrl: string;
-  approveUrl?: string;
+  approveUrl?: string; // if not provided, we fall back to /api/ai-ops/approval/approve
+  executeRawUrl?: string; // if not provided, we fall back to /api/execute/raw
   headers?: Record<string, string>;
   strings?: Partial<UiStrings>;
   onOpenApprovals?: (approvalRequestId?: string) => void;
@@ -64,9 +65,69 @@ const toGovernanceCard = (
   };
 };
 
+// ---------
+// EXTRA: extract proposed_commands from normalized response (defensive)
+// ---------
+type ProposedCmd = {
+  command_type: string;
+  payload: Record<string, any>;
+  required_approval?: boolean;
+  status?: string;
+};
+
+const _extractProposedCommands = (resp: any): ProposedCmd[] => {
+  const candidates = [
+    resp?.proposed_commands,
+    resp?.proposedCommands,
+    resp?.raw?.proposed_commands,
+    resp?.raw?.proposedCommands,
+    resp?.result?.proposed_commands,
+    resp?.result?.proposedCommands,
+  ];
+
+  for (const c of candidates) {
+    if (!Array.isArray(c)) continue;
+    const out: ProposedCmd[] = [];
+    for (const x of c) {
+      if (!x || typeof x !== "object") continue;
+      const command_type = String(
+        x.command_type ?? x.commandType ?? x.command ?? x.command_name ?? ""
+      ).trim();
+      const payloadRaw = x.payload ?? x.args ?? x.params ?? {};
+      const payload =
+        payloadRaw && typeof payloadRaw === "object" && !Array.isArray(payloadRaw)
+          ? payloadRaw
+          : {};
+      if (!command_type) continue;
+      out.push({
+        command_type,
+        payload,
+        required_approval: Boolean(
+          x.required_approval ?? x.requires_approval ?? x.requiresApproval ?? true
+        ),
+        status: typeof x.status === "string" ? x.status : undefined,
+      });
+    }
+    return out;
+  }
+
+  return [];
+};
+
+const _pickText = (x: any): string => {
+  if (!x || typeof x !== "object") return "";
+  const keys = ["summary", "text", "message", "output_text", "outputText"];
+  for (const k of keys) {
+    const v = (x as any)[k];
+    if (typeof v === "string" && v.trim()) return v.trim();
+  }
+  return "";
+};
+
 export const CeoChatbox: React.FC<CeoChatboxProps> = ({
   ceoCommandUrl,
   approveUrl,
+  executeRawUrl,
   headers,
   strings,
   onOpenApprovals,
@@ -141,7 +202,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         return;
       }
 
-      const sysText = resp.systemText ?? "";
+      const sysText = resp.systemText ?? resp.summary ?? resp.text ?? "";
       updateItem(placeholderId, { content: sysText, status: "final" });
 
       const gov = toGovernanceCard(resp);
@@ -151,6 +212,94 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       setLastError(null);
     },
     [appendItem, updateItem, isPinnedToBottom, scrollToBottom]
+  );
+
+  // ---------
+  // AUTO EXECUTION: execute/raw + approve, based on proposed_commands
+  // ---------
+  const autoExecuteFirstProposed = useCallback(
+    async (resp: NormalizedConsoleResponse, signal: AbortSignal) => {
+      const proposed = _extractProposedCommands(resp as any);
+      if (!proposed.length) return null;
+
+      const first = proposed[0];
+      const cmd = first.command_type;
+
+      // We only auto-execute if it's a safe expected command (extend later)
+      if (cmd !== "refresh_snapshot") return null;
+
+      const execUrl = executeRawUrl ?? "/api/execute/raw";
+      const appUrl = approveUrl ?? "/api/ai-ops/approval/approve";
+
+      const execBody = {
+        command: cmd,
+        intent: cmd,
+        params: first.payload || { source: "ceo_dashboard" },
+        initiator: "ceo",
+        read_only: false,
+        metadata: { origin: "ceo_chatbox_auto" },
+      };
+
+      const mergedHeaders: Record<string, string> = {
+        "Content-Type": "application/json",
+        ...(headers ?? {}),
+      };
+
+      const execRes = await fetch(execUrl, {
+        method: "POST",
+        headers: mergedHeaders,
+        body: JSON.stringify(execBody),
+        signal,
+      });
+
+      const execText = await execRes.text();
+      if (!execRes.ok) {
+        throw new Error(
+          `execute/raw failed (${execRes.status}): ${execText || "no body"}`
+        );
+      }
+
+      let execJson: any = {};
+      try {
+        execJson = execText ? JSON.parse(execText) : {};
+      } catch {
+        execJson = {};
+      }
+
+      const approvalId: string | null =
+        typeof execJson?.approval_id === "string" && execJson.approval_id
+          ? execJson.approval_id
+          : null;
+
+      if (!approvalId) {
+        // Some commands might not require approval; we return raw executor result
+        return execJson;
+      }
+
+      const approveRes = await fetch(appUrl, {
+        method: "POST",
+        headers: mergedHeaders,
+        body: JSON.stringify({ approval_id: approvalId }),
+        signal,
+      });
+
+      const approveText = await approveRes.text();
+      if (!approveRes.ok) {
+        throw new Error(
+          `approve failed (${approveRes.status}): ${approveText || "no body"}`
+        );
+      }
+
+      let approveJson: any = {};
+      try {
+        approveJson = approveText ? JSON.parse(approveText) : {};
+      } catch {
+        approveJson = {};
+      }
+
+      return approveJson;
+    },
+    [approveUrl, executeRawUrl, headers]
   );
 
   const submit = useCallback(async () => {
@@ -184,6 +333,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
 
     try {
       // Gateway expects: { input_text, smart_context, source }
+      // (api layer normalizes to backend shape)
       const req: CeoCommandRequest = {
         input_text: trimmed,
         smart_context: {},
@@ -193,7 +343,44 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       const resp = await api.sendCommand(req, controller.signal);
 
       abortRef.current = null;
+
+      // 1) show advisor response first
       await flushResponseToUi(placeholder.id, resp);
+
+      // 2) if response contains a proposed command and we have backend routes available, auto-execute it
+      // NOTE: this keeps CEO console UX "actionable" (proposal -> approval -> execution) without leaving chat.
+      try {
+        const execResult = await autoExecuteFirstProposed(resp, controller.signal);
+        if (execResult) {
+          const text =
+            _pickText(execResult) ||
+            (execResult?.execution_state
+              ? `Izvršeno: ${execResult.execution_state}`
+              : "Izvršeno.");
+
+          appendItem({
+            id: uid(),
+            kind: "message",
+            role: "system",
+            content: text,
+            status: "final",
+            createdAt: now(),
+            requestId: clientRequestId,
+          } as ChatMessageItem);
+        }
+      } catch (e) {
+        // If auto-exec fails, surface the error but keep the original advisor response intact
+        const msg = e instanceof Error ? e.message : String(e);
+        appendItem({
+          id: uid(),
+          kind: "message",
+          role: "system",
+          content: `Ne mogu automatski izvršiti proposal.\n${msg}`,
+          status: "final",
+          createdAt: now(),
+          requestId: clientRequestId,
+        } as ChatMessageItem);
+      }
     } catch (e) {
       abortRef.current = null;
       const msg = e instanceof Error ? e.message : String(e);
@@ -201,7 +388,15 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       setBusy("error");
       setLastError(msg);
     }
-  }, [api, appendItem, busy, draft, flushResponseToUi, updateItem]);
+  }, [
+    api,
+    appendItem,
+    autoExecuteFirstProposed,
+    busy,
+    draft,
+    flushResponseToUi,
+    updateItem,
+  ]);
 
   const onKeyDown = useCallback(
     (ev: React.KeyboardEvent<HTMLTextAreaElement>) => {
