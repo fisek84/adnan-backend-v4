@@ -1,67 +1,56 @@
 # routers/ceo_console_router.py
+import os
+
 from __future__ import annotations
 
 import inspect
-import logging
+import re
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Body, HTTPException
 from pydantic import BaseModel, Field
 
 from models.agent_contract import AgentInput, AgentOutput
-
-# IMPORTANT: koristi SSOT singleton registry (isti kao gateway_server.py)
 from services.agent_registry_service import get_agent_registry_service
 from services.agent_router_service import AgentRouterService
-
-logger = logging.getLogger(__name__)
+from system_version import SYSTEM_NAME, VERSION
 
 router = APIRouter(prefix="/ceo-console", tags=["CEO Console"])
 
-# SSOT (singleton) registry + router
+# IMPORTANT:
+# - Do NOT create a new AgentRegistryService() here.
+# - Use SSOT singleton (same instance as gateway_server.py uses).
 _agent_registry = get_agent_registry_service()
 _agent_router = AgentRouterService(_agent_registry)
 
 
-def _resolve_agents_json_path() -> str:
-    """
-    Repo-root aware path. U runtime-u na Renderu /app je root projekta.
-    Koristi isti default koji gateway_server.py koristi (/app/config/agents.json).
-    """
-    # Ako ima env override, poštuj ga (kanonski)
-    p = (inspect_os_getenv("AGENTS_JSON_PATH") or "").strip()
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def _agents_json_path() -> str:
+    # mirror gateway_server.py behavior
+    p = (os.getenv("AGENTS_JSON_PATH") or "").strip()
     if p:
         return p
-    p2 = (inspect_os_getenv("AGENTS_REGISTRY_PATH") or "").strip()
+    p2 = (os.getenv("AGENTS_REGISTRY_PATH") or "").strip()
     if p2:
         return p2
-    return "config/agents.json"
-
-
-def inspect_os_getenv(name: str) -> Optional[str]:
-    # lokalni helper da izbjegnemo circular import s gateway_server
-    try:
-        import os
-
-        return os.getenv(name)
-    except Exception:
-        return None
+    return str(_repo_root() / "config" / "agents.json")
 
 
 def _ensure_registry_loaded() -> None:
     """
-    Osiguraj da su agenti učitani. Ne pravimo nove instance registra.
+    Ensure agents.json is loaded into the singleton registry.
+    Safe to call multiple times.
     """
     try:
-        agents = _agent_registry.list_agents()
-        if agents:
-            return
-        path = _resolve_agents_json_path()
-        _agent_registry.load_from_agents_json(path, clear=True)
-        logger.info("CEO console loaded agent registry: %s", path)
-    except Exception as exc:  # noqa: BLE001
-        # Ne ruši API; ali ostavi trag u logu
-        logger.warning("CEO console registry load failed: %s", exc)
+        if not _agent_registry.list_agents():
+            _agent_registry.load_from_agents_json(_agents_json_path(), clear=True)
+    except Exception:
+        # do not crash API on load issues; agent router will handle
+        pass
 
 
 # ======================
@@ -90,13 +79,14 @@ class CEOCommandResponse(BaseModel):
     read_only: bool = True
     context: Dict[str, Any] = Field(default_factory=dict)
 
-    # UI polja
+    # IMPORTANT: frontend very often expects "text"
+    # We keep "summary" too for backward compatibility.
+    text: str = ""
     summary: str = ""
-    text: str = ""  # IMPORTANT: frontend očekuje `text` u praksi
+
     questions: List[str] = Field(default_factory=list)
     plan: List[str] = Field(default_factory=list)
     options: List[str] = Field(default_factory=list)
-
     proposed_commands: List[ProposedAICommand] = Field(default_factory=list)
     trace: Dict[str, Any] = Field(default_factory=dict)
 
@@ -110,9 +100,6 @@ async def _maybe_await(value: Any) -> Any:
     if inspect.isawaitable(value):
         return await value
     return value
-
-
-_HEAVY_KEYS = {"properties", "properties_text", "properties_types", "raw"}
 
 
 def _compact_item(item: Dict[str, Any]) -> Dict[str, Any]:
@@ -137,8 +124,8 @@ def _compact_dashboard_snapshot(snap: Dict[str, Any]) -> Dict[str, Any]:
         "source": snap.get("source"),
         "kind": "dashboard_snapshot",
         "dashboard": {
-            "goals": [_compact_item(g) for g in dashboard.get("goals", [])],
-            "tasks": [_compact_item(t) for t in dashboard.get("tasks", [])],
+            "goals": [_compact_item(g) for g in (dashboard.get("goals", []) or [])],
+            "tasks": [_compact_item(t) for t in (dashboard.get("tasks", []) or [])],
         },
     }
 
@@ -180,7 +167,7 @@ async def _build_context(req: CEOCommandRequest) -> Dict[str, Any]:
                 "available": True,
                 "source": "request.context_hint",
             }
-            return ctx  # ne zovi server snapshot
+            return ctx  # do not call server snapshotter
 
     # ===============================
     # FALLBACK: SERVER SNAPSHOT
@@ -191,24 +178,43 @@ async def _build_context(req: CEOCommandRequest) -> Dict[str, Any]:
         snapshotter = CEOConsoleSnapshotService()
         snap = snapshotter.snapshot()
         snap = await _maybe_await(snap)
-        if not isinstance(snap, dict):
-            raise RuntimeError("snapshot_invalid_type")
-
         ctx["snapshot"] = _compact_dashboard_snapshot(snap)
         ctx["snapshot_meta"] = {
             "snapshotter": "CEOConsoleSnapshotService",
             "available": True,
             "source": "server",
         }
-    except Exception as exc:  # noqa: BLE001
-        ctx["snapshot"] = {"available": False, "error": str(exc)}
+    except Exception as e:
+        ctx["snapshot"] = {"available": False, "error": str(e)}
         ctx["snapshot_meta"] = {
             "snapshotter": "exception",
             "available": False,
-            "error": str(exc),
+            "error": str(e),
         }
 
     return ctx
+
+
+# ======================
+# DETERMINISTIC FALLBACKS (NO GUESSING)
+# ======================
+
+
+_IDENTITY_RE = re.compile(
+    r"^\s*(ko\s*si\s*ti|ko\s*si|šta\s*si|sta\s*si|who\s*are\s*you)\s*\??\s*$",
+    re.IGNORECASE,
+)
+
+
+def _identity_answer() -> str:
+    return (
+        f"Ja sam {SYSTEM_NAME} CEO Advisor (read-only) servis. "
+        f"Verzija: {VERSION}. "
+        "Mogu: (1) dati sažetak dashboard snapshot-a, (2) predložiti komande kao PROPOSALS "
+        "koje idu kroz approval flow, i (3) objasniti status sistema. "
+        "Ako želiš akciju, napiši konkretno: npr. 'kreiraj cilj X', 'prikaži top 5 taskova', "
+        "'predloži plan za KPI OS'."
+    )
 
 
 # ======================
@@ -217,53 +223,38 @@ async def _build_context(req: CEOCommandRequest) -> Dict[str, Any]:
 
 
 async def _ceo_advice_via_agent_router(
-    text: str, context: Dict[str, Any], *, session_id: Optional[str]
+    text: str, context: Dict[str, Any]
 ) -> Dict[str, Any]:
     _ensure_registry_loaded()
-
-    preferred = "ceo_advisor"
-    # dozvoli UI override agenta
-    ui_hint = context.get("ui_context_hint")
-    if isinstance(ui_hint, dict):
-        pa = ui_hint.get("preferred_agent_id")
-        if isinstance(pa, str) and pa.strip():
-            preferred = pa.strip()
 
     agent_input = AgentInput(
         message=text,
         snapshot=context.get("snapshot"),
-        preferred_agent_id=preferred,
+        preferred_agent_id="ceo_advisor",
         metadata={
             "read_only": True,
-            "session_id": session_id,
-            "initiator": context.get("initiator"),
-            "canon": context.get("canon"),
+            # give the agent a chance to answer the question,
+            # but keep system safe:
+            "mode": "ceo_console_read_only",
         },
     )
 
     out: AgentOutput = await _agent_router.route(agent_input)
 
-    # hard guarantee da UI ne ostane bez teksta
-    if not getattr(out, "text", None):
-        out.text = "Nema odgovora od agenta (prazan output)."
+    summary = (out.text or "").strip()
+    if not summary:
+        summary = "Nema dostupnih podataka u snapshotu."
 
-    proposed: List[ProposedAICommand] = []
-    try:
-        for p in out.proposed_commands or []:
-            if not getattr(p, "command", None):
-                continue
-            proposed.append(
-                ProposedAICommand(
-                    command_type=p.command,
-                    payload=p.args or {},
-                )
-            )
-    except Exception as exc:  # noqa: BLE001
-        # ne ruši, samo zabilježi
-        tr = out.trace or {}
-        tr["proposed_parse_error"] = str(exc)
-        out.trace = tr
+    proposed = [
+        ProposedAICommand(
+            command_type=p.command,
+            payload=p.args or {},
+        )
+        for p in (out.proposed_commands or [])
+        if getattr(p, "command", None)
+    ]
 
+    # Always ensure at least 1 proposed command exists (your requirement)
     if not proposed:
         proposed.append(
             ProposedAICommand(
@@ -273,11 +264,9 @@ async def _ceo_advice_via_agent_router(
         )
 
     return {
-        "summary": out.text,
-        "text": out.text,
+        "summary": summary,
         "proposed_commands": proposed,
         "trace": out.trace or {},
-        "agent_id": getattr(out, "agent_id", None),
     }
 
 
@@ -304,32 +293,43 @@ def ceo_console_status() -> Dict[str, Any]:
 
 @router.post("/command", response_model=CEOCommandResponse)
 async def ceo_command(req: CEOCommandRequest = Body(...)) -> CEOCommandResponse:
-    text = (req.text or "").strip()
-    if not text:
+    text_in = (req.text or "").strip()
+    if not text_in:
         raise HTTPException(status_code=400, detail="text required")
 
     context = await _build_context(req)
-    result = await _ceo_advice_via_agent_router(
-        text, context, session_id=req.session_id
-    )
 
-    summary = str(result.get("summary") or "")
-    out_text = str(result.get("text") or summary)
+    # Deterministic identity answer (no dependence on LLM prompt)
+    if _IDENTITY_RE.match(text_in):
+        summary = _identity_answer()
+        proposed = [
+            ProposedAICommand(
+                command_type="refresh_snapshot",
+                payload={"source": "ceo_console"},
+            )
+        ]
+        return CEOCommandResponse(
+            ok=True,
+            read_only=True,
+            context=context,
+            text=summary,
+            summary=summary,
+            proposed_commands=proposed,
+            trace={"path": "deterministic_identity"},
+        )
 
-    trace = result.get("trace") if isinstance(result.get("trace"), dict) else {}
-    trace["preferred_agent_id"] = (context.get("ui_context_hint", {}) or {}).get(
-        "preferred_agent_id"
-    ) or "ceo_advisor"
-    trace["agent_id"] = result.get("agent_id")
+    # Normal path: agent router
+    result = await _ceo_advice_via_agent_router(text_in, context)
+    summary = (result.get("summary") or "").strip()
 
     return CEOCommandResponse(
         ok=True,
         read_only=True,
         context=context,
+        text=summary,  # IMPORTANT for frontend
         summary=summary,
-        text=out_text,
         proposed_commands=result.get("proposed_commands", []),
-        trace=trace,
+        trace=result.get("trace", {}),
     )
 
 
