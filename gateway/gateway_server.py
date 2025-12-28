@@ -974,16 +974,65 @@ async def notion_bulk_query(payload: Dict[str, Any] = Body(...)):
 
 # ================================================================
 # LEGACY CEO COMMAND ENDPOINTS (READ-ONLY WRAPPERS)
+#   FIX: kompatibilnost sa frontend bundle-om koji zove:
+#        - /api/ceo-console/command
+#        i šalje payload ključeve:
+#        - input_text OR text OR message
 # ================================================================
-@app.post("/api/ceo/command")
-async def ceo_dashboard_command_api(payload: CeoCommandInput):
-    cleaned_text = _preprocess_ceo_nl_input(payload.input_text, payload.smart_context)
+
+
+def _extract_text_from_payload(payload: Any) -> str:
+    if not isinstance(payload, dict):
+        return ""
+
+    for key in ("input_text", "text", "message"):
+        v = payload.get(key)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+
+    data = payload.get("data")
+    if isinstance(data, dict):
+        for key in ("input_text", "text", "message"):
+            v = data.get(key)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+
+    return ""
+
+
+def _extract_smart_context(payload: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(payload, dict):
+        return None
+    sc = payload.get("smart_context")
+    if isinstance(sc, dict):
+        return sc
+    sc2 = payload.get("context")
+    if isinstance(sc2, dict):
+        return sc2
+    return None
+
+
+def _extract_source(payload: Any) -> str:
+    if not isinstance(payload, dict):
+        return "ceo_dashboard"
+    s = payload.get("source") or payload.get("initiator")
+    if isinstance(s, str) and s.strip():
+        return s.strip()
+    return "ceo_dashboard"
+
+
+async def _ceo_command_core(payload_dict: Dict[str, Any]) -> JSONResponse:
+    raw_text = _extract_text_from_payload(payload_dict)
+    smart_context = _extract_smart_context(payload_dict)
+    source = _extract_source(payload_dict)
+
+    cleaned_text = _preprocess_ceo_nl_input(raw_text, smart_context)
 
     req = ceo_console_module.CEOCommandRequest(
         text=cleaned_text,
-        initiator=payload.source or "ceo_dashboard",
+        initiator=source,
         session_id=None,
-        context_hint=payload.smart_context,
+        context_hint=smart_context,
     )
 
     result_obj = await ceo_console_module.ceo_command(req)
@@ -996,16 +1045,36 @@ async def ceo_dashboard_command_api(payload: CeoCommandInput):
         result["text"] = result.get("summary") or ""
 
     tr = result.get("trace")
-    if isinstance(tr, dict) and result.get("text"):
-        tr["agent_router_empty_text"] = False
-        tr["agent_output_text_len"] = len(str(result.get("text") or ""))
+    if isinstance(tr, dict):
+        tr["normalized_input_text"] = cleaned_text
+        tr["normalized_input_source"] = source
+        tr["normalized_input_has_smart_context"] = bool(smart_context)
+        if result.get("text"):
+            tr["agent_router_empty_text"] = False
+            tr["agent_output_text_len"] = len(str(result.get("text") or ""))
 
     return JSONResponse(content=result, media_type="application/json; charset=utf-8")
 
 
+@app.post("/api/ceo/command")
+async def ceo_dashboard_command_api(payload: Dict[str, Any] = Body(...)):
+    return await _ceo_command_core(payload)
+
+
+# Alias za stare frontende: "/api/ceo-console/command"
+@app.post("/api/ceo-console/command")
+async def ceo_console_command_api(payload: Dict[str, Any] = Body(...)):
+    return await _ceo_command_core(payload)
+
+
 @app.post("/ceo/command")
-async def ceo_dashboard_command_public(payload: CeoCommandInput):
-    return await ceo_dashboard_command_api(payload)
+async def ceo_dashboard_command_public(payload: Dict[str, Any] = Body(...)):
+    return await _ceo_command_core(payload)
+
+
+@app.post("/ceo-console/command")
+async def ceo_console_command_public(payload: Dict[str, Any] = Body(...)):
+    return await _ceo_command_core(payload)
 
 
 # ================================================================
