@@ -87,23 +87,18 @@ const _extractProposedCommands = (resp: any): ProposedCmd[] => {
 
   for (const c of candidates) {
     if (!Array.isArray(c)) continue;
-
     const out: ProposedCmd[] = [];
     for (const x of c) {
       if (!x || typeof x !== "object") continue;
-
       const command_type = String(
         x.command_type ?? x.commandType ?? x.command ?? x.command_name ?? ""
       ).trim();
-
       const payloadRaw = x.payload ?? x.args ?? x.params ?? {};
       const payload =
         payloadRaw && typeof payloadRaw === "object" && !Array.isArray(payloadRaw)
           ? payloadRaw
           : {};
-
       if (!command_type) continue;
-
       out.push({
         command_type,
         payload,
@@ -113,7 +108,6 @@ const _extractProposedCommands = (resp: any): ProposedCmd[] => {
         status: typeof x.status === "string" ? x.status : undefined,
       });
     }
-
     return out;
   }
 
@@ -122,7 +116,15 @@ const _extractProposedCommands = (resp: any): ProposedCmd[] => {
 
 const _pickText = (x: any): string => {
   if (!x || typeof x !== "object") return "";
-  const keys = ["systemText", "summary", "text", "message", "output_text", "outputText"];
+  const keys = [
+    "systemText",
+    "summary",
+    "text",
+    "message",
+    "output_text",
+    "outputText",
+    "assistant_text",
+  ];
   for (const k of keys) {
     const v = (x as any)[k];
     if (typeof v === "string" && v.trim()) return v.trim();
@@ -170,7 +172,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
     setItems((prev) =>
       prev.map((x) =>
         x.id === id
-          ? ({ ...x, ...(patch as any) } as ChatItem)
+          ? ({ ...x, ...(patch as any) } as ChatItem) // <- HARD TS FIX (no runtime change)
           : x
       )
     );
@@ -208,12 +210,13 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         return;
       }
 
-      // IMPORTANT: backend često vraća summary; systemText je normalizacija
-      const sysText = String(
-        (resp as any).systemText ?? (resp as any).summary ?? (resp as any).text ?? ""
-      );
+      // non-stream response: prefer systemText, otherwise pick from raw-ish fields defensively
+      const sysText =
+        resp.systemText && resp.systemText.trim()
+          ? resp.systemText
+          : _pickText(resp as any);
 
-      updateItem(placeholderId, { content: sysText, status: "final" });
+      updateItem(placeholderId, { content: sysText ?? "", status: "final" });
 
       const gov = toGovernanceCard(resp);
       if (gov) appendItem(gov);
@@ -235,27 +238,24 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       const first = proposed[0];
       const cmd = first.command_type;
 
-      // Only auto-execute a whitelisted safe command
+      // We only auto-execute if it's a safe expected command (extend later)
       if (cmd !== "refresh_snapshot") return null;
 
       const execUrl = executeRawUrl ?? "/api/execute/raw";
       const appUrl = approveUrl ?? "/api/ai-ops/approval/approve";
 
-      const mergedHeaders: Record<string, string> = {
-        "Content-Type": "application/json",
-        ...(headers ?? {}),
-      };
-
       const execBody = {
         command: cmd,
         intent: cmd,
-        params:
-          first.payload && typeof first.payload === "object" && !Array.isArray(first.payload)
-            ? first.payload
-            : { source: "ceo_dashboard" },
+        params: first.payload || { source: "ceo_dashboard" },
         initiator: "ceo",
         read_only: false,
         metadata: { origin: "ceo_chatbox_auto" },
+      };
+
+      const mergedHeaders: Record<string, string> = {
+        "Content-Type": "application/json",
+        ...(headers ?? {}),
       };
 
       const execRes = await fetch(execUrl, {
@@ -284,8 +284,10 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
           ? execJson.approval_id
           : null;
 
-      // Ako nema approval_id, vrati rezultat executor-a
-      if (!approvalId) return execJson;
+      if (!approvalId) {
+        // Some commands might not require approval; we return raw executor result
+        return execJson;
+      }
 
       const approveRes = await fetch(appUrl, {
         method: "POST",
@@ -343,19 +345,20 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
     abortRef.current = controller;
 
     try {
-      // Legacy request shape (api layer treba normalizovati na backend {text,...})
+      // Backend CEO Console expects: { text, initiator?, session_id?, context_hint? }
       const req: CeoCommandRequest = {
-        input_text: trimmed,
-        smart_context: {},
-        source: "ceo_dashboard",
+        text: trimmed,
+        initiator: "ceo",
       };
 
       const resp = await api.sendCommand(req, controller.signal);
 
-      // 1) prikazi odgovor odmah
+      abortRef.current = null;
+
+      // 1) show advisor response first
       await flushResponseToUi(placeholder.id, resp);
 
-      // 2) pokušaj auto-exec (proposal -> execute/raw -> approve)
+      // 2) auto-exec safe proposal (refresh_snapshot)
       try {
         const execResult = await autoExecuteFirstProposed(resp, controller.signal);
         if (execResult) {
@@ -387,10 +390,6 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
           requestId: clientRequestId,
         } as ChatMessageItem);
       }
-
-      abortRef.current = null;
-      setBusy("idle");
-      setLastError(null);
     } catch (e) {
       abortRef.current = null;
       const msg = e instanceof Error ? e.message : String(e);
