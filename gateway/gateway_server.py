@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import Body, FastAPI, HTTPException, Request, Response
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -115,7 +115,6 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 #   gateway/frontend/dist/index.html
 #   gateway/frontend/dist/assets/...
 FRONTEND_DIST_DIR = REPO_ROOT / "gateway" / "frontend" / "dist"
-FRONTEND_ASSETS_DIR = FRONTEND_DIST_DIR / "assets"
 
 
 def _agents_registry_path() -> Path:
@@ -1088,7 +1087,7 @@ async def ceo_weekly_priority_memory():
 
 
 # ================================================================
-# HEALTH / READY  (MORA BITI IZNAD SPA FALLBACK-A)
+# HEALTH / READY  (MORA BITI IZNAD FRONTEND MOUNT-A)
 # ================================================================
 @app.get("/health")
 async def health_check():
@@ -1140,65 +1139,20 @@ async def global_exception_handler(_: Request, exc: Exception):
 
 # ================================================================
 # REACT FRONTEND (PROD BUILD) — SERVE dist/
-#  - STAVLJENO NA KRAJ da ne “pojede” /health i /ready
-#  - Dodan HEAD / da Render probe ne dobije 405
-#  - HARD FIX: spa_fallback eksplicitno vraća /health i /ready umjesto 404
+#  - STAVLJENO NA KRAJ da ne “pojede” /api, /health i /ready
+#  - FIX (WHITE SCREEN): mount cijeli dist/ kao StaticFiles(html=True)
+#    (servira /, /assets/* i SPA deep-link fallback)
 # ================================================================
 if not FRONTEND_DIST_DIR.is_dir():
     logger.warning("React dist directory not found: %s", FRONTEND_DIST_DIR)
 else:
-    if FRONTEND_ASSETS_DIR.is_dir():
-        app.mount(
-            "/assets",
-            StaticFiles(directory=str(FRONTEND_ASSETS_DIR)),
-            name="assets",
-        )
 
     @app.head("/", include_in_schema=False)
     async def head_root():
         return Response(status_code=200)
 
-    @app.get("/", include_in_schema=False)
-    async def serve_frontend_index():
-        index_path = FRONTEND_DIST_DIR / "index.html"
-        if not index_path.is_file():
-            raise HTTPException(
-                status_code=404,
-                detail="React frontend not built (dist/index.html missing)",
-            )
-        return FileResponse(str(index_path))
-
-    @app.get("/{full_path:path}", include_in_schema=False)
-    async def spa_fallback(full_path: str):
-        # HARD FIX: ako bilo šta “presretne” /health ili /ready, vrati prave odgovore
-        if full_path == "health":
-            return await health_check()
-        if full_path == "ready":
-            return await ready_check()
-
-        # Don't hijack API, assets, or docs endpoints
-        if (
-            full_path.startswith("api/")
-            or full_path.startswith("assets/")
-            or full_path
-            in (
-                "docs",
-                "redoc",
-                "openapi.json",
-            )
-        ):
-            raise HTTPException(status_code=404, detail="Not found")
-
-        # Serve static files if they exist (favicon, manifest, etc.)
-        maybe_file = FRONTEND_DIST_DIR / full_path
-        if maybe_file.is_file():
-            return FileResponse(str(maybe_file))
-
-        # Otherwise serve SPA index.html (deep links)
-        index_path = FRONTEND_DIST_DIR / "index.html"
-        if not index_path.is_file():
-            raise HTTPException(
-                status_code=404,
-                detail="React frontend not built (dist/index.html missing)",
-            )
-        return FileResponse(str(index_path))
+    app.mount(
+        "/",
+        StaticFiles(directory=str(FRONTEND_DIST_DIR), html=True),
+        name="frontend",
+    )
