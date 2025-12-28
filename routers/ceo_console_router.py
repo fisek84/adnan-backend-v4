@@ -2,27 +2,66 @@
 from __future__ import annotations
 
 import inspect
+import logging
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Body, HTTPException
 from pydantic import BaseModel, Field
 
 from models.agent_contract import AgentInput, AgentOutput
-from services.agent_registry_service import AgentRegistryService
+
+# IMPORTANT: koristi SSOT singleton registry (isti kao gateway_server.py)
+from services.agent_registry_service import get_agent_registry_service
 from services.agent_router_service import AgentRouterService
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/ceo-console", tags=["CEO Console"])
 
-_agent_registry = AgentRegistryService()
+# SSOT (singleton) registry + router
+_agent_registry = get_agent_registry_service()
 _agent_router = AgentRouterService(_agent_registry)
 
 
-def _ensure_registry_loaded() -> None:
+def _resolve_agents_json_path() -> str:
+    """
+    Repo-root aware path. U runtime-u na Renderu /app je root projekta.
+    Koristi isti default koji gateway_server.py koristi (/app/config/agents.json).
+    """
+    # Ako ima env override, poštuj ga (kanonski)
+    p = (inspect_os_getenv("AGENTS_JSON_PATH") or "").strip()
+    if p:
+        return p
+    p2 = (inspect_os_getenv("AGENTS_REGISTRY_PATH") or "").strip()
+    if p2:
+        return p2
+    return "config/agents.json"
+
+
+def inspect_os_getenv(name: str) -> Optional[str]:
+    # lokalni helper da izbjegnemo circular import s gateway_server
     try:
-        if not _agent_registry.list_agents():
-            _agent_registry.load_from_agents_json("config/agents.json", clear=True)
+        import os
+
+        return os.getenv(name)
     except Exception:
-        pass
+        return None
+
+
+def _ensure_registry_loaded() -> None:
+    """
+    Osiguraj da su agenti učitani. Ne pravimo nove instance registra.
+    """
+    try:
+        agents = _agent_registry.list_agents()
+        if agents:
+            return
+        path = _resolve_agents_json_path()
+        _agent_registry.load_from_agents_json(path, clear=True)
+        logger.info("CEO console loaded agent registry: %s", path)
+    except Exception as exc:  # noqa: BLE001
+        # Ne ruši API; ali ostavi trag u logu
+        logger.warning("CEO console registry load failed: %s", exc)
 
 
 # ======================
@@ -49,16 +88,15 @@ class ProposedAICommand(BaseModel):
 class CEOCommandResponse(BaseModel):
     ok: bool = True
     read_only: bool = True
-
-    # IMPORTANT: frontend contract — many UIs render "text"
-    # Keep summary as canonical, but always mirror into text.
-    text: str = ""
-
     context: Dict[str, Any] = Field(default_factory=dict)
+
+    # UI polja
     summary: str = ""
+    text: str = ""  # IMPORTANT: frontend očekuje `text` u praksi
     questions: List[str] = Field(default_factory=list)
     plan: List[str] = Field(default_factory=list)
     options: List[str] = Field(default_factory=list)
+
     proposed_commands: List[ProposedAICommand] = Field(default_factory=list)
     trace: Dict[str, Any] = Field(default_factory=dict)
 
@@ -129,23 +167,20 @@ async def _build_context(req: CEOCommandRequest) -> Dict[str, Any]:
         ctx["ui_context_hint"] = req.context_hint
 
     # ===============================
-    # 🔴 SNAPSHOT FROM REQUEST (OVERRIDE)
+    # SNAPSHOT FROM REQUEST (OVERRIDE)
     # ===============================
     if req.context_hint and isinstance(req.context_hint, dict):
         req_snapshot = req.context_hint.get("snapshot")
         if isinstance(req_snapshot, dict):
             ctx["snapshot"] = _compact_dashboard_snapshot(
-                {
-                    "source": "request.context_hint",
-                    "dashboard": req_snapshot,
-                }
+                {"source": "request.context_hint", "dashboard": req_snapshot}
             )
             ctx["snapshot_meta"] = {
                 "snapshotter": "request",
                 "available": True,
                 "source": "request.context_hint",
             }
-            return ctx  # ⬅️ PREKID: NE ZOVI SNAPSHOT SERVIS
+            return ctx  # ne zovi server snapshot
 
     # ===============================
     # FALLBACK: SERVER SNAPSHOT
@@ -156,18 +191,21 @@ async def _build_context(req: CEOCommandRequest) -> Dict[str, Any]:
         snapshotter = CEOConsoleSnapshotService()
         snap = snapshotter.snapshot()
         snap = await _maybe_await(snap)
+        if not isinstance(snap, dict):
+            raise RuntimeError("snapshot_invalid_type")
+
         ctx["snapshot"] = _compact_dashboard_snapshot(snap)
         ctx["snapshot_meta"] = {
             "snapshotter": "CEOConsoleSnapshotService",
             "available": True,
             "source": "server",
         }
-    except Exception as e:
-        ctx["snapshot"] = {"available": False, "error": str(e)}
+    except Exception as exc:  # noqa: BLE001
+        ctx["snapshot"] = {"available": False, "error": str(exc)}
         ctx["snapshot_meta"] = {
             "snapshotter": "exception",
             "available": False,
-            "error": str(e),
+            "error": str(exc),
         }
 
     return ctx
@@ -179,30 +217,52 @@ async def _build_context(req: CEOCommandRequest) -> Dict[str, Any]:
 
 
 async def _ceo_advice_via_agent_router(
-    text: str, context: Dict[str, Any]
+    text: str, context: Dict[str, Any], *, session_id: Optional[str]
 ) -> Dict[str, Any]:
     _ensure_registry_loaded()
+
+    preferred = "ceo_advisor"
+    # dozvoli UI override agenta
+    ui_hint = context.get("ui_context_hint")
+    if isinstance(ui_hint, dict):
+        pa = ui_hint.get("preferred_agent_id")
+        if isinstance(pa, str) and pa.strip():
+            preferred = pa.strip()
 
     agent_input = AgentInput(
         message=text,
         snapshot=context.get("snapshot"),
-        preferred_agent_id="ceo_advisor",
-        metadata={"read_only": True},
+        preferred_agent_id=preferred,
+        metadata={
+            "read_only": True,
+            "session_id": session_id,
+            "initiator": context.get("initiator"),
+            "canon": context.get("canon"),
+        },
     )
 
     out: AgentOutput = await _agent_router.route(agent_input)
 
-    if not out.text:
-        out.text = "Nema dostupnih podataka u snapshotu."
+    # hard guarantee da UI ne ostane bez teksta
+    if not getattr(out, "text", None):
+        out.text = "Nema odgovora od agenta (prazan output)."
 
-    proposed = [
-        ProposedAICommand(
-            command_type=p.command,
-            payload=p.args or {},
-        )
-        for p in (out.proposed_commands or [])
-        if p.command
-    ]
+    proposed: List[ProposedAICommand] = []
+    try:
+        for p in out.proposed_commands or []:
+            if not getattr(p, "command", None):
+                continue
+            proposed.append(
+                ProposedAICommand(
+                    command_type=p.command,
+                    payload=p.args or {},
+                )
+            )
+    except Exception as exc:  # noqa: BLE001
+        # ne ruši, samo zabilježi
+        tr = out.trace or {}
+        tr["proposed_parse_error"] = str(exc)
+        out.trace = tr
 
     if not proposed:
         proposed.append(
@@ -214,8 +274,10 @@ async def _ceo_advice_via_agent_router(
 
     return {
         "summary": out.text,
+        "text": out.text,
         "proposed_commands": proposed,
         "trace": out.trace or {},
+        "agent_id": getattr(out, "agent_id", None),
     }
 
 
@@ -242,27 +304,32 @@ def ceo_console_status() -> Dict[str, Any]:
 
 @router.post("/command", response_model=CEOCommandResponse)
 async def ceo_command(req: CEOCommandRequest = Body(...)) -> CEOCommandResponse:
-    text_in = (req.text or "").strip()
-    if not text_in:
+    text = (req.text or "").strip()
+    if not text:
         raise HTTPException(status_code=400, detail="text required")
 
     context = await _build_context(req)
-    result = await _ceo_advice_via_agent_router(text_in, context)
+    result = await _ceo_advice_via_agent_router(
+        text, context, session_id=req.session_id
+    )
 
-    summary = (result.get("summary") or "").strip()
+    summary = str(result.get("summary") or "")
+    out_text = str(result.get("text") or summary)
 
-    # CRITICAL: frontend contract (white screen fix)
-    # Always provide "text" (mirror of summary).
-    text_out = summary
+    trace = result.get("trace") if isinstance(result.get("trace"), dict) else {}
+    trace["preferred_agent_id"] = (context.get("ui_context_hint", {}) or {}).get(
+        "preferred_agent_id"
+    ) or "ceo_advisor"
+    trace["agent_id"] = result.get("agent_id")
 
     return CEOCommandResponse(
         ok=True,
         read_only=True,
-        text=text_out,
         context=context,
         summary=summary,
+        text=out_text,
         proposed_commands=result.get("proposed_commands", []),
-        trace=result.get("trace", {}),
+        trace=trace,
     )
 
 
