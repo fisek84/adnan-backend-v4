@@ -12,6 +12,15 @@ RUN npm ci
 COPY gateway/frontend/ ./
 RUN npm run build
 
+# DEBUG: pokaži šta je stvarno u dist/
+RUN echo "===== FRONTEND DIST LIST =====" \
+ && ls -la /app/gateway/frontend/dist || true \
+ && echo "===== FRONTEND DIST/ASSETS LIST =====" \
+ && (ls -la /app/gateway/frontend/dist/assets || true) \
+ && echo "===== FRONTEND dist/index.html (first 200 lines) =====" \
+ && (sed -n '1,200p' /app/gateway/frontend/dist/index.html || true) \
+ && echo "===== END DEBUG ====="
+
 # Fail build if this is NOT a Vite/React build output
 RUN test -s /app/gateway/frontend/dist/index.html \
  && grep -qi "<!doctype html" /app/gateway/frontend/dist/index.html \
@@ -41,6 +50,15 @@ COPY . .
 
 # Copy built frontend dist into the expected path used by gateway_server.py
 COPY --from=frontend-build /app/gateway/frontend/dist ./gateway/frontend/dist
+
+# DEBUG: potvrdi šta je došlo u final image
+RUN echo "===== FINAL IMAGE DIST LIST =====" \
+ && ls -la ./gateway/frontend/dist || true \
+ && echo "===== FINAL IMAGE DIST/ASSETS LIST =====" \
+ && (ls -la ./gateway/frontend/dist/assets || true) \
+ && echo "===== FINAL IMAGE dist/index.html (first 200 lines) =====" \
+ && (sed -n '1,200p' ./gateway/frontend/dist/index.html || true) \
+ && echo "===== END DEBUG ====="
 
 # Fail build if dist/index.html missing/empty or not Vite/React
 RUN test -s ./gateway/frontend/dist/index.html \
