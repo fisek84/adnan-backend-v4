@@ -1,5 +1,3 @@
-# render-rebuild-marker: 2025-12-28-1
-
 # =========================
 # 1) Frontend build (Vite)
 # =========================
@@ -14,8 +12,11 @@ RUN npm ci
 COPY gateway/frontend/ ./
 RUN npm run build
 
-# Fail build if index.html missing/empty
-RUN test -s /app/gateway/frontend/dist/index.html
+# Fail build if this is NOT a Vite/React build output
+RUN test -s /app/gateway/frontend/dist/index.html \
+ && grep -qi "<!doctype html" /app/gateway/frontend/dist/index.html \
+ && grep -qi 'id="root"' /app/gateway/frontend/dist/index.html \
+ && grep -qi '/assets/.*\.js' /app/gateway/frontend/dist/index.html
 
 
 # =========================
@@ -41,10 +42,12 @@ COPY . .
 # Copy built frontend dist into the expected path used by gateway_server.py
 COPY --from=frontend-build /app/gateway/frontend/dist ./gateway/frontend/dist
 
-# Fail build if dist/index.html missing/empty in final image too
-RUN test -s ./gateway/frontend/dist/index.html
+# Fail build if dist/index.html missing/empty or not Vite/React
+RUN test -s ./gateway/frontend/dist/index.html \
+ && grep -qi "<!doctype html" ./gateway/frontend/dist/index.html \
+ && grep -qi 'id="root"' ./gateway/frontend/dist/index.html \
+ && grep -qi '/assets/.*\.js' ./gateway/frontend/dist/index.html
 
 EXPOSE 8000
 
-# START THE ACTUAL GATEWAY APP (no main.py indirection)
 CMD ["bash", "-lc", "uvicorn gateway.gateway_server:app --host 0.0.0.0 --port ${PORT:-8000}"]
