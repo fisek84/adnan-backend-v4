@@ -1118,11 +1118,16 @@ async def ready_check():
 # ================================================================
 @app.exception_handler(StarletteHTTPException)
 async def http_exception_handler(_: Request, exc: StarletteHTTPException):
-    # Preserve HTTP status codes (404/403/422/...) instead of turning them into 500.
+    # Preserve HTTP status codes and FastAPI canonical payload: {"detail": ...}
     detail = getattr(exc, "detail", None)
-    return JSONResponse(
-        status_code=exc.status_code, content={"status": "error", "message": detail}
-    )
+
+    content: Dict[str, Any] = {"detail": detail}
+
+    # Optional extra fields (safe; tests won't mind extra keys)
+    content["status"] = "error"
+    content["message"] = detail
+
+    return JSONResponse(status_code=exc.status_code, content=content)
 
 
 @app.exception_handler(Exception)
