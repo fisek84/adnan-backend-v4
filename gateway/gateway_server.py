@@ -204,7 +204,7 @@ _agent_router = AgentRouterService(_agent_registry)
 _chat_router = build_chat_router(_agent_router)  # defines "/chat"
 
 # ================================================================
-# ROUTERS
+# ROUTERS (OTHER)
 # ================================================================
 from routers.adnan_ai_router import router as adnan_ai_router
 from routers.ai_ops_router import ai_ops_router
@@ -218,7 +218,9 @@ import routers.ai_ops_router as ai_ops_router_module
 # IMPORTANT: import MODULE (so set_ai_services is available)
 import routers.ai_router as ai_router_module
 
-# CEO Console router module (READ-only)
+# CEO Console router module:
+# - We do NOT mount it on /api because /api/ceo-console/command is served by wrappers below (compat).
+# - We DO mount it on /api/internal to avoid collisions and keep debug access.
 import routers.ceo_console_router as ceo_console_module
 
 # ================================================================
@@ -416,7 +418,8 @@ async def lifespan(_: FastAPI):
             hook = getattr(ai_ops_router_module, "set_ai_ops_services", None)
             if callable(hook):
                 hook(
-                    orchestrator=_execution_orchestrator, approvals=get_approval_state()
+                    orchestrator=_execution_orchestrator,
+                    approvals=get_approval_state(),
                 )
                 logger.info(
                     "AI Ops router services injected (shared orchestrator/approvals)"
@@ -474,20 +477,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ================================================================
-# INCLUDE ROUTERS
-# ================================================================
-app.include_router(audit_router, prefix="/api")
-app.include_router(adnan_ai_router, prefix="/api")
-app.include_router(ai_router_module.router, prefix="/api")  # /api/ai/run
-app.include_router(ai_ops_router, prefix="/api")
-app.include_router(
-    ceo_console_module.router, prefix="/api"
-)  # READ-only CEO console router
-app.include_router(metrics_router, prefix="/api")
-app.include_router(alerting_router, prefix="/api")
-app.include_router(_chat_router, prefix="/api")  # /api/chat
-
 
 # ================================================================
 # REQUEST MODELS
@@ -514,6 +503,9 @@ class ProposalExecuteInput(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
+# ================================================================
+# HELPERS
+# ================================================================
 def _preprocess_ceo_nl_input(
     raw_text: str, smart_context: Optional[Dict[str, Any]]
 ) -> str:
@@ -974,25 +966,23 @@ async def notion_bulk_query(payload: Dict[str, Any] = Body(...)):
 
 # ================================================================
 # LEGACY CEO COMMAND ENDPOINTS (READ-ONLY WRAPPERS)
-#   FIX: kompatibilnost sa frontend bundle-om koji zove:
-#        - /api/ceo-console/command
-#        i šalje payload ključeve:
-#        - input_text OR text OR message
+#   FIX:
+#     - kompatibilnost sa frontend bundle-om koji šalje:
+#         input_text OR text OR message OR prompt
+#     - plus nested: payload.data.{...}
 # ================================================================
-
-
 def _extract_text_from_payload(payload: Any) -> str:
     if not isinstance(payload, dict):
         return ""
 
-    for key in ("input_text", "text", "message"):
+    for key in ("input_text", "text", "message", "prompt"):
         v = payload.get(key)
         if isinstance(v, str) and v.strip():
             return v.strip()
 
     data = payload.get("data")
     if isinstance(data, dict):
-        for key in ("input_text", "text", "message"):
+        for key in ("input_text", "text", "message", "prompt"):
             v = data.get(key)
             if isinstance(v, str) and v.strip():
                 return v.strip()
@@ -1028,8 +1018,14 @@ async def _ceo_command_core(payload_dict: Dict[str, Any]) -> JSONResponse:
 
     cleaned_text = _preprocess_ceo_nl_input(raw_text, smart_context)
 
+    if not isinstance(cleaned_text, str) or not cleaned_text.strip():
+        raise HTTPException(
+            status_code=422,
+            detail="Missing text. Provide one of: input_text | text | message | prompt (optionally under data).",
+        )
+
     req = ceo_console_module.CEOCommandRequest(
-        text=cleaned_text,
+        text=cleaned_text.strip(),
         initiator=source,
         session_id=None,
         context_hint=smart_context,
@@ -1046,7 +1042,7 @@ async def _ceo_command_core(payload_dict: Dict[str, Any]) -> JSONResponse:
 
     tr = result.get("trace")
     if isinstance(tr, dict):
-        tr["normalized_input_text"] = cleaned_text
+        tr["normalized_input_text"] = cleaned_text.strip()
         tr["normalized_input_source"] = source
         tr["normalized_input_has_smart_context"] = bool(smart_context)
         if result.get("text"):
@@ -1067,6 +1063,12 @@ async def ceo_console_command_api(payload: Dict[str, Any] = Body(...)):
     return await _ceo_command_core(payload)
 
 
+# DEBUG alias (no collision, always available)
+@app.post("/api/ceo-console/command/internal")
+async def ceo_console_command_api_internal(payload: Dict[str, Any] = Body(...)):
+    return await _ceo_command_core(payload)
+
+
 @app.post("/ceo/command")
 async def ceo_dashboard_command_public(payload: Dict[str, Any] = Body(...)):
     return await _ceo_command_core(payload)
@@ -1075,6 +1077,31 @@ async def ceo_dashboard_command_public(payload: Dict[str, Any] = Body(...)):
 @app.post("/ceo-console/command")
 async def ceo_console_command_public(payload: Dict[str, Any] = Body(...)):
     return await _ceo_command_core(payload)
+
+
+@app.post("/ceo-console/command/internal")
+async def ceo_console_command_public_internal(payload: Dict[str, Any] = Body(...)):
+    return await _ceo_command_core(payload)
+
+
+# ================================================================
+# CEO CONSOLE STATUS (to replace removed include_router)
+# ================================================================
+@app.get("/api/ceo-console/status")
+async def ceo_console_status_api():
+    return {
+        "ok": True,
+        "system": SYSTEM_NAME,
+        "version": VERSION,
+        "boot_ready": _BOOT_READY,
+        "boot_error": _BOOT_ERROR,
+        "ops_safe_mode": _ops_safe_mode(),
+    }
+
+
+@app.get("/ceo-console/status")
+async def ceo_console_status_public():
+    return await ceo_console_status_api()
 
 
 # ================================================================
@@ -1182,16 +1209,29 @@ async def ready_check():
 
 
 # ================================================================
+# INCLUDE ROUTERS
+#  - CEO console router ide na /api/internal da nema kolizije sa wrapperima.
+# ================================================================
+app.include_router(audit_router, prefix="/api")
+app.include_router(adnan_ai_router, prefix="/api")
+app.include_router(ai_router_module.router, prefix="/api")  # /api/ai/run
+app.include_router(ai_ops_router, prefix="/api")
+app.include_router(metrics_router, prefix="/api")
+app.include_router(alerting_router, prefix="/api")
+app.include_router(_chat_router, prefix="/api")  # /api/chat
+
+# Internal/debug mount (no collision with /api/ceo-console/command wrapper)
+app.include_router(ceo_console_module.router, prefix="/api/internal")
+
+
+# ================================================================
 # GLOBAL ERROR HANDLER
 # ================================================================
 @app.exception_handler(StarletteHTTPException)
 async def http_exception_handler(_: Request, exc: StarletteHTTPException):
-    # Preserve HTTP status codes and FastAPI canonical payload: {"detail": ...}
     detail = getattr(exc, "detail", None)
 
     content: Dict[str, Any] = {"detail": detail}
-
-    # Optional extra fields (safe; tests won't mind extra keys)
     content["status"] = "error"
     content["message"] = detail
 
@@ -1202,7 +1242,8 @@ async def http_exception_handler(_: Request, exc: StarletteHTTPException):
 async def global_exception_handler(_: Request, exc: Exception):
     logger.exception("GLOBAL ERROR")
     return JSONResponse(
-        status_code=500, content={"status": "error", "message": str(exc)}
+        status_code=500,
+        content={"status": "error", "message": str(exc)},
     )
 
 

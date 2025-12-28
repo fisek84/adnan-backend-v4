@@ -199,8 +199,9 @@ class _NotionConfig:
     excerpt_lines: int = DEFAULT_EXCERPT_LINES
 
     # KANON: detail controls (READ-only)
-    include_properties: bool = True
-    include_properties_text: bool = True
+    # Default MUST be compact; deep introspection only when explicitly enabled via env.
+    include_properties: bool = False
+    include_properties_text: bool = False
     include_raw_pages: bool = False  # very heavy; keep default OFF
 
     # KANON: bounds for normalized values
@@ -382,9 +383,11 @@ class CeoConsoleSnapshotService:
         )
         version = cls._env_first("NOTION_VERSION") or DEFAULT_NOTION_VERSION
 
-        include_properties = _env_true("CEO_SNAPSHOT_INCLUDE_PROPERTIES", "true")
+        # Default MUST be compact for frontend and logs.
+        # Deep payload only when explicitly enabled via env vars.
+        include_properties = _env_true("CEO_SNAPSHOT_INCLUDE_PROPERTIES", "false")
         include_properties_text = _env_true(
-            "CEO_SNAPSHOT_INCLUDE_PROPERTIES_TEXT", "true"
+            "CEO_SNAPSHOT_INCLUDE_PROPERTIES_TEXT", "false"
         )
         include_raw_pages = _env_true("CEO_SNAPSHOT_INCLUDE_RAW_PAGES", "false")
 
