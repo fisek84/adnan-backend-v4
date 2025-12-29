@@ -32,9 +32,7 @@ class ExecutionOrchestrator:
         self.notion_agent = NotionOpsAgent(get_notion_service())
         self.approvals = get_approval_state()
 
-    async def execute(
-        self, command: Union[AICommand, Dict[str, Any]]
-    ) -> Dict[str, Any]:
+    async def execute(self, command: Union[AICommand, Dict[str, Any]]) -> Dict[str, Any]:
         """
         Ulaz može biti AICommand ili dict (npr. direktno iz API sloja).
         CANON: ovdje se payload kanonizuje u AICommand, bez interpretacije intent-a.
@@ -170,6 +168,29 @@ class ExecutionOrchestrator:
         # 4) EXECUTE (AGENT / WORKFLOW)
         command.execution_state = "EXECUTING"
 
+        # ------------------------------------------------------------
+        # CEO CONSOLE: next_step is advisory/no-op.
+        # It must not be routed into NotionOpsAgent / NotionService.
+        # ------------------------------------------------------------
+        if (
+            getattr(command, "command", None) == "ceo_console.next_step"
+            or getattr(command, "intent", None) == "ceo_console.next_step"
+        ):
+            result = {
+                "status": "NOOP",
+                "message": "ceo_console.next_step executed (no side effects)",
+                "params": command.params if isinstance(command.params, dict) else {},
+            }
+
+            command.execution_state = "COMPLETED"
+            self.registry.complete(execution_id, result)
+
+            return {
+                "execution_id": execution_id,
+                "execution_state": "COMPLETED",
+                "result": result,
+            }
+
         if command.command == "goal_task_workflow":
             params = command.params if isinstance(command.params, dict) else {}
             workflow_type = params.get("workflow_type")
@@ -194,9 +215,7 @@ class ExecutionOrchestrator:
             "result": result,
         }
 
-    async def _execute_goal_with_tasks_workflow(
-        self, command: AICommand
-    ) -> Dict[str, Any]:
+    async def _execute_goal_with_tasks_workflow(self, command: AICommand) -> Dict[str, Any]:
         """
         WORKFLOW:
         - kreira Goal u Goals DB
@@ -242,14 +261,10 @@ class ExecutionOrchestrator:
             "intent": "create_page",
             "read_only": False,
             "params": {
-                "db_key": (
-                    goal_spec.get("db_key") if isinstance(goal_spec, dict) else None
-                )
+                "db_key": (goal_spec.get("db_key") if isinstance(goal_spec, dict) else None)
                 or "goals",
                 "property_specs": (
-                    goal_spec.get("property_specs")
-                    if isinstance(goal_spec, dict)
-                    else None
+                    goal_spec.get("property_specs") if isinstance(goal_spec, dict) else None
                 )
                 or {},
             },
@@ -266,9 +281,7 @@ class ExecutionOrchestrator:
 
         goal_cmd = AICommand(**self._filter_kwargs(goal_kwargs))
         goal_result = await self.notion_agent.execute(goal_cmd)
-        goal_page_id = (
-            goal_result.get("notion_page_id") if isinstance(goal_result, dict) else None
-        )
+        goal_page_id = goal_result.get("notion_page_id") if isinstance(goal_result, dict) else None
 
         # ---------------------------
         # 2) KREIRAJ TASKOVE POVEZANE NA TAJ GOAL
@@ -328,9 +341,7 @@ class ExecutionOrchestrator:
             "tasks": created_tasks,
         }
 
-    async def _execute_kpi_weekly_summary_workflow(
-        self, command: AICommand
-    ) -> Dict[str, Any]:
+    async def _execute_kpi_weekly_summary_workflow(self, command: AICommand) -> Dict[str, Any]:
         """
         WORKFLOW: KPI WEEKLY SUMMARY → AI SUMMARY DB
 
@@ -462,7 +473,9 @@ class ExecutionOrchestrator:
 
         latest = results[-1]
         if not isinstance(latest, dict):
-            return f"KPI zapisi su pronađeni za '{time_scope}', ali format zapisa nije očekivan."
+            return (
+                f"KPI zapisi su pronađeni za '{time_scope}', ali format zapisa nije očekivan."
+            )
 
         props = latest.get("properties") or {}
         if not isinstance(props, dict):
@@ -474,9 +487,7 @@ class ExecutionOrchestrator:
         if isinstance(name_prop, dict) and name_prop.get("type") == "title":
             title_arr = name_prop.get("title") or []
             if isinstance(title_arr, list):
-                pieces = [
-                    p.get("plain_text", "") for p in title_arr if isinstance(p, dict)
-                ]
+                pieces = [p.get("plain_text", "") for p in title_arr if isinstance(p, dict)]
                 title = "".join(pieces).strip() or None
 
         # numbers
