@@ -38,26 +38,31 @@ INTENT_DEFINITIONS: Dict[IntentType, Dict[str, Any]] = {
     # -------------------------
     IntentType.CHAT: {
         "executable": False,
+        "side_effect": False,
         "allowed_commands": [],
         "description": "Conversational input only",
     },
     IntentType.RESET: {
         "executable": False,
+        "side_effect": False,
         "allowed_commands": [],
         "description": "Reset conversation or state (UX handled)",
     },
     IntentType.CONFIRM: {
         "executable": False,
+        "side_effect": False,
         "allowed_commands": [],
         "description": "User confirmation",
     },
     IntentType.CANCEL: {
         "executable": False,
+        "side_effect": False,
         "allowed_commands": [],
         "description": "User cancellation",
     },
     IntentType.REQUEST_EXECUTION: {
         "executable": False,
+        "side_effect": False,
         "allowed_commands": [],
         "description": "Execution request wrapper (internal)",
     },
@@ -66,59 +71,70 @@ INTENT_DEFINITIONS: Dict[IntentType, Dict[str, Any]] = {
     # -------------------------
     IntentType.SYSTEM_QUERY: {
         "executable": True,
+        "side_effect": False,
         "allowed_commands": ["system_query"],
         "description": "Read-only system state query",
     },
     IntentType.GOALS_LIST: {
         "executable": True,
+        "side_effect": False,
         "allowed_commands": ["list_goals"],
         "description": "List goals (read-only)",
     },
     IntentType.LIST_SOPS: {
         "executable": True,
+        "side_effect": False,
         "allowed_commands": ["list_sops"],
         "description": "List available SOPs (read-only)",
     },
     IntentType.VIEW_SOP: {
         "executable": True,
+        "side_effect": False,
         "allowed_commands": ["view_sop"],
         "description": "View SOP content (read-only)",
     },
     # -------------------------
-    # WRITE (GOVERNED)
+    # WRITE (GOVERNED / APPROVAL REQUIRED)
     # -------------------------
     IntentType.GOAL_CREATE: {
         "executable": True,
+        "side_effect": True,
         "allowed_commands": ["update_goal"],
         "description": "Create or update a goal",
     },
     IntentType.PLAN_CREATE: {
         "executable": True,
+        "side_effect": True,
         "allowed_commands": ["create_plan"],
         "description": "Create a plan",
     },
     IntentType.TASK_GENERATE_FROM_PLAN: {
         "executable": True,
+        "side_effect": True,
         "allowed_commands": ["generate_tasks"],
         "description": "Generate tasks from plan",
     },
     IntentType.TASK_CREATE: {
         "executable": True,
+        "side_effect": True,
         "allowed_commands": ["create_task"],
         "description": "Create a task",
     },
     IntentType.TASK_START: {
         "executable": True,
+        "side_effect": True,
         "allowed_commands": ["update_state"],
         "description": "Start a task",
     },
     IntentType.TASK_COMPLETE: {
         "executable": True,
+        "side_effect": True,
         "allowed_commands": ["update_state"],
         "description": "Complete a task",
     },
     IntentType.TASK_FAIL: {
         "executable": True,
+        "side_effect": True,
         "allowed_commands": ["update_state"],
         "description": "Mark task as failed",
     },
@@ -127,31 +143,37 @@ INTENT_DEFINITIONS: Dict[IntentType, Dict[str, Any]] = {
     # -------------------------
     IntentType.GOAL_CONFIRM: {
         "executable": False,
+        "side_effect": False,
         "allowed_commands": [],
         "description": "Confirm goal creation (UX flow)",
     },
     IntentType.GOAL_CANCEL: {
         "executable": False,
+        "side_effect": False,
         "allowed_commands": [],
         "description": "Cancel goal creation (UX flow)",
     },
     IntentType.PLAN_CONFIRM: {
         "executable": False,
+        "side_effect": False,
         "allowed_commands": [],
         "description": "Confirm plan (UX flow)",
     },
     IntentType.PLAN_CANCEL: {
         "executable": False,
+        "side_effect": False,
         "allowed_commands": [],
         "description": "Cancel plan (UX flow)",
     },
     IntentType.TASK_CONFIRM: {
         "executable": False,
+        "side_effect": False,
         "allowed_commands": [],
         "description": "Confirm task creation",
     },
     IntentType.TASK_CANCEL: {
         "executable": False,
+        "side_effect": False,
         "allowed_commands": [],
         "description": "Cancel task creation",
     },
@@ -178,6 +200,10 @@ class Intent:
     @property
     def is_executable(self) -> bool:
         return self.definition.get("executable", False)
+
+    @property
+    def has_side_effect(self) -> bool:
+        return self.definition.get("side_effect", False)
 
     @property
     def allowed_commands(self) -> List[str]:

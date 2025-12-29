@@ -38,7 +38,7 @@ class AICommandService:
 
         try:
             # ==================================================
-            # READ PATH
+            # READ PATH (NO APPROVAL REQUIRED)
             # ==================================================
             if command.read_only:
                 if not is_valid_command(command.command):
@@ -48,10 +48,14 @@ class AICommandService:
                 return await self.orchestrator.execute(command)
 
             # ==================================================
-            # WRITE PATH
+            # WRITE PATH (APPROVAL REQUIRED)
             # ==================================================
             if not command.intent:
                 raise RuntimeError("WRITE command must define intent.")
+
+            # 🔒 KANONSKI GUARD: nema execution-a bez approval-a
+            if not command.approval_id:
+                raise RuntimeError("WRITE command requires approval_id.")
 
             # 🔑 KANONSKA GARANCIJA: input MORA postojati
             if command.input is None:

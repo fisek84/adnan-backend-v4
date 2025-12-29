@@ -24,10 +24,6 @@ class ApprovalStatus(str, Enum):
     NOT_REQUIRED = "not_required"
 
 
-# Minimal allowlist za akcije koje su deterministički safe i bez side-effecta.
-_AUTO_APPROVED_TYPES = {"log_event", "read_only_query", "agent_ping"}
-
-
 def _as_dict(v: Any) -> Dict[str, Any]:
     return v if isinstance(v, dict) else {}
 
@@ -56,9 +52,8 @@ def check_approval(
     """
     Pravila:
     1) Ako je eksplicitno read_only => NOT_REQUIRED.
-    2) Određeni tipovi mogu biti auto-NOT_REQUIRED (safe stubs).
-    3) Ako postoji approval_id => verifikuj preko approval_state_service.
-    4) Inače => PENDING.
+    2) Ako postoji approval_id => verifikuj preko approval_state_service.
+    3) Inače => PENDING.
     """
     _ = command_id  # command_id je dio API-ja; trenutno se ne koristi u logici.
     ctx = _as_dict(context)
@@ -67,12 +62,7 @@ def check_approval(
     if ctx.get("read_only") is True:
         return ApprovalStatus.NOT_REQUIRED
 
-    # 2) safe allowlist
-    ct = (command_type or "").strip()
-    if ct in _AUTO_APPROVED_TYPES:
-        return ApprovalStatus.NOT_REQUIRED
-
-    # 3) approval_id verifikacija
+    # 2) approval_id verifikacija
     approval_id = _extract_approval_id(ctx)
     if approval_id:
         # Lazy import da izbjegnemo cikluse
@@ -83,7 +73,7 @@ def check_approval(
             return ApprovalStatus.APPROVED
         return ApprovalStatus.PENDING
 
-    # 4) default: blokiraj dok se ne dobije approval_id (upstream)
+    # 3) default: blokiraj dok se ne dobije approval_id (upstream)
     return ApprovalStatus.PENDING
 
 
