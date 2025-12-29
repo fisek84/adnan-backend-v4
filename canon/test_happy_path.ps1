@@ -164,6 +164,30 @@ function Convert-ProposalToExecuteRawPayload($proposal) {
     }
   }
 
+  # 4) ceo_console_router shape: command_type + payload
+  if (($proposal.PSObject.Properties.Name -contains "command_type") -and
+      ($proposal.PSObject.Properties.Name -contains "payload")) {
+
+    $ct = [string]$proposal.command_type
+    if ($ct.Trim().Length -gt 0) {
+      $p = $proposal.payload
+      if ($null -eq $p) { $p = @{} }
+
+      return @{
+        command   = $ct
+        intent    = $ct
+        params    = $p
+        initiator = "ceo"
+        read_only = $false
+        metadata  = @{
+          canon  = "happy_path"
+          source = "test_happy_path.ps1"
+          proposal_shape = "command_type_payload"
+        }
+      }
+    }
+  }
+
   return $null
 }
 
