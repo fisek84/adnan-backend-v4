@@ -357,7 +357,9 @@ def _filter_ai_command_payload(data: Dict[str, Any]) -> Dict[str, Any]:
         return {
             "command": data.get("command"),
             "intent": data.get("intent"),
-            "params": data.get("params") if isinstance(data.get("params"), dict) else {},
+            "params": data.get("params")
+            if isinstance(data.get("params"), dict)
+            else {},
             "initiator": data.get("initiator") or "ceo",
             "read_only": bool(data.get("read_only", False)),
             "metadata": data.get("metadata")
@@ -453,6 +455,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+
 # ================================================================
 # CORS (ISPRAVNO)
 # ================================================================
@@ -473,6 +476,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 # ================================================================
 # REQUEST MODELS

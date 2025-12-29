@@ -226,7 +226,9 @@ def _build_snapshot() -> Dict[str, Any]:
             return []
         return [x for x in v if isinstance(x, dict)]
 
-    def _first_non_empty_list(d: Dict[str, Any], keys: List[str]) -> List[Dict[str, Any]]:
+    def _first_non_empty_list(
+        d: Dict[str, Any], keys: List[str]
+    ) -> List[Dict[str, Any]]:
         for k in keys:
             lst = _as_list(d.get(k))
             if lst:
@@ -301,11 +303,17 @@ def _build_snapshot() -> Dict[str, Any]:
         meta["view_errors"] = extra_errors
 
     # Decide compactness via metadata flags (default: compact)
-    meta = dashboard.get("metadata") if isinstance(dashboard.get("metadata"), dict) else {}
+    meta = (
+        dashboard.get("metadata") if isinstance(dashboard.get("metadata"), dict) else {}
+    )
     include_properties = bool(meta.get("include_properties"))
     include_properties_text = bool(meta.get("include_properties_text"))
     include_raw_pages = bool(meta.get("include_raw_pages"))
-    is_compact = (not include_properties) and (not include_properties_text) and (not include_raw_pages)
+    is_compact = (
+        (not include_properties)
+        and (not include_properties_text)
+        and (not include_raw_pages)
+    )
 
     # Project minimal fields for agent stability
     goals = _as_list(dashboard.get("goals"))
@@ -339,7 +347,9 @@ def _build_snapshot() -> Dict[str, Any]:
     }
 
 
-def _extract_dashboard_lists(snapshot: Dict[str, Any]) -> Dict[str, List[Dict[str, Any]]]:
+def _extract_dashboard_lists(
+    snapshot: Dict[str, Any],
+) -> Dict[str, List[Dict[str, Any]]]:
     out = {"goals": [], "tasks": []}
     ceo_dash = snapshot.get("ceo_dashboard_snapshot")
     if not isinstance(ceo_dash, dict):
@@ -576,7 +586,9 @@ async def ceo_command(req: CEOCommandRequest = Body(...)) -> CEOCommandResponse:
 
     # CONTRACT STABILIZER
     if not resp.proposed_commands:
-        resp.proposed_commands = [_fallback_command(req, snapshot_meta, preferred_agent_id)]
+        resp.proposed_commands = [
+            _fallback_command(req, snapshot_meta, preferred_agent_id)
+        ]
         resp.trace["fallback_proposed_commands"] = True
 
     return resp
