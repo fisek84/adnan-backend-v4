@@ -122,7 +122,9 @@ class AgentRouterService:
 
         # Execute agent callable. Allow sync or async agent implementations.
         try:
-            routed = callable_fn(agent_input, {"registry_entry": selected, "trace": trace})
+            routed = callable_fn(
+                agent_input, {"registry_entry": selected, "trace": trace}
+            )
             if inspect.isawaitable(routed):
                 routed = await routed
 
@@ -187,8 +189,19 @@ class AgentRouterService:
                 # Ako agent vrati dict umjesto ProposedCommand, probaj normalizovati
                 if isinstance(pc, dict):
                     pc = ProposedCommand(
-                        command=str(pc.get("command") or pc.get("command_type") or pc.get("type") or ""),
-                        args=pc.get("args") if isinstance(pc.get("args"), dict) else (pc.get("payload") if isinstance(pc.get("payload"), dict) else {}),
+                        command=str(
+                            pc.get("command")
+                            or pc.get("command_type")
+                            or pc.get("type")
+                            or ""
+                        ),
+                        args=pc.get("args")
+                        if isinstance(pc.get("args"), dict)
+                        else (
+                            pc.get("payload")
+                            if isinstance(pc.get("payload"), dict)
+                            else {}
+                        ),
                         reason=pc.get("reason"),
                         requires_approval=pc.get("requires_approval", True),
                         risk=pc.get("risk"),
@@ -205,7 +218,10 @@ class AgentRouterService:
                         pc.execute = False  # type: ignore[attr-defined]
                     if hasattr(pc, "approved"):
                         pc.approved = False  # type: ignore[attr-defined]
-                    if hasattr(pc, "requires_approval") and pc.requires_approval is None:
+                    if (
+                        hasattr(pc, "requires_approval")
+                        and pc.requires_approval is None
+                    ):
                         pc.requires_approval = True
                     if hasattr(pc, "status"):
                         pc.status = "BLOCKED"  # type: ignore[attr-defined]
@@ -217,7 +233,11 @@ class AgentRouterService:
                 pc_requires = True
                 if hasattr(pc, "requires_approval"):
                     try:
-                        pc_requires = bool(pc.requires_approval) if pc.requires_approval is not None else True
+                        pc_requires = (
+                            bool(pc.requires_approval)
+                            if pc.requires_approval is not None
+                            else True
+                        )
                     except Exception:
                         pc_requires = True
 
@@ -304,7 +324,9 @@ class AgentRouterService:
         mod = importlib.import_module(module_path)
         fn = getattr(mod, fn_name, None)
         if fn is None or not callable(fn):
-            raise ValueError(f"Invalid agent entrypoint; callable not found: {entrypoint}")
+            raise ValueError(
+                f"Invalid agent entrypoint; callable not found: {entrypoint}"
+            )
         return fn
 
 
@@ -380,7 +402,9 @@ def _dig(snapshot: Dict[str, Any], path: Tuple[str, ...]) -> Any:
     return cur
 
 
-def _extract_list(snapshot: Dict[str, Any], candidates: List[Tuple[str, ...]]) -> List[Dict[str, Any]]:
+def _extract_list(
+    snapshot: Dict[str, Any], candidates: List[Tuple[str, ...]]
+) -> List[Dict[str, Any]]:
     for path in candidates:
         v = _dig(snapshot, path)
         if isinstance(v, list):
@@ -511,7 +535,9 @@ def _parse_filter(text: str, key: str) -> Optional[str]:
     return None
 
 
-def _filter_items(items: List[Dict[str, Any]], *, status: Optional[str], priority: Optional[str]) -> List[Dict[str, Any]]:
+def _filter_items(
+    items: List[Dict[str, Any]], *, status: Optional[str], priority: Optional[str]
+) -> List[Dict[str, Any]]:
     out = items
     if status:
         s = status.strip().lower()
@@ -534,14 +560,18 @@ def _render_items(items: List[Dict[str, Any]], kind: str, *, limit: int) -> str:
             status = str(x.get("status") or "-").strip()
             prio = str(x.get("priority") or "-").strip()
             due = str(x.get("deadline") or x.get("due_date") or "-").strip()
-            lines.append(f"- {name} | id: {_id} | status: {status} | prioritet: {prio} | deadline: {due}")
+            lines.append(
+                f"- {name} | id: {_id} | status: {status} | prioritet: {prio} | deadline: {due}"
+            )
         elif kind == "tasks":
             title = str(x.get("title") or x.get("name") or "(bez naziva)").strip()
             _id = str(x.get("id") or "-").strip()
             status = str(x.get("status") or "-").strip()
             prio = str(x.get("priority") or "-").strip()
             due = str(x.get("due_date") or x.get("deadline") or "-").strip()
-            lines.append(f"- {title} | id: {_id} | status: {status} | prioritet: {prio} | due: {due}")
+            lines.append(
+                f"- {title} | id: {_id} | status: {status} | prioritet: {prio} | due: {due}"
+            )
         elif kind == "kpis":
             name = str(x.get("name") or x.get("title") or "(bez naziva)").strip()
             val = str(x.get("value") or x.get("current") or "-").strip()
@@ -680,7 +710,11 @@ def ceo_clone_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> AgentOutput
             proposed_commands=[],
             agent_id="ceo_clone",
             read_only=True,
-            trace={"agent": "ceo_clone", "intent": "inventory", **(ctx.get("trace") or {})},
+            trace={
+                "agent": "ceo_clone",
+                "intent": "inventory",
+                **(ctx.get("trace") or {}),
+            },
         )
 
     if any(x in lower_ascii for x in ["ko si ti", "tko si ti", "who are you", "ko si"]):
@@ -693,7 +727,11 @@ def ceo_clone_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> AgentOutput
             proposed_commands=[],
             agent_id="ceo_clone",
             read_only=True,
-            trace={"agent": "ceo_clone", "intent": "who_am_i", **(ctx.get("trace") or {})},
+            trace={
+                "agent": "ceo_clone",
+                "intent": "who_am_i",
+                **(ctx.get("trace") or {}),
+            },
         )
 
     m_props = re.search(
@@ -710,16 +748,36 @@ def ceo_clone_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> AgentOutput
             proposed_commands=[],
             agent_id="ceo_clone",
             read_only=True,
-            trace={"agent": "ceo_clone", "intent": "show_properties", "kind": kind, **(ctx.get("trace") or {})},
+            trace={
+                "agent": "ceo_clone",
+                "intent": "show_properties",
+                "kind": kind,
+                **(ctx.get("trace") or {}),
+            },
         )
 
     if any(
         x in lower_ascii
-        for x in ["pokazi baze", "pokaži baze", "databases", "baze", "db list", "lista baza"]
+        for x in [
+            "pokazi baze",
+            "pokaži baze",
+            "databases",
+            "baze",
+            "db list",
+            "lista baza",
+        ]
     ):
         extra = _dig(snap, ("knowledge_snapshot", "extra_databases"))
         lines = ["Baze (best-effort iz snapshot-a):"]
-        core = ["goals", "tasks", "projects", "kpi", "leads", "agent_exchange", "ai_summary"]
+        core = [
+            "goals",
+            "tasks",
+            "projects",
+            "kpi",
+            "leads",
+            "agent_exchange",
+            "ai_summary",
+        ]
         lines.append(f"- core: {', '.join(core)}")
         if isinstance(extra, dict) and extra:
             names = sorted(list(extra.keys()))[:200]
@@ -731,14 +789,21 @@ def ceo_clone_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> AgentOutput
             proposed_commands=[],
             agent_id="ceo_clone",
             read_only=True,
-            trace={"agent": "ceo_clone", "intent": "list_databases", **(ctx.get("trace") or {})},
+            trace={
+                "agent": "ceo_clone",
+                "intent": "list_databases",
+                **(ctx.get("trace") or {}),
+            },
         )
 
     limit = _parse_limit(msg, default=25, max_limit=100)
     status = _parse_filter(msg, "status")
     priority = _parse_filter(msg, "priority") or _parse_filter(msg, "prioritet")
 
-    if any(x in lower_ascii for x in ["pokazi ciljeve", "pokaži ciljeve", "ciljevi", "goals"]):
+    if any(
+        x in lower_ascii
+        for x in ["pokazi ciljeve", "pokaži ciljeve", "ciljevi", "goals"]
+    ):
         base = _extract_goals(snap)
         goals = _filter_items(base, status=status, priority=priority)
         if base and not goals and (status or priority):
@@ -764,7 +829,10 @@ def ceo_clone_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> AgentOutput
             },
         )
 
-    if any(x in lower_ascii for x in ["pokazi taskove", "pokaži taskove", "taskovi", "tasks"]):
+    if any(
+        x in lower_ascii
+        for x in ["pokazi taskove", "pokaži taskove", "taskovi", "tasks"]
+    ):
         base = _extract_tasks(snap)
         tasks = _filter_items(base, status=status, priority=priority)
         if base and not tasks and (status or priority):
@@ -798,10 +866,18 @@ def ceo_clone_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> AgentOutput
             proposed_commands=[],
             agent_id="ceo_clone",
             read_only=True,
-            trace={"agent": "ceo_clone", "intent": "show_kpis", "limit": limit, **(ctx.get("trace") or {})},
+            trace={
+                "agent": "ceo_clone",
+                "intent": "show_kpis",
+                "limit": limit,
+                **(ctx.get("trace") or {}),
+            },
         )
 
-    if any(x in lower_ascii for x in ["pokazi projekte", "pokaži projekte", "projekti", "projects"]):
+    if any(
+        x in lower_ascii
+        for x in ["pokazi projekte", "pokaži projekte", "projekti", "projects"]
+    ):
         base = _extract_projects(snap)
         projects = _filter_items(base, status=status, priority=priority)
         if base and not projects and (status or priority):
@@ -811,7 +887,9 @@ def ceo_clone_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> AgentOutput
                 f"(ukupno u snapshotu: {len(base)})"
             )
         else:
-            text = "Projekti (snapshot):\n" + _render_items(projects, "projects", limit=limit)
+            text = "Projekti (snapshot):\n" + _render_items(
+                projects, "projects", limit=limit
+            )
         return AgentOutput(
             text=text,
             proposed_commands=[],
@@ -828,8 +906,21 @@ def ceo_clone_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> AgentOutput
         )
 
     write_markers = [
-        "kreiraj", "napravi", "dodaj", "azuriraj", "ažuriraj", "promijeni", "obrisi",
-        "create", "add", "update", "delete", "remove", "edit", "set", "change",
+        "kreiraj",
+        "napravi",
+        "dodaj",
+        "azuriraj",
+        "ažuriraj",
+        "promijeni",
+        "obrisi",
+        "create",
+        "add",
+        "update",
+        "delete",
+        "remove",
+        "edit",
+        "set",
+        "change",
     ]
     if any(m in lower_ascii for m in write_markers):
         proposed.append(
@@ -858,11 +949,17 @@ def ceo_clone_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> AgentOutput
         proposed_commands=proposed,
         agent_id="ceo_clone",
         read_only=True,
-        trace={"agent": "ceo_clone", "intent": "general_advice", **(ctx.get("trace") or {})},
+        trace={
+            "agent": "ceo_clone",
+            "intent": "general_advice",
+            **(ctx.get("trace") or {}),
+        },
     )
 
 
-def specialist_notion_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> AgentOutput:
+def specialist_notion_agent(
+    agent_input: AgentInput, ctx: Dict[str, Any]
+) -> AgentOutput:
     msg = (agent_input.message or "").strip()
     lower_ascii = _normalize_ascii((msg or "").lower())
 
@@ -870,7 +967,16 @@ def specialist_notion_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> Age
 
     is_notion_topic = ("notion" in lower_ascii) or any(
         x in lower_ascii
-        for x in ["database", "page", "property", "schema", "workspace", "db", "tablica", "baza"]
+        for x in [
+            "database",
+            "page",
+            "property",
+            "schema",
+            "workspace",
+            "db",
+            "tablica",
+            "baza",
+        ]
     )
 
     if is_notion_topic:
@@ -887,7 +993,17 @@ def specialist_notion_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> Age
 
         if any(
             x in lower_ascii
-            for x in ["create", "add", "update", "delete", "kreiraj", "dodaj", "ažuriraj", "azuriraj", "obrisi"]
+            for x in [
+                "create",
+                "add",
+                "update",
+                "delete",
+                "kreiraj",
+                "dodaj",
+                "ažuriraj",
+                "azuriraj",
+                "obrisi",
+            ]
         ):
             proposed.append(
                 ProposedCommand(

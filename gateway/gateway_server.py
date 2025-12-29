@@ -177,7 +177,9 @@ from services.notion_service import NotionService, set_notion_service
 
 set_notion_service(
     NotionService(
-        api_key=((os.getenv("NOTION_API_KEY") or os.getenv("NOTION_TOKEN") or "").strip()),
+        api_key=(
+            (os.getenv("NOTION_API_KEY") or os.getenv("NOTION_TOKEN") or "").strip()
+        ),
         goals_db_id=(os.getenv("NOTION_GOALS_DB_ID") or "").strip(),
         tasks_db_id=(os.getenv("NOTION_TASKS_DB_ID") or "").strip(),
         projects_db_id=(os.getenv("NOTION_PROJECTS_DB_ID") or "").strip(),
@@ -355,10 +357,14 @@ def _filter_ai_command_payload(data: Dict[str, Any]) -> Dict[str, Any]:
         return {
             "command": data.get("command"),
             "intent": data.get("intent"),
-            "params": data.get("params") if isinstance(data.get("params"), dict) else {},
+            "params": data.get("params")
+            if isinstance(data.get("params"), dict)
+            else {},
             "initiator": data.get("initiator") or "ceo",
             "read_only": bool(data.get("read_only", False)),
-            "metadata": data.get("metadata") if isinstance(data.get("metadata"), dict) else {},
+            "metadata": data.get("metadata")
+            if isinstance(data.get("metadata"), dict)
+            else {},
             "execution_id": data.get("execution_id"),
             "approval_id": data.get("approval_id"),
         }

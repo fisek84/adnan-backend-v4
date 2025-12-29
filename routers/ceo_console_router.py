@@ -148,7 +148,11 @@ def _list_agent_ids() -> List[str]:
             if isinstance(v, str) and v:
                 ids.append(v)
                 continue
-        v = getattr(a, "id", None) or getattr(a, "agent_id", None) or getattr(a, "name", None)
+        v = (
+            getattr(a, "id", None)
+            or getattr(a, "agent_id", None)
+            or getattr(a, "name", None)
+        )
         if isinstance(v, str) and v:
             ids.append(v)
 
@@ -166,7 +170,9 @@ def _pick_preferred_agent_id(req: CEOCommandRequest) -> str:
     # ručni override za test
     if isinstance(req.preferred_agent_id, str) and req.preferred_agent_id.strip():
         pid = req.preferred_agent_id.strip()
-        return pid if pid in ids else pid  # i ako nije u ids, ostavimo da se vidi u trace-u
+        return (
+            pid if pid in ids else pid
+        )  # i ako nije u ids, ostavimo da se vidi u trace-u
 
     if req.read_only:
         for cand in ("ceo_advisor", "ceo"):
@@ -213,20 +219,32 @@ def _build_snapshot() -> Dict[str, Any]:
 
     dashboard = ceo_dash.get("dashboard")
     if isinstance(dashboard, dict):
-        meta = dashboard.get("metadata") if isinstance(dashboard.get("metadata"), dict) else {}
+        meta = (
+            dashboard.get("metadata")
+            if isinstance(dashboard.get("metadata"), dict)
+            else {}
+        )
         include_properties = bool(meta.get("include_properties"))
         include_properties_text = bool(meta.get("include_properties_text"))
         include_raw_pages = bool(meta.get("include_raw_pages"))
 
-        is_compact = (not include_properties) and (not include_properties_text) and (not include_raw_pages)
+        is_compact = (
+            (not include_properties)
+            and (not include_properties_text)
+            and (not include_raw_pages)
+        )
         if is_compact:
             goals = dashboard.get("goals")
             tasks = dashboard.get("tasks")
 
             if isinstance(goals, list):
-                dashboard["goals"] = [_project_goal(g) for g in goals if isinstance(g, dict)]
+                dashboard["goals"] = [
+                    _project_goal(g) for g in goals if isinstance(g, dict)
+                ]
             if isinstance(tasks, list):
-                dashboard["tasks"] = [_project_task(t) for t in tasks if isinstance(t, dict)]
+                dashboard["tasks"] = [
+                    _project_task(t) for t in tasks if isinstance(t, dict)
+                ]
             ceo_dash["dashboard"] = dashboard
 
     ks: Dict[str, Any] = {}
@@ -244,7 +262,9 @@ def _build_snapshot() -> Dict[str, Any]:
     }
 
 
-def _extract_dashboard_lists(snapshot: Dict[str, Any]) -> Dict[str, List[Dict[str, Any]]]:
+def _extract_dashboard_lists(
+    snapshot: Dict[str, Any],
+) -> Dict[str, List[Dict[str, Any]]]:
     out = {"goals": [], "tasks": []}
 
     ceo_dash = snapshot.get("ceo_dashboard_snapshot")
