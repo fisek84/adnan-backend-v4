@@ -1042,11 +1042,16 @@ async def _ceo_command_core(payload_dict: Dict[str, Any]) -> JSONResponse:
     if session_id is None and isinstance(payload_dict.get("data"), dict):
         session_id = payload_dict["data"].get("session_id")
 
+    # IMPORTANT CANON:
+    # /api/ceo/command is a legacy wrapper and MUST be read-only (advisor mode).
+    # SSOT for proposals/execution planning is /api/chat.
     req = ceo_console_module.CEOCommandRequest(
         text=cleaned_text.strip(),
         initiator=source,
         session_id=session_id,
         context_hint=smart_context,
+        read_only=True,
+        require_approval=False,
     )
 
     result_obj = await ceo_console_module.ceo_command(req)
@@ -1054,6 +1059,9 @@ async def _ceo_command_core(payload_dict: Dict[str, Any]) -> JSONResponse:
 
     if not isinstance(result, dict):
         result = {"ok": True, "summary": str(result_obj), "trace": {}}
+
+    # Defanzivno: legacy wrapper contract (tests rely on this)
+    result["read_only"] = True
 
     if not result.get("text"):
         result["text"] = result.get("summary") or ""

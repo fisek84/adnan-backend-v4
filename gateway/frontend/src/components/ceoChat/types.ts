@@ -12,20 +12,34 @@ export type ChatMessageItem = {
   content: string;
   status: ChatStatus;
   createdAt: number;
+
+  // vezivanje request/response (korisno za debug + retry)
   requestId?: string;
 };
 
 export type GovernanceState = "BLOCKED" | "APPROVED" | "EXECUTED" | string;
 
-export type GovernanceEventItem = {
-  id: string;
-  kind: "governance";
-  createdAt: number;
+export type GovernanceCard = {
   state: GovernanceState;
   title?: string;
   summary?: string;
   reasons?: string[];
   approvalRequestId?: string;
+
+  // za UI korelaciju (nije obavezno da backend šalje)
+  requestId?: string;
+};
+
+export type GovernanceEventItem = {
+  id: string;
+  kind: "governance";
+  state: GovernanceState;
+  title?: string;
+  summary?: string;
+  reasons?: string[];
+  approvalRequestId?: string;
+
+  createdAt: number;
   requestId?: string;
 };
 
@@ -38,36 +52,17 @@ export type UiStrings = {
   jumpToLatestLabel: string;
   inputPlaceholder: string;
   sendLabel: string;
-
-  blockedLabel: string;
-  approvedLabel: string;
-  executedLabel: string;
-
-  openApprovalsLabel: string;
-  approveLabel: string;
-
-  retryLabel: string;
 };
 
 export type CeoCommandRequest = {
-  // Preferirano (tvoj FastAPI router očekuje ovo):
-  text: string;
-  initiator?: string;
-  session_id?: string;
-  context_hint?: Record<string, any>;
-
-  // Legacy polja (ako negdje u kodu još postoji):
-  input_text?: string;
+  input_text: string;
   smart_context?: Record<string, any>;
   source?: string;
-};
 
-export type GovernanceCard = {
-  state: GovernanceState;
-  title?: string;
-  summary?: string;
-  reasons?: string[];
-  approvalRequestId?: string;
+  // optional: canonical fields koje backend wrapperi razumiju
+  initiator?: string;
+  session_id?: string | null;
+  context_hint?: Record<string, any>;
 };
 
 export type NormalizedConsoleResponse = {
@@ -84,6 +79,12 @@ export type NormalizedConsoleResponse = {
 
   // opciono za streaming (ako ikad dodaš)
   stream?: AsyncIterable<string>;
+
+  // omogućava UI da renderuje proposals i kad nisu mapirani u governance
+  proposed_commands?: RawCeoConsoleResponse["proposed_commands"];
+
+  // raw response za debug/compat (nikad ne gubi polja)
+  raw?: RawCeoConsoleResponse;
 };
 
 // Backend shape (CEOCommandResponse iz FastAPI)
@@ -91,8 +92,11 @@ export type RawCeoConsoleResponse = {
   ok?: boolean;
   read_only?: boolean;
   context?: any;
+
   summary?: string;
-  text?: string; // fallback ako nekad vrati
+  text?: string;
+
+  // proposals iz agenta/routera (kanon za UI)
   proposed_commands?: Array<{
     command_type?: string;
     payload?: Record<string, any>;
@@ -100,6 +104,13 @@ export type RawCeoConsoleResponse = {
     required_approval?: boolean;
     cost_hint?: string | null;
     risk_hint?: string | null;
+
+    // neki oblici proposals imaju args / command / intent / params
+    command?: string;
+    intent?: string;
+    params?: Record<string, any>;
+    args?: Record<string, any>;
   }>;
+
   trace?: Record<string, any>;
 };

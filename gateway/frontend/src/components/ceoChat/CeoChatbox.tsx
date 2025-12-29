@@ -7,11 +7,12 @@ import type {
   NormalizedConsoleResponse,
   UiStrings,
 } from "./types";
-import type { CeoConsoleApi } from "./api";
 import { createCeoConsoleApi } from "./api";
 import { defaultStrings } from "./strings";
 import { useAutoScroll } from "./hooks";
 import "./CeoChatbox.css";
+
+type CeoConsoleApi = ReturnType<typeof createCeoConsoleApi>;
 
 const uid = () =>
   typeof crypto !== "undefined" && "randomUUID" in crypto
@@ -80,6 +81,7 @@ const _extractProposedCommands = (resp: any): ProposedCmd[] => {
     resp?.raw?.proposedCommands,
     resp?.result?.proposed_commands,
     resp?.result?.proposedCommands,
+    resp?.governance?.proposed_commands,
   ];
 
   for (const c of candidates) {
@@ -114,12 +116,24 @@ const _extractProposedCommands = (resp: any): ProposedCmd[] => {
 const _pickText = (x: any): string => {
   if (typeof x === "string") return x.trim();
   if (!x || typeof x !== "object") return "";
-  const keys = ["summary", "text", "message", "output_text", "outputText"];
+  const keys = ["summary", "text", "message", "output_text", "outputText", "detail"];
   for (const k of keys) {
     const v = x[k];
     if (typeof v === "string" && v.trim()) return v.trim();
   }
   return "";
+};
+
+const _looksLikeFailedAgentRun = (resp: any): boolean => {
+  const t =
+    String(resp?.systemText ?? resp?.text ?? resp?.summary ?? "").toLowerCase() ||
+    "";
+  if (t.includes("agent execution failed")) return true;
+  if (t.includes("failed") && t.includes("agent")) return true;
+  // if router picked notion_ops for a CEO advisory style prompt, treat as suspicious
+  const preferred = String(resp?.raw?.trace?.preferred_agent_id ?? "").toLowerCase();
+  if (preferred === "notion_ops" && t.includes("failed")) return true;
+  return false;
 };
 
 export const CeoChatbox: React.FC<CeoChatboxProps> = ({
@@ -136,8 +150,14 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
     [strings]
   );
 
+  // Keep compatibility regardless of api.ts signature (we do not rely on config being used).
   const api: CeoConsoleApi = useMemo(
-    () => createCeoConsoleApi({ ceoCommandUrl, approveUrl, headers }),
+    () =>
+      (createCeoConsoleApi as any)({
+        ceoCommandUrl,
+        approveUrl,
+        headers,
+      }) as CeoConsoleApi,
     [ceoCommandUrl, approveUrl, headers]
   );
 
@@ -172,6 +192,51 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
     setBusy("idle");
   }, []);
 
+  // --- URL resolvers (support absolute urls and cross-origin dev) ---
+  const resolveUrl = useCallback(
+    (maybeUrl: string | undefined, fallbackPath: string): string => {
+      try {
+        if (maybeUrl && maybeUrl.trim()) {
+          // If it's already absolute, keep. If it's relative, resolve against ceoCommandUrl.
+          return new URL(maybeUrl, ceoCommandUrl).toString();
+        }
+        return new URL(fallbackPath, ceoCommandUrl).toString();
+      } catch {
+        // last resort: relative to current origin
+        return maybeUrl && maybeUrl.trim() ? maybeUrl : fallbackPath;
+      }
+    },
+    [ceoCommandUrl]
+  );
+
+  const mergedHeaders = useMemo(() => {
+    return {
+      "Content-Type": "application/json",
+      ...(headers ?? {}),
+    } as Record<string, string>;
+  }, [headers]);
+
+  const postJson = useCallback(
+    async (url: string, body: any, signal: AbortSignal): Promise<any> => {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: mergedHeaders,
+        body: JSON.stringify(body ?? {}),
+        signal,
+      });
+      const txt = await res.text();
+      if (!res.ok) {
+        throw new Error(`${url} failed (${res.status}): ${txt || "no body"}`);
+      }
+      try {
+        return txt ? JSON.parse(txt) : {};
+      } catch {
+        return {};
+      }
+    },
+    [mergedHeaders]
+  );
+
   const flushResponseToUi = useCallback(
     async (placeholderId: string, resp: NormalizedConsoleResponse) => {
       // If your api layer supports streaming, keep it.
@@ -199,7 +264,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         return;
       }
 
-      // IMPORTANT: backend returns { summary: "...", proposed_commands: [...] }
+      // IMPORTANT: backend returns { text/summary, proposed_commands: [...] }
       const sysText =
         (resp as any).systemText ??
         (resp as any).summary ??
@@ -210,6 +275,25 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
 
       const gov = toGovernanceCard(resp);
       if (gov) appendItem(gov);
+
+      // NEW: always render proposals (even if there is no approval_id yet)
+      const proposals = _extractProposedCommands(resp as any);
+      if (proposals.length > 0) {
+        appendItem({
+          id: uid(),
+          kind: "governance",
+          createdAt: now(),
+          state: "BLOCKED",
+          title: "Proposed commands",
+          summary:
+            "Select a proposal to create an approval and execute (governance gate).",
+          reasons: proposals.map((p) => p.command_type),
+          approvalRequestId: undefined,
+          requestId: (resp as any)?.requestId,
+          // attach payload for renderer
+          proposedCommands: proposals,
+        } as any);
+      }
 
       setBusy("idle");
       setLastError(null);
@@ -228,8 +312,8 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
 
       if (cmd !== "refresh_snapshot") return null;
 
-      const execUrl = executeRawUrl ?? "/api/execute/raw";
-      const appUrl = approveUrl ?? "/api/ai-ops/approval/approve";
+      const execUrl = resolveUrl(executeRawUrl, "/api/execute/raw");
+      const appUrl = resolveUrl(approveUrl, "/api/ai-ops/approval/approve");
 
       const execBody = {
         command: cmd,
@@ -240,31 +324,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         metadata: { origin: "ceo_chatbox_auto" },
       };
 
-      const mergedHeaders: Record<string, string> = {
-        "Content-Type": "application/json",
-        ...(headers ?? {}),
-      };
-
-      const execRes = await fetch(execUrl, {
-        method: "POST",
-        headers: mergedHeaders,
-        body: JSON.stringify(execBody),
-        signal,
-      });
-
-      const execText = await execRes.text();
-      if (!execRes.ok) {
-        throw new Error(
-          `execute/raw failed (${execRes.status}): ${execText || "no body"}`
-        );
-      }
-
-      let execJson: any = {};
-      try {
-        execJson = execText ? JSON.parse(execText) : {};
-      } catch {
-        execJson = {};
-      }
+      const execJson = await postJson(execUrl, execBody, signal);
 
       const approvalId: string | null =
         typeof execJson?.approval_id === "string" && execJson.approval_id
@@ -273,30 +333,172 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
 
       if (!approvalId) return execJson;
 
-      const approveRes = await fetch(appUrl, {
-        method: "POST",
-        headers: mergedHeaders,
-        body: JSON.stringify({ approval_id: approvalId }),
-        signal,
-      });
-
-      const approveText = await approveRes.text();
-      if (!approveRes.ok) {
-        throw new Error(
-          `approve failed (${approveRes.status}): ${approveText || "no body"}`
-        );
-      }
-
-      let approveJson: any = {};
-      try {
-        approveJson = approveText ? JSON.parse(approveText) : {};
-      } catch {
-        approveJson = {};
-      }
+      const approveJson = await postJson(
+        appUrl,
+        { approval_id: approvalId },
+        signal
+      );
 
       return approveJson;
     },
-    [approveUrl, executeRawUrl, headers]
+    [approveUrl, executeRawUrl, postJson, resolveUrl]
+  );
+
+  const handleOpenApprovals = useCallback(
+    (approvalRequestId?: string) => {
+      if (onOpenApprovals) onOpenApprovals(approvalRequestId);
+      else {
+        window.dispatchEvent(
+          new CustomEvent("ceo:openApprovals", {
+            detail: { approvalRequestId },
+          })
+        );
+      }
+    },
+    [onOpenApprovals]
+  );
+
+  // NEW: Execute proposal -> create approval via /api/execute/raw
+  const handleCreateApprovalFromProposal = useCallback(
+    async (proposal: ProposedCmd) => {
+      if (busy === "submitting" || busy === "streaming") return;
+
+      setBusy("submitting");
+      setLastError(null);
+
+      const placeholder = makeSystemProcessingItem("proposal");
+      appendItem(placeholder);
+
+      const controller = new AbortController();
+      abortRef.current = controller;
+
+      try {
+        const execUrl = resolveUrl(executeRawUrl, "/api/execute/raw");
+
+        const execBody = {
+          command: proposal.command_type,
+          intent: proposal.command_type,
+          params: proposal.payload || {},
+          initiator: "ceo",
+          read_only: false,
+          metadata: {
+            origin: "ceo_chatbox_proposal",
+            proposal_command_type: proposal.command_type,
+          },
+        };
+
+        const execJson = await postJson(execUrl, execBody, controller.signal);
+
+        const approvalId: string | null =
+          typeof execJson?.approval_id === "string" && execJson.approval_id
+            ? execJson.approval_id
+            : null;
+
+        const msg =
+          approvalId?.trim()
+            ? `Approval created: ${approvalId}`
+            : _pickText(execJson) || "Approval created.";
+
+        updateItem(placeholder.id, { content: msg, status: "final" });
+        abortRef.current = null;
+        setBusy("idle");
+        setLastError(null);
+
+        if (approvalId) handleOpenApprovals(approvalId);
+      } catch (e) {
+        abortRef.current = null;
+        const msg = e instanceof Error ? e.message : String(e);
+        updateItem(placeholder.id, { status: "error", content: "" });
+        setBusy("error");
+        setLastError(msg);
+      }
+    },
+    [
+      appendItem,
+      busy,
+      executeRawUrl,
+      handleOpenApprovals,
+      postJson,
+      resolveUrl,
+      updateItem,
+    ]
+  );
+
+  // NEW: Approve & execute immediately (happy-path)
+  const handleApproveAndExecuteProposal = useCallback(
+    async (proposal: ProposedCmd) => {
+      if (busy === "submitting" || busy === "streaming") return;
+
+      setBusy("submitting");
+      setLastError(null);
+
+      const placeholder = makeSystemProcessingItem("proposal_execute");
+      appendItem(placeholder);
+
+      const controller = new AbortController();
+      abortRef.current = controller;
+
+      try {
+        const execUrl = resolveUrl(executeRawUrl, "/api/execute/raw");
+        const appUrl = resolveUrl(approveUrl, "/api/ai-ops/approval/approve");
+
+        const execBody = {
+          command: proposal.command_type,
+          intent: proposal.command_type,
+          params: proposal.payload || {},
+          initiator: "ceo",
+          read_only: false,
+          metadata: {
+            origin: "ceo_chatbox_proposal",
+            proposal_command_type: proposal.command_type,
+          },
+        };
+
+        const execJson = await postJson(execUrl, execBody, controller.signal);
+
+        const approvalId: string | null =
+          typeof execJson?.approval_id === "string" && execJson.approval_id
+            ? execJson.approval_id
+            : null;
+
+        if (!approvalId) {
+          const msg =
+            _pickText(execJson) ||
+            (execJson?.execution_state
+              ? `Execution: ${execJson.execution_state}`
+              : "Executed.");
+          updateItem(placeholder.id, { content: msg, status: "final" });
+          abortRef.current = null;
+          setBusy("idle");
+          setLastError(null);
+          return;
+        }
+
+        const approveJson = await postJson(
+          appUrl,
+          { approval_id: approvalId },
+          controller.signal
+        );
+
+        const msg =
+          _pickText(approveJson) ||
+          (approveJson?.execution_state
+            ? `Execution: ${approveJson.execution_state}`
+            : "Approved & executed.");
+
+        updateItem(placeholder.id, { content: msg, status: "final" });
+        abortRef.current = null;
+        setBusy("idle");
+        setLastError(null);
+      } catch (e) {
+        abortRef.current = null;
+        const msg = e instanceof Error ? e.message : String(e);
+        updateItem(placeholder.id, { status: "error", content: "" });
+        setBusy("error");
+        setLastError(msg);
+      }
+    },
+    [appendItem, approveUrl, busy, executeRawUrl, postJson, resolveUrl, updateItem]
   );
 
   const submit = useCallback(async () => {
@@ -329,19 +531,45 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
     abortRef.current = controller;
 
     try {
-      // CRITICAL FIX:
-      // Backend ceo_console_router expects: { text, initiator, session_id?, context_hint? }
+      // Backend expects: { text, initiator, session_id?, context_hint? }
       const req: any = {
         text: trimmed,
         initiator: "ceo_dashboard",
         context_hint: {},
       };
 
-      const resp = await api.sendCommand(req, controller.signal);
+      // 1) Try ceo/command via api layer
+      let resp = await api.sendCommand(req, controller.signal);
+
+      // 2) If no proposals and it looks like a failed/incorrect agent run, retry via /api/chat (happy-path)
+      const proposals1 = _extractProposedCommands(resp as any);
+      if (
+        proposals1.length < 1 &&
+        (_looksLikeFailedAgentRun(resp as any) ||
+          String((resp as any)?.systemText ?? "").toLowerCase().includes("failed"))
+      ) {
+        const chatUrl = resolveUrl(undefined, "/api/chat");
+        const chatJson = await postJson(
+          chatUrl,
+          { message: trimmed, initiator: "ceo_dashboard", context_hint: req.context_hint },
+          controller.signal
+        );
+
+        // Make a minimal normalized response for UI
+        resp = {
+          systemText:
+            (chatJson?.text as any) ??
+            (chatJson?.summary as any) ??
+            (chatJson?.message as any) ??
+            "",
+          raw: chatJson,
+          proposed_commands: chatJson?.proposed_commands ?? chatJson?.proposedCommands ?? [],
+        } as any;
+      }
 
       abortRef.current = null;
 
-      // show advisor response
+      // show advisor response + proposals
       await flushResponseToUi(placeholder.id, resp);
 
       // auto-exec (only refresh_snapshot)
@@ -393,6 +621,8 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
     busy,
     draft,
     flushResponseToUi,
+    postJson,
+    resolveUrl,
     updateItem,
   ]);
 
@@ -410,26 +640,9 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
   const showTyping = busy === "submitting" || busy === "streaming";
   const jumpToLatest = useCallback(() => scrollToBottom(true), [scrollToBottom]);
 
-  const handleOpenApprovals = useCallback(
-    (approvalRequestId?: string) => {
-      if (onOpenApprovals) onOpenApprovals(approvalRequestId);
-      else {
-        window.dispatchEvent(
-          new CustomEvent("ceo:openApprovals", {
-            detail: { approvalRequestId },
-          })
-        );
-      }
-    },
-    [onOpenApprovals]
-  );
-
   const handleApprove = useCallback(
     async (approvalId: string) => {
-      if (!approveUrl) {
-        handleOpenApprovals(approvalId);
-        return;
-      }
+      const appUrl = resolveUrl(approveUrl, "/api/ai-ops/approval/approve");
 
       if (busy === "submitting" || busy === "streaming") return;
 
@@ -443,9 +656,22 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       abortRef.current = controller;
 
       try {
-        const resp = await api.approve(approvalId, controller.signal);
+        const approveJson = await postJson(
+          appUrl,
+          { approval_id: approvalId },
+          controller.signal
+        );
+
+        const msg =
+          _pickText(approveJson) ||
+          (approveJson?.execution_state
+            ? `Execution: ${approveJson.execution_state}`
+            : "Approved.");
+
+        updateItem(placeholder.id, { content: msg, status: "final" });
         abortRef.current = null;
-        await flushResponseToUi(placeholder.id, resp);
+        setBusy("idle");
+        setLastError(null);
       } catch (e) {
         abortRef.current = null;
         const msg = e instanceof Error ? e.message : String(e);
@@ -454,15 +680,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         setLastError(msg);
       }
     },
-    [
-      api,
-      appendItem,
-      approveUrl,
-      busy,
-      flushResponseToUi,
-      handleOpenApprovals,
-      updateItem,
-    ]
+    [appendItem, approveUrl, busy, postJson, resolveUrl, updateItem]
   );
 
   const retryLast = useCallback(() => {
@@ -542,6 +760,9 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
                 ? ui.approvedLabel
                 : ui.executedLabel;
 
+            const proposedCommands: ProposedCmd[] =
+              ((it as any)?.proposedCommands as ProposedCmd[]) ?? [];
+
             return (
               <div className="ceoRow left" key={it.id}>
                 <div className="govCard">
@@ -563,6 +784,53 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
                       </ul>
                     ) : null}
 
+                    {/* NEW: Render proposals with action buttons */}
+                    {proposedCommands.length > 0 ? (
+                      <div style={{ marginTop: 10 }}>
+                        <div className="govSummary" style={{ marginBottom: 8 }}>
+                          Proposals (requires approval):
+                        </div>
+
+                        <ul className="govReasons" style={{ marginTop: 0 }}>
+                          {proposedCommands.map((p, idx) => (
+                            <li key={`${it.id}_p_${idx}`}>
+                              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                                <span style={{ fontWeight: 600 }}>{p.command_type}</span>
+                                {p.required_approval ? (
+                                  <span style={{ opacity: 0.8 }}>(approval)</span>
+                                ) : null}
+                              </div>
+
+                              <div
+                                style={{
+                                  display: "flex",
+                                  gap: 8,
+                                  marginTop: 8,
+                                  flexWrap: "wrap",
+                                }}
+                              >
+                                <button
+                                  className="govButton"
+                                  onClick={() => void handleApproveAndExecuteProposal(p)}
+                                  disabled={busy === "submitting" || busy === "streaming"}
+                                >
+                                  Approve & Execute
+                                </button>
+
+                                <button
+                                  className="govButton"
+                                  onClick={() => void handleCreateApprovalFromProposal(p)}
+                                  disabled={busy === "submitting" || busy === "streaming"}
+                                >
+                                  Create Approval
+                                </button>
+                              </div>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : null}
+
                     <div className="govActions">
                       <button
                         className="govButton"
@@ -574,7 +842,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
                       {it.state === "BLOCKED" && it.approvalRequestId ? (
                         <button
                           className="govButton"
-                          onClick={() => handleApprove(it.approvalRequestId!)}
+                          onClick={() => void handleApprove(it.approvalRequestId!)}
                           disabled={busy === "submitting" || busy === "streaming"}
                         >
                           {ui.approveLabel}

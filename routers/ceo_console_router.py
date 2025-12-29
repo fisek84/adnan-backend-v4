@@ -40,12 +40,21 @@ class CEOCommandRequest(BaseModel):
     - frontend/legacy često šalje: prompt / input_text / message / text
     - ponekad je payload ugniježđen u {"data": {...}}
     Ovaj model mapira sve na canonical "text".
+
+    Režimi:
+    - read_only: default False (executor mode)
+    - require_approval: default True (UI mora tražiti approve prije write)
+    - preferred_agent_id: optional override (ako želiš ručno testirati)
     """
 
     text: str = Field(..., min_length=1)
     initiator: Optional[str] = None
     session_id: Optional[str] = None
     context_hint: Optional[Dict[str, Any]] = None
+
+    read_only: bool = False
+    require_approval: bool = True
+    preferred_agent_id: Optional[str] = None
 
     @model_validator(mode="before")
     @classmethod
@@ -89,7 +98,7 @@ class ProposedAICommand(BaseModel):
 
 class CEOCommandResponse(BaseModel):
     ok: bool = True
-    read_only: bool = True
+    read_only: bool = False  # executor-friendly default
     context: Dict[str, Any] = Field(default_factory=dict)
     summary: str = ""
     questions: List[str] = Field(default_factory=list)
@@ -120,15 +129,61 @@ def _safe_dict(obj: Any) -> Dict[str, Any]:
     return {}
 
 
+def _list_agent_ids() -> List[str]:
+    """
+    Robustno: agent registry može vraćati list[str] ili list[dict]/objekata.
+    """
+    ids: List[str] = []
+    try:
+        agents = _agent_registry.list_agents() or []
+    except Exception:
+        agents = []
+
+    for a in agents:
+        if isinstance(a, str) and a:
+            ids.append(a)
+            continue
+        if isinstance(a, dict):
+            v = a.get("id") or a.get("agent_id") or a.get("name")
+            if isinstance(v, str) and v:
+                ids.append(v)
+                continue
+        v = getattr(a, "id", None) or getattr(a, "agent_id", None) or getattr(a, "name", None)
+        if isinstance(v, str) and v:
+            ids.append(v)
+
+    return sorted(set(ids))
+
+
+def _pick_preferred_agent_id(req: CEOCommandRequest) -> str:
+    """
+    Bez pogađanja: bira prvi agent iz liste kandidata koji stvarno postoji u registry-u.
+    - read_only=True -> prefer ceo_advisor (ako postoji)
+    - read_only=False -> prefer executor/ops agent (ako postoji)
+    """
+    ids = set(_list_agent_ids())
+
+    # ručni override za test
+    if isinstance(req.preferred_agent_id, str) and req.preferred_agent_id.strip():
+        pid = req.preferred_agent_id.strip()
+        return pid if pid in ids else pid  # i ako nije u ids, ostavimo da se vidi u trace-u
+
+    if req.read_only:
+        for cand in ("ceo_advisor", "ceo"):
+            if cand in ids:
+                return cand
+        return "ceo_advisor"
+
+    # executor mode
+    for cand in ("ceo_executor", "ceo_ops", "notion_ops", "ops", "ceo_advisor"):
+        if cand in ids:
+            return cand
+    return "ceo_executor"
+
+
 def _build_snapshot() -> Dict[str, Any]:
     """
     SSOT snapshot koji agent koristi.
-    Oslanja se na CEOConsoleSnapshotService (isti izvor koji koristi gateway /api/ceo/console/snapshot).
-
-    Patch:
-    - kada je CEOConsoleSnapshotService u "compact" modu (include_properties/text/raw_pages = false),
-      eksplicitno projekujemo goals/tasks na minimalni stabilni shape
-      i zadržimo ključna polja (posebno: priority za goals).
     """
 
     def _project_goal(g: Dict[str, Any]) -> Dict[str, Any]:
@@ -156,37 +211,22 @@ def _build_snapshot() -> Dict[str, Any]:
     except Exception:
         ceo_dash = {}
 
-    # Compact projection (fail-soft)
     dashboard = ceo_dash.get("dashboard")
     if isinstance(dashboard, dict):
-        meta = (
-            dashboard.get("metadata")
-            if isinstance(dashboard.get("metadata"), dict)
-            else {}
-        )
+        meta = dashboard.get("metadata") if isinstance(dashboard.get("metadata"), dict) else {}
         include_properties = bool(meta.get("include_properties"))
         include_properties_text = bool(meta.get("include_properties_text"))
         include_raw_pages = bool(meta.get("include_raw_pages"))
 
-        is_compact = (
-            (not include_properties)
-            and (not include_properties_text)
-            and (not include_raw_pages)
-        )
-
+        is_compact = (not include_properties) and (not include_properties_text) and (not include_raw_pages)
         if is_compact:
             goals = dashboard.get("goals")
             tasks = dashboard.get("tasks")
 
             if isinstance(goals, list):
-                dashboard["goals"] = [
-                    _project_goal(g) for g in goals if isinstance(g, dict)
-                ]
+                dashboard["goals"] = [_project_goal(g) for g in goals if isinstance(g, dict)]
             if isinstance(tasks, list):
-                dashboard["tasks"] = [
-                    _project_task(t) for t in tasks if isinstance(t, dict)
-                ]
-
+                dashboard["tasks"] = [_project_task(t) for t in tasks if isinstance(t, dict)]
             ceo_dash["dashboard"] = dashboard
 
     ks: Dict[str, Any] = {}
@@ -204,13 +244,7 @@ def _build_snapshot() -> Dict[str, Any]:
     }
 
 
-def _extract_dashboard_lists(
-    snapshot: Dict[str, Any],
-) -> Dict[str, List[Dict[str, Any]]]:
-    """
-    Pokuša izvući goals/tasks iz CEOConsoleSnapshotService formata.
-    Očekuje: snapshot["ceo_dashboard_snapshot"]["dashboard"]["goals"/"tasks"]
-    """
+def _extract_dashboard_lists(snapshot: Dict[str, Any]) -> Dict[str, List[Dict[str, Any]]]:
     out = {"goals": [], "tasks": []}
 
     ceo_dash = snapshot.get("ceo_dashboard_snapshot")
@@ -264,9 +298,6 @@ def _format_summary_from_snapshot(snapshot: Dict[str, Any]) -> str:
 
 
 def _coerce_proposed_commands(agent_output: Any) -> List[ProposedAICommand]:
-    """
-    AgentOutput može imati proposed_commands u različitim oblicima; normalizujemo u ProposedAICommand.
-    """
     out: List[ProposedAICommand] = []
 
     if isinstance(agent_output, dict):
@@ -306,14 +337,15 @@ def _coerce_proposed_commands(agent_output: Any) -> List[ProposedAICommand]:
 @router.get("/status")
 async def ceo_console_status() -> Dict[str, Any]:
     """
-    Contract (tests expect):
+    Contract:
     - ok: true
-    - read_only: true/false (key MUST exist)
+    - read_only: key MUST exist
+    Ovdje read_only reflektuje default režim modula (executor-friendly => False).
     """
     _ensure_registry_loaded()
     return {
         "ok": True,
-        "read_only": True,  # IMPORTANT: required by contract test
+        "read_only": False,  # executor-friendly status
         "registry_agents": len(_agent_registry.list_agents() or []),
         "ts": _now_iso(),
     }
@@ -323,8 +355,8 @@ async def ceo_console_status() -> Dict[str, Any]:
 async def ceo_command(req: CEOCommandRequest = Body(...)) -> CEOCommandResponse:
     """
     Canon:
-    - read-only (ne izvršava write)
-    - vraća summary + proposed_commands (dry-run / BLOCKED)
+    - kada read_only=False: executor-planning mode -> agent treba vratiti proposed_commands (BLOCKED) uz require_approval gate
+    - kada read_only=True: advisory mode
     """
     _ensure_registry_loaded()
 
@@ -336,19 +368,27 @@ async def ceo_command(req: CEOCommandRequest = Body(...)) -> CEOCommandResponse:
         "ts": _now_iso(),
     }
 
+    preferred_agent_id = _pick_preferred_agent_id(req)
+
     # Agent input (SSOT snapshot)
     agent_in = AgentInput(
         message=req.text,
-        identity_pack={},  # gateway drži identity/mode/state; ovdje je read-only
+        identity_pack={
+            "mode": "ADVISOR" if req.read_only else "EXECUTOR",
+            "read_only": bool(req.read_only),
+            "require_approval": bool(req.require_approval),
+        },
         snapshot=snapshot,
         conversation_id=req.session_id,
         history=None,
-        preferred_agent_id="ceo_advisor",
+        preferred_agent_id=preferred_agent_id,
         metadata={
             "initiator": initiator,
             "context_hint": req.context_hint or {},
             "snapshot_meta": snapshot_meta,
             "canon": "ceo_console_router",
+            "read_only": bool(req.read_only),
+            "require_approval": bool(req.require_approval),
         },
     )
 
@@ -362,16 +402,18 @@ async def ceo_command(req: CEOCommandRequest = Body(...)) -> CEOCommandResponse:
     # Build response
     resp = CEOCommandResponse(
         ok=True,
-        read_only=True,
+        read_only=bool(req.read_only),
         context={
             "canon": "ceo_console_router",
             "initiator": initiator,
             "snapshot": snapshot,
             "snapshot_meta": snapshot_meta,
+            "read_only": bool(req.read_only),
+            "require_approval": bool(req.require_approval),
         },
         trace={
             "selected_by": "preferred_agent_id",
-            "preferred_agent_id": "ceo_advisor",
+            "preferred_agent_id": preferred_agent_id,
             "normalized_input_text": req.text,
             "normalized_input_source": initiator,
             "normalized_input_has_smart_context": bool(req.context_hint),
@@ -380,22 +422,25 @@ async def ceo_command(req: CEOCommandRequest = Body(...)) -> CEOCommandResponse:
     )
 
     # Text/summary:
-    # - ako agent vrati text, koristi njega
-    # - fallback: format iz snapshot-a (da nikad ne bude prazan)
     text = None
     if isinstance(agent_out, dict):
-        text = agent_out.get("text")
+        text = agent_out.get("text") or agent_out.get("summary")
     else:
-        text = getattr(agent_out, "text", None)
+        text = getattr(agent_out, "text", None) or getattr(agent_out, "summary", None)
 
     if isinstance(text, str) and text.strip():
         resp.summary = text.strip()
     else:
+        # samo fallback (ako agent baš ništa ne vrati)
         resp.summary = _format_summary_from_snapshot(snapshot)
 
-    # Proposed commands
+    # Proposed commands (ključ za execution flow)
     resp.proposed_commands = _coerce_proposed_commands(agent_out)
 
-    # Mirror for compatibility
-    # (gateway wrapper često očekuje i "text" polje; ovdje ga držimo u summary, gateway ga već mapira)
     return resp
+
+
+# (Opcionalno) alias bez "/internal" ako ti gateway direktno mapira:
+@router.post("/command")
+async def ceo_command_alias(req: CEOCommandRequest = Body(...)) -> CEOCommandResponse:
+    return await ceo_command(req)
