@@ -93,9 +93,9 @@ async def test_happy_path_execute_approve(client):
     pending = pending_response.json()
     approvals = pending.get("approvals", [])
     approval_ids = [a.get("approval_id") for a in approvals]
-    assert approval_id in approval_ids, (
-        "approval_id from execute must be in pending approvals"
-    )
+    assert (
+        approval_id in approval_ids
+    ), "approval_id from execute must be in pending approvals"
 
     # 3) Approve -> očekujemo COMPLETED
     approve_response = await client.post(
