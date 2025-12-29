@@ -100,12 +100,52 @@ const formatSection = (title: string, lines: string[]) => {
   return `${title}\n${clean.map((x) => `- ${x}`).join("\n")}`;
 };
 
+const getDashboardSnapshot = (obj: any): { goals: any[]; tasks: any[] } | null => {
+  const dash = obj?.context?.snapshot?.ceo_dashboard_snapshot?.dashboard;
+  if (!dash || typeof dash !== "object") return null;
+  const goals = Array.isArray(dash?.goals) ? dash.goals : [];
+  const tasks = Array.isArray(dash?.tasks) ? dash.tasks : [];
+  return { goals, tasks };
+};
+
+const looksLikeEmptySnapshotMessage = (s: string): boolean => {
+  const ll = s.toLowerCase();
+  return ll.includes("snapshot je prazan") || ll.includes("nema dovoljno podataka") || ll.includes("prazan");
+};
+
 const deriveSystemTextFromCeoConsole = (obj: any): string | undefined => {
   // CEO Console canonical response: { summary, questions[], plan[], options[], proposed_commands[] }
-  const summary = asString(obj?.summary) ?? asString(obj?.text) ?? asString(obj?.message);
+  let summary = asString(obj?.summary) ?? asString(obj?.text) ?? asString(obj?.message);
   const questions = asArrayOfStrings(obj?.questions) ?? [];
   const plan = asArrayOfStrings(obj?.plan) ?? [];
   const options = asArrayOfStrings(obj?.options) ?? [];
+
+  // --- IMPORTANT: if backend says "snapshot empty" but snapshot actually contains goals/tasks, override summary ---
+  if (summary && looksLikeEmptySnapshotMessage(summary)) {
+    const snap = getDashboardSnapshot(obj);
+    if (snap && (snap.goals.length > 0 || snap.tasks.length > 0)) {
+      const topGoals = snap.goals.slice(0, 3).map((g: any) => {
+        const name = asString(g?.name) ?? "Untitled goal";
+        const st = asString(g?.status) ?? "Unknown";
+        return `${name} (${st})`;
+      });
+
+      const topTasks = snap.tasks.slice(0, 5).map((t: any) => {
+        const title = asString(t?.title) ?? "Untitled task";
+        const st = asString(t?.status) ?? "Unknown";
+        const pr = asString(t?.priority);
+        return `${title} (${st}${pr ? `, ${pr}` : ""})`;
+      });
+
+      const blocks: string[] = [];
+      blocks.push(`Snapshot: goals=${snap.goals.length}, tasks=${snap.tasks.length}`);
+      const gBlock = formatSection("GOALS (top 3)", topGoals);
+      if (gBlock) blocks.push(gBlock);
+      const tBlock = formatSection("TASKS (top 5)", topTasks);
+      if (tBlock) blocks.push(tBlock);
+      summary = blocks.join("\n\n");
+    }
+  }
 
   const proposed = Array.isArray(obj?.proposed_commands) ? obj.proposed_commands : [];
   const proposedLines =
@@ -114,6 +154,7 @@ const deriveSystemTextFromCeoConsole = (obj: any): string | undefined => {
           .map((p: any, idx: number) => {
             const t = asString(p?.command_type) ?? asString(p?.command) ?? "";
             const risk = asString(p?.risk_hint) ?? asString(p?.risk) ?? "";
+            // FIX: proper dash char
             const extra = [t || `Command #${idx + 1}`, risk ? `risk: ${risk}` : ""].filter(Boolean).join(" — ");
             return extra || `Command #${idx + 1}`;
           })

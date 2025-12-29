@@ -7,12 +7,14 @@
     const cfg = (window.__EVO_UI__ = window.__EVO_UI__ || {});
     const mountSelector = cfg.mountSelector || "#ceo-left-panel";
 
-    // CEO Console canonical endpoints (backend router prefix: /api/ceo-console/*)
+    // CEO Console endpoints
     const ceoCommandUrl = cfg.ceoCommandUrl || "/api/ceo-console/command";
     const ceoStatusUrl = cfg.ceoStatusUrl || "/api/ceo-console/status";
 
-    // NOTE: CEO Console flow is read-only; it returns proposed_commands (BLOCKED) without approval_id.
-    // approveUrl is intentionally not used here to avoid misleading UX.
+    // CANON governance endpoints (enabled)
+    const executeRawUrl = cfg.executeRawUrl || "/api/execute/raw";
+    const approveUrl = cfg.approveUrl || "/api/ai-ops/approval/approve";
+
     const headers = Object.assign(
       { "Content-Type": "application/json" },
       cfg.headers || {}
@@ -59,14 +61,13 @@
     sendBtn.type = "button";
     sendBtn.textContent = "Pošalji";
 
-    // Approve button removed/disabled intentionally (CEO Console returns proposals, not approvals)
+    // Approve button ENABLED (disabled only when there is no approval_id or when busy)
     const approveBtn = document.createElement("button");
     approveBtn.className = "ceo-chatbox-btn";
     approveBtn.type = "button";
     approveBtn.textContent = "Odobri";
     approveBtn.disabled = true;
-    approveBtn.title =
-      "CEO Console je read-only. Nema approval_id u ovom flow-u (samo proposed_commands = BLOCKED).";
+    approveBtn.title = "Odobri zadnju izvršenu komandu (approval_id).";
 
     composer.appendChild(textarea);
     composer.appendChild(sendBtn);
@@ -80,6 +81,9 @@
 
     let busy = false;
     let lastRole = null;
+
+    // governance state
+    let currentApprovalId = null;
 
     function isNearBottom() {
       const threshold = 120;
@@ -123,7 +127,7 @@
       row.appendChild(badge);
       row.appendChild(msg);
 
-      if (meta && (meta.state || meta.extra)) {
+      if (meta && (meta.state || meta.extra_html)) {
         const metaRow = document.createElement("div");
         metaRow.className = "ceo-chatbox-meta";
 
@@ -133,10 +137,10 @@
           pill.innerHTML = `<strong>Status:</strong> ${meta.state}`;
           metaRow.appendChild(pill);
         }
-        if (meta.extra) {
+        if (meta.extra_html) {
           const pill = document.createElement("span");
           pill.className = "ceo-chatbox-pill";
-          pill.innerHTML = meta.extra;
+          pill.innerHTML = meta.extra_html;
           metaRow.appendChild(pill);
         }
 
@@ -149,6 +153,8 @@
 
       scrollToBottom(stayAtBottom);
       updateScrollBtn();
+
+      return row;
     }
 
     function setBusy(next) {
@@ -156,8 +162,9 @@
       sendBtn.disabled = next;
       textarea.disabled = next;
       typing.style.display = next ? "block" : "none";
-      // approve always disabled in this flow
-      approveBtn.disabled = true;
+
+      // approve enabled only if we have approval_id and not busy
+      approveBtn.disabled = next || !currentApprovalId;
     }
 
     function autosize() {
@@ -196,19 +203,203 @@
       }
     }
 
-    function formatProposedCommands(proposed) {
-      if (!Array.isArray(proposed) || proposed.length === 0) return "";
-      const lines = proposed
-        .map((p, i) => {
-          const cmd = p && (p.command_type || p.command || "");
-          const status = (p && p.status) || "BLOCKED";
-          const risk = (p && (p.risk_hint || p.risk)) || "";
-          return `${i + 1}) ${cmd || "unknown_command"} | ${status}${
-            risk ? ` | risk=${risk}` : ""
-          }`;
-        })
+    // NEW: fetch latest status snapshot from server (used as context_hint)
+    async function fetchLatestStatus() {
+      try {
+        const res = await fetch(ceoStatusUrl, { method: "GET", headers });
+        if (!res.ok) return null;
+        const t = await readBodyAsText(res);
+        return safeJsonParse(t) || null;
+      } catch {
+        return null;
+      }
+    }
+
+    // More robust dashboard extraction (backend shapes vary)
+    function extractDashboard(data) {
+      if (!data || typeof data !== "object") return null;
+
+      // Original expected path
+      let dash =
+        data?.context?.snapshot?.ceo_dashboard_snapshot?.dashboard || null;
+
+      // Common alternates
+      dash =
+        dash ||
+        data?.snapshot?.ceo_dashboard_snapshot?.dashboard ||
+        data?.context?.ceo_dashboard_snapshot?.dashboard ||
+        data?.ceo_dashboard_snapshot?.dashboard ||
+        data?.dashboard ||
+        null;
+
+      // Sometimes status endpoint returns directly { dashboard: {...} } or { data: { dashboard: ... } }
+      dash = dash || data?.data?.dashboard || null;
+
+      return dash || null;
+    }
+
+    function formatDashboard(dash) {
+      if (!dash) return "";
+      const goals = Array.isArray(dash.goals) ? dash.goals : [];
+      const tasks = Array.isArray(dash.tasks) ? dash.tasks : [];
+
+      const gTop = goals
+        .slice(0, 3)
+        .map((g, i) => `${i + 1}) ${g.name || g.title || "?"} [${g.status || "?"}]`)
         .join("\n");
-      return `\n\nProposed commands (BLOCKED)\n${lines}`;
+
+      const tTop = tasks
+        .slice(0, 5)
+        .map((t, i) => `${i + 1}) ${t.title || t.name || "?"} [${t.status || "?"}]`)
+        .join("\n");
+
+      return `\n\nGOALS (top 3)\n${gTop || "-"}\n\nTASKS (top 5)\n${tTop || "-"}`;
+    }
+
+    function pickExecutePayload(p) {
+      // Prefer shapes that match your backend responses (payload_summary from approvals)
+      if (p && p.payload_summary && typeof p.payload_summary === "object")
+        return p.payload_summary;
+      if (p && p.payload && typeof p.payload === "object") return p.payload;
+      if (p && p.raw_payload && typeof p.raw_payload === "object")
+        return p.raw_payload;
+
+      const cmd = (p && (p.command_type || p.command)) || "unknown_command";
+      return { command: cmd, intent: cmd, params: (p && p.params) || {} };
+    }
+
+    async function executeProposal(p) {
+      if (busy) return;
+      setBusy(true);
+
+      try {
+        const payload = pickExecutePayload(p);
+
+        const res = await fetch(executeRawUrl, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(payload),
+        });
+
+        const raw = await readBodyAsText(res);
+        if (!res.ok) {
+          addMessage("sys", `Execute greška: ${res.status}\n${raw || "N/A"}`, {
+            state: "ERROR",
+          });
+          return;
+        }
+
+        const data = safeJsonParse(raw) || {};
+        const approvalId =
+          data.approval_id ||
+          (data.approval && data.approval.approval_id) ||
+          null;
+
+        currentApprovalId = approvalId;
+        approveBtn.disabled = !currentApprovalId;
+
+        addMessage(
+          "sys",
+          approvalId
+            ? `Komanda poslana. BLOCKED (approval_id=${approvalId})`
+            : `Komanda poslana. (nema approval_id u response)`,
+          { state: approvalId ? "BLOCKED" : "OK" }
+        );
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        addMessage("sys", `Execute greška.\n${msg}`, { state: "ERROR" });
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    async function approveCurrent() {
+      if (!currentApprovalId || busy) return;
+      setBusy(true);
+
+      try {
+        const res = await fetch(approveUrl, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ approval_id: currentApprovalId }),
+        });
+
+        const raw = await readBodyAsText(res);
+        if (!res.ok) {
+          addMessage("sys", `Approve greška: ${res.status}\n${raw || "N/A"}`, {
+            state: "ERROR",
+          });
+          return;
+        }
+
+        const data = safeJsonParse(raw) || {};
+        const state =
+          data.execution_state ||
+          (data.approval && data.approval.status) ||
+          "APPROVED";
+
+        addMessage("sys", `Approve OK. ${state}`, { state });
+
+        // Clear approval_id after approval
+        currentApprovalId = null;
+        approveBtn.disabled = true;
+
+        // NEW: immediately load status and show short confirmation
+        const statusData = await fetchLatestStatus();
+        if (statusData && statusData.ok) {
+          const dash = extractDashboard(statusData);
+          const dashText = dash ? formatDashboard(dash) : "";
+          if (dashText) {
+            addMessage("sys", `Snapshot osvježen.${dashText}`, { state: "OK" });
+          } else {
+            addMessage("sys", "Snapshot osvježen (status OK).", { state: "OK" });
+          }
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        addMessage("sys", `Approve greška.\n${msg}`, { state: "ERROR" });
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    approveBtn.addEventListener("click", approveCurrent);
+
+    function renderProposalsWithButtons(proposed) {
+      if (!Array.isArray(proposed) || proposed.length === 0) return null;
+
+      const wrap = document.createElement("div");
+      wrap.className = "ceo-chatbox-proposals";
+
+      proposed.forEach((p, idx) => {
+        const cmd = (p && (p.command_type || p.command)) || "unknown_command";
+        const status = (p && p.status) || "BLOCKED";
+        const risk = (p && (p.risk_hint || p.risk)) || "";
+
+        const row = document.createElement("div");
+        row.style.display = "flex";
+        row.style.gap = "8px";
+        row.style.alignItems = "center";
+        row.style.marginTop = "6px";
+
+        const label = document.createElement("div");
+        label.style.whiteSpace = "pre-wrap";
+        label.textContent = `${idx + 1}) ${cmd} | ${status}${
+          risk ? ` | risk=${risk}` : ""
+        }`;
+
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "ceo-chatbox-btn";
+        btn.textContent = "Execute (raw)";
+        btn.addEventListener("click", () => executeProposal(p));
+
+        row.appendChild(label);
+        row.appendChild(btn);
+        wrap.appendChild(row);
+      });
+
+      return wrap;
     }
 
     async function pingStatus() {
@@ -234,13 +425,21 @@
       setBusy(true);
 
       try {
+        // NEW: always fetch latest status/snapshot and pass it to backend as context_hint
+        const statusData = await fetchLatestStatus();
+
         const payload = {
           text,
           initiator: cfg.initiator || "ceo_dashboard",
-          // session_id is optional; if you have one in cfg, include it
+
+          // session_id optional
           session_id: cfg.session_id || undefined,
-          // context_hint is optional; backend will fallback to server snapshot if not provided
-          context_hint: cfg.context_hint || undefined,
+
+          // NEW: Provide server status/snapshot as context hint, fallback to cfg.context_hint if provided
+          context_hint: statusData || cfg.context_hint || undefined,
+
+          // NEW (harmless if backend ignores): explicit scope hint
+          snapshot_scope: cfg.snapshot_scope || "ceo_dashboard",
         };
 
         const res = await fetch(ceoCommandUrl, {
@@ -251,32 +450,40 @@
 
         const raw = await readBodyAsText(res);
         if (!res.ok) {
-          addMessage(
-            "sys",
-            `Greška: ${res.status}\n${raw || "N/A"}`,
-            { state: "ERROR" }
-          );
+          addMessage("sys", `Greška: ${res.status}\n${raw || "N/A"}`, {
+            state: "ERROR",
+          });
           return;
         }
 
         const data = safeJsonParse(raw) || {};
+
+        // If snapshot exists, show it and ignore misleading summary/text
+        const dash = extractDashboard(data) || extractDashboard(statusData);
+        const dashText = dash ? formatDashboard(dash) : "";
+
         const summary =
+          dashText ||
           (typeof data.summary === "string" && data.summary.trim()) ||
           (typeof data.text === "string" && data.text.trim()) ||
           (raw && raw.trim()) ||
           "Nema odgovora.";
 
-        const proposed = data.proposed_commands || [];
-        const extra = formatProposedCommands(proposed);
+        // Proposed commands from backend
+        const proposed = Array.isArray(data.proposed_commands)
+          ? data.proposed_commands
+          : [];
 
-        addMessage("sys", summary + extra, { state: "OK" });
+        const row = addMessage("sys", summary, { state: "OK" });
+
+        const proposalsNode = renderProposalsWithButtons(proposed);
+        if (proposalsNode) {
+          const msgEl = row.querySelector(".ceo-chatbox-msg");
+          if (msgEl) msgEl.appendChild(proposalsNode);
+        }
 
         textarea.value = "";
         autosize();
-
-        // If page has a snapshot refresh button, trigger it (optional)
-        const snapBtn = document.getElementById("refresh-snapshot-btn");
-        if (snapBtn) snapBtn.click();
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         addMessage("sys", `Greška pri slanju naredbe.\n${msg}`, {
@@ -299,6 +506,8 @@
       mountSelector,
       ceoCommandUrl,
       ceoStatusUrl,
+      executeRawUrl,
+      approveUrl,
     });
   } catch (e) {
     console.error("[CEO_CHATBOX] init failed", e);

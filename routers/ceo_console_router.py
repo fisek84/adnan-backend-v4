@@ -14,6 +14,9 @@ from services.agent_router_service import AgentRouterService
 from services.ceo_console_snapshot_service import CEOConsoleSnapshotService
 from services.knowledge_snapshot_service import KnowledgeSnapshotService
 
+# Bump this when you change contract behavior, so you can verify deploy via trace.
+ROUTER_VERSION = "2025-12-29-fallback-v2"
+
 router = APIRouter(prefix="/internal/ceo-console", tags=["CEO Console"])
 
 _agent_registry = AgentRegistryService()
@@ -39,12 +42,9 @@ class CEOCommandRequest(BaseModel):
     Kompatibilnost:
     - frontend/legacy često šalje: prompt / input_text / message / text
     - ponekad je payload ugniježđen u {"data": {...}}
-    Ovaj model mapira sve na canonical "text".
+    - često šalje metadata.initiator i smart_context
 
-    Režimi:
-    - read_only: default False (executor mode)
-    - require_approval: default True (UI mora tražiti approve prije write)
-    - preferred_agent_id: optional override (ako želiš ručno testirati)
+    Ovaj model mapira sve na canonical "text" + "initiator"/"context_hint".
     """
 
     text: str = Field(..., min_length=1)
@@ -61,6 +61,21 @@ class CEOCommandRequest(BaseModel):
     def _normalize_legacy_payload(cls, values: Any) -> Any:
         if not isinstance(values, dict):
             return values
+
+        # 0) Pull initiator from metadata if present
+        md = values.get("metadata")
+        if isinstance(md, dict) and not values.get("initiator"):
+            ini = md.get("initiator")
+            if isinstance(ini, str) and ini.strip():
+                values["initiator"] = ini.strip()
+
+        # 1) Normalize smart_context -> context_hint (if enabled)
+        sc = values.get("smart_context")
+        if isinstance(sc, dict):
+            enabled = sc.get("enabled")
+            if enabled is True and not values.get("context_hint"):
+                # keep the full dict; agent/router can decide how to use it
+                values["context_hint"] = sc
 
         # already ok
         t = values.get("text")
@@ -160,19 +175,12 @@ def _list_agent_ids() -> List[str]:
 
 
 def _pick_preferred_agent_id(req: CEOCommandRequest) -> str:
-    """
-    Bez pogađanja: bira prvi agent iz liste kandidata koji stvarno postoji u registry-u.
-    - read_only=True -> prefer ceo_advisor (ako postoji)
-    - read_only=False -> prefer executor/ops agent (ako postoji)
-    """
     ids = set(_list_agent_ids())
 
     # ručni override za test
     if isinstance(req.preferred_agent_id, str) and req.preferred_agent_id.strip():
         pid = req.preferred_agent_id.strip()
-        return (
-            pid if pid in ids else pid
-        )  # i ako nije u ids, ostavimo da se vidi u trace-u
+        return pid  # keep even if not in registry (trace will show it)
 
     if req.read_only:
         for cand in ("ceo_advisor", "ceo"):
@@ -180,7 +188,6 @@ def _pick_preferred_agent_id(req: CEOCommandRequest) -> str:
                 return cand
         return "ceo_advisor"
 
-    # executor mode
     for cand in ("ceo_executor", "ceo_ops", "notion_ops", "ops", "ceo_advisor"):
         if cand in ids:
             return cand
@@ -189,7 +196,10 @@ def _pick_preferred_agent_id(req: CEOCommandRequest) -> str:
 
 def _build_snapshot() -> Dict[str, Any]:
     """
-    SSOT snapshot koji agent koristi.
+    Robust snapshot builder:
+    - ensures ceo_dashboard_snapshot.dashboard.goals/tasks exist when data exists somewhere in ceo_dash
+    - captures view errors (e.g. active_goals__error) into dashboard.metadata.view_errors for debugging
+    - provides projected minimal fields (compact) and optional *_min lists (non-compact)
     """
 
     def _project_goal(g: Dict[str, Any]) -> Dict[str, Any]:
@@ -198,7 +208,7 @@ def _build_snapshot() -> Dict[str, Any]:
             "name": g.get("name") or g.get("title"),
             "status": g.get("status"),
             "priority": g.get("priority"),
-            "deadline": g.get("deadline"),
+            "deadline": g.get("deadline") or g.get("due_date"),
         }
 
     def _project_task(t: Dict[str, Any]) -> Dict[str, Any]:
@@ -207,9 +217,21 @@ def _build_snapshot() -> Dict[str, Any]:
             "title": t.get("title") or t.get("name"),
             "status": t.get("status"),
             "priority": t.get("priority"),
-            "due_date": t.get("due_date"),
+            "due_date": t.get("due_date") or t.get("deadline"),
             "lead": t.get("lead"),
         }
+
+    def _as_list(v: Any) -> List[Dict[str, Any]]:
+        if not isinstance(v, list):
+            return []
+        return [x for x in v if isinstance(x, dict)]
+
+    def _first_non_empty_list(d: Dict[str, Any], keys: List[str]) -> List[Dict[str, Any]]:
+        for k in keys:
+            lst = _as_list(d.get(k))
+            if lst:
+                return lst
+        return []
 
     ceo_dash: Dict[str, Any] = {}
     try:
@@ -217,35 +239,90 @@ def _build_snapshot() -> Dict[str, Any]:
     except Exception:
         ceo_dash = {}
 
+    # Ensure dashboard exists
     dashboard = ceo_dash.get("dashboard")
-    if isinstance(dashboard, dict):
-        meta = (
-            dashboard.get("metadata")
-            if isinstance(dashboard.get("metadata"), dict)
-            else {}
-        )
-        include_properties = bool(meta.get("include_properties"))
-        include_properties_text = bool(meta.get("include_properties_text"))
-        include_raw_pages = bool(meta.get("include_raw_pages"))
+    if not isinstance(dashboard, dict):
+        dashboard = {}
+        ceo_dash["dashboard"] = dashboard
 
-        is_compact = (
-            (not include_properties)
-            and (not include_properties_text)
-            and (not include_raw_pages)
-        )
-        if is_compact:
-            goals = dashboard.get("goals")
-            tasks = dashboard.get("tasks")
+    # If dashboard.goals/tasks missing, try fallback keys from ceo_dash
+    goals = _as_list(dashboard.get("goals"))
+    tasks = _as_list(dashboard.get("tasks"))
 
-            if isinstance(goals, list):
-                dashboard["goals"] = [
-                    _project_goal(g) for g in goals if isinstance(g, dict)
-                ]
-            if isinstance(tasks, list):
-                dashboard["tasks"] = [
-                    _project_task(t) for t in tasks if isinstance(t, dict)
-                ]
-            ceo_dash["dashboard"] = dashboard
+    if not goals:
+        goals = _first_non_empty_list(
+            ceo_dash,
+            [
+                "goals",
+                "active_goals",
+                "blocked_goals",
+                "completed_goals",
+                "all_goals",
+                "raw_goals",
+                "goals_raw",
+            ],
+        )
+        if goals:
+            dashboard["goals"] = goals
+
+    if not tasks:
+        tasks = _first_non_empty_list(
+            ceo_dash,
+            [
+                "tasks",
+                "active_tasks",
+                "blocked_tasks",
+                "completed_tasks",
+                "all_tasks",
+                "raw_tasks",
+                "tasks_raw",
+            ],
+        )
+        if tasks:
+            dashboard["tasks"] = tasks
+
+    # Capture view errors if present
+    extra_errors: Dict[str, str] = {}
+    for k in (
+        "active_goals__error",
+        "blocked_goals__error",
+        "completed_goals__error",
+        "tasks__error",
+    ):
+        v = ceo_dash.get(k)
+        if isinstance(v, str) and v.strip():
+            extra_errors[k] = v.strip()
+
+    if extra_errors:
+        meta = dashboard.get("metadata")
+        if not isinstance(meta, dict):
+            meta = {}
+            dashboard["metadata"] = meta
+        meta["view_errors"] = extra_errors
+
+    # Decide compactness via metadata flags (default: compact)
+    meta = dashboard.get("metadata") if isinstance(dashboard.get("metadata"), dict) else {}
+    include_properties = bool(meta.get("include_properties"))
+    include_properties_text = bool(meta.get("include_properties_text"))
+    include_raw_pages = bool(meta.get("include_raw_pages"))
+    is_compact = (not include_properties) and (not include_properties_text) and (not include_raw_pages)
+
+    # Project minimal fields for agent stability
+    goals = _as_list(dashboard.get("goals"))
+    tasks = _as_list(dashboard.get("tasks"))
+
+    if is_compact:
+        if goals:
+            dashboard["goals"] = [_project_goal(g) for g in goals]
+        if tasks:
+            dashboard["tasks"] = [_project_task(t) for t in tasks]
+    else:
+        if goals and "goals_min" not in dashboard:
+            dashboard["goals_min"] = [_project_goal(g) for g in goals]
+        if tasks and "tasks_min" not in dashboard:
+            dashboard["tasks_min"] = [_project_task(t) for t in tasks]
+
+    ceo_dash["dashboard"] = dashboard
 
     ks: Dict[str, Any] = {}
     try:
@@ -262,11 +339,8 @@ def _build_snapshot() -> Dict[str, Any]:
     }
 
 
-def _extract_dashboard_lists(
-    snapshot: Dict[str, Any],
-) -> Dict[str, List[Dict[str, Any]]]:
+def _extract_dashboard_lists(snapshot: Dict[str, Any]) -> Dict[str, List[Dict[str, Any]]]:
     out = {"goals": [], "tasks": []}
-
     ceo_dash = snapshot.get("ceo_dashboard_snapshot")
     if not isinstance(ceo_dash, dict):
         return out
@@ -282,6 +356,17 @@ def _extract_dashboard_lists(
         out["goals"] = [g for g in goals if isinstance(g, dict)]
     if isinstance(tasks, list):
         out["tasks"] = [t for t in tasks if isinstance(t, dict)]
+
+    # If still empty, try *_min lists
+    if not out["goals"]:
+        gmin = dashboard.get("goals_min")
+        if isinstance(gmin, list):
+            out["goals"] = [g for g in gmin if isinstance(g, dict)]
+
+    if not out["tasks"]:
+        tmin = dashboard.get("tasks_min")
+        if isinstance(tmin, list):
+            out["tasks"] = [t for t in tmin if isinstance(t, dict)]
 
     return out
 
@@ -317,7 +402,7 @@ def _format_summary_from_snapshot(snapshot: Dict[str, Any]) -> str:
     return "\n".join(lines).strip()
 
 
-def _coerce_proposed_commands(agent_output: Any) -> List[ProposedAICommand]:
+def _coerce_proposed_commands(agent_output: Any) -> List["ProposedAICommand"]:
     out: List[ProposedAICommand] = []
 
     if isinstance(agent_output, dict):
@@ -349,6 +434,41 @@ def _coerce_proposed_commands(agent_output: Any) -> List[ProposedAICommand]:
     return out
 
 
+def _fallback_command(
+    req: CEOCommandRequest, snapshot_meta: Dict[str, Any], preferred_agent_id: str
+) -> ProposedAICommand:
+    """
+    Contract stabilizer: if agent returns no proposed commands, we STILL return 1 BLOCKED command.
+    UI can treat it as "next step" or ignore, but contract stays stable.
+    """
+    if req.read_only:
+        return ProposedAICommand(
+            command_type="ceo_console.next_step",
+            payload={
+                "mode": "ADVISOR",
+                "suggested_action": "review_dashboard_and_set_weekly_priority",
+                "preferred_agent_id": preferred_agent_id,
+                "snapshot_meta": snapshot_meta,
+            },
+            status="BLOCKED",
+            required_approval=False,
+            risk_hint="Low",
+        )
+
+    return ProposedAICommand(
+        command_type="ceo_executor.plan_next_action",
+        payload={
+            "mode": "EXECUTOR",
+            "suggested_action": "generate_plan_and_commands",
+            "preferred_agent_id": preferred_agent_id,
+            "snapshot_meta": snapshot_meta,
+        },
+        status="BLOCKED",
+        required_approval=True,
+        risk_hint="Medium",
+    )
+
+
 # ======================
 # ROUTES
 # ======================
@@ -357,40 +477,40 @@ def _coerce_proposed_commands(agent_output: Any) -> List[ProposedAICommand]:
 @router.get("/status")
 async def ceo_console_status() -> Dict[str, Any]:
     """
-    Contract:
-    - ok: true
-    - read_only: key MUST exist
-    Ovdje read_only reflektuje default režim modula (executor-friendly => False).
+    Status endpoint – now returns minimal snapshot availability signals.
+    If you want to avoid big payloads, keep snapshot omitted.
     """
     _ensure_registry_loaded()
+
+    snap = _build_snapshot()
+    lists = _extract_dashboard_lists(snap)
+
     return {
         "ok": True,
-        "read_only": False,  # executor-friendly status
+        "read_only": False,
         "registry_agents": len(_agent_registry.list_agents() or []),
         "ts": _now_iso(),
+        "router_version": ROUTER_VERSION,
+        "snapshot_meta": {
+            "has_goals": bool(lists["goals"]),
+            "has_tasks": bool(lists["tasks"]),
+        },
+        # Optional: include snapshot for debugging
+        # "snapshot": snap,
     }
 
 
 @router.post("/command/internal")
 async def ceo_command(req: CEOCommandRequest = Body(...)) -> CEOCommandResponse:
-    """
-    Canon:
-    - kada read_only=False: executor-planning mode -> agent treba vratiti proposed_commands (BLOCKED) uz require_approval gate
-    - kada read_only=True: advisory mode
-    """
     _ensure_registry_loaded()
 
     initiator = (req.initiator or "ceo_dashboard").strip() or "ceo_dashboard"
 
     snapshot = _build_snapshot()
-    snapshot_meta = {
-        "source": "CEOConsoleSnapshotService",
-        "ts": _now_iso(),
-    }
+    snapshot_meta = {"source": "CEOConsoleSnapshotService", "ts": _now_iso()}
 
     preferred_agent_id = _pick_preferred_agent_id(req)
 
-    # Agent input (SSOT snapshot)
     agent_in = AgentInput(
         message=req.text,
         identity_pack={
@@ -412,14 +532,11 @@ async def ceo_command(req: CEOCommandRequest = Body(...)) -> CEOCommandResponse:
         },
     )
 
-    # Route to agent
-    agent_out: Any = None
     try:
-        agent_out = await _maybe_await(_agent_router.route(agent_in))
+        agent_out: Any = await _maybe_await(_agent_router.route(agent_in))
     except Exception:
         agent_out = None
 
-    # Build response
     resp = CEOCommandResponse(
         ok=True,
         read_only=bool(req.read_only),
@@ -432,6 +549,7 @@ async def ceo_command(req: CEOCommandRequest = Body(...)) -> CEOCommandResponse:
             "require_approval": bool(req.require_approval),
         },
         trace={
+            "router_version": ROUTER_VERSION,
             "selected_by": "preferred_agent_id",
             "preferred_agent_id": preferred_agent_id,
             "normalized_input_text": req.text,
@@ -441,7 +559,7 @@ async def ceo_command(req: CEOCommandRequest = Body(...)) -> CEOCommandResponse:
         },
     )
 
-    # Text/summary:
+    # Text/summary
     text = None
     if isinstance(agent_out, dict):
         text = agent_out.get("text") or agent_out.get("summary")
@@ -451,16 +569,19 @@ async def ceo_command(req: CEOCommandRequest = Body(...)) -> CEOCommandResponse:
     if isinstance(text, str) and text.strip():
         resp.summary = text.strip()
     else:
-        # samo fallback (ako agent baš ništa ne vrati)
         resp.summary = _format_summary_from_snapshot(snapshot)
 
-    # Proposed commands (ključ za execution flow)
+    # Proposed commands
     resp.proposed_commands = _coerce_proposed_commands(agent_out)
+
+    # CONTRACT STABILIZER
+    if not resp.proposed_commands:
+        resp.proposed_commands = [_fallback_command(req, snapshot_meta, preferred_agent_id)]
+        resp.trace["fallback_proposed_commands"] = True
 
     return resp
 
 
-# (Opcionalno) alias bez "/internal" ako ti gateway direktno mapira:
 @router.post("/command")
 async def ceo_command_alias(req: CEOCommandRequest = Body(...)) -> CEOCommandResponse:
     return await ceo_command(req)

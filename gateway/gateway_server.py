@@ -357,9 +357,7 @@ def _filter_ai_command_payload(data: Dict[str, Any]) -> Dict[str, Any]:
         return {
             "command": data.get("command"),
             "intent": data.get("intent"),
-            "params": data.get("params")
-            if isinstance(data.get("params"), dict)
-            else {},
+            "params": data.get("params") if isinstance(data.get("params"), dict) else {},
             "initiator": data.get("initiator") or "ceo",
             "read_only": bool(data.get("read_only", False)),
             "metadata": data.get("metadata")
@@ -455,7 +453,6 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-
 # ================================================================
 # CORS (ISPRAVNO)
 # ================================================================
@@ -476,7 +473,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 
 # ================================================================
 # REQUEST MODELS
@@ -590,6 +586,67 @@ def _derive_legacy_goal_task_summaries_from_ceo_snapshot(
         pass
 
     return {"goals_summary": goals_summary, "tasks_summary": tasks_summary}
+
+
+# -------------------------------
+# HARD GUARANTEE: non-empty proposals
+# -------------------------------
+def _ensure_list(x: Any) -> List[Any]:
+    return x if isinstance(x, list) else []
+
+
+def _ensure_dict(x: Any) -> Dict[str, Any]:
+    return x if isinstance(x, dict) else {}
+
+
+def _inject_fallback_proposed_commands(result: Dict[str, Any], *, prompt: str) -> None:
+    """
+    HARD GUARANTEE:
+      - result["proposed_commands"] exists and is a NON-empty list.
+
+    We return a safe, promotable proposal:
+      - command = "ceo.command.propose"
+      - args.prompt = original user prompt
+
+    This is compatible with /api/proposals/execute logic in this file.
+    """
+    pcs = result.get("proposed_commands")
+    pcs_list = _ensure_list(pcs)
+
+    if len(pcs_list) > 0:
+        # also ensure proper type
+        result["proposed_commands"] = pcs_list
+        tr0 = _ensure_dict(result.get("trace"))
+        tr0.setdefault("fallback_proposed_commands", False)
+        tr0.setdefault("router_version", "gateway-fallback-proposed-commands-v1")
+        result["trace"] = tr0
+        return
+
+    safe_prompt = (prompt or "").strip() or "noop"
+
+    # Provide BOTH shapes (legacy-ish + ceo_console-ish) for maximum compatibility.
+    result["proposed_commands"] = [
+        {
+            # canonical/promotable path
+            "command": "ceo.command.propose",
+            "args": {"prompt": safe_prompt},
+            "status": "BLOCKED",
+            "requires_approval": True,
+            "scope": "ceo_console",
+            "risk": "LOW",
+            "cost_hint": "Low",
+            "risk_hint": "Low",
+            # ceo_console_router compatibility (if UI expects these keys)
+            "command_type": "ceo.command.propose",
+            "payload": {"prompt": safe_prompt},
+            "required_approval": True,
+        }
+    ]
+
+    tr = _ensure_dict(result.get("trace"))
+    tr["fallback_proposed_commands"] = True
+    tr["router_version"] = "gateway-fallback-proposed-commands-v1"
+    result["trace"] = tr
 
 
 # ================================================================
@@ -1082,6 +1139,9 @@ async def _ceo_command_core(payload_dict: Dict[str, Any]) -> JSONResponse:
             tr["agent_router_empty_text"] = False
             tr["agent_output_text_len"] = len(str(result.get("text") or ""))
 
+    # HARD GUARANTEE: always return at least one proposed_command
+    _inject_fallback_proposed_commands(result, prompt=cleaned_text.strip())
+
     return JSONResponse(content=result, media_type="application/json; charset=utf-8")
 
 
@@ -1133,7 +1193,7 @@ async def ceo_console_status_api():
         "ops_safe_mode": ops_safe,
         "canon": {
             "chat_is_read_only": True,
-            "no_side_effects": True,  # FIX: required by tests/test_canon_endpoints.py
+            "no_side_effects": True,  # required by tests/test_canon_endpoints.py
             "ops_safe_mode": ops_safe,
             "boot_ready": _BOOT_READY,
         },
