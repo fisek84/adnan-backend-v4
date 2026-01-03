@@ -193,6 +193,16 @@ def set_ai_ops_services(*, orchestrator: ExecutionOrchestrator, approvals: Any) 
     global _orchestrator, _approval_state_override
     _orchestrator = orchestrator
     _approval_state_override = approvals
+
+    # PATCH (CANON):
+    # Ensure orchestrator uses the same approvals instance used by the router.
+    # Prevents edge-case mismatches if approvals injection is not the same object
+    # as get_approval_state() return value.
+    try:
+        setattr(_orchestrator, "approvals", approvals)
+    except Exception:
+        pass
+
     logger.info("ai_ops_router: services injected (shared orchestrator/approvals)")
 
 

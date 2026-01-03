@@ -7,7 +7,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 from models.ai_command import AICommand
@@ -23,6 +23,7 @@ class _ParsedFields:
     priority: Optional[str] = None
     due: Optional[str] = None
     description: Optional[str] = None
+    goal_relation_id: Optional[str] = None
 
 
 class COOTranslationService:
@@ -37,9 +38,6 @@ class COOTranslationService:
         - AICommand(read_only=True) za sistemska pitanja (system_query)
         - AICommand za write/workflow directive (npr. goal_task_workflow, notion_write, goal_write)
         - None ako ne može da prevede input
-
-    FAZA 4:
-    - Chat/UX slojevi smiju samo "propose"; execution ide kroz /api/execute i approval pipeline.
     """
 
     READ_ONLY_COMMAND = "system_query"
@@ -142,9 +140,9 @@ class COOTranslationService:
                     status = (goal.get("status") or "").strip()
                     due = (goal.get("due") or "").strip()
                     if status:
-                        specs["Status"] = {"type": "status", "name": status}
+                        specs["Status"] = {"type": "status", "name": self._normalize_status(status)}
                     if prio:
-                        specs["Priority"] = {"type": "select", "name": prio}
+                        specs["Priority"] = {"type": "select", "name": self._normalize_priority(prio)}
                     if due:
                         iso = self._try_parse_date_to_iso(due)
                         if iso:
@@ -224,9 +222,7 @@ class COOTranslationService:
         read_only = bool(data.get("read_only", False))
 
         initiator = str(data.get("initiator") or fallback_ctx.get("initiator") or "ceo")
-        metadata = (
-            data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
-        )
+        metadata = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
         if "context_type" not in metadata:
             metadata["context_type"] = str(fallback_ctx.get("context_type") or "ux")
         metadata.setdefault("source", source)
@@ -234,9 +230,7 @@ class COOTranslationService:
         try:
             return AICommand(
                 command=cmd_name,
-                intent=str(intent)
-                if isinstance(intent, str) and intent.strip()
-                else None,
+                intent=str(intent) if isinstance(intent, str) and intent.strip() else None,
                 read_only=read_only,
                 params=params,
                 initiator=initiator,
@@ -248,9 +242,7 @@ class COOTranslationService:
         except Exception:
             return AICommand(
                 command=cmd_name,
-                intent=str(intent)
-                if isinstance(intent, str) and intent.strip()
-                else None,
+                intent=str(intent) if isinstance(intent, str) and intent.strip() else None,
                 read_only=read_only,
                 params=params,
                 initiator=initiator,
@@ -291,9 +283,7 @@ class COOTranslationService:
 
         return AICommand(
             command=cmd,
-            intent=intent.strip()
-            if isinstance(intent, str) and intent.strip()
-            else None,
+            intent=intent.strip() if isinstance(intent, str) and intent.strip() else None,
             read_only=ro_flag,
             params=params,
             initiator=initiator,
@@ -309,10 +299,7 @@ class COOTranslationService:
     ) -> Optional[AICommand]:
         t = text.strip()
 
-        # =========================================================
-        # KPI WEEKLY SUMMARY (SPECIAL WORKFLOW)
-        # Trigger example (tests): "kpi weekly summary", "kpi sedmični rezime", "kpi tjedni pregled", ...
-        # =========================================================
+        # KPI WEEKLY SUMMARY
         if (
             re.search(r"\bkpi\b", t, flags=re.IGNORECASE)
             and re.search(r"\b(weekly|sedmic|sedmič|tjedn)\b", t, flags=re.IGNORECASE)
@@ -323,9 +310,7 @@ class COOTranslationService:
             )
         ):
             time_scope = "this_week"
-            if re.search(
-                r"\b(last|prosla|prošla|zadnja|prethodna)\b", t, flags=re.IGNORECASE
-            ):
+            if re.search(r"\b(last|prosla|prošla|zadnja|prethodna)\b", t, flags=re.IGNORECASE):
                 time_scope = "last_week"
 
             return AICommand(
@@ -359,25 +344,13 @@ class COOTranslationService:
                         metadata={"context_type": "workflow", "source": source},
                     )
 
-        # heuristic triggers for goal+tasks / day-plan
         has_goal_word = bool(re.search(r"\b(goal|cilj)\b", t, flags=re.IGNORECASE))
-        has_task_word = bool(
-            re.search(
-                r"\b(task|tasks|zadatak|zadaci|zadatci)\b", t, flags=re.IGNORECASE
-            )
-        )
+        has_task_word = bool(re.search(r"\b(task|tasks|zadatak|zadaci|zadatci)\b", t, flags=re.IGNORECASE))
         has_day_plan = bool(re.search(r"\bDan\s*\d+\s*:", t, flags=re.IGNORECASE))
-        mentions_7day = bool(
-            re.search(r"\b(7\s*[- ]?\s*dnevni|7\s*day)\b", t, flags=re.IGNORECASE)
-        )
-        mentions_14day = bool(
-            re.search(r"\b(14\s*[- ]?\s*dnevni|14\s*day)\b", t, flags=re.IGNORECASE)
-        )
+        mentions_7day = bool(re.search(r"\b(7\s*[- ]?\s*dnevni|7\s*day)\b", t, flags=re.IGNORECASE))
+        mentions_14day = bool(re.search(r"\b(14\s*[- ]?\s*dnevni|14\s*day)\b", t, flags=re.IGNORECASE))
 
-        if not (
-            has_goal_word
-            and (has_task_word or has_day_plan or mentions_7day or mentions_14day)
-        ):
+        if not (has_goal_word and (has_task_word or has_day_plan or mentions_7day or mentions_14day)):
             return None
 
         goal_title = self._extract_goal_title(t)
@@ -413,7 +386,7 @@ class COOTranslationService:
                 "Status": {"type": "select", "name": "Not started"},
             }
             if prio:
-                prop["Priority"] = {"type": "select", "name": prio}
+                prop["Priority"] = {"type": "select", "name": self._normalize_priority(prio)}
             tasks_specs.append({"db_key": "tasks", "property_specs": prop})
 
         if not tasks_specs:
@@ -433,6 +406,16 @@ class COOTranslationService:
         t = (text or "").strip()
         if not t:
             return None
+
+        # Prefer explicit Name= / Naziv= / Title=
+        explicit = (
+            self._extract_field_value(t, "name")
+            or self._extract_field_value(t, "naziv")
+            or self._extract_field_value(t, "ime")
+            or self._extract_field_value(t, "title")
+        )
+        if isinstance(explicit, str) and explicit.strip():
+            return explicit.strip()
 
         m = re.search(
             r"(?i)\b(?:kreiraj|napravi|dodaj|create)\s+(?:cilj|goal)\s*[:\-]\s*(.+)",
@@ -529,7 +512,7 @@ class COOTranslationService:
     def _translate_goal(
         self, text: str, *, source: str, context: Dict[str, Any]
     ) -> Optional[AICommand]:
-        t = text.strip()
+        t = self._normalize_prefix_noise(text)
 
         if re.search(
             r"\b(list\s+goals|prikaži\s+ciljeve|prikazi\s+ciljeve)\b",
@@ -546,9 +529,14 @@ class COOTranslationService:
                 metadata={"context_type": "ux", "source": source},
             )
 
-        if not re.search(r"^(create|kreiraj|napravi|dodaj)\s+", t, re.IGNORECASE):
-            return None
-        if not re.search(r"\b(goal|cilj)\b", t, re.IGNORECASE):
+        # Accept both:
+        # - "kreiraj cilj ..." (classic)
+        # - "cilj ... Name=..." (structured without imperative)
+        has_create = bool(re.search(r"^(create|kreiraj|napravi|dodaj)\s+", t, re.IGNORECASE))
+        has_goal_word = bool(re.search(r"\b(goal|cilj)\b", t, re.IGNORECASE))
+        has_name_kv = bool(re.search(r"(?i)\b(name|naziv|ime|title)\b\s*[:=]\s*", t))
+
+        if not has_goal_word or (not has_create and not has_name_kv):
             return None
 
         fields = self._parse_common_fields(t, entity="goal")
@@ -556,10 +544,10 @@ class COOTranslationService:
             return None
 
         specs: Dict[str, Any] = {"Name": {"type": "title", "text": fields.title}}
-        specs["Status"] = {"type": "status", "name": fields.status or "Not started"}
+        specs["Status"] = {"type": "status", "name": self._normalize_status(fields.status or "Not started")}
 
         if fields.priority:
-            specs["Priority"] = {"type": "select", "name": fields.priority}
+            specs["Priority"] = {"type": "select", "name": self._normalize_priority(fields.priority)}
 
         if fields.due:
             specs["Deadline"] = {"type": "date", "start": fields.due}
@@ -583,12 +571,13 @@ class COOTranslationService:
     def _translate_task(
         self, text: str, *, source: str, context: Dict[str, Any]
     ) -> Optional[AICommand]:
-        t = text.strip()
+        t = self._normalize_prefix_noise(text)
 
-        if not re.search(r"^(create|kreiraj|napravi|dodaj)\s+", t, re.IGNORECASE):
-            return None
+        has_create = bool(re.search(r"^(create|kreiraj|napravi|dodaj)\s+", t, re.IGNORECASE))
+        has_task_word = bool(re.search(r"\b(task|zadatak|todo|to-do)\b", t, re.IGNORECASE))
+        has_name_kv = bool(re.search(r"(?i)\b(name|naziv|ime|title)\b\s*[:=]\s*", t))
 
-        if not re.search(r"\b(task|zadatak|todo|to-do)\b", t, re.IGNORECASE):
+        if not has_task_word or (not has_create and not has_name_kv):
             return None
 
         fields = self._parse_common_fields(t, entity="task")
@@ -597,17 +586,21 @@ class COOTranslationService:
 
         specs: Dict[str, Any] = {
             "Name": {"type": "title", "text": fields.title},
-            "Status": {"type": "select", "name": fields.status or "Not started"},
+            "Status": {"type": "select", "name": self._normalize_status(fields.status or "Not started")},
         }
 
         if fields.priority:
-            specs["Priority"] = {"type": "select", "name": fields.priority}
+            specs["Priority"] = {"type": "select", "name": self._normalize_priority(fields.priority)}
 
         if fields.due:
             specs["Due Date"] = {"type": "date", "start": fields.due}
 
         if fields.description:
             specs["Description"] = {"type": "rich_text", "text": fields.description}
+
+        # Optional: attach to Goal relation if provided
+        if fields.goal_relation_id:
+            specs["Goal"] = {"type": "relation", "ids": [fields.goal_relation_id]}
 
         return AICommand(
             command="notion_write",
@@ -622,32 +615,100 @@ class COOTranslationService:
     # ------------------------------------------------------------
     # PARSING HELPERS
     # ------------------------------------------------------------
-    def _parse_common_fields(self, text: str, *, entity: str) -> _ParsedFields:
-        raw = text.strip()
+    def _normalize_prefix_noise(self, text: str) -> str:
+        """
+        Removes common noise like:
+          "Kreiraj cilj u Notionu: ..."
+          "Create goal in Notion: ..."
+        This makes translation service robust even if gateway preprocessing is bypassed.
+        """
+        t = (text or "").strip()
+        if not t:
+            return t
 
-        status = self._extract_field_value(raw, "status")
-        priority = self._extract_field_value(
-            raw, "prioritet"
-        ) or self._extract_field_value(raw, "priority")
+        # normalize repeated spaces
+        t = re.sub(r"\s+", " ", t).strip()
+
+        # remove "u Notionu"/"in Notion" right after create/kreiraj ... (goal/task)
+        t = re.sub(
+            r"(?i)^(create|kreiraj|napravi|dodaj)\s+(cilj|goal|task|zadatak)\s+(u|in)\s+notionu?\s*[:\-]?\s*",
+            r"\1 \2: ",
+            t,
+        ).strip()
+
+        return t
+
+    def _parse_common_fields(self, text: str, *, entity: str) -> _ParsedFields:
+        raw = self._normalize_prefix_noise(text)
+
+        # 1) Explicit title via Name/Naziv/Ime/Title takes precedence
+        title_explicit = (
+            self._extract_field_value(raw, "name")
+            or self._extract_field_value(raw, "naziv")
+            or self._extract_field_value(raw, "ime")
+            or self._extract_field_value(raw, "title")
+        )
+
+        # 2) Standard fields
+        status_raw = self._extract_field_value(raw, "status")
+        priority_raw = (
+            self._extract_field_value(raw, "prioritet")
+            or self._extract_field_value(raw, "priority")
+        )
         due_raw = (
             self._extract_field_value(raw, "due")
             or self._extract_field_value(raw, "rok")
             or self._extract_field_value(raw, "deadline")
         )
-        due = self._try_parse_date_to_iso(due_raw) if due_raw else None
-
-        description = (
+        desc_raw = (
             self._extract_field_value(raw, "opis")
             or self._extract_field_value(raw, "description")
             or self._extract_field_value(raw, "desc")
         )
 
+        # Optional goal relation for tasks
+        goal_rel = (
+            self._extract_field_value(raw, "goal_id")
+            or self._extract_field_value(raw, "goal")
+            or self._extract_field_value(raw, "subgoal_id")
+        )
+        goal_rel = goal_rel.strip() if isinstance(goal_rel, str) else None
+        if goal_rel and not self._looks_like_uuid(goal_rel):
+            goal_rel = None
+
+        # Normalize
+        status = self._normalize_status(status_raw) if isinstance(status_raw, str) else None
+        priority = self._normalize_priority(priority_raw) if isinstance(priority_raw, str) else None
+        due = self._try_parse_date_to_iso(due_raw) if isinstance(due_raw, str) else None
+        description = desc_raw.strip() if isinstance(desc_raw, str) and desc_raw.strip() else None
+
+        # 3) Build title:
+        #    - if explicit Name=... exists -> use it
+        #    - else derive from cleaned imperative prefix
         cleaned = raw
-        cleaned = re.sub(
-            r"(?i)\b(status|prioritet|priority|due|rok|deadline|opis|description|desc)\b.*$",
-            "",
+
+        # Remove extracted KV segments only (not ".*$" which was too aggressive)
+        cleaned = self._strip_kv_segments(
             cleaned,
-        ).strip(" ,.-")
+            keys=[
+                "name",
+                "naziv",
+                "ime",
+                "title",
+                "status",
+                "prioritet",
+                "priority",
+                "due",
+                "rok",
+                "deadline",
+                "opis",
+                "description",
+                "desc",
+                "goal",
+                "goal_id",
+                "subgoal_id",
+            ],
+        )
 
         if entity == "goal":
             cleaned = re.sub(
@@ -662,32 +723,60 @@ class COOTranslationService:
                 cleaned,
             ).strip()
 
-        title = cleaned.strip(" ,.-")
+        derived_title = cleaned.strip(" ,.-")
+        title = (title_explicit or derived_title or "").strip(" ,.-")
 
         return _ParsedFields(
             title=title,
-            status=status.strip(" ,.-")
-            if isinstance(status, str) and status.strip()
-            else None,
-            priority=priority.strip(" ,.-")
-            if isinstance(priority, str) and priority.strip()
-            else None,
+            status=status if isinstance(status, str) and status.strip() else None,
+            priority=priority if isinstance(priority, str) and priority.strip() else None,
             due=due,
-            description=description.strip()
-            if isinstance(description, str) and description.strip()
-            else None,
+            description=description,
+            goal_relation_id=goal_rel,
         )
+
+    @staticmethod
+    def _looks_like_uuid(value: str) -> bool:
+        if not isinstance(value, str):
+            return False
+        v = value.strip()
+        return bool(re.match(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", v))
+
+    @staticmethod
+    def _strip_kv_segments(text: str, *, keys: List[str]) -> str:
+        """
+        Removes occurrences like:
+          Key: value
+          Key = value
+        but only the matched segment, not the rest of the string.
+        """
+        if not text:
+            return text
+
+        out = text
+
+        for k in keys:
+            # Match "k: ..." or "k= ..." up to stop punctuation / next keyword-ish boundary
+            # Keep it conservative: remove "k ...value" and trailing separators.
+            pattern = rf"(?i)\b{re.escape(k)}\b\s*[:=]\s*[^,\n;\.]+"
+            out = re.sub(pattern, " ", out)
+
+        # Cleanup separators and spaces
+        out = re.sub(r"\s+", " ", out)
+        out = re.sub(r"\s*([,;:])\s*", r"\1 ", out)
+        return out.strip()
 
     @staticmethod
     def _extract_field_value(text: str, key: str) -> Optional[str]:
         """
         Robust extractor that stops at punctuation or next directive keywords.
-        Fixes the Notion select/status issue: prevents capturing full sentences.
+        Prevents capturing full sentences.
+        Supports both ':' and '='.
         """
         if not text or not key:
             return None
 
-        m = re.search(rf"(?i)\b{re.escape(key)}\b\s*[: ]+\s*", text)
+        m = re.search(rf"(?i)\b{re.escape(key)}\b\s*[:= ]+\s*", text)
         if not m:
             return None
 
@@ -696,7 +785,7 @@ class COOTranslationService:
             return None
 
         stop_re = re.compile(
-            r"(?i)([\n\r,;\.])|(\b(prioritet|priority|due|rok|deadline|opis|description|desc|kreiraj|napravi|dodaj|create|plan|dan|task|tasks|zadatak|zadaci|podcilj|subgoal)\b)"
+            r"(?i)([\n\r,;\.])|(\b(prioritet|priority|due|rok|deadline|opis|description|desc|status|name|naziv|ime|title|kreiraj|napravi|dodaj|create|plan|dan|task|tasks|zadatak|zadaci|podcilj|subgoal|goal|goal_id|subgoal_id)\b)"
         )
 
         stop = stop_re.search(tail)
@@ -711,11 +800,88 @@ class COOTranslationService:
         return tail or None
 
     @staticmethod
+    def _normalize_status(value: str) -> str:
+        if not isinstance(value, str):
+            return "Not started"
+        v = value.strip().lower()
+
+        mapping = {
+            "not started": "Not started",
+            "nije poceto": "Not started",
+            "nije početo": "Not started",
+            "nepoceto": "Not started",
+            "u toku": "In progress",
+            "in progress": "In progress",
+            "active": "In progress",
+            "zavrseno": "Done",
+            "završeno": "Done",
+            "done": "Done",
+            "completed": "Done",
+            "blokirano": "Blocked",
+            "blocked": "Blocked",
+        }
+
+        # exact match
+        if v in mapping:
+            return mapping[v]
+
+        # partial heuristics
+        if "toku" in v or "progress" in v:
+            return "In progress"
+        if "zavr" in v or "done" in v or "complete" in v:
+            return "Done"
+        if "blok" in v or "block" in v:
+            return "Blocked"
+
+        # default: preserve original casing as best-effort
+        return value.strip()
+
+    @staticmethod
+    def _normalize_priority(value: str) -> str:
+        if not isinstance(value, str):
+            return value
+        v = value.strip().lower()
+
+        mapping = {
+            "high": "High",
+            "visok": "High",
+            "visoka": "High",
+            "urgent": "High",
+            "medium": "Medium",
+            "srednji": "Medium",
+            "srednja": "Medium",
+            "normal": "Medium",
+            "low": "Low",
+            "nizak": "Low",
+            "niska": "Low",
+        }
+
+        if v in mapping:
+            return mapping[v]
+
+        if "vis" in v or "urg" in v:
+            return "High"
+        if "niz" in v:
+            return "Low"
+
+        return value.strip()
+
+    @staticmethod
     def _try_parse_date_to_iso(value: str) -> Optional[str]:
         if not isinstance(value, str) or not value.strip():
             return None
 
         v = value.strip()
+
+        # relative (basic)
+        lv = v.lower()
+        now = datetime.utcnow().date()
+        if lv in ("danas", "today"):
+            return now.strftime("%Y-%m-%d")
+        if lv in ("sutra", "tomorrow"):
+            return (now + timedelta(days=1)).strftime("%Y-%m-%d")
+        if lv in ("prekosutra",):
+            return (now + timedelta(days=2)).strftime("%Y-%m-%d")
 
         m = re.match(r"^(\d{4})[-/](\d{2})[-/](\d{2})$", v)
         if m:

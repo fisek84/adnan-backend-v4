@@ -33,6 +33,13 @@ class ExecutionOrchestrator:
         self.notion_agent = NotionOpsAgent(get_notion_service())
         self.approvals = get_approval_state()
 
+    def set_approvals(self, approvals: Any) -> None:
+        """
+        Optional injection to avoid singleton mismatch between router/gateway and orchestrator.
+        """
+        if approvals is not None:
+            self.approvals = approvals
+
     @staticmethod
     def _is_proposal_wrapper(cmd: AICommand) -> bool:
         directive = getattr(cmd, "command", None)
@@ -51,7 +58,6 @@ class ExecutionOrchestrator:
         cmd = self._normalize_command(command)
 
         # DEFENSE-IN-DEPTH (CANON):
-        # Orchestrator must never execute proposal wrappers; unwrap must happen before execution/approval.
         if self._is_proposal_wrapper(cmd):
             raise ValueError(
                 "proposal intent cannot be executed; unwrap/translation required before creating or resuming execution"
@@ -134,14 +140,13 @@ class ExecutionOrchestrator:
         """
         command = self.registry.get(execution_id)
         if not command:
-            raise RuntimeError("Execution not found")
+            # IMPORTANT: router/tests prefer 404-like behavior
+            raise KeyError(execution_id)
 
         cmd = self._normalize_command(command)
         if cmd is not command:
             self.registry.register(cmd)
 
-        # DEFENSE-IN-DEPTH (CANON):
-        # Resuming a proposal wrapper is always a bug; unwrap must occur before execution exists.
         if self._is_proposal_wrapper(cmd):
             raise ValueError(
                 "proposal intent cannot be resumed; unwrap/translation required before creating execution/approval"
@@ -181,7 +186,6 @@ class ExecutionOrchestrator:
     async def _execute_after_approval(self, command: AICommand) -> Dict[str, Any]:
         execution_id = command.execution_id
 
-        # Extra paranoia: this should be impossible after execute()/resume() guards.
         if self._is_proposal_wrapper(command):
             raise ValueError(
                 "proposal intent reached _execute_after_approval; unwrap required (bug: wrapper leaked into execution)"
