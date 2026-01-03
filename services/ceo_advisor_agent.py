@@ -1,8 +1,8 @@
 # services/ceo_advisor_agent.py
 from __future__ import annotations
 
-from typing import Any, Dict, List, Tuple, Optional
 import re
+from typing import Any, Dict, List, Optional, Tuple
 
 from models.agent_contract import AgentInput, AgentOutput, ProposedCommand
 from services.agent_router.openai_assistant_executor import OpenAIAssistantExecutor
@@ -129,6 +129,43 @@ def _extract_goals_tasks(snapshot: Dict[str, Any]) -> Tuple[Any, Any]:
         tasks = snapshot.get("tasks") if isinstance(snapshot, dict) else None
 
     return goals, tasks
+
+
+def _render_snapshot_summary(goals: Any, tasks: Any) -> str:
+    def _safe_list(x: Any) -> List[Dict[str, Any]]:
+        if isinstance(x, list):
+            return [i for i in x if isinstance(i, dict)]
+        return []
+
+    g = _safe_list(goals)
+    t = _safe_list(tasks)
+
+    lines: List[str] = []
+    lines.append("GOALS (top 3)")
+    if not g:
+        lines.append("NEMA DOVOLJNO PODATAKA U SNAPSHOT-U")
+    else:
+        for i, it in enumerate(g[:3], start=1):
+            name = str(
+                it.get("name") or it.get("Name") or it.get("title") or "-"
+            ).strip()
+            status = str(it.get("status") or it.get("Status") or "-").strip()
+            priority = str(it.get("priority") or it.get("Priority") or "-").strip()
+            lines.append(f"{i}) {name} | {status} | {priority}")
+
+    lines.append("TASKS (top 5)")
+    if not t:
+        lines.append("NEMA DOVOLJNO PODATAKA U SNAPSHOT-U")
+    else:
+        for i, it in enumerate(t[:5], start=1):
+            title = str(
+                it.get("title") or it.get("Name") or it.get("name") or "-"
+            ).strip()
+            status = str(it.get("status") or it.get("Status") or "-").strip()
+            priority = str(it.get("priority") or it.get("Priority") or "-").strip()
+            lines.append(f"{i}) {title} | {status} | {priority}")
+
+    return "\n".join(lines)
 
 
 # -------------------------------
@@ -438,7 +475,7 @@ async def create_ceo_advisor_agent(
         )
 
     # =========================================================
-    # LLM PUT (read-only)
+    # LLM PUT (read-only) — GUARDED (CI-safe)
     # =========================================================
     safe_context: Dict[str, Any] = {
         "canon": {"read_only": True, "no_tools": True, "no_side_effects": True},
@@ -457,19 +494,45 @@ async def create_ceo_advisor_agent(
             "Ne izvršavaj ništa."
         )
 
-    executor = OpenAIAssistantExecutor()
-    result = await executor.ceo_command(text=prompt_text, context=safe_context)
+    # IMPORTANT:
+    # - propose_only workflows MUST be deterministic and CI-safe
+    # - structured_mode can fall back to snapshot rendering if LLM is unavailable
+    result: Dict[str, Any] = {}
+    proposed_items: Any = None
+    proposed: List[ProposedCommand] = []
+    text_out: str = ""
 
-    text_out = _pick_text(result) or "CEO advisor nije vratio tekstualni output."
-    proposed_items = (
-        result.get("proposed_commands") if isinstance(result, dict) else None
-    )
-    proposed = _to_proposed_commands(proposed_items)
+    use_llm = not propose_only  # keep propose-only deterministic (no OpenAI dependency)
+
+    if use_llm:
+        try:
+            executor = OpenAIAssistantExecutor()
+            raw = await executor.ceo_command(text=prompt_text, context=safe_context)
+            if isinstance(raw, dict):
+                result = raw
+            else:
+                result = {"text": str(raw)}
+        except Exception as e:
+            # CI / missing key / transient failures
+            result = {"text": f"LLM unavailable: {e}"}
+
+        text_out = _pick_text(result) or "CEO advisor nije vratio tekstualni output."
+        proposed_items = (
+            result.get("proposed_commands") if isinstance(result, dict) else None
+        )
+        proposed = _to_proposed_commands(proposed_items)
+    else:
+        # deterministic text for propose-only
+        if structured_mode:
+            text_out = _render_snapshot_summary(goals, tasks)
+        else:
+            text_out = "OK. Predložiću akciju (propose-only), bez izvršavanja."
 
     # =========================================================
     # CANON: translate create_task/create_goal -> notion_write executable ai_command
     # =========================================================
     if propose_only and wants_notion:
+        # If LLM provided structured items anyway (some routers might), we still translate them.
         first_cmd = getattr(proposed[0], "command", None) if proposed else None
 
         if first_cmd in ("create_task", "create_goal"):
@@ -495,22 +558,25 @@ async def create_ceo_advisor_agent(
                     )
                 ]
 
-        # If LLM gave nothing usable, force deterministic proposal
+        # If we still have nothing usable, force deterministic proposal
         if not proposed or (
             proposed and getattr(proposed[0], "command", None) in ("refresh_snapshot",)
         ):
             if _wants_task(base_text):
+                deadline_iso = _extract_deadline_from_text(base_text)
+
+                property_specs: Dict[str, Any] = {
+                    "Name": {"type": "title", "text": "E2E Chat Task"},
+                    "Priority": {"type": "select", "name": "High"},
+                    "Status": {"type": "select", "name": "To Do"},
+                }
+                if deadline_iso:
+                    property_specs["Deadline"] = {"type": "date", "start": deadline_iso}
+
                 ai_cmd = {
                     "command": "notion_write",
                     "intent": "create_page",
-                    "params": {
-                        "db_key": "tasks",
-                        "property_specs": {
-                            "Name": {"type": "title", "text": "E2E Chat Task"},
-                            "Priority": {"type": "select", "name": "High"},
-                            "Status": {"type": "select", "name": "To Do"},
-                        },
-                    },
+                    "params": {"db_key": "tasks", "property_specs": property_specs},
                 }
                 proposed = [
                     _wrap_as_proposed_command_with_ai_command(
@@ -563,6 +629,7 @@ async def create_ceo_advisor_agent(
     trace["structured_mode"] = structured_mode
     trace["propose_only"] = propose_only
     trace["wants_notion"] = wants_notion
+    trace["llm_used"] = use_llm
 
     return AgentOutput(
         text=text_out,
