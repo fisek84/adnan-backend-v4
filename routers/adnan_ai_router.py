@@ -79,6 +79,10 @@ def _ensure_registry_loaded() -> None:
         logger.warning("Agent registry load fallback failed: %s", exc)
 
 
+def _ensure_dict(v: Any) -> Dict[str, Any]:
+    return v if isinstance(v, dict) else {}
+
+
 @router.post("/input", response_model=AgentOutput)
 async def adnan_ai_input(payload: AdnanAIInput) -> AgentOutput:
     """
@@ -99,6 +103,11 @@ async def adnan_ai_input(payload: AdnanAIInput) -> AgentOutput:
         raise HTTPException(400, "Empty input")
 
     context = payload.context or {}
+
+    # Normalize optional payloads (IMPORTANT: do NOT blindly do "or {}" because it
+    # destroys the distinction between "not provided" and "provided empty/invalid".)
+    identity_pack = _ensure_dict(payload.identity_pack)
+    snapshot = _ensure_dict(payload.snapshot)
 
     # 1) COO CONVERSATION — UX ONLY
     conversation_result = coo_conversation_service.handle_user_input(
@@ -125,28 +134,51 @@ async def adnan_ai_input(payload: AdnanAIInput) -> AgentOutput:
     # 2) CANON AGENT ROUTER — READ/PROPOSE ONLY
     _ensure_registry_loaded()
 
+    md: Dict[str, Any] = {
+        "context": context,
+        "endpoint": "/adnan-ai/input",
+        "read_only": True,
+        "legacy_wrapper": True,
+        "canon": "read_propose_only",
+    }
+
+    # Track snapshot origin for downstream diagnostics.
+    # If snapshot is non-empty dict -> treat as client-provided snapshot.
+    if isinstance(snapshot, dict) and len(snapshot) > 0:
+        md.setdefault("snapshot_source", "client")
+
     agent_input = AgentInput(
         message=user_text,
-        identity_pack=payload.identity_pack or {},
-        snapshot=payload.snapshot or {},
+        identity_pack=identity_pack,
+        snapshot=snapshot,
         preferred_agent_id=payload.preferred_agent_id,
-        metadata={
-            "context": context,
-            "endpoint": "/adnan-ai/input",
-            "read_only": True,
-            "legacy_wrapper": True,
-        },
+        metadata=md,
     )
 
     out = _agent_router.route(agent_input)
 
-    # Final hard gate
+    # Final hard gate (defense-in-depth)
     out.read_only = True
     if out.trace is None:
         out.trace = {}
-    out.trace["endpoint"] = "/adnan-ai/input"
-    out.trace["canon"] = "read_propose_only"
-    for pc in out.proposed_commands or []:
-        pc.dry_run = True
+    if isinstance(out.trace, dict):
+        out.trace["endpoint"] = "/adnan-ai/input"
+        out.trace["canon"] = "read_propose_only"
+
+    pcs = out.proposed_commands or []
+    for pc in pcs:
+        try:
+            if hasattr(pc, "dry_run"):
+                pc.dry_run = True
+            if hasattr(pc, "execute"):
+                pc.execute = False
+            if hasattr(pc, "approved"):
+                pc.approved = False
+            if hasattr(pc, "requires_approval"):
+                pc.requires_approval = True
+        except Exception:
+            # fail-soft
+            continue
+    out.proposed_commands = pcs
 
     return out

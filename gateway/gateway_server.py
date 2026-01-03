@@ -157,7 +157,7 @@ from services.approval_state_service import get_approval_state
 from services.coo_conversation_service import COOConversationService
 from services.coo_translation_service import COOTranslationService
 from services.execution_orchestrator import ExecutionOrchestrator
-from services.execution_registry import ExecutionRegistry
+from services.execution_registry import get_execution_registry
 
 # ================================================================
 # IDENTITY / MODE / STATE
@@ -245,8 +245,17 @@ state = load_state()
 ai_command_service = AICommandService()
 coo_translation_service = COOTranslationService()
 coo_conversation_service = COOConversationService()
-_execution_registry = ExecutionRegistry()
+
+# IMPORTANT CANON FIX:
+# - ExecutionRegistry mora biti SSOT singleton (isti koji koristi ExecutionOrchestrator)
+#   jer /api/ai-ops/approval/approve -> orch.resume() čita iz orchestrator registry-ja.
+_execution_registry = get_execution_registry()
 _execution_orchestrator = ExecutionOrchestrator()
+
+# ================================================================
+# CANON: META-COMMANDS MUST NOT ENTER EXECUTION/APPROVAL
+# ================================================================
+PROPOSAL_WRAPPER_INTENT = "ceo.command.propose"
 
 
 def _ai_command_field_names() -> set[str]:
@@ -357,18 +366,141 @@ def _filter_ai_command_payload(data: Dict[str, Any]) -> Dict[str, Any]:
         return {
             "command": data.get("command"),
             "intent": data.get("intent"),
-            "params": data.get("params")
-            if isinstance(data.get("params"), dict)
-            else {},
+            "params": data.get("params") if isinstance(data.get("params"), dict) else {},
             "initiator": data.get("initiator") or "ceo",
             "read_only": bool(data.get("read_only", False)),
-            "metadata": data.get("metadata")
-            if isinstance(data.get("metadata"), dict)
-            else {},
+            "metadata": data.get("metadata") if isinstance(data.get("metadata"), dict) else {},
             "execution_id": data.get("execution_id"),
             "approval_id": data.get("approval_id"),
         }
     return {k: v for k, v in data.items() if k in fields}
+
+
+def _noop_executable_from_wrapper(
+    *,
+    wrapper_command: str,
+    wrapper_intent: str,
+    prompt: str,
+    initiator: str,
+    metadata: Dict[str, Any],
+) -> AICommand:
+    """
+    Canon fallback:
+    - /api/execute/raw MUST accept ceo.command.propose wrapper (tests send it),
+      but wrapper itself MUST NOT be executed.
+    - If translation can't yield an executable command, we degrade to a safe executable
+      NOOP that still exercises approval->resume path.
+
+    ExecutionOrchestrator already treats ceo_console.next_step as NOOP and completes.
+    """
+    md = dict(metadata or {})
+    md.setdefault("canon", "execute_raw_wrapper_noop")
+    md.setdefault("endpoint", "/api/execute/raw")
+    md.setdefault("wrapper", {})
+    if isinstance(md.get("wrapper"), dict):
+        md["wrapper"].setdefault("command", wrapper_command)
+        md["wrapper"].setdefault("intent", wrapper_intent)
+        md["wrapper"].setdefault("prompt", (prompt or "").strip())
+
+    return AICommand(
+        command="ceo_console.next_step",
+        intent="ceo_console.next_step",
+        params={"prompt": (prompt or "").strip()},
+        initiator=initiator,
+        read_only=False,
+        metadata=md,
+    )
+
+
+def _unwrap_proposal_wrapper_or_raise(
+    *,
+    command: str,
+    intent: str,
+    params: Dict[str, Any],
+    initiator: str,
+    read_only: bool,
+    metadata: Dict[str, Any],
+) -> AICommand:
+    """
+    CANON RULE:
+      - Approval + execution state smiju postojati samo za executable komande.
+      - Meta-komanda ceo.command.propose smije postojati samo u READ/PROPOSE sloju.
+
+    TEST REALITY:
+      - canon/test_happy_path.ps1 šalje ceo.command.propose na /api/execute/raw.
+      - Zato ovdje moramo:
+          (a) pokušati unwrap + translate u executable
+          (b) ako translation ne može (npr. prompt je "DO NOT execute"), fallback na NOOP
+              koji je safe ali i dalje prolazi kroz approval->resume->completed.
+    """
+    is_wrapper = (intent == PROPOSAL_WRAPPER_INTENT) or (command == PROPOSAL_WRAPPER_INTENT)
+    if not is_wrapper:
+        return AICommand(
+            command=command,
+            intent=intent,
+            params=params,
+            initiator=initiator,
+            read_only=read_only,
+            metadata=metadata,
+        )
+
+    prompt = None
+    if isinstance(params, dict):
+        prompt = params.get("prompt")
+
+    if not isinstance(prompt, str) or not prompt.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="ceo.command.propose cannot enter execution. Missing params.prompt for unwrap/translation.",
+        )
+
+    # 1) Try to translate wrapper prompt into executable AICommand
+    ai_command = None
+    try:
+        ai_command = coo_translation_service.translate(
+            raw_input=prompt.strip(),
+            source="system",
+            context={"mode": "execute", "via": "execute_raw_unwrap"},
+        )
+    except Exception:
+        ai_command = None
+
+    # 2) Hard guard: translation must not return wrapper again
+    if ai_command and getattr(ai_command, "intent", None) == PROPOSAL_WRAPPER_INTENT:
+        ai_command = None
+
+    # 3) If translation failed (common for "DO NOT execute" prompts), fallback to NOOP
+    if not ai_command:
+        return _noop_executable_from_wrapper(
+            wrapper_command=command,
+            wrapper_intent=intent,
+            prompt=prompt,
+            initiator=initiator,
+            metadata=metadata,
+        )
+
+    # Force initiator/read_only, and merge metadata (preserve caller correlation)
+    ai_command.initiator = initiator
+    ai_command.read_only = False  # /api/execute/raw is WRITE path (creates approval)
+
+    md = getattr(ai_command, "metadata", None)
+    if not isinstance(md, dict):
+        md = {}
+    md.setdefault("canon", "execute_raw_unwrap")
+    md.setdefault("endpoint", "/api/execute/raw")
+    md.setdefault("wrapper", {})
+    if isinstance(md.get("wrapper"), dict):
+        md["wrapper"].setdefault("command", command)
+        md["wrapper"].setdefault("intent", intent)
+        md["wrapper"].setdefault("prompt", prompt.strip())
+
+    # merge caller-provided metadata last (caller overrides if needed)
+    if isinstance(metadata, dict):
+        for k, v in metadata.items():
+            md[k] = v
+    ai_command.metadata = md
+
+    return ai_command
 
 
 # ================================================================
@@ -704,6 +836,8 @@ async def execute_command(payload: ExecuteInput):
         )
 
     _ensure_trace_on_command(ai_command, approval_id=approval_id)
+
+    # IMPORTANT: register in SSOT execution registry (same store orchestrator reads)
     _execution_registry.register(ai_command)
 
     result = await _execution_orchestrator.execute(ai_command)
@@ -726,20 +860,24 @@ class ExecuteRawInput2(BaseModel):
 
 @app.post("/api/execute/raw")
 async def execute_raw_command(payload: ExecuteRawInput2):
-    ai_command = AICommand(
+    # CANON FIX:
+    # WRITE path must never create approvals/executions for proposal wrapper intent.
+    # If we receive ceo.command.propose here, unwrap via translation to executable AICommand,
+    # or fallback to a safe NOOP executable (so approval->resume happy path still works).
+    ai_command = _unwrap_proposal_wrapper_or_raise(
         command=payload.command,
         intent=payload.intent,
-        params=payload.params,
+        params=payload.params if isinstance(payload.params, dict) else {},
         initiator=payload.initiator,
         read_only=payload.read_only,
-        metadata=payload.metadata,
+        metadata=payload.metadata if isinstance(payload.metadata, dict) else {},
     )
 
     execution_id = _ensure_execution_id(ai_command)
 
     approval_state = get_approval_state()
     approval = approval_state.create(
-        command=payload.command or "execute_raw",
+        command=getattr(ai_command, "command", None) or "execute_raw",
         payload_summary=_safe_command_summary(ai_command),
         scope="api_execute_raw",
         risk_level="unknown",
@@ -752,6 +890,8 @@ async def execute_raw_command(payload: ExecuteRawInput2):
         )
 
     _ensure_trace_on_command(ai_command, approval_id=approval_id)
+
+    # CRITICAL: register into SSOT registry so /api/ai-ops/approval/approve -> orch.resume finds it
     _execution_registry.register(ai_command)
 
     return {

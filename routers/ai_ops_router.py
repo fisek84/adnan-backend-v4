@@ -23,6 +23,9 @@ logger.setLevel(logging.INFO)
 # CANONICAL WRITE GUARDS (runtime reads)
 # ------------------------------------------------------------
 
+# CANON: meta/proposal wrapper intents must never be approved/executed.
+PROPOSAL_WRAPPER_INTENT = "ceo.command.propose"
+
 
 def _env_true(name: str, default: str = "false") -> bool:
     return (os.getenv(name, default) or "").strip().lower() == "true"
@@ -238,6 +241,20 @@ def list_pending() -> Dict[str, Any]:
     return {"approvals": pending, "read_only": True}
 
 
+def _extract_intent_from_approval(approval: Any) -> Optional[str]:
+    """
+    Best-effort extraction of intent/command from approval payload_summary, if present.
+    This is only a defensive UX error; SSOT fix is in gateway (unwrap before approval creation).
+    """
+    if not isinstance(approval, dict):
+        return None
+    ps = approval.get("payload_summary")
+    if not isinstance(ps, dict):
+        return None
+    intent = ps.get("intent") or ps.get("command")
+    return intent.strip() if isinstance(intent, str) and intent.strip() else None
+
+
 @router.post("/approval/approve")
 async def approve(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     _guard_write(request)
@@ -260,13 +277,46 @@ async def approve(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[st
     except KeyError:
         raise HTTPException(status_code=404, detail="Approval not found")
 
+    # Optional guard: do not allow approving proposal wrappers (should be impossible after gateway unwrap).
+    intent = _extract_intent_from_approval(approval)
+    if intent == PROPOSAL_WRAPPER_INTENT:
+        raise HTTPException(
+            status_code=400,
+            detail="cannot approve proposal wrapper (ceo.command.propose); unwrap required before approval is created",
+        )
+
     execution_id = approval.get("execution_id")
     if not isinstance(execution_id, str) or not execution_id.strip():
         # This should never be "normal": it means /api/execute didn't attach execution_id properly
         raise HTTPException(500, detail="Approval has no execution_id")
 
-    orch = _get_orchestrator()
-    execution_result = await orch.resume(execution_id.strip())
+    # Defensive: make failure mode explicit instead of a silent 500.
+    orch: Optional[ExecutionOrchestrator]
+    try:
+        orch = _get_orchestrator()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            500, detail=f"Orchestrator init failed: {type(exc).__name__}: {exc}"
+        ) from exc
+
+    if orch is None:
+        raise HTTPException(500, detail="Orchestrator not initialized")
+
+    try:
+        execution_result = await orch.resume(execution_id.strip())
+    except KeyError as exc:
+        # Common case: execution_id not present in orchestrator registry/store.
+        raise HTTPException(
+            404, detail=f"Execution not found for execution_id={execution_id.strip()}"
+        ) from exc
+    except HTTPException:
+        # Do not wrap explicit HTTP errors.
+        raise
+    except Exception as exc:  # noqa: BLE001
+        # Make the root cause visible to happy path scripts/tests.
+        raise HTTPException(
+            500, detail=f"approve_failed: {type(exc).__name__}: {exc}"
+        ) from exc
 
     # Ensure test can read execution_state at root.
     if isinstance(execution_result, dict):

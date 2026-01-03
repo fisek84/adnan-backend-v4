@@ -13,6 +13,9 @@ from services.notion_service import get_notion_service
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
+# CANON: meta/proposal wrapper intents must never be executed/resumed
+PROPOSAL_WRAPPER_INTENT = "ceo.command.propose"
+
 
 class ExecutionOrchestrator:
     """
@@ -30,6 +33,12 @@ class ExecutionOrchestrator:
         self.notion_agent = NotionOpsAgent(get_notion_service())
         self.approvals = get_approval_state()
 
+    @staticmethod
+    def _is_proposal_wrapper(cmd: AICommand) -> bool:
+        directive = getattr(cmd, "command", None)
+        intent = getattr(cmd, "intent", None)
+        return (directive == PROPOSAL_WRAPPER_INTENT) or (intent == PROPOSAL_WRAPPER_INTENT)
+
     async def execute(
         self, command: Union[AICommand, Dict[str, Any]]
     ) -> Dict[str, Any]:
@@ -38,6 +47,13 @@ class ExecutionOrchestrator:
         CANON: ovdje se payload kanonizuje u AICommand, bez interpretacije intent-a.
         """
         cmd = self._normalize_command(command)
+
+        # DEFENSE-IN-DEPTH (CANON):
+        # Orchestrator must never execute proposal wrappers; unwrap must happen before execution/approval.
+        if self._is_proposal_wrapper(cmd):
+            raise ValueError(
+                "proposal intent cannot be executed; unwrap/translation required before creating or resuming execution"
+            )
 
         execution_id = getattr(cmd, "execution_id", None)
         if not isinstance(execution_id, str) or not execution_id:
@@ -122,6 +138,13 @@ class ExecutionOrchestrator:
         if cmd is not command:
             self.registry.register(cmd)
 
+        # DEFENSE-IN-DEPTH (CANON):
+        # Resuming a proposal wrapper is always a bug; unwrap must occur before execution exists.
+        if self._is_proposal_wrapper(cmd):
+            raise ValueError(
+                "proposal intent cannot be resumed; unwrap/translation required before creating execution/approval"
+            )
+
         approval_id = getattr(cmd, "approval_id", None)
         if not isinstance(approval_id, str) or not approval_id:
             md = getattr(cmd, "metadata", None)
@@ -155,6 +178,12 @@ class ExecutionOrchestrator:
 
     async def _execute_after_approval(self, command: AICommand) -> Dict[str, Any]:
         execution_id = command.execution_id
+
+        # Extra paranoia: this should be impossible after execute()/resume() guards.
+        if self._is_proposal_wrapper(command):
+            raise ValueError(
+                "proposal intent reached _execute_after_approval; unwrap required (bug: wrapper leaked into execution)"
+            )
 
         command.execution_state = "EXECUTING"
         self.registry.register(command)

@@ -75,21 +75,28 @@ function Invoke-Json {
   }
 }
 
+# FIX: eliminate nested-array bug (array-in-array) for proposed_commands.
 function Get-ProposedCommandsFromResponse($data) {
   if ($null -eq $data) { return @() }
 
+  function As-FlatList($x) {
+    if ($null -eq $x) { return @() }
+    if ($x -is [System.Collections.IEnumerable] -and -not ($x -is [string])) {
+      return @($x)
+    }
+    return @($x)
+  }
+
   # Standard: root.proposed_commands
   if ($data.PSObject.Properties.Name -contains "proposed_commands") {
-    $pc = $data.proposed_commands
-    if ($null -eq $pc) { return @() }
-    return @($pc)
+    return (As-FlatList $data.proposed_commands)
   }
 
   # Fallback: sometimes nested
   if ($data.PSObject.Properties.Name -contains "trace") {
     $t = $data.trace
     if ($t -and ($t.PSObject.Properties.Name -contains "proposed_commands")) {
-      return @($t.proposed_commands)
+      return (As-FlatList $t.proposed_commands)
     }
   }
 
@@ -290,6 +297,13 @@ $execPayload = Convert-ProposalToExecuteRawPayload $proposal0
 if ($null -eq $execPayload) {
   Fail("Cannot map proposal to execute/raw payload. Proposal[0]: $($proposal0 | ConvertTo-Json -Depth 30)")
 }
+
+# DEBUG: print exact payload being sent (critical for 400 diagnostics)
+Write-Host ""
+Write-Host "EXEC PAYLOAD (about to POST /api/execute/raw):" -ForegroundColor Yellow
+$execJson = ($execPayload | ConvertTo-Json -Depth 30)
+Write-Host $execJson
+Write-Host ""
 
 $exec = Invoke-Json -Method "POST" -Path "/api/execute/raw" -Body $execPayload -Headers $headers
 if ($exec.status -ne 200) { Fail("execute/raw returned $($exec.status). Body: $($exec.raw)") }

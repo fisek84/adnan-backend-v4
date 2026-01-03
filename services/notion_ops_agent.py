@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Dict, Any, List
 import logging
+from typing import Any, Dict, List
 
 from models.ai_command import AICommand
-from services.notion_service import NotionService
+from services.notion_service import NotionService, get_notion_service
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -18,29 +18,29 @@ class NotionOpsAgent:
 
     - jedini agent koji izvršava write prema Notionu (preko NotionService)
     - NE gradi raw Notion API payload (radi NotionService)
-    - NE radi KPI weekly summary workflow ovdje (to je posao Orchestratora),
-      da ne dođe do duplih upisa i divergentne logike.
+    - workflow-e (goal_task_workflow, KPI, itd.) primarno orkestrira Orchestrator
     """
 
     def __init__(self, notion: NotionService):
+        if notion is None:
+            raise TypeError("NotionOpsAgent requires a NotionService instance")
         self.notion = notion
 
     async def execute(self, command: AICommand) -> Dict[str, Any]:
-        if not command.intent:
+        if not getattr(command, "intent", None):
             raise RuntimeError("Write command missing intent")
 
         logger.info(
             "NotionOpsAgent executing cmd=%s intent=%s execution_id=%s",
-            command.command,
-            command.intent,
-            command.execution_id,
+            getattr(command, "command", None),
+            getattr(command, "intent", None),
+            getattr(command, "execution_id", None),
         )
 
         # Legacy support: ako neko direktno pozove goal_task_workflow mimo Orchestratora.
-        if command.command == "goal_task_workflow":
+        if getattr(command, "command", None) == "goal_task_workflow":
             return await self._execute_goal_task_workflow(command)
 
-        # Sve ostalo → direktno NotionService
         return await self.notion.execute(command)
 
     # -------------------------------------------------
@@ -145,3 +145,10 @@ class NotionOpsAgent:
             "goal": goal_result,
             "tasks": tasks_results,
         }
+
+
+# ============================================================
+# FACTORY ENTRYPOINT (Router must use this, not the class)
+# ============================================================
+def create_notion_ops_agent() -> NotionOpsAgent:
+    return NotionOpsAgent(get_notion_service())
