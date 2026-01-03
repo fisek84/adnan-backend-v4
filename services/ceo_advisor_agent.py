@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from typing import Any, Dict, List, Tuple, Optional
+import re
 
 from models.agent_contract import AgentInput, AgentOutput, ProposedCommand
 from services.agent_router.openai_assistant_executor import OpenAIAssistantExecutor
@@ -177,7 +178,6 @@ def _normalize_priority(v: Any) -> str:
         return "Medium"
     if s_low in ("low", "l", "nizak", "niska"):
         return "Low"
-    # passthrough but TitleCase common
     return s[:1].upper() + s[1:]
 
 
@@ -195,17 +195,69 @@ def _normalize_status(v: Any) -> str:
     return s
 
 
+def _normalize_date_iso(v: Any) -> Optional[str]:
+    """
+    Accepts:
+      - '2025-10-01'
+      - '01.10.2025' (dd.mm.yyyy)
+    Returns ISO 'YYYY-MM-DD' or None.
+    """
+    s = str(v or "").strip()
+    if not s:
+        return None
+
+    # already ISO
+    if len(s) == 10 and s[4] == "-" and s[7] == "-":
+        return s
+
+    # dd.mm.yyyy
+    if len(s) == 10 and s[2] == "." and s[5] == ".":
+        dd, mm, yyyy = s.split(".")
+        if len(yyyy) == 4:
+            return f"{yyyy}-{mm}-{dd}"
+
+    return None
+
+
+def _extract_deadline_from_text(text: str) -> Optional[str]:
+    """
+    Finds deadline/due date in the user's message.
+    Supports:
+      - deadline 01.10.2025
+      - due date 01.10.2025
+      - deadline: 2025-10-01
+      - rok 01.10.2025
+    Returns ISO YYYY-MM-DD or None.
+    """
+    t = (text or "").strip()
+
+    # 1) dd.mm.yyyy
+    m = re.search(
+        r"(deadline|rok|due date|duedate|due)\s*[:=]?\s*(\d{2}\.\d{2}\.\d{4})",
+        t,
+        re.IGNORECASE,
+    )
+    if m:
+        return _normalize_date_iso(m.group(2))
+
+    # 2) yyyy-mm-dd
+    m = re.search(
+        r"(deadline|rok|due date|duedate|due)\s*[:=]?\s*(\d{4}-\d{2}-\d{2})",
+        t,
+        re.IGNORECASE,
+    )
+    if m:
+        return _normalize_date_iso(m.group(2))
+
+    return None
+
+
 # ---------------------------------------
-# Translation: create_task -> ai_command
+# Translation: create_task/create_goal -> ai_command
 # ---------------------------------------
 def _translate_create_task_to_ai_command(
     proposal: Dict[str, Any],
 ) -> Optional[Dict[str, Any]]:
-    """
-    Accepts proposal dict like:
-      { "command": "create_task", "args": {"Name": "...", "Priority": "...", "Status": "..."} }
-    and returns ai_command dict for notion_write/create_page.
-    """
     if not isinstance(proposal, dict):
         return None
 
@@ -224,17 +276,66 @@ def _translate_create_task_to_ai_command(
     priority = _normalize_priority(args.get("Priority") or args.get("priority"))
     status = _normalize_status(args.get("Status") or args.get("status"))
 
+    # optional deadline/due
+    date_iso = _normalize_date_iso(
+        args.get("Deadline") or args.get("Due Date") or args.get("due_date")
+    )
+    property_specs: Dict[str, Any] = {
+        "Name": {"type": "title", "text": title},
+        "Priority": {"type": "select", "name": priority},
+        "Status": {"type": "select", "name": status},
+    }
+    if date_iso:
+        # your Tasks DB uses "Deadline" (based on your screenshot)
+        property_specs["Deadline"] = {"type": "date", "start": date_iso}
+
     return {
         "command": "notion_write",
         "intent": "create_page",
-        "params": {
-            "db_key": "tasks",
-            "property_specs": {
-                "Name": {"type": "title", "text": title},
-                "Priority": {"type": "select", "name": priority},
-                "Status": {"type": "select", "name": status},
-            },
-        },
+        "params": {"db_key": "tasks", "property_specs": property_specs},
+    }
+
+
+def _translate_create_goal_to_ai_command(
+    proposal: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    if not isinstance(proposal, dict):
+        return None
+
+    cmd = str(proposal.get("command") or "").strip()
+    if cmd != "create_goal":
+        return None
+
+    args = proposal.get("args") or {}
+    if not isinstance(args, dict):
+        args = {}
+
+    name = (
+        str(args.get("Name") or args.get("name") or args.get("title") or "").strip()
+        or "E2E Chat Goal"
+    )
+    priority = _normalize_priority(args.get("Priority") or args.get("priority"))
+    status = (
+        str(args.get("Status") or args.get("status") or "Active").strip() or "Active"
+    )
+
+    date_iso = _normalize_date_iso(
+        args.get("Deadline") or args.get("deadline") or args.get("Due date")
+    )
+
+    property_specs: Dict[str, Any] = {
+        "Name": {"type": "title", "text": name},
+        "Priority": {"type": "select", "name": priority},
+        "Status": {"type": "select", "name": status},
+    }
+    if date_iso:
+        # your Goals DB uses "Deadline" (you proved it in terminal)
+        property_specs["Deadline"] = {"type": "date", "start": date_iso}
+
+    return {
+        "command": "notion_write",
+        "intent": "create_page",
+        "params": {"db_key": "goals", "property_specs": property_specs},
     }
 
 
@@ -252,10 +353,6 @@ def _wrap_as_proposed_command_with_ai_command(
 
 
 def _to_proposed_commands(items: Any) -> List[ProposedCommand]:
-    """
-    Normalizes list of dicts into ProposedCommand objects.
-    Also supports LLM returning raw executable {command,intent,params} by wrapping into args.ai_command.
-    """
     if not isinstance(items, list):
         return []
 
@@ -370,37 +467,38 @@ async def create_ceo_advisor_agent(
     proposed = _to_proposed_commands(proposed_items)
 
     # =========================================================
-    # CANON: translate create_task -> notion_write executable ai_command
+    # CANON: translate create_task/create_goal -> notion_write executable ai_command
     # =========================================================
     if propose_only and wants_notion:
-        # If LLM gave create_task, convert it into args.ai_command (executable)
-        if proposed and getattr(proposed[0], "command", None) == "create_task":
+        first_cmd = getattr(proposed[0], "command", None) if proposed else None
+
+        if first_cmd in ("create_task", "create_goal"):
             p0 = (
                 proposed_items[0]
                 if isinstance(proposed_items, list) and proposed_items
                 else None
             )
-            ai_cmd = _translate_create_task_to_ai_command(
-                p0 if isinstance(p0, dict) else {}
-            )
+            p0d = p0 if isinstance(p0, dict) else {}
+
+            ai_cmd = None
+            if first_cmd == "create_task":
+                ai_cmd = _translate_create_task_to_ai_command(p0d)
+            if first_cmd == "create_goal":
+                ai_cmd = _translate_create_goal_to_ai_command(p0d)
+
             if isinstance(ai_cmd, dict):
                 proposed = [
                     _wrap_as_proposed_command_with_ai_command(
                         ai_cmd,
-                        reason="Translated create_task -> notion_write/create_page (args.ai_command) for /api/proposals/execute compatibility.",
+                        reason=f"Translated {first_cmd} -> notion_write/{ai_cmd.get('intent')} (args.ai_command) for approval-gated execution.",
                         risk="LOW",
                     )
                 ]
-                text_out = (
-                    text_out
-                    or "Translated proposal into executable Notion write command."
-                )
 
-        # If LLM gave nothing usable, force a deterministic executable proposal for tasks/goals
+        # If LLM gave nothing usable, force deterministic proposal
         if not proposed or (
             proposed and getattr(proposed[0], "command", None) in ("refresh_snapshot",)
         ):
-            # Minimal deterministic fallback only for task creation requests
             if _wants_task(base_text):
                 ai_cmd = {
                     "command": "notion_write",
@@ -422,17 +520,20 @@ async def create_ceo_advisor_agent(
                     )
                 ]
             elif _wants_goal(base_text):
+                deadline_iso = _extract_deadline_from_text(base_text)
+
+                property_specs = {
+                    "Name": {"type": "title", "text": "E2E Chat Goal"},
+                    "Priority": {"type": "select", "name": "High"},
+                    "Status": {"type": "select", "name": "Active"},
+                }
+                if deadline_iso:
+                    property_specs["Deadline"] = {"type": "date", "start": deadline_iso}
+
                 ai_cmd = {
                     "command": "notion_write",
                     "intent": "create_page",
-                    "params": {
-                        "db_key": "goals",
-                        "property_specs": {
-                            "Name": {"type": "title", "text": "E2E Chat Goal"},
-                            "Priority": {"type": "select", "name": "High"},
-                            "Status": {"type": "select", "name": "Active"},
-                        },
-                    },
+                    "params": {"db_key": "goals", "property_specs": property_specs},
                 }
                 proposed = [
                     _wrap_as_proposed_command_with_ai_command(
