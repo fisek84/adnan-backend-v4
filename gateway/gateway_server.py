@@ -128,7 +128,6 @@ logger = logging.getLogger("gateway")
 # ================================================================
 # CORE SERVICES
 # ================================================================
-from models.agent_contract import ProposedCommand
 from models.ai_command import AICommand
 from routers.chat_router import build_chat_router
 from services.ai_command_service import AICommandService
@@ -525,6 +524,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+
 # ================================================================
 # CORS
 # ================================================================
@@ -545,6 +545,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 # ================================================================
 # REQUEST MODELS
@@ -639,7 +640,10 @@ def _derive_legacy_goal_task_summaries_from_ceo_snapshot(
                         "name": g.get("name") or g.get("title") or "(bez naziva)",
                         "status": g.get("status") or "-",
                         "priority": g.get("priority") or "-",
-                        "due_date": g.get("deadline") or g.get("due_date") or g.get("due") or "-",
+                        "due_date": g.get("deadline")
+                        or g.get("due_date")
+                        or g.get("due")
+                        or "-",
                     }
                 )
 
@@ -652,7 +656,10 @@ def _derive_legacy_goal_task_summaries_from_ceo_snapshot(
                         "title": t.get("title") or t.get("name") or "(bez naziva)",
                         "status": t.get("status") or "-",
                         "priority": t.get("priority") or "-",
-                        "due_date": t.get("due_date") or t.get("deadline") or t.get("due") or "-",
+                        "due_date": t.get("due_date")
+                        or t.get("deadline")
+                        or t.get("due")
+                        or "-",
                     }
                 )
     except Exception:
@@ -834,12 +841,18 @@ async def execute_proposal(payload: ProposalExecuteInput):
     # leave as-is (your current file content)
     if isinstance(proposal, dict):
         proposal_cmd = proposal.get("command")
-        proposal_args = proposal.get("args") if isinstance(proposal.get("args"), dict) else {}
+        proposal_args = (
+            proposal.get("args") if isinstance(proposal.get("args"), dict) else {}
+        )
         proposal_scope = proposal.get("scope")
         proposal_risk = proposal.get("risk")
     else:
         proposal_cmd = getattr(proposal, "command", None)
-        proposal_args = getattr(proposal, "args", {}) if isinstance(getattr(proposal, "args", None), dict) else {}
+        proposal_args = (
+            getattr(proposal, "args", {})
+            if isinstance(getattr(proposal, "args", None), dict)
+            else {}
+        )
         proposal_scope = getattr(proposal, "scope", None)
         proposal_risk = getattr(proposal, "risk", None)
 
@@ -1034,15 +1047,21 @@ def _resolve_db_id_from_service(notion_service: Any, db_key: str) -> str:
     lk = key.lower()
     for candidate in (lk, lk.rstrip("s"), lk + "s"):
         if candidate == "goals":
-            v = getattr(notion_service, "goals_db_id", None) or getattr(notion_service, "_goals_db_id", None)
+            v = getattr(notion_service, "goals_db_id", None) or getattr(
+                notion_service, "_goals_db_id", None
+            )
             if isinstance(v, str) and v.strip():
                 return v.strip()
         if candidate == "tasks":
-            v = getattr(notion_service, "tasks_db_id", None) or getattr(notion_service, "_tasks_db_id", None)
+            v = getattr(notion_service, "tasks_db_id", None) or getattr(
+                notion_service, "_tasks_db_id", None
+            )
             if isinstance(v, str) and v.strip():
                 return v.strip()
         if candidate == "projects":
-            v = getattr(notion_service, "projects_db_id", None) or getattr(notion_service, "_projects_db_id", None)
+            v = getattr(notion_service, "projects_db_id", None) or getattr(
+                notion_service, "_projects_db_id", None
+            )
             if isinstance(v, str) and v.strip():
                 return v.strip()
 
@@ -1107,7 +1126,9 @@ async def _query_notion_database(db_key: str, query: Dict[str, Any]) -> Dict[str
         or (os.getenv("NOTION_API_KEY") or os.getenv("NOTION_TOKEN") or "").strip()
     )
     if not isinstance(api_key, str) or not api_key.strip():
-        raise HTTPException(status_code=500, detail="NOTION_API_KEY/NOTION_TOKEN not set")
+        raise HTTPException(
+            status_code=500, detail="NOTION_API_KEY/NOTION_TOKEN not set"
+        )
 
     db_id = _resolve_db_id_from_service(notion_service, db_key)
 
@@ -1115,10 +1136,17 @@ async def _query_notion_database(db_key: str, query: Dict[str, Any]) -> Dict[str
     try:
         res = client.databases.query(database_id=db_id, **(query or {}))
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=f"Notion databases.query failed: {exc}") from exc
+        raise HTTPException(
+            status_code=500, detail=f"Notion databases.query failed: {exc}"
+        ) from exc
 
     if not isinstance(res, dict):
-        return {"results": [], "has_more": False, "next_cursor": None, "database_id": db_id}
+        return {
+            "results": [],
+            "has_more": False,
+            "next_cursor": None,
+            "database_id": db_id,
+        }
 
     res.setdefault("database_id", db_id)
     return res
@@ -1160,12 +1188,22 @@ async def notion_bulk_query(payload: Dict[str, Any] = Body(...)):
 
         db_key = q.get("db_key")
         if not isinstance(db_key, str) or not db_key.strip():
-            out.append({"query": q, "items": [], "response": {"results": [], "has_more": False}})
+            out.append(
+                {
+                    "query": q,
+                    "items": [],
+                    "response": {"results": [], "has_more": False},
+                }
+            )
             continue
 
         nq = _normalize_notion_query_payload(q)
         res = await _query_notion_database(db_key.strip(), nq)
-        items = res.get("results") if isinstance(res, dict) and isinstance(res.get("results"), list) else []
+        items = (
+            res.get("results")
+            if isinstance(res, dict) and isinstance(res.get("results"), list)
+            else []
+        )
         out.append({"query": q, "items": items, "response": res})
 
     return {"results": out}

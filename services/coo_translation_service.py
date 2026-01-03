@@ -140,9 +140,15 @@ class COOTranslationService:
                     status = (goal.get("status") or "").strip()
                     due = (goal.get("due") or "").strip()
                     if status:
-                        specs["Status"] = {"type": "status", "name": self._normalize_status(status)}
+                        specs["Status"] = {
+                            "type": "status",
+                            "name": self._normalize_status(status),
+                        }
                     if prio:
-                        specs["Priority"] = {"type": "select", "name": self._normalize_priority(prio)}
+                        specs["Priority"] = {
+                            "type": "select",
+                            "name": self._normalize_priority(prio),
+                        }
                     if due:
                         iso = self._try_parse_date_to_iso(due)
                         if iso:
@@ -222,7 +228,9 @@ class COOTranslationService:
         read_only = bool(data.get("read_only", False))
 
         initiator = str(data.get("initiator") or fallback_ctx.get("initiator") or "ceo")
-        metadata = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
+        metadata = (
+            data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
+        )
         if "context_type" not in metadata:
             metadata["context_type"] = str(fallback_ctx.get("context_type") or "ux")
         metadata.setdefault("source", source)
@@ -230,7 +238,9 @@ class COOTranslationService:
         try:
             return AICommand(
                 command=cmd_name,
-                intent=str(intent) if isinstance(intent, str) and intent.strip() else None,
+                intent=str(intent)
+                if isinstance(intent, str) and intent.strip()
+                else None,
                 read_only=read_only,
                 params=params,
                 initiator=initiator,
@@ -242,7 +252,9 @@ class COOTranslationService:
         except Exception:
             return AICommand(
                 command=cmd_name,
-                intent=str(intent) if isinstance(intent, str) and intent.strip() else None,
+                intent=str(intent)
+                if isinstance(intent, str) and intent.strip()
+                else None,
                 read_only=read_only,
                 params=params,
                 initiator=initiator,
@@ -283,7 +295,9 @@ class COOTranslationService:
 
         return AICommand(
             command=cmd,
-            intent=intent.strip() if isinstance(intent, str) and intent.strip() else None,
+            intent=intent.strip()
+            if isinstance(intent, str) and intent.strip()
+            else None,
             read_only=ro_flag,
             params=params,
             initiator=initiator,
@@ -310,7 +324,9 @@ class COOTranslationService:
             )
         ):
             time_scope = "this_week"
-            if re.search(r"\b(last|prosla|prošla|zadnja|prethodna)\b", t, flags=re.IGNORECASE):
+            if re.search(
+                r"\b(last|prosla|prošla|zadnja|prethodna)\b", t, flags=re.IGNORECASE
+            ):
                 time_scope = "last_week"
 
             return AICommand(
@@ -345,12 +361,23 @@ class COOTranslationService:
                     )
 
         has_goal_word = bool(re.search(r"\b(goal|cilj)\b", t, flags=re.IGNORECASE))
-        has_task_word = bool(re.search(r"\b(task|tasks|zadatak|zadaci|zadatci)\b", t, flags=re.IGNORECASE))
+        has_task_word = bool(
+            re.search(
+                r"\b(task|tasks|zadatak|zadaci|zadatci)\b", t, flags=re.IGNORECASE
+            )
+        )
         has_day_plan = bool(re.search(r"\bDan\s*\d+\s*:", t, flags=re.IGNORECASE))
-        mentions_7day = bool(re.search(r"\b(7\s*[- ]?\s*dnevni|7\s*day)\b", t, flags=re.IGNORECASE))
-        mentions_14day = bool(re.search(r"\b(14\s*[- ]?\s*dnevni|14\s*day)\b", t, flags=re.IGNORECASE))
+        mentions_7day = bool(
+            re.search(r"\b(7\s*[- ]?\s*dnevni|7\s*day)\b", t, flags=re.IGNORECASE)
+        )
+        mentions_14day = bool(
+            re.search(r"\b(14\s*[- ]?\s*dnevni|14\s*day)\b", t, flags=re.IGNORECASE)
+        )
 
-        if not (has_goal_word and (has_task_word or has_day_plan or mentions_7day or mentions_14day)):
+        if not (
+            has_goal_word
+            and (has_task_word or has_day_plan or mentions_7day or mentions_14day)
+        ):
             return None
 
         goal_title = self._extract_goal_title(t)
@@ -386,7 +413,10 @@ class COOTranslationService:
                 "Status": {"type": "select", "name": "Not started"},
             }
             if prio:
-                prop["Priority"] = {"type": "select", "name": self._normalize_priority(prio)}
+                prop["Priority"] = {
+                    "type": "select",
+                    "name": self._normalize_priority(prio),
+                }
             tasks_specs.append({"db_key": "tasks", "property_specs": prop})
 
         if not tasks_specs:
@@ -532,7 +562,9 @@ class COOTranslationService:
         # Accept both:
         # - "kreiraj cilj ..." (classic)
         # - "cilj ... Name=..." (structured without imperative)
-        has_create = bool(re.search(r"^(create|kreiraj|napravi|dodaj)\s+", t, re.IGNORECASE))
+        has_create = bool(
+            re.search(r"^(create|kreiraj|napravi|dodaj)\s+", t, re.IGNORECASE)
+        )
         has_goal_word = bool(re.search(r"\b(goal|cilj)\b", t, re.IGNORECASE))
         has_name_kv = bool(re.search(r"(?i)\b(name|naziv|ime|title)\b\s*[:=]\s*", t))
 
@@ -544,10 +576,16 @@ class COOTranslationService:
             return None
 
         specs: Dict[str, Any] = {"Name": {"type": "title", "text": fields.title}}
-        specs["Status"] = {"type": "status", "name": self._normalize_status(fields.status or "Not started")}
+        specs["Status"] = {
+            "type": "status",
+            "name": self._normalize_status(fields.status or "Not started"),
+        }
 
         if fields.priority:
-            specs["Priority"] = {"type": "select", "name": self._normalize_priority(fields.priority)}
+            specs["Priority"] = {
+                "type": "select",
+                "name": self._normalize_priority(fields.priority),
+            }
 
         if fields.due:
             specs["Deadline"] = {"type": "date", "start": fields.due}
@@ -573,8 +611,12 @@ class COOTranslationService:
     ) -> Optional[AICommand]:
         t = self._normalize_prefix_noise(text)
 
-        has_create = bool(re.search(r"^(create|kreiraj|napravi|dodaj)\s+", t, re.IGNORECASE))
-        has_task_word = bool(re.search(r"\b(task|zadatak|todo|to-do)\b", t, re.IGNORECASE))
+        has_create = bool(
+            re.search(r"^(create|kreiraj|napravi|dodaj)\s+", t, re.IGNORECASE)
+        )
+        has_task_word = bool(
+            re.search(r"\b(task|zadatak|todo|to-do)\b", t, re.IGNORECASE)
+        )
         has_name_kv = bool(re.search(r"(?i)\b(name|naziv|ime|title)\b\s*[:=]\s*", t))
 
         if not has_task_word or (not has_create and not has_name_kv):
@@ -586,11 +628,17 @@ class COOTranslationService:
 
         specs: Dict[str, Any] = {
             "Name": {"type": "title", "text": fields.title},
-            "Status": {"type": "select", "name": self._normalize_status(fields.status or "Not started")},
+            "Status": {
+                "type": "select",
+                "name": self._normalize_status(fields.status or "Not started"),
+            },
         }
 
         if fields.priority:
-            specs["Priority"] = {"type": "select", "name": self._normalize_priority(fields.priority)}
+            specs["Priority"] = {
+                "type": "select",
+                "name": self._normalize_priority(fields.priority),
+            }
 
         if fields.due:
             specs["Due Date"] = {"type": "date", "start": fields.due}
@@ -651,10 +699,9 @@ class COOTranslationService:
 
         # 2) Standard fields
         status_raw = self._extract_field_value(raw, "status")
-        priority_raw = (
-            self._extract_field_value(raw, "prioritet")
-            or self._extract_field_value(raw, "priority")
-        )
+        priority_raw = self._extract_field_value(
+            raw, "prioritet"
+        ) or self._extract_field_value(raw, "priority")
         due_raw = (
             self._extract_field_value(raw, "due")
             or self._extract_field_value(raw, "rok")
@@ -677,10 +724,18 @@ class COOTranslationService:
             goal_rel = None
 
         # Normalize
-        status = self._normalize_status(status_raw) if isinstance(status_raw, str) else None
-        priority = self._normalize_priority(priority_raw) if isinstance(priority_raw, str) else None
+        status = (
+            self._normalize_status(status_raw) if isinstance(status_raw, str) else None
+        )
+        priority = (
+            self._normalize_priority(priority_raw)
+            if isinstance(priority_raw, str)
+            else None
+        )
         due = self._try_parse_date_to_iso(due_raw) if isinstance(due_raw, str) else None
-        description = desc_raw.strip() if isinstance(desc_raw, str) and desc_raw.strip() else None
+        description = (
+            desc_raw.strip() if isinstance(desc_raw, str) and desc_raw.strip() else None
+        )
 
         # 3) Build title:
         #    - if explicit Name=... exists -> use it
@@ -729,7 +784,9 @@ class COOTranslationService:
         return _ParsedFields(
             title=title,
             status=status if isinstance(status, str) and status.strip() else None,
-            priority=priority if isinstance(priority, str) and priority.strip() else None,
+            priority=priority
+            if isinstance(priority, str) and priority.strip()
+            else None,
             due=due,
             description=description,
             goal_relation_id=goal_rel,
@@ -740,7 +797,12 @@ class COOTranslationService:
         if not isinstance(value, str):
             return False
         v = value.strip()
-        return bool(re.match(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", v))
+        return bool(
+            re.match(
+                r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+                v,
+            )
+        )
 
     @staticmethod
     def _strip_kv_segments(text: str, *, keys: List[str]) -> str:
