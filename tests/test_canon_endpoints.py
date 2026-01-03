@@ -6,7 +6,7 @@ def _get_app():
     Import app lazily so env overrides can be applied in tests if needed.
     Adjust import path if your package layout differs.
     """
-    from gateway.gateway_server import app  # noqa: WPS433
+    from gateway.gateway_server import app  # noqa: PLC0415
 
     return app
 

@@ -1,11 +1,11 @@
 # services/ceo_advisor_agent.py
 from __future__ import annotations
 
-import re
 from typing import Any, Dict, List, Tuple, Optional
 
 from models.agent_contract import AgentInput, AgentOutput, ProposedCommand
 from services.agent_router.openai_assistant_executor import OpenAIAssistantExecutor
+
 
 # -----------------------------------
 # Detection (propose-only / notion ask)
@@ -28,19 +28,23 @@ def _is_propose_only_request(user_text: str) -> bool:
     )
     return any(s in t for s in signals)
 
+
 def _wants_notion_task_or_goal(user_text: str) -> bool:
     t = (user_text or "").lower()
     if "notion" not in t:
         return False
-    return ("task" in t or "zad" in t or "goal" in t or "cilj" in t)
+    return "task" in t or "zad" in t or "goal" in t or "cilj" in t
+
 
 def _wants_task(user_text: str) -> bool:
     t = (user_text or "").lower()
     return ("task" in t or "zad" in t) and ("goal" not in t and "cilj" not in t)
 
+
 def _wants_goal(user_text: str) -> bool:
     t = (user_text or "").lower()
-    return ("goal" in t or "cilj" in t)
+    return "goal" in t or "cilj" in t
+
 
 # -------------------------------
 # Snapshot-structured mode (as-is)
@@ -63,6 +67,7 @@ def _format_enforcer(user_text: str) -> str:
         "- Koristi ISKLJUČIVO podatke iz snapshot-a.\n"
         "- Ako nema dovoljno podataka, napiši: NEMA DOVOLJNO PODATAKA U SNAPSHOT-U.\n"
     )
+
 
 def _needs_structured_snapshot_answer(user_text: str) -> bool:
     t = (user_text or "").strip().lower()
@@ -107,6 +112,7 @@ def _needs_structured_snapshot_answer(user_text: str) -> bool:
     )
     return any(k in t for k in keywords)
 
+
 def _extract_goals_tasks(snapshot: Dict[str, Any]) -> Tuple[Any, Any]:
     dashboard = snapshot.get("dashboard") if isinstance(snapshot, dict) else {}
     goals = None
@@ -123,18 +129,33 @@ def _extract_goals_tasks(snapshot: Dict[str, Any]) -> Tuple[Any, Any]:
 
     return goals, tasks
 
+
 # -------------------------------
 # LLM output parsing / utilities
 # -------------------------------
 def _pick_text(result: Any) -> str:
     if isinstance(result, dict):
-        for k in ("text", "summary", "assistant_text", "message", "output_text", "response"):
+        for k in (
+            "text",
+            "summary",
+            "assistant_text",
+            "message",
+            "output_text",
+            "response",
+        ):
             v = result.get(k)
             if isinstance(v, str) and v.strip():
                 return v.strip()
         raw = result.get("raw")
         if isinstance(raw, dict):
-            for k in ("text", "summary", "assistant_text", "message", "output_text", "response"):
+            for k in (
+                "text",
+                "summary",
+                "assistant_text",
+                "message",
+                "output_text",
+                "response",
+            ):
                 v = raw.get(k)
                 if isinstance(v, str) and v.strip():
                     return v.strip()
@@ -143,6 +164,7 @@ def _pick_text(result: Any) -> str:
     if isinstance(result, str) and result.strip():
         return result.strip()
     return ""
+
 
 def _normalize_priority(v: Any) -> str:
     s = str(v or "").strip()
@@ -158,6 +180,7 @@ def _normalize_priority(v: Any) -> str:
     # passthrough but TitleCase common
     return s[:1].upper() + s[1:]
 
+
 def _normalize_status(v: Any) -> str:
     s = str(v or "").strip()
     if not s:
@@ -171,10 +194,13 @@ def _normalize_status(v: Any) -> str:
         return "Done"
     return s
 
+
 # ---------------------------------------
 # Translation: create_task -> ai_command
 # ---------------------------------------
-def _translate_create_task_to_ai_command(proposal: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def _translate_create_task_to_ai_command(
+    proposal: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
     """
     Accepts proposal dict like:
       { "command": "create_task", "args": {"Name": "...", "Priority": "...", "Status": "..."} }
@@ -191,7 +217,10 @@ def _translate_create_task_to_ai_command(proposal: Dict[str, Any]) -> Optional[D
     if not isinstance(args, dict):
         args = {}
 
-    title = str(args.get("Name") or args.get("title") or args.get("name") or "").strip() or "E2E Chat Task"
+    title = (
+        str(args.get("Name") or args.get("title") or args.get("name") or "").strip()
+        or "E2E Chat Task"
+    )
     priority = _normalize_priority(args.get("Priority") or args.get("priority"))
     status = _normalize_status(args.get("Status") or args.get("status"))
 
@@ -208,7 +237,10 @@ def _translate_create_task_to_ai_command(proposal: Dict[str, Any]) -> Optional[D
         },
     }
 
-def _wrap_as_proposed_command_with_ai_command(ai_cmd: Dict[str, Any], reason: str, risk: str = "LOW") -> ProposedCommand:
+
+def _wrap_as_proposed_command_with_ai_command(
+    ai_cmd: Dict[str, Any], reason: str, risk: str = "LOW"
+) -> ProposedCommand:
     return ProposedCommand(
         command="notion_write",
         args={"ai_command": ai_cmd},
@@ -217,6 +249,7 @@ def _wrap_as_proposed_command_with_ai_command(ai_cmd: Dict[str, Any], reason: st
         risk=risk or "LOW",
         dry_run=True,
     )
+
 
 def _to_proposed_commands(items: Any) -> List[ProposedCommand]:
     """
@@ -244,7 +277,10 @@ def _to_proposed_commands(items: Any) -> List[ProposedCommand]:
         # If LLM returns executable raw triple, wrap into ai_command
         if isinstance(intent, str) and intent.strip() and isinstance(params, dict):
             args = dict(args)
-            args.setdefault("ai_command", {"command": cmd, "intent": intent.strip(), "params": params})
+            args.setdefault(
+                "ai_command",
+                {"command": cmd, "intent": intent.strip(), "params": params},
+            )
 
         out.append(
             ProposedCommand(
@@ -258,10 +294,13 @@ def _to_proposed_commands(items: Any) -> List[ProposedCommand]:
         )
     return out
 
+
 # -------------------------------
 # Main agent entrypoint
 # -------------------------------
-async def create_ceo_advisor_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> AgentOutput:
+async def create_ceo_advisor_agent(
+    agent_input: AgentInput, ctx: Dict[str, Any]
+) -> AgentOutput:
     base_text = (agent_input.message or "").strip()
     if not base_text:
         base_text = "Reci ukratko šta možeš i kako mogu tražiti akciju."
@@ -307,7 +346,9 @@ async def create_ceo_advisor_agent(agent_input: AgentInput, ctx: Dict[str, Any])
     safe_context: Dict[str, Any] = {
         "canon": {"read_only": True, "no_tools": True, "no_side_effects": True},
         "snapshot": snapshot,
-        "metadata": agent_input.metadata if isinstance(agent_input.metadata, dict) else {},
+        "metadata": agent_input.metadata
+        if isinstance(agent_input.metadata, dict)
+        else {},
     }
 
     if structured_mode:
@@ -323,7 +364,9 @@ async def create_ceo_advisor_agent(agent_input: AgentInput, ctx: Dict[str, Any])
     result = await executor.ceo_command(text=prompt_text, context=safe_context)
 
     text_out = _pick_text(result) or "CEO advisor nije vratio tekstualni output."
-    proposed_items = result.get("proposed_commands") if isinstance(result, dict) else None
+    proposed_items = (
+        result.get("proposed_commands") if isinstance(result, dict) else None
+    )
     proposed = _to_proposed_commands(proposed_items)
 
     # =========================================================
@@ -332,8 +375,14 @@ async def create_ceo_advisor_agent(agent_input: AgentInput, ctx: Dict[str, Any])
     if propose_only and wants_notion:
         # If LLM gave create_task, convert it into args.ai_command (executable)
         if proposed and getattr(proposed[0], "command", None) == "create_task":
-            p0 = proposed_items[0] if isinstance(proposed_items, list) and proposed_items else None
-            ai_cmd = _translate_create_task_to_ai_command(p0 if isinstance(p0, dict) else {})
+            p0 = (
+                proposed_items[0]
+                if isinstance(proposed_items, list) and proposed_items
+                else None
+            )
+            ai_cmd = _translate_create_task_to_ai_command(
+                p0 if isinstance(p0, dict) else {}
+            )
             if isinstance(ai_cmd, dict):
                 proposed = [
                     _wrap_as_proposed_command_with_ai_command(
@@ -342,10 +391,15 @@ async def create_ceo_advisor_agent(agent_input: AgentInput, ctx: Dict[str, Any])
                         risk="LOW",
                     )
                 ]
-                text_out = text_out or "Translated proposal into executable Notion write command."
+                text_out = (
+                    text_out
+                    or "Translated proposal into executable Notion write command."
+                )
 
         # If LLM gave nothing usable, force a deterministic executable proposal for tasks/goals
-        if not proposed or (proposed and getattr(proposed[0], "command", None) in ("refresh_snapshot",)):
+        if not proposed or (
+            proposed and getattr(proposed[0], "command", None) in ("refresh_snapshot",)
+        ):
             # Minimal deterministic fallback only for task creation requests
             if _wants_task(base_text):
                 ai_cmd = {

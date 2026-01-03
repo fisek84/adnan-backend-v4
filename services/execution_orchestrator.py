@@ -37,7 +37,9 @@ class ExecutionOrchestrator:
     def _is_proposal_wrapper(cmd: AICommand) -> bool:
         directive = getattr(cmd, "command", None)
         intent = getattr(cmd, "intent", None)
-        return (directive == PROPOSAL_WRAPPER_INTENT) or (intent == PROPOSAL_WRAPPER_INTENT)
+        return (directive == PROPOSAL_WRAPPER_INTENT) or (
+            intent == PROPOSAL_WRAPPER_INTENT
+        )
 
     async def execute(
         self, command: Union[AICommand, Dict[str, Any]]

@@ -68,7 +68,9 @@ def build_chat_router(agent_router: AgentRouterService) -> APIRouter:
             payload.snapshot = server_snap  # type: ignore[assignment]
 
             md = _ensure_dict(getattr(payload, "metadata", None))
-            md.setdefault("snapshot_source", "server:KnowledgeSnapshotService.get_snapshot")
+            md.setdefault(
+                "snapshot_source", "server:KnowledgeSnapshotService.get_snapshot"
+            )
             payload.metadata = md  # type: ignore[assignment]
         except Exception:
             # Fail-soft: do not break canonical chat due to snapshot injection issues.

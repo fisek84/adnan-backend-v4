@@ -1,12 +1,38 @@
-import re
 from typing import Dict, Any
 
 WRITE_MARKERS = [
-    "postavi", "dodaj", "kreiraj", "napravi", "azuriraj", "ažuriraj", "promijeni", "obriši", "obrisi",
-    "set", "add", "create", "update", "change", "delete", "remove"
+    "postavi",
+    "dodaj",
+    "kreiraj",
+    "napravi",
+    "azuriraj",
+    "ažuriraj",
+    "promijeni",
+    "obriši",
+    "obrisi",
+    "set",
+    "add",
+    "create",
+    "update",
+    "change",
+    "delete",
+    "remove",
 ]
 
-QUESTION_MARKERS = ["?", "sta", "što", "kako", "zasto", "zašto", "objasni", "explain", "why", "how", "what"]
+QUESTION_MARKERS = [
+    "?",
+    "sta",
+    "što",
+    "kako",
+    "zasto",
+    "zašto",
+    "objasni",
+    "explain",
+    "why",
+    "how",
+    "what",
+]
+
 
 def decide_read_write(message: str) -> Dict[str, Any]:
     msg = (message or "").strip()
@@ -18,7 +44,11 @@ def decide_read_write(message: str) -> Dict[str, Any]:
 
     # 2) imperativ / write marker → write
     if any(w in low for w in WRITE_MARKERS):
-        return {"read_only": False, "require_approval": True, "reason": "imperative_like"}
+        return {
+            "read_only": False,
+            "require_approval": True,
+            "reason": "imperative_like",
+        }
 
     # 3) default safe
     return {"read_only": True, "reason": "default_safe"}

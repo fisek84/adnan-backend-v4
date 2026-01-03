@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 #   APPROVAL_STATE_PATH=/var/data/adnan_ai/approval_state.json
 #
 
+
 def _repo_root() -> Path:
     # services/approval_state_service.py -> services -> repo root
     return Path(__file__).resolve().parents[1]
@@ -87,7 +88,9 @@ class ApprovalStateService:
     _LOADED_FROM_DISK: bool = False
 
     def __init__(self) -> None:
-        self._approvals: Dict[str, Dict[str, Any]] = ApprovalStateService._GLOBAL_APPROVALS
+        self._approvals: Dict[str, Dict[str, Any]] = (
+            ApprovalStateService._GLOBAL_APPROVALS
+        )
         self._lock: Lock = ApprovalStateService._GLOBAL_LOCK
 
         # Best-effort load once per process
@@ -229,7 +232,11 @@ class ApprovalStateService:
     # Optional helper (non-breaking)
     def list_by_execution_id(self, execution_id: str) -> List[Dict[str, Any]]:
         with self._lock:
-            return [dict(a) for a in self._approvals.values() if a.get("execution_id") == execution_id]
+            return [
+                dict(a)
+                for a in self._approvals.values()
+                if a.get("execution_id") == execution_id
+            ]
 
     # ============================================================
     # INTERNAL

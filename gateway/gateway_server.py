@@ -366,10 +366,14 @@ def _filter_ai_command_payload(data: Dict[str, Any]) -> Dict[str, Any]:
         return {
             "command": data.get("command"),
             "intent": data.get("intent"),
-            "params": data.get("params") if isinstance(data.get("params"), dict) else {},
+            "params": data.get("params")
+            if isinstance(data.get("params"), dict)
+            else {},
             "initiator": data.get("initiator") or "ceo",
             "read_only": bool(data.get("read_only", False)),
-            "metadata": data.get("metadata") if isinstance(data.get("metadata"), dict) else {},
+            "metadata": data.get("metadata")
+            if isinstance(data.get("metadata"), dict)
+            else {},
             "execution_id": data.get("execution_id"),
             "approval_id": data.get("approval_id"),
         }
@@ -433,7 +437,9 @@ def _unwrap_proposal_wrapper_or_raise(
           (b) ako translation ne može (npr. prompt je "DO NOT execute"), fallback na NOOP
               koji je safe ali i dalje prolazi kroz approval->resume->completed.
     """
-    is_wrapper = (intent == PROPOSAL_WRAPPER_INTENT) or (command == PROPOSAL_WRAPPER_INTENT)
+    is_wrapper = (intent == PROPOSAL_WRAPPER_INTENT) or (
+        command == PROPOSAL_WRAPPER_INTENT
+    )
     if not is_wrapper:
         return AICommand(
             command=command,
