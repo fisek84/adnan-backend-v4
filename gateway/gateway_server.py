@@ -326,14 +326,10 @@ def _filter_ai_command_payload(data: Dict[str, Any]) -> Dict[str, Any]:
         return {
             "command": data.get("command"),
             "intent": data.get("intent"),
-            "params": data.get("params")
-            if isinstance(data.get("params"), dict)
-            else {},
+            "params": data.get("params") if isinstance(data.get("params"), dict) else {},
             "initiator": data.get("initiator") or "ceo",
             "read_only": bool(data.get("read_only", False)),
-            "metadata": data.get("metadata")
-            if isinstance(data.get("metadata"), dict)
-            else {},
+            "metadata": data.get("metadata") if isinstance(data.get("metadata"), dict) else {},
             "execution_id": data.get("execution_id"),
             "approval_id": data.get("approval_id"),
         }
@@ -376,9 +372,7 @@ def _unwrap_proposal_wrapper_or_raise(
     read_only: bool,
     metadata: Dict[str, Any],
 ) -> AICommand:
-    is_wrapper = (intent == PROPOSAL_WRAPPER_INTENT) or (
-        command == PROPOSAL_WRAPPER_INTENT
-    )
+    is_wrapper = (intent == PROPOSAL_WRAPPER_INTENT) or (command == PROPOSAL_WRAPPER_INTENT)
     if not is_wrapper:
         return AICommand(
             command=command,
@@ -490,9 +484,7 @@ async def lifespan(_: FastAPI):
                     orchestrator=_execution_orchestrator,
                     approvals=get_approval_state(),
                 )
-                logger.info(
-                    "AI Ops router services injected (shared orchestrator/approvals)"
-                )
+                logger.info("AI Ops router services injected (shared orchestrator/approvals)")
         except Exception as exc:  # noqa: BLE001
             _append_boot_error(f"ai_ops_injection_failed:{exc}")
             logger.warning("AI Ops services injection failed: %s", exc)
@@ -510,7 +502,7 @@ async def lifespan(_: FastAPI):
         logger.info("System boot completed. READY.")
         yield
     finally:
-        # ✅ FIX: close aiohttp ClientSession (prevents "Unclosed client session")
+        # ✅ close aiohttp ClientSession (prevents "Unclosed client session")
         try:
             from services.notion_service import get_notion_service
 
@@ -585,9 +577,7 @@ class ProposalExecuteInput(BaseModel):
 # ================================================================
 # HELPERS
 # ================================================================
-def _preprocess_ceo_nl_input(
-    raw_text: str, smart_context: Optional[Dict[str, Any]]
-) -> str:
+def _preprocess_ceo_nl_input(raw_text: str, smart_context: Optional[Dict[str, Any]]) -> str:
     text = (raw_text or "").strip()
     if not text:
         return text
@@ -622,18 +612,12 @@ def _preprocess_ceo_nl_input(
     return cleaned or text
 
 
-def _derive_legacy_goal_task_summaries_from_ceo_snapshot(
-    ceo_dash_snapshot: Dict[str, Any],
-) -> Dict[str, List[Dict[str, Any]]]:
+def _derive_legacy_goal_task_summaries_from_ceo_snapshot(ceo_dash_snapshot: Dict[str, Any]) -> Dict[str, List[Dict[str, Any]]]:
     goals_summary: List[Dict[str, Any]] = []
     tasks_summary: List[Dict[str, Any]] = []
 
     try:
-        dashboard = (
-            ceo_dash_snapshot.get("dashboard")
-            if isinstance(ceo_dash_snapshot, dict)
-            else None
-        )
+        dashboard = ceo_dash_snapshot.get("dashboard") if isinstance(ceo_dash_snapshot, dict) else None
         if not isinstance(dashboard, dict):
             return {"goals_summary": goals_summary, "tasks_summary": tasks_summary}
 
@@ -649,10 +633,7 @@ def _derive_legacy_goal_task_summaries_from_ceo_snapshot(
                         "name": g.get("name") or g.get("title") or "(bez naziva)",
                         "status": g.get("status") or "-",
                         "priority": g.get("priority") or "-",
-                        "due_date": g.get("deadline")
-                        or g.get("due_date")
-                        or g.get("due")
-                        or "-",
+                        "due_date": g.get("deadline") or g.get("due_date") or g.get("due") or "-",
                     }
                 )
 
@@ -665,10 +646,7 @@ def _derive_legacy_goal_task_summaries_from_ceo_snapshot(
                         "title": t.get("title") or t.get("name") or "(bez naziva)",
                         "status": t.get("status") or "-",
                         "priority": t.get("priority") or "-",
-                        "due_date": t.get("due_date")
-                        or t.get("deadline")
-                        or t.get("due")
-                        or "-",
+                        "due_date": t.get("due_date") or t.get("deadline") or t.get("due") or "-",
                     }
                 )
     except Exception:
@@ -767,9 +745,7 @@ async def execute_command(payload: ExecuteInput):
     )
     approval_id = approval.get("approval_id")
     if not approval_id:
-        raise HTTPException(
-            status_code=500, detail="Approval create failed: missing approval_id"
-        )
+        raise HTTPException(status_code=500, detail="Approval create failed: missing approval_id")
 
     _ensure_trace_on_command(ai_command, approval_id=approval_id)
 
@@ -816,9 +792,7 @@ async def execute_raw_command(payload: ExecuteRawInput2):
     )
     approval_id = approval.get("approval_id")
     if not approval_id:
-        raise HTTPException(
-            status_code=500, detail="Approval create failed: missing approval_id"
-        )
+        raise HTTPException(status_code=500, detail="Approval create failed: missing approval_id")
 
     _ensure_trace_on_command(ai_command, approval_id=approval_id)
 
@@ -829,11 +803,7 @@ async def execute_raw_command(payload: ExecuteRawInput2):
         "execution_state": "BLOCKED",
         "approval_id": approval_id,
         "execution_id": execution_id,
-        "command": (
-            ai_command.model_dump()
-            if hasattr(ai_command, "model_dump")
-            else _to_serializable(ai_command)
-        ),
+        "command": (ai_command.model_dump() if hasattr(ai_command, "model_dump") else _to_serializable(ai_command)),
     }
 
 
@@ -848,18 +818,12 @@ async def execute_proposal(payload: ProposalExecuteInput):
 
     if isinstance(proposal, dict):
         proposal_cmd = proposal.get("command")
-        proposal_args = (
-            proposal.get("args") if isinstance(proposal.get("args"), dict) else {}
-        )
+        proposal_args = proposal.get("args") if isinstance(proposal.get("args"), dict) else {}
         proposal_scope = proposal.get("scope")
         proposal_risk = proposal.get("risk")
     else:
         proposal_cmd = getattr(proposal, "command", None)
-        proposal_args = (
-            getattr(proposal, "args", {})
-            if isinstance(getattr(proposal, "args", None), dict)
-            else {}
-        )
+        proposal_args = getattr(proposal, "args", {}) if isinstance(getattr(proposal, "args", None), dict) else {}
         proposal_scope = getattr(proposal, "scope", None)
         proposal_risk = getattr(proposal, "risk", None)
 
@@ -868,9 +832,7 @@ async def execute_proposal(payload: ProposalExecuteInput):
     if proposal_cmd == "ceo.command.propose":
         prompt = args.get("prompt")
         if not isinstance(prompt, str) or not prompt.strip():
-            raise HTTPException(
-                status_code=400, detail="ceo.command.propose requires args.prompt"
-            )
+            raise HTTPException(status_code=400, detail="ceo.command.propose requires args.prompt")
 
         ai_command = coo_translation_service.translate(
             raw_input=prompt.strip(),
@@ -878,9 +840,7 @@ async def execute_proposal(payload: ProposalExecuteInput):
             context={"mode": "execute", "via": "proposal_promotion"},
         )
         if not ai_command:
-            raise HTTPException(
-                status_code=400, detail="Could not translate proposal prompt to command"
-            )
+            raise HTTPException(status_code=400, detail="Could not translate proposal prompt to command")
 
         ai_command.initiator = initiator
 
@@ -911,9 +871,7 @@ async def execute_proposal(payload: ProposalExecuteInput):
         )
         approval_id = approval.get("approval_id")
         if not approval_id:
-            raise HTTPException(
-                status_code=500, detail="Approval create failed: missing approval_id"
-            )
+            raise HTTPException(status_code=500, detail="Approval create failed: missing approval_id")
 
         _ensure_trace_on_command(ai_command, approval_id=approval_id)
         _execution_registry.register(ai_command)
@@ -929,8 +887,29 @@ async def execute_proposal(payload: ProposalExecuteInput):
 
 
 # ================================================================
-# NOTION OPS — LIST DATABASES (READ ONLY)  ✅ /api + non-/api
+# NOTION OPS — LIST DATABASES (READ ONLY) ✅ NOW RETURNS ALL db_ids
 # ================================================================
+def _collect_all_notion_db_ids_from_env() -> Dict[str, str]:
+    """
+    Fallback collector:
+      NOTION_<SOMETHING>_DB_ID -> key "<something_lower_snake>"
+    """
+    out: Dict[str, str] = {}
+    for env_name, raw_val in os.environ.items():
+        if not env_name.startswith("NOTION_") or not env_name.endswith("_DB_ID"):
+            continue
+        val = (raw_val or "").strip()
+        if not val:
+            continue
+        mid = env_name[len("NOTION_") : -len("_DB_ID")]
+        key = mid.strip().lower()
+        key = re.sub(r"\s+", "_", key)
+        key = re.sub(r"_+", "_", key).strip("_")
+        if key:
+            out[key] = val
+    return out
+
+
 @app.get("/api/notion-ops/databases")
 @app.get("/notion-ops/databases")
 async def notion_ops_list_databases():
@@ -942,35 +921,15 @@ async def notion_ops_list_databases():
 
     ns = get_notion_service()
 
-    candidates = {
-        "goals": ["goals_db_id", "_goals_db_id"],
-        "tasks": ["tasks_db_id", "_tasks_db_id"],
-        "projects": ["projects_db_id", "_projects_db_id"],
-        "kpi": ["kpi_db_id", "_kpi_db_id"],
-        "leads": ["leads_db_id", "_leads_db_id"],
-        "agent_exchange": ["agent_exchange_db_id", "_agent_exchange_db_id"],
-        "ai_summary": ["ai_summary_db_id", "_ai_summary_db_id"],
-    }
-
+    # ✅ Return EVERYTHING NotionService knows about (includes auto-ingested NOTION_*_DB_ID)
     dbs: Dict[str, str] = {}
-    for key, attrs in candidates.items():
-        for a in attrs:
-            v = getattr(ns, a, None)
-            if isinstance(v, str) and v.strip():
-                dbs[key] = v.strip()
-                break
-
-    # fallback: bare env vars (za slučaj da ns nema atrib.)
-    env_map = {
-        "goals": "NOTION_GOALS_DB_ID",
-        "tasks": "NOTION_TASKS_DB_ID",
-        "projects": "NOTION_PROJECTS_DB_ID",
-    }
-    for k, env in env_map.items():
-        if k not in dbs:
-            vv = (os.getenv(env) or "").strip()
-            if vv:
-                dbs[k] = vv
+    if isinstance(getattr(ns, "db_ids", None), dict):
+        for k, v in ns.db_ids.items():
+            if isinstance(k, str) and isinstance(v, str):
+                kk = k.strip()
+                vv = v.strip()
+                if kk and vv:
+                    dbs[kk] = vv
 
     return {
         "ok": True,
@@ -1011,9 +970,7 @@ def _validate_bulk_items(items: Any) -> List[Dict[str, Any]]:
             raise HTTPException(status_code=400, detail="each item must be an object")
         t = it.get("type")
         if not isinstance(t, str) or not t.strip():
-            raise HTTPException(
-                status_code=400, detail="each item must have non-empty 'type'"
-            )
+            raise HTTPException(status_code=400, detail="each item must have non-empty 'type'")
         tt = t.strip().lower()
         if tt not in _ALLOWED_BULK_TYPES:
             raise HTTPException(status_code=400, detail=f"invalid type: {t}")
@@ -1098,6 +1055,12 @@ def _looks_like_uuid(s: str) -> bool:
 
 
 def _resolve_db_id_from_service(notion_service: Any, db_key: str) -> str:
+    """
+    FIX:
+      - prvo podrži UUID direktno
+      - onda mapiraj preko notion_service.db_ids (SVE baze)
+      - tek onda legacy special-case goals/tasks/projects
+    """
     key = (db_key or "").strip()
     if not key:
         raise HTTPException(status_code=400, detail="db_key is required")
@@ -1106,23 +1069,27 @@ def _resolve_db_id_from_service(notion_service: Any, db_key: str) -> str:
         return key
 
     lk = key.lower()
+
+    # 1) Primarno: db_ids mapping (SSOT)
+    db_ids = getattr(notion_service, "db_ids", None)
+    if isinstance(db_ids, dict):
+        for candidate in (lk, lk.rstrip("s"), lk + "s"):
+            v = db_ids.get(candidate)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+
+    # 2) Legacy fallback: attributes
     for candidate in (lk, lk.rstrip("s"), lk + "s"):
         if candidate == "goals":
-            v = getattr(notion_service, "goals_db_id", None) or getattr(
-                notion_service, "_goals_db_id", None
-            )
+            v = getattr(notion_service, "goals_db_id", None) or getattr(notion_service, "_goals_db_id", None)
             if isinstance(v, str) and v.strip():
                 return v.strip()
         if candidate == "tasks":
-            v = getattr(notion_service, "tasks_db_id", None) or getattr(
-                notion_service, "_tasks_db_id", None
-            )
+            v = getattr(notion_service, "tasks_db_id", None) or getattr(notion_service, "_tasks_db_id", None)
             if isinstance(v, str) and v.strip():
                 return v.strip()
         if candidate == "projects":
-            v = getattr(notion_service, "projects_db_id", None) or getattr(
-                notion_service, "_projects_db_id", None
-            )
+            v = getattr(notion_service, "projects_db_id", None) or getattr(notion_service, "_projects_db_id", None)
             if isinstance(v, str) and v.strip():
                 return v.strip()
 
@@ -1189,9 +1156,7 @@ async def _query_notion_database(db_key: str, query: Dict[str, Any]) -> Dict[str
         or (os.getenv("NOTION_API_KEY") or os.getenv("NOTION_TOKEN") or "").strip()
     )
     if not isinstance(api_key, str) or not api_key.strip():
-        raise HTTPException(
-            status_code=500, detail="NOTION_API_KEY/NOTION_TOKEN not set"
-        )
+        raise HTTPException(status_code=500, detail="NOTION_API_KEY/NOTION_TOKEN not set")
 
     db_id = _resolve_db_id_from_service(notion_service, db_key)
 
@@ -1199,13 +1164,9 @@ async def _query_notion_database(db_key: str, query: Dict[str, Any]) -> Dict[str
 
     try:
         # notion_client is sync; run in a thread to avoid blocking event loop
-        res = await asyncio.to_thread(
-            lambda: client.databases.query(database_id=db_id, **(query or {}))
-        )
+        res = await asyncio.to_thread(lambda: client.databases.query(database_id=db_id, **(query or {})))
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(
-            status_code=500, detail=f"Notion databases.query failed: {exc}"
-        ) from exc
+        raise HTTPException(status_code=500, detail=f"Notion databases.query failed: {exc}") from exc
 
     if not isinstance(res, dict):
         return {
@@ -1267,11 +1228,7 @@ async def notion_bulk_query(payload: Dict[str, Any] = Body(...)):
 
         nq = _normalize_notion_query_payload(q)
         res = await _query_notion_database(db_key.strip(), nq)
-        items = (
-            res.get("results")
-            if isinstance(res, dict) and isinstance(res.get("results"), list)
-            else []
-        )
+        items = res.get("results") if isinstance(res, dict) and isinstance(res.get("results"), list) else []
         out.append({"query": q, "items": items, "response": res})
 
     return {"results": out}
@@ -1304,12 +1261,7 @@ def _extract_smart_context(payload: Any) -> Optional[Dict[str, Any]]:
         return None
 
     def _pick(d: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        sc = (
-            d.get("smart_context")
-            or d.get("context")
-            or d.get("context_hint")
-            or d.get("ui_context_hint")
-        )
+        sc = d.get("smart_context") or d.get("context") or d.get("context_hint") or d.get("ui_context_hint")
         return sc if isinstance(sc, dict) else None
 
     sc = _pick(payload)

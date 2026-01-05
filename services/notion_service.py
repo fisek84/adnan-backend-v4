@@ -38,24 +38,24 @@ class NotionService:
         tasks_db_id: Optional[str],
         projects_db_id: Optional[str],
     ):
-        self.api_key = api_key
+        self.api_key = (api_key or "").strip() or None
         self.db_ids: Dict[str, str] = {}
 
         # 1) Registry (primarni SSOT)
         for key, cfg in NotionSchemaRegistry.DATABASES.items():
             db_id = cfg.get("db_id")
             if db_id:
-                self.db_ids[key] = db_id
+                self.db_ids[str(key).strip().lower()] = str(db_id).strip()
 
         # 2) Backward kompatibilnost – eksplicitni parametri imaju prednost
         if goals_db_id:
-            self.db_ids["goals"] = goals_db_id
+            self.db_ids["goals"] = str(goals_db_id).strip()
         if tasks_db_id:
-            self.db_ids["tasks"] = tasks_db_id
+            self.db_ids["tasks"] = str(tasks_db_id).strip()
         if projects_db_id:
-            self.db_ids["projects"] = projects_db_id
+            self.db_ids["projects"] = str(projects_db_id).strip()
 
-        # 3) Extra iz .env (ENV jači od registry-ja)
+        # 3) Extra iz .env (legacy map; ostaje radi kompatibilnosti)
         extra_env_map = {
             "active_goals": "NOTION_ACTIVE_GOALS_DB_ID",
             "blocked_goals": "NOTION_BLOCKED_GOALS_DB_ID",
@@ -85,16 +85,20 @@ class NotionService:
             "sop_master": "NOTION_SOP_MASTER_DB_ID",
         }
         for key, env_name in extra_env_map.items():
-            value = os.getenv(env_name)
+            value = (os.getenv(env_name) or "").strip()
             if value:
-                self.db_ids[key] = value
+                self.db_ids[str(key).strip().lower()] = value
 
-        # 4) Alias mapiranja
+        # 4) AUTOMATSKI: pokupi SVE NOTION_*_DB_ID iz env-a (ENV je najsnažniji SSOT)
+        self._ingest_all_env_db_ids()
+
+        # 5) Alias mapiranja (kompatibilnost)
         if "ai_summary" in self.db_ids:
             self.db_ids.setdefault("ai_weekly_summary", self.db_ids["ai_summary"])
         if "lead" in self.db_ids:
             self.db_ids.setdefault("leads", self.db_ids["lead"])
 
+        # Canonical shortcuts (ostaju jer drugi dijelovi sistema ovo očekuju)
         self.goals_db_id = self.db_ids.get("goals")
         self.tasks_db_id = self.db_ids.get("tasks")
         self.projects_db_id = self.db_ids.get("projects")
@@ -113,11 +117,7 @@ class NotionService:
         self._snapshot_page_size = int(os.getenv("NOTION_SNAPSHOT_PAGE_SIZE", "50"))
         self._snapshot_compact = os.getenv(
             "NOTION_SNAPSHOT_COMPACT", "true"
-        ).lower() in (
-            "1",
-            "true",
-            "yes",
-        )
+        ).lower() in ("1", "true", "yes")
         self._snapshot_include_blocks = os.getenv(
             "NOTION_SNAPSHOT_INCLUDE_BLOCKS", "false"
         ).lower() in ("1", "true", "yes")
@@ -161,6 +161,37 @@ class NotionService:
             "time_management": None,
             "snapshot_meta": {},
         }
+
+    def _ingest_all_env_db_ids(self) -> None:
+        """
+        Skenira env za sve varijable formata:
+          NOTION_<SOMETHING>_DB_ID=<id>
+        i mapira u:
+          db_ids["<something_lower_snake>"] = <id>
+
+        Primjer:
+          NOTION_CUSTOMER_PERFORMANCE_SOP_DB_ID -> key "customer_performance_sop"
+        """
+        for env_name, raw_val in os.environ.items():
+            if not env_name.startswith("NOTION_"):
+                continue
+            if not env_name.endswith("_DB_ID"):
+                continue
+
+            val = (raw_val or "").strip()
+            if not val:
+                continue
+
+            mid = env_name[len("NOTION_") : -len("_DB_ID")]
+            key = mid.strip().lower()
+            key = re.sub(r"\s+", "_", key)
+            key = re.sub(r"_+", "_", key).strip("_")
+
+            if not key:
+                continue
+
+            # ENV je “final authority”
+            self.db_ids[key] = val
 
     # --------------------------------------------------
     # SESSION + REQUEST
@@ -213,16 +244,35 @@ class NotionService:
     # HELPERS
     # --------------------------------------------------
 
+    def _normalize_db_key(self, db_key: Optional[str]) -> Optional[str]:
+        if not isinstance(db_key, str):
+            return None
+        k = db_key.strip().lower()
+        if not k:
+            return None
+        k = re.sub(r"\s+", "_", k)
+        k = re.sub(r"_+", "_", k).strip("_")
+        return k or None
+
     def _resolve_db_id(self, db_key: Optional[str], database_id: Optional[str]) -> str:
         if database_id:
-            return database_id
-        if not db_key:
-            raise RuntimeError(
-                "Database not specified (db_key or database_id required)."
-            )
-        if db_key not in self.db_ids:
-            raise RuntimeError(f"Unknown db_key '{db_key}' for NotionService.")
-        return self.db_ids[db_key]
+            return str(database_id).strip()
+
+        k = self._normalize_db_key(db_key)
+        if not k:
+            raise RuntimeError("Database not specified (db_key or database_id required).")
+
+        # direktno
+        if k in self.db_ids:
+            return self.db_ids[k]
+
+        # probaj singular/plural fallback
+        if k.endswith("s") and k[:-1] in self.db_ids:
+            return self.db_ids[k[:-1]]
+        if (k + "s") in self.db_ids:
+            return self.db_ids[k + "s"]
+
+        raise RuntimeError(f"Unknown db_key '{db_key}' for NotionService.")
 
     def _assert_write_allowed(
         self, *, db_key: Optional[str] = None, database_id: Optional[str] = None
@@ -232,7 +282,7 @@ class NotionService:
         Unknown DBs are treated as "not enforceable" (backwards-compat), not auto-blocked.
         """
         db_info = None
-        db_key_resolved = db_key
+        db_key_resolved = self._normalize_db_key(db_key) if db_key else None
 
         if db_key_resolved:
             try:
@@ -244,7 +294,7 @@ class NotionService:
             for key, cfg in NotionSchemaRegistry.DATABASES.items():
                 if cfg.get("db_id") == database_id:
                     db_info = cfg
-                    db_key_resolved = key
+                    db_key_resolved = str(key)
                     break
 
         if db_info is None:
@@ -600,7 +650,7 @@ class NotionService:
             property_specs = params.get("property_specs") or {}
             properties = params.get("properties")
             db_key = params.get("db_key")
-            database_id = params.get("database_id")
+            database_id = params.get("database_id")  # ✅ FIXED (bio je prekinut string)
 
             if db_key or database_id:
                 self._assert_write_allowed(db_key=db_key, database_id=database_id)
@@ -1059,7 +1109,6 @@ class NotionService:
             try:
                 await sess.close()
             except Exception:
-                # fail-soft: shutdown path must not raise
                 pass
 
 
