@@ -1,14 +1,13 @@
 // gateway/frontend/ceo_chatbox.js
 (function () {
   try {
-    // Guard: ako je već mountano, ne diraj
     if (window.__CEO_CHATBOX_APP__) return;
     window.__CEO_CHATBOX_APP__ = true;
 
     const cfg = (window.__EVO_UI__ = window.__EVO_UI__ || {});
     const mountSelector = cfg.mountSelector || "#ceo-left-panel";
 
-    // CHAT (LLM) endpoint
+    // CHAT (LLM) endpoint (READ/PROPOSE ONLY backend-side)
     const chatUrl = cfg.chatUrl || "/api/chat";
 
     // EXECUTION (approval-gated) endpoints
@@ -19,7 +18,7 @@
     const host = document.querySelector(mountSelector);
     if (!host) return;
 
-    // Sakrij legacy dio (ali ga NE brišemo da script.js ne pukne)
+    // Hide legacy UI
     const legacy = [
       document.getElementById("ceo-history"),
       document.getElementById("ceo-command-input"),
@@ -45,7 +44,7 @@
       }
     });
 
-    // CSS (minimal, ChatGPT-like, uklapa se u dark)
+    // CSS
     const style = document.createElement("style");
     style.textContent = `
       .ceo-chatbox { display:flex; flex-direction:column; height: 100%; min-height: 420px; }
@@ -103,12 +102,18 @@
     const history = document.createElement("div");
     history.className = "ceo-chatbox-history";
 
+    const typing = document.createElement("div");
+    typing.className = "ceo-chatbox-typing";
+    typing.style.display = "none";
+    typing.textContent = "SYSTEM obrađuje…";
+
     const composer = document.createElement("div");
     composer.className = "ceo-chatbox-composer";
 
     const textarea = document.createElement("textarea");
     textarea.className = "ceo-chatbox-textarea";
-    textarea.placeholder = 'Piši normalno (chat). Npr: "Ko si ti?", "Šta je prioritet danas?", "Kreiraj cilj ..."';
+    textarea.placeholder =
+      'Chat ili komanda. Primjeri:\n- "Ko si ti?"\n- "Kreiraj cilj ..."';
 
     const sendBtn = document.createElement("button");
     sendBtn.className = "ceo-chatbox-btn primary";
@@ -121,11 +126,6 @@
     approveBtn.textContent = "Odobri predloženo";
     approveBtn.disabled = true;
 
-    const typing = document.createElement("div");
-    typing.className = "ceo-chatbox-typing";
-    typing.style.display = "none";
-    typing.textContent = "SYSTEM obrađuje…";
-
     composer.appendChild(textarea);
     composer.appendChild(sendBtn);
     composer.appendChild(approveBtn);
@@ -135,12 +135,9 @@
     root.appendChild(composer);
     host.appendChild(root);
 
-    // NON-BLOCKING: ne gasimo input/send; samo pokazujemo typing dok ima zahtjeva
     let pending = 0;
-
-    // State for approvals
-    let lastProposals = []; // proposals iz /api/chat
-    let lastBlocked = []; // { approval_id, execution_id, state }
+    let lastProposals = [];
+    let lastBlocked = [];
 
     function scrollToBottom() {
       history.scrollTop = history.scrollHeight;
@@ -219,58 +216,132 @@
       }
     });
 
-    // ---- Canon mapping helpers ----
-
-    function proposalToAiCommand(proposal) {
-      if (!proposal || typeof proposal !== "object") return null;
-
-      // A) preferred: proposal.args.ai_command
-      if (proposal.args && proposal.args.ai_command && typeof proposal.args.ai_command === "object") {
-        const ai = proposal.args.ai_command;
-        return {
-          command: ai.command || ai.intent || null,
-          intent: ai.intent || ai.command || null,
-          params: ai.params || {},
-        };
-      }
-
-      // A alt: proposal.args.command/intent/params
-      if (proposal.args && (proposal.args.command || proposal.args.intent)) {
-        return {
-          command: proposal.args.command || proposal.args.intent || null,
-          intent: proposal.args.intent || proposal.args.command || null,
-          params: proposal.args.params || proposal.args.payload || {},
-        };
-      }
-
-      // B) legacy: proposal.command_type + proposal.payload
-      if (proposal.command_type) {
-        return {
-          command: proposal.command_type,
-          intent: proposal.command_type,
-          params: proposal.payload || {},
-        };
-      }
-
-      return null;
+    // --- Minimal deterministic command detection (no LLM guessing) ---
+    function looksLikeCommand(text) {
+      const t = (text || "").trim().toLowerCase();
+      // Deterministički: samo jasne imperative koji mapiraju na write tok.
+      // Ovo je minimalno da riješimo bug "komanda ide u chat".
+      return (
+        t.startsWith("kreiraj ") ||
+        t.startsWith("napravi ") ||
+        t.startsWith("dodaj ") ||
+        t.startsWith("create ") ||
+        t.startsWith("add ") ||
+        t.includes('kreiraj cilj') ||
+        t.includes('napravi cilj') ||
+        t.includes('dodaj cilj') ||
+        t.includes('create goal') ||
+        t.includes('add goal')
+      );
     }
 
-    function buildExecuteRawPayload(aiCommand) {
-      // CANON: canon ide SAMO na execute pipeline, ne na chat
+    function buildExecuteRawTextPayload(text) {
+      // Reuse backend /api/execute UX: it expects { text: "..." } in your PS tests.
       return {
-        command: aiCommand.command,
-        intent: aiCommand.intent,
-        params: aiCommand.params || {},
-        initiator: "ceo",
-        read_only: false,
+        text,
         metadata: {
           source: "ceoChatbox",
           canon: "CEO_CONSOLE_APPROVAL_GATED_EXECUTION",
+          initiator: "ceo_dashboard",
         },
       };
     }
 
-    // ---- Chat (LLM) ----
+    async function execApproveFromText(text) {
+      bumpPending(+1);
+      try {
+        // 1) Create approval (BLOCKED) using /api/execute/raw
+        const executeRes = await fetch(executeRawUrl, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(buildExecuteRawTextPayload(text)),
+        });
+
+        if (!executeRes.ok) {
+          const detail = await executeRes.text();
+          addMessage("sys", `Greška (execute/raw): ${executeRes.status}\n${detail || ""}`, { state: "ERROR" });
+          return;
+        }
+
+        const execData = await executeRes.json();
+        const approvalId = execData.approval_id || execData.approvalId || null;
+        const executionId = execData.execution_id || execData.executionId || null;
+        const state = execData.state || execData.execution_state || "BLOCKED";
+
+        lastBlocked.push({ approval_id: approvalId, execution_id: executionId, state });
+
+        addMessage("sys", "Komanda registrovana (BLOCKED) i čeka odobrenje.", {
+          state: "BLOCKED",
+          approval_id: approvalId || "–",
+          execution_id: executionId || "–",
+        });
+
+        if (!approvalId) {
+          addMessage("sys", "Nedostaje approval_id iz /api/execute/raw.", { state: "ERROR" });
+          return;
+        }
+
+        // Enable approve button and store a synthetic proposal record
+        lastProposals = [{ __from_text__: true, text }];
+        approveBtn.disabled = false;
+      } catch (err) {
+        addMessage("sys", "Greška pri execute/raw toku.", { state: "ERROR" });
+      } finally {
+        bumpPending(-1);
+      }
+    }
+
+    async function approveProposals() {
+      if (!Array.isArray(lastProposals) || lastProposals.length === 0) return;
+
+      approveBtn.disabled = true;
+
+      // If proposals are from raw-text (we already created approval), just approve latest blocked
+      // Minimal approach: approve all pending approvals created in this session.
+      for (let i = 0; i < lastBlocked.length; i++) {
+        const b = lastBlocked[i];
+        const approvalId = b.approval_id;
+        if (!approvalId) continue;
+
+        bumpPending(+1);
+        try {
+          const approveRes = await fetch(approveUrl, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({ approval_id: approvalId }),
+          });
+
+          if (!approveRes.ok) {
+            const detail = await approveRes.text();
+            addMessage("sys", `Greška (approve): ${approveRes.status}\n${detail || ""}`, {
+              state: "ERROR",
+              approval_id: approvalId,
+            });
+            continue;
+          }
+
+          const approveData = await approveRes.json();
+          const finalState =
+            approveData.execution_state || approveData.state || approveData.status || "APPROVED/EXECUTED";
+
+          addMessage("sys", "Odobreno i poslano u execution pipeline.", {
+            state: finalState,
+            approval_id: approvalId,
+            execution_id: b.execution_id || approveData.execution_id || "–",
+          });
+
+          const snapBtn = document.getElementById("refresh-snapshot-btn");
+          if (snapBtn) snapBtn.click();
+        } catch (err) {
+          addMessage("sys", "Greška pri approve toku.", { state: "ERROR" });
+        } finally {
+          bumpPending(-1);
+        }
+      }
+
+      lastProposals = [];
+      lastBlocked = [];
+    }
 
     async function sendMessage() {
       const text = (textarea.value || "").trim();
@@ -278,25 +349,27 @@
 
       addMessage("ceo", text);
 
-      // clear immediately (non-blocking UX)
       textarea.value = "";
       autosize();
 
-      // reset proposals UI state
       approveBtn.disabled = true;
       lastProposals = [];
       lastBlocked = [];
 
+      // Deterministic routing: command -> execute pipeline; otherwise -> chat
+      if (looksLikeCommand(text)) {
+        await execApproveFromText(text);
+        return;
+      }
+
       bumpPending(+1);
       try {
-        // KRITIČNO: bez metadata.canon u /api/chat
         const body = {
           message: text,
           preferred_agent_id: "ceo_advisor",
           metadata: {
             initiator: "ceo_dashboard",
             source: "ceoChatbox",
-            // canon: "CEO_CONSOLE_APPROVAL_GATED_EXECUTION", // MUST NOT be sent for /api/chat
           },
         };
 
@@ -313,11 +386,9 @@
         }
 
         const data = await res.json();
-
-        // normal chat odgovor
         addMessage("sys", (data && data.text) || "(no text)", { state: "CHAT" });
 
-        // proposals (ako ih ima)
+        // Keep backward compatibility if backend ever returns proposed_commands
         const proposals = Array.isArray(data.proposed_commands) ? data.proposed_commands : [];
         if (proposals.length > 0) {
           lastProposals = proposals;
@@ -328,7 +399,6 @@
           });
         }
 
-        // optional: refresh snapshot desno (ako postoji)
         const snapBtn = document.getElementById("refresh-snapshot-btn");
         if (snapBtn) snapBtn.click();
       } catch (err) {
@@ -338,107 +408,15 @@
       }
     }
 
-    // ---- Approve & Execute (explicit click) ----
-
-    async function approveProposals() {
-      if (!Array.isArray(lastProposals) || lastProposals.length === 0) return;
-
-      // eksplicitna akcija CEO-a
-      approveBtn.disabled = true;
-
-      for (let i = 0; i < lastProposals.length; i++) {
-        const p = lastProposals[i];
-        const ai = proposalToAiCommand(p);
-
-        if (!ai || !ai.command || !ai.intent) {
-          addMessage("sys", `Nevalidan proposal (index ${i}).`, { state: "ERROR" });
-          continue;
-        }
-
-        bumpPending(+1);
-        try {
-          // 1) Create Approval (BLOCKED): /api/execute/raw
-          const executeRes = await fetch(executeRawUrl, {
-            method: "POST",
-            headers,
-            body: JSON.stringify(buildExecuteRawPayload(ai)),
-          });
-
-          if (!executeRes.ok) {
-            const detail = await executeRes.text();
-            addMessage("sys", `Greška (execute/raw): ${executeRes.status}\n${detail || ""}`, { state: "ERROR" });
-            continue;
-          }
-
-          const execData = await executeRes.json();
-          const approvalId = execData.approval_id || execData.approvalId || null;
-          const executionId = execData.execution_id || execData.executionId || null;
-          const state = execData.state || execData.execution_state || "BLOCKED";
-
-          lastBlocked.push({ approval_id: approvalId, execution_id: executionId, state });
-
-          addMessage("sys", "Zahtjev registrovan (BLOCKED) i čeka odobrenje.", {
-            state: "BLOCKED",
-            approval_id: approvalId || "–",
-            execution_id: executionId || "–",
-          });
-
-          if (!approvalId) {
-            addMessage("sys", "Nedostaje approval_id iz /api/execute/raw.", { state: "ERROR" });
-            continue;
-          }
-
-          // 2) Approve & Execute: /api/ai-ops/approval/approve
-          const approveRes = await fetch(approveUrl, {
-            method: "POST",
-            headers,
-            body: JSON.stringify({ approval_id: approvalId }),
-          });
-
-          if (!approveRes.ok) {
-            const detail = await approveRes.text();
-            addMessage("sys", `Greška (approve): ${res.status}\n${detail || ""}`, {
-              state: "ERROR",
-              approval_id: approvalId,
-            });
-            continue;
-          }
-
-          const approveData = await approveRes.json();
-          const finalState =
-            approveData.execution_state || approveData.state || approveData.status || "APPROVED/EXECUTED";
-
-          addMessage("sys", "Odobreno i poslano u execution pipeline.", {
-            state: finalState,
-            approval_id: approvalId,
-            execution_id: executionId || approveData.execution_id || "–",
-          });
-
-          // refresh snapshot desno
-          const snapBtn = document.getElementById("refresh-snapshot-btn");
-          if (snapBtn) snapBtn.click();
-        } catch (err) {
-          addMessage("sys", "Greška pri approval/execution toku.", { state: "ERROR" });
-        } finally {
-          bumpPending(-1);
-        }
-      }
-
-      // clear proposals after processing
-      lastProposals = [];
-    }
-
     sendBtn.addEventListener("click", sendMessage);
     approveBtn.addEventListener("click", approveProposals);
 
-    // Initial system message
     addMessage(
       "sys",
-      "CEO Chat je aktivan (LLM). Ako agent predloži akcije (side-effects), pojaviće se dugme 'Odobri predloženo'. Chat ne šalje canon lock.",
+      "CEO Chatbox: chat ide na /api/chat (read-only), komande idu na approval-gated /api/execute/raw. Ako je komanda BLOCKED, klikni 'Odobri predloženo'.",
       { state: "READY" }
     );
 
-    // Focus input
     setTimeout(() => textarea.focus(), 50);
 
     console.log("[CEO_CHATBOX] mounted", { mountSelector, chatUrl, executeRawUrl, approveUrl });
