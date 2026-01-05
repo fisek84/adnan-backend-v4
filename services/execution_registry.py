@@ -11,13 +11,14 @@ Problem koji rješava:
 Rješenje:
 - Class-level GLOBAL store + lock (kao ApprovalStateService).
 - Best-effort persist na disk (da preživi reload/restart).
-- Registry čuva AICommand (kanonski objekat), i state (BLOCKED/COMPLETED...).
+- Registry čuva AICommand (kanonski objekat), i state (BLOCKED/COMPLETED/FAILED...).
 
 API koje koristi Orchestrator:
 - register(cmd)
 - get(execution_id)
 - block(execution_id, decision)
 - complete(execution_id, result)
+- fail(execution_id, failure)   ✅ (dodano)
 """
 
 from __future__ import annotations
@@ -72,6 +73,9 @@ def _to_dict(cmd: AICommand) -> Dict[str, Any]:
         "metadata": getattr(cmd, "metadata", None)
         if isinstance(getattr(cmd, "metadata", None), dict)
         else {},
+        "execution_state": getattr(cmd, "execution_state", None),
+        "decision": getattr(cmd, "decision", None),
+        "result": getattr(cmd, "result", None),
     }
 
 
@@ -110,9 +114,6 @@ def _from_dict(data: Dict[str, Any]) -> Optional[AICommand]:
             return None
 
 
-# ============================================================
-# CANONICAL REGISTRY
-# ============================================================
 class ExecutionRegistry:
     """
     CANONICAL EXECUTION REGISTRY (SSOT)
@@ -171,7 +172,6 @@ class ExecutionRegistry:
                 )
 
                 if existing_cmd is not None:
-                    # Ako novi cmd nema decision/result/state, a stari ima — prenesi.
                     if (
                         getattr(cmd, "decision", None) is None
                         and getattr(existing_cmd, "decision", None) is not None
@@ -187,7 +187,6 @@ class ExecutionRegistry:
                         and getattr(existing_cmd, "execution_state", None) is not None
                     ):
                         cmd.execution_state = existing_cmd.execution_state
-                    # approval_id: sačuvaj ako postoji na starom
                     if not getattr(cmd, "approval_id", None) and getattr(
                         existing_cmd, "approval_id", None
                     ):
@@ -233,7 +232,6 @@ class ExecutionRegistry:
 
             cmd = _from_dict(cmd_dict) if isinstance(cmd_dict, dict) else None
             if cmd is None:
-                # Minimal placeholder
                 cmd = AICommand(
                     command="unknown", initiator="unknown", params={}, read_only=False
                 )
@@ -243,7 +241,6 @@ class ExecutionRegistry:
             if isinstance(decision, dict):
                 cmd.decision = decision
 
-                # propagate approval_id into cmd+metadata if present
                 aid = decision.get("approval_id")
                 if isinstance(aid, str) and aid.strip():
                     cmd.approval_id = aid.strip()
@@ -273,6 +270,33 @@ class ExecutionRegistry:
             cmd.execution_state = "COMPLETED"
             if isinstance(result, dict):
                 cmd.result = result
+
+            self._store[eid] = {"command": _to_dict(cmd), "updated_at": _utc_ts()}
+            self._persist_to_disk_locked()
+
+    def fail(self, execution_id: str, failure: Dict[str, Any]) -> None:
+        """
+        ✅ NEW: Symmetric to complete(), records FAILED state + failure payload in cmd.result
+        so that resume/inspection sees canonical failure details.
+        """
+        eid = (execution_id or "").strip()
+        if not eid:
+            raise ValueError("ExecutionRegistry.fail requires execution_id")
+
+        with self._lock:
+            rec = self._store.get(eid) or {}
+            cmd_dict = rec.get("command") if isinstance(rec, dict) else None
+
+            cmd = _from_dict(cmd_dict) if isinstance(cmd_dict, dict) else None
+            if cmd is None:
+                cmd = AICommand(
+                    command="unknown", initiator="unknown", params={}, read_only=False
+                )
+
+            cmd.execution_id = eid
+            cmd.execution_state = "FAILED"
+            if isinstance(failure, dict):
+                cmd.result = failure
 
             self._store[eid] = {"command": _to_dict(cmd), "updated_at": _utc_ts()}
             self._persist_to_disk_locked()
@@ -322,7 +346,6 @@ class ExecutionRegistry:
             if not isinstance(data, dict):
                 return
 
-            # Merge disk into memory (best-effort, disk nije “authority”)
             for eid, rec in data.items():
                 if not isinstance(eid, str) or not isinstance(rec, dict):
                     continue
@@ -341,9 +364,6 @@ class ExecutionRegistry:
             logger.warning("ExecutionRegistry persist_to_disk failed: %s", str(e))
 
 
-# ============================================================
-# CANONICAL SINGLETON (optional but recommended)
-# ============================================================
 _EXECUTION_REGISTRY_SINGLETON = ExecutionRegistry()
 
 

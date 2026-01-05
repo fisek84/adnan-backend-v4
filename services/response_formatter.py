@@ -85,19 +85,36 @@ class ResponseFormatter:
                 execution_state = execution_result.get("execution_state")
 
                 if execution_state == "FAILED":
+                    # ✅ MINIMAL CANON FIX:
+                    # Prefer explicit "failure" payload, otherwise fall back to "result" payload.
+                    failure_payload = execution_result.get("failure")
+                    if not isinstance(failure_payload, dict):
+                        result_payload = execution_result.get("result")
+                        if isinstance(result_payload, dict):
+                            failure_payload = result_payload
+                        else:
+                            failure_payload = {}
+
+                    # Reason extraction (no guessing, only common keys)
+                    reason = None
+                    if isinstance(failure_payload, dict):
+                        reason = (
+                            failure_payload.get("reason")
+                            or failure_payload.get("message")
+                            or failure_payload.get("error")
+                        )
+
                     response.update(
                         {
                             "type": "execution",
                             "status": "failed",
-                            "message": execution_result.get("failure", {}).get(
-                                "reason", "Izvršenje nije uspjelo."
-                            ),
+                            "message": reason or "Izvršenje nije uspjelo.",
                             "read_only": False,
                         }
                     )
 
-                    # 🔑 FIX — PROPAGATE FAILURE SNAPSHOT
-                    response["failure"] = execution_result.get("failure")
+                    # 🔑 PROPAGATE FAILURE SNAPSHOT (always dict)
+                    response["failure"] = failure_payload
 
                 elif execution_state == "COMPLETED":
                     response.update(

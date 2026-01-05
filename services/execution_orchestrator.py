@@ -48,6 +48,20 @@ class ExecutionOrchestrator:
             intent == PROPOSAL_WRAPPER_INTENT
         )
 
+    @staticmethod
+    def _is_failure_result(result: Any) -> bool:
+        """
+        Minimal canonical failure detection:
+        - if result is dict and explicitly says ok==False or success==False, treat as failure.
+        """
+        if not isinstance(result, dict):
+            return False
+        if result.get("ok") is False:
+            return True
+        if result.get("success") is False:
+            return True
+        return False
+
     async def execute(
         self, command: Union[AICommand, Dict[str, Any]]
     ) -> Dict[str, Any]:
@@ -140,7 +154,6 @@ class ExecutionOrchestrator:
         """
         command = self.registry.get(execution_id)
         if not command:
-            # IMPORTANT: router/tests prefer 404-like behavior
             raise KeyError(execution_id)
 
         cmd = self._normalize_command(command)
@@ -194,15 +207,54 @@ class ExecutionOrchestrator:
         command.execution_state = "EXECUTING"
         self.registry.register(command)
 
-        if (
-            getattr(command, "command", None) == "ceo_console.next_step"
-            or getattr(command, "intent", None) == "ceo_console.next_step"
-        ):
-            result = {
-                "status": "NOOP",
-                "message": "ceo_console.next_step executed (no side effects)",
-                "params": command.params if isinstance(command.params, dict) else {},
-            }
+        try:
+            if (
+                getattr(command, "command", None) == "ceo_console.next_step"
+                or getattr(command, "intent", None) == "ceo_console.next_step"
+            ):
+                result = {
+                    "status": "NOOP",
+                    "message": "ceo_console.next_step executed (no side effects)",
+                    "params": command.params
+                    if isinstance(command.params, dict)
+                    else {},
+                }
+
+                command.execution_state = "COMPLETED"
+                self.registry.complete(execution_id, result)
+
+                return {
+                    "execution_id": execution_id,
+                    "execution_state": "COMPLETED",
+                    "result": result,
+                }
+
+            if command.command == "goal_task_workflow":
+                params = command.params if isinstance(command.params, dict) else {}
+                workflow_type = params.get("workflow_type")
+
+                if workflow_type == "kpi_weekly_summary":
+                    result = await self._execute_kpi_weekly_summary_workflow(command)
+                else:
+                    result = await self._execute_goal_with_tasks_workflow(command)
+            else:
+                result = await self.notion_agent.execute(command)
+
+            # ✅ FAILURE DETECTION (explicit only)
+            if self._is_failure_result(result):
+                failure = {
+                    "reason": result.get("reason")
+                    or result.get("message")
+                    or "Execution failed (explicit ok/success=false).",
+                    "result": result,
+                }
+                command.execution_state = "FAILED"
+                self.registry.fail(execution_id, failure)
+                return {
+                    "execution_id": execution_id,
+                    "execution_state": "FAILED",
+                    "failure": failure,
+                }
 
             command.execution_state = "COMPLETED"
             self.registry.complete(execution_id, result)
@@ -213,25 +265,19 @@ class ExecutionOrchestrator:
                 "result": result,
             }
 
-        if command.command == "goal_task_workflow":
-            params = command.params if isinstance(command.params, dict) else {}
-            workflow_type = params.get("workflow_type")
-
-            if workflow_type == "kpi_weekly_summary":
-                result = await self._execute_kpi_weekly_summary_workflow(command)
-            else:
-                result = await self._execute_goal_with_tasks_workflow(command)
-        else:
-            result = await self.notion_agent.execute(command)
-
-        command.execution_state = "COMPLETED"
-        self.registry.complete(execution_id, result)
-
-        return {
-            "execution_id": execution_id,
-            "execution_state": "COMPLETED",
-            "result": result,
-        }
+        except Exception as exc:
+            logger.exception("Execution failed execution_id=%s", execution_id)
+            failure = {
+                "reason": str(exc),
+                "error_type": exc.__class__.__name__,
+            }
+            command.execution_state = "FAILED"
+            self.registry.fail(execution_id, failure)
+            return {
+                "execution_id": execution_id,
+                "execution_state": "FAILED",
+                "failure": failure,
+            }
 
     async def _execute_goal_with_tasks_workflow(
         self, command: AICommand

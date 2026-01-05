@@ -652,7 +652,7 @@ class NotionService:
             property_specs = params.get("property_specs") or {}
             properties = params.get("properties")
             db_key = params.get("db_key")
-            database_id = params.get("database_id")  # ✅ FIXED (bio je prekinut string)
+            database_id = params.get("database_id")
 
             if db_key or database_id:
                 self._assert_write_allowed(db_key=db_key, database_id=database_id)
@@ -1069,7 +1069,7 @@ class NotionService:
                 snapshot["time_management_error"] = str(exc)
 
         # ----------------------------
-        # ✅ FIX: determine whether refresh produced any usable data
+        # ✅ FIX (your part): determine whether refresh produced any usable data
         # ----------------------------
         core_total = (
             len(goals_results)
@@ -1081,18 +1081,15 @@ class NotionService:
             + len(ai_summary_results)
         )
 
-        # extra_databases can include errors too; only count non-empty lists/pages
         extra_has_any_data = False
         extra_db = snapshot.get("extra_databases") or {}
         if isinstance(extra_db, dict):
             for k, v in extra_db.items():
                 if k.endswith("__error"):
                     continue
-                # list of rows
                 if isinstance(v, list) and len(v) > 0:
                     extra_has_any_data = True
                     break
-                # page fallback object
                 if isinstance(v, dict) and v.get("kind") == "page":
                     extra_has_any_data = True
                     break
@@ -1108,7 +1105,7 @@ class NotionService:
             for k in snapshot.keys()
             if isinstance(k, str) and k.endswith("_error") and snapshot.get(k)
         ]
-        extra_error_keys = []
+        extra_error_keys: List[str] = []
         if isinstance(extra_db, dict):
             extra_error_keys = [k for k in extra_db.keys() if k.endswith("__error")]
 
@@ -1117,7 +1114,7 @@ class NotionService:
         if not has_any_data:
             # Do NOT overwrite the last good snapshot with an empty one
             logger.warning(
-                ">> Snapshot refresh produced NO DATA. " "core_total=%s errors=%s",
+                ">> Snapshot refresh produced NO DATA. core_total=%s errors=%s",
                 core_total,
                 all_errors,
             )
@@ -1130,7 +1127,7 @@ class NotionService:
                 "time_management_loaded": bool(snapshot.get("time_management")),
             }
 
-        # Only now commit snapshot
+        # Only now commit snapshot (even if partial); status will reflect core failures below.
         self.knowledge_snapshot = snapshot
         KnowledgeSnapshotService.update_snapshot(snapshot)
 
@@ -1142,8 +1139,30 @@ class NotionService:
             f"ai_summary={len(ai_summary_results)}, extra_db={len(snapshot['extra_databases'])})"
         )
 
+        # ----------------------------
+        # ✅ ADDITION (my canonical part): core DB failure should mark ok=False
+        # - This is what makes refresh_snapshot propagate FAILED via orchestrator.
+        # ----------------------------
+        core_error_keys: List[str] = []
+        if self.goals_db_id and snapshot.get("goals_error"):
+            core_error_keys.append("goals_error")
+        if self.tasks_db_id and snapshot.get("tasks_error"):
+            core_error_keys.append("tasks_error")
+
+        projects_db_id2 = self.projects_db_id or self.db_ids.get("projects")
+        if projects_db_id2 and snapshot.get("projects_error"):
+            core_error_keys.append("projects_error")
+
+        ok_flag = len(core_error_keys) == 0
+        failure_reason = None
+        if not ok_flag:
+            failure_reason = "refresh_snapshot failed for core databases: " + ", ".join(
+                core_error_keys
+            )
+
         return {
-            "ok": True,
+            "ok": ok_flag,
+            "reason": failure_reason,
             "last_sync": snapshot["last_sync"],
             "total_goals": len(goals_results),
             "total_tasks": len(tasks_results),
@@ -1154,6 +1173,8 @@ class NotionService:
             "total_ai_summary": len(ai_summary_results),
             "extra_databases_keys": list(snapshot["extra_databases"].keys()),
             "time_management_loaded": bool(snapshot.get("time_management")),
+            "errors": all_errors,
+            "core_errors": core_error_keys,
         }
 
     def get_knowledge_snapshot(self) -> Dict[str, Any]:
