@@ -20,6 +20,50 @@
       cfg.headers || {}
     );
 
+    // --- NEW: stable session_id (persist in localStorage) ---
+    const SESSION_STORAGE_KEY =
+      cfg.sessionStorageKey || "ceo_console_session_id";
+
+    function genSessionId() {
+      try {
+        if (typeof crypto !== "undefined" && crypto.randomUUID) {
+          return crypto.randomUUID();
+        }
+      } catch {
+        // ignore
+      }
+      // fallback
+      return (
+        "sess_" +
+        Math.random().toString(36).slice(2) +
+        "_" +
+        Date.now().toString(36)
+      );
+    }
+
+    function getOrCreateSessionId() {
+      try {
+        // allow hard override if set in cfg
+        if (cfg.session_id && typeof cfg.session_id === "string") {
+          return cfg.session_id;
+        }
+
+        const existing = localStorage.getItem(SESSION_STORAGE_KEY);
+        if (existing && typeof existing === "string") return existing;
+
+        const created = genSessionId();
+        localStorage.setItem(SESSION_STORAGE_KEY, created);
+        return created;
+      } catch {
+        // if storage blocked, at least return an in-memory id
+        return cfg.session_id || genSessionId();
+      }
+    }
+
+    // ensure cfg has a session_id for subsequent calls
+    cfg.session_id = getOrCreateSessionId();
+    // --- /NEW ---
+
     const host = document.querySelector(mountSelector);
     if (!host) return;
 
@@ -245,12 +289,18 @@
 
       const gTop = goals
         .slice(0, 3)
-        .map((g, i) => `${i + 1}) ${g.name || g.title || "?"} [${g.status || "?"}]`)
+        .map(
+          (g, i) =>
+            `${i + 1}) ${g.name || g.title || "?"} [${g.status || "?"}]`
+        )
         .join("\n");
 
       const tTop = tasks
         .slice(0, 5)
-        .map((t, i) => `${i + 1}) ${t.title || t.name || "?"} [${t.status || "?"}]`)
+        .map(
+          (t, i) =>
+            `${i + 1}) ${t.title || t.name || "?"} [${t.status || "?"}]`
+        )
         .join("\n");
 
       return `\n\nGOALS (top 3)\n${gTop || "-"}\n\nTASKS (top 5)\n${tTop || "-"}`;
@@ -430,16 +480,18 @@
 
         const payload = {
           text,
-          initiator: cfg.initiator || "ceo_dashboard",
 
-          // session_id optional
-          session_id: cfg.session_id || undefined,
+          // CHANGED: default to ceo_chat (instead of ceo_dashboard)
+          initiator: cfg.initiator || "ceo_chat",
 
-          // NEW: Provide server status/snapshot as context hint, fallback to cfg.context_hint if provided
+          // CHANGED: ensure session_id is always present
+          session_id: cfg.session_id || getOrCreateSessionId(),
+
+          // Provide server status/snapshot as context hint, fallback to cfg.context_hint if provided
           context_hint: statusData || cfg.context_hint || undefined,
 
-          // NEW (harmless if backend ignores): explicit scope hint
-          snapshot_scope: cfg.snapshot_scope || "ceo_dashboard",
+          // CHANGED: scope aligned with chat (harmless if backend ignores)
+          snapshot_scope: cfg.snapshot_scope || "ceo_chat",
         };
 
         const res = await fetch(ceoCommandUrl, {
@@ -508,6 +560,8 @@
       ceoStatusUrl,
       executeRawUrl,
       approveUrl,
+      session_id: cfg.session_id,
+      initiator: cfg.initiator || "ceo_chat",
     });
   } catch (e) {
     console.error("[CEO_CHATBOX] init failed", e);
