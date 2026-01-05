@@ -579,6 +579,24 @@ class NotionService:
         params = command.params or {}
 
         # ----------------------------
+        # ✅ COMPAT: notion_write wrapper (frontend/legacy proposals)
+        # Some clients send intent="notion_write" with params.ai_command={intent, params}
+        # We unwrap and dispatch to the real intent (e.g., create_page).
+        # ----------------------------
+        if isinstance(intent, str) and intent.strip() == "notion_write":
+            ai = params.get("ai_command")
+            if isinstance(ai, dict):
+                inner_intent = ai.get("intent")
+                inner_params = ai.get("params") or {}
+                if isinstance(inner_intent, str) and inner_intent.strip():
+                    intent = inner_intent.strip()
+                    params = inner_params if isinstance(inner_params, dict) else {}
+                else:
+                    raise RuntimeError("notion_write missing ai_command.intent")
+            else:
+                raise RuntimeError("notion_write missing ai_command payload")
+
+        # ----------------------------
         # LEGACY: create_goal
         # ----------------------------
         if intent == "create_goal":
@@ -1093,7 +1111,7 @@ class NotionService:
                 snapshot["time_management_error"] = str(exc)
 
         # ----------------------------
-        # ✅ FIX (your part): determine whether refresh produced any usable data
+        # ✅ FIX: determine whether refresh produced any usable data
         # ----------------------------
         core_total = (
             len(goals_results)
@@ -1164,8 +1182,7 @@ class NotionService:
         )
 
         # ----------------------------
-        # ✅ ADDITION (my canonical part): core DB failure should mark ok=False
-        # - This is what makes refresh_snapshot propagate FAILED via orchestrator.
+        # ✅ ADDITION: core DB failure should mark ok=False
         # ----------------------------
         core_error_keys: List[str] = []
         if self.goals_db_id and snapshot.get("goals_error"):
