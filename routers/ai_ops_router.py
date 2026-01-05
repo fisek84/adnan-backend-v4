@@ -92,7 +92,9 @@ def _norm_status(v: Any) -> str:
     return (v or "").__str__().strip().lower()
 
 
-def _try_get_existing_approval(approval_state: Any, approval_id: str) -> Optional[Dict[str, Any]]:
+def _try_get_existing_approval(
+    approval_state: Any, approval_id: str
+) -> Optional[Dict[str, Any]]:
     """
     Best-effort read without assuming an interface.
     If ApprovalState exposes a getter, we use it; otherwise returns None.
@@ -140,7 +142,9 @@ def _cached_response_for_approval(approval_id: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _cache_execution_result(*, approval_id: str, execution_id: str, execution_result: Dict[str, Any]) -> None:
+def _cache_execution_result(
+    *, approval_id: str, execution_id: str, execution_result: Dict[str, Any]
+) -> None:
     _APPROVAL_TO_EXECUTION[approval_id] = execution_id
     _EXECUTION_RESULT_CACHE[execution_id] = execution_result
 
@@ -339,7 +343,9 @@ async def approve(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[st
     # 0) Fast path: if we already completed this approval in this process, return stable result.
     cached = _cached_response_for_approval(approval_id)
     if isinstance(cached, dict) and cached:
-        logger.info("ai_ops_router: approve idempotent hit (cached) approval_id=%s", approval_id)
+        logger.info(
+            "ai_ops_router: approve idempotent hit (cached) approval_id=%s", approval_id
+        )
         return cached
 
     approved_by = body.get("approved_by", "unknown")
@@ -372,7 +378,9 @@ async def approve(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[st
             return {
                 "execution_id": existing.get("execution_id"),
                 "execution_state": "COMPLETED" if st == "completed" else "APPROVED",
-                "result": existing.get("result"),  # may be absent in your current ApprovalState
+                "result": existing.get(
+                    "result"
+                ),  # may be absent in your current ApprovalState
                 "approval": existing,
                 "read_only": False,
                 "note": "idempotent_noop_already_approved",
@@ -453,7 +461,9 @@ async def approve(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[st
         "approval": approval,
         "read_only": False,
     }
-    _cache_execution_result(approval_id=approval_id, execution_id=execution_id, execution_result=wrapped)
+    _cache_execution_result(
+        approval_id=approval_id, execution_id=execution_id, execution_result=wrapped
+    )
     return wrapped
 
 

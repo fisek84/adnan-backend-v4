@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from models.ai_command import AICommand
 from models.agent_contract import AgentInput, AgentOutput, ProposedCommand

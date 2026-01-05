@@ -154,7 +154,9 @@ def _needs_structured_snapshot_answer(user_text: str) -> bool:
 
 
 def _extract_goals_tasks(snapshot_payload: Dict[str, Any]) -> Tuple[Any, Any]:
-    dashboard = snapshot_payload.get("dashboard") if isinstance(snapshot_payload, dict) else {}
+    dashboard = (
+        snapshot_payload.get("dashboard") if isinstance(snapshot_payload, dict) else {}
+    )
     goals = None
     tasks = None
 
@@ -163,9 +165,17 @@ def _extract_goals_tasks(snapshot_payload: Dict[str, Any]) -> Tuple[Any, Any]:
         tasks = dashboard.get("tasks")
 
     if goals is None:
-        goals = snapshot_payload.get("goals") if isinstance(snapshot_payload, dict) else None
+        goals = (
+            snapshot_payload.get("goals")
+            if isinstance(snapshot_payload, dict)
+            else None
+        )
     if tasks is None:
-        tasks = snapshot_payload.get("tasks") if isinstance(snapshot_payload, dict) else None
+        tasks = (
+            snapshot_payload.get("tasks")
+            if isinstance(snapshot_payload, dict)
+            else None
+        )
 
     return goals, tasks
 
@@ -185,7 +195,9 @@ def _render_snapshot_summary(goals: Any, tasks: Any) -> str:
         lines.append("NEMA DOVOLJNO PODATAKA U SNAPSHOT-U")
     else:
         for i, it in enumerate(g[:3], start=1):
-            name = str(it.get("name") or it.get("Name") or it.get("title") or "-").strip()
+            name = str(
+                it.get("name") or it.get("Name") or it.get("title") or "-"
+            ).strip()
             status = str(it.get("status") or it.get("Status") or "-").strip()
             priority = str(it.get("priority") or it.get("Priority") or "-").strip()
             lines.append(f"{i}) {name} | {status} | {priority}")
@@ -195,7 +207,9 @@ def _render_snapshot_summary(goals: Any, tasks: Any) -> str:
         lines.append("NEMA DOVOLJNO PODATAKA U SNAPSHOT-U")
     else:
         for i, it in enumerate(t[:5], start=1):
-            title = str(it.get("title") or it.get("Name") or it.get("name") or "-").strip()
+            title = str(
+                it.get("title") or it.get("Name") or it.get("name") or "-"
+            ).strip()
             status = str(it.get("status") or it.get("Status") or "-").strip()
             priority = str(it.get("priority") or it.get("Priority") or "-").strip()
             lines.append(f"{i}) {title} | {status} | {priority}")
@@ -208,13 +222,27 @@ def _render_snapshot_summary(goals: Any, tasks: Any) -> str:
 # -------------------------------
 def _pick_text(result: Any) -> str:
     if isinstance(result, dict):
-        for k in ("text", "summary", "assistant_text", "message", "output_text", "response"):
+        for k in (
+            "text",
+            "summary",
+            "assistant_text",
+            "message",
+            "output_text",
+            "response",
+        ):
             v = result.get(k)
             if isinstance(v, str) and v.strip():
                 return v.strip()
         raw = result.get("raw")
         if isinstance(raw, dict):
-            for k in ("text", "summary", "assistant_text", "message", "output_text", "response"):
+            for k in (
+                "text",
+                "summary",
+                "assistant_text",
+                "message",
+                "output_text",
+                "response",
+            ):
                 v = raw.get(k)
                 if isinstance(v, str) and v.strip():
                     return v.strip()
@@ -313,7 +341,9 @@ def _extract_deadline_from_text(text: str) -> Optional[str]:
 # ---------------------------------------
 # Translation: create_task/create_goal -> ai_command
 # ---------------------------------------
-def _translate_create_task_to_ai_command(proposal: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def _translate_create_task_to_ai_command(
+    proposal: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
     if not isinstance(proposal, dict):
         return None
 
@@ -332,7 +362,9 @@ def _translate_create_task_to_ai_command(proposal: Dict[str, Any]) -> Optional[D
     priority = _normalize_priority(args.get("Priority") or args.get("priority"))
     status = _normalize_status(args.get("Status") or args.get("status"))
 
-    date_iso = _normalize_date_iso(args.get("Deadline") or args.get("Due Date") or args.get("due_date"))
+    date_iso = _normalize_date_iso(
+        args.get("Deadline") or args.get("Due Date") or args.get("due_date")
+    )
     property_specs: Dict[str, Any] = {
         "Name": {"type": "title", "text": title},
         "Priority": {"type": "select", "name": priority},
@@ -348,7 +380,9 @@ def _translate_create_task_to_ai_command(proposal: Dict[str, Any]) -> Optional[D
     }
 
 
-def _translate_create_goal_to_ai_command(proposal: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def _translate_create_goal_to_ai_command(
+    proposal: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
     if not isinstance(proposal, dict):
         return None
 
@@ -365,9 +399,13 @@ def _translate_create_goal_to_ai_command(proposal: Dict[str, Any]) -> Optional[D
         or "E2E Chat Goal"
     )
     priority = _normalize_priority(args.get("Priority") or args.get("priority"))
-    status = str(args.get("Status") or args.get("status") or "Active").strip() or "Active"
+    status = (
+        str(args.get("Status") or args.get("status") or "Active").strip() or "Active"
+    )
 
-    date_iso = _normalize_date_iso(args.get("Deadline") or args.get("deadline") or args.get("Due date"))
+    date_iso = _normalize_date_iso(
+        args.get("Deadline") or args.get("deadline") or args.get("Due date")
+    )
 
     property_specs: Dict[str, Any] = {
         "Name": {"type": "title", "text": name},
@@ -384,7 +422,9 @@ def _translate_create_goal_to_ai_command(proposal: Dict[str, Any]) -> Optional[D
     }
 
 
-def _wrap_as_proposed_command_with_ai_command(ai_cmd: Dict[str, Any], reason: str, risk: str = "LOW") -> ProposedCommand:
+def _wrap_as_proposed_command_with_ai_command(
+    ai_cmd: Dict[str, Any], reason: str, risk: str = "LOW"
+) -> ProposedCommand:
     return ProposedCommand(
         command="notion_write",
         args={"ai_command": ai_cmd},
@@ -416,7 +456,10 @@ def _to_proposed_commands(items: Any) -> List[ProposedCommand]:
 
         if isinstance(intent, str) and intent.strip() and isinstance(params, dict):
             args = dict(args)
-            args.setdefault("ai_command", {"command": cmd, "intent": intent.strip(), "params": params})
+            args.setdefault(
+                "ai_command",
+                {"command": cmd, "intent": intent.strip(), "params": params},
+            )
 
         out.append(
             ProposedCommand(
@@ -478,12 +521,16 @@ def _deterministic_notion_ai_command_from_text(text: str) -> Optional[Dict[str, 
 # -------------------------------
 # Main agent entrypoint
 # -------------------------------
-async def create_ceo_advisor_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> AgentOutput:
+async def create_ceo_advisor_agent(
+    agent_input: AgentInput, ctx: Dict[str, Any]
+) -> AgentOutput:
     base_text = (agent_input.message or "").strip()
     if not base_text:
         base_text = "Reci ukratko šta možeš i kako mogu tražiti akciju."
 
-    raw_snapshot = agent_input.snapshot if isinstance(agent_input.snapshot, dict) else {}
+    raw_snapshot = (
+        agent_input.snapshot if isinstance(agent_input.snapshot, dict) else {}
+    )
     snapshot_payload = _unwrap_snapshot(raw_snapshot)
 
     structured_mode = _needs_structured_snapshot_answer(base_text)
@@ -516,10 +563,15 @@ async def create_ceo_advisor_agent(agent_input: AgentInput, ctx: Dict[str, Any])
             trace={
                 "snapshot_empty": True,
                 "structured_mode": True,
-                "snapshot_wrapper_present": isinstance(raw_snapshot.get("payload"), dict),
+                "snapshot_wrapper_present": isinstance(
+                    raw_snapshot.get("payload"), dict
+                ),
                 "snapshot_ready": raw_snapshot.get("ready"),
-                "snapshot_last_sync": raw_snapshot.get("last_sync") or snapshot_payload.get("last_sync"),
-                "snapshot_source": (agent_input.metadata or {}).get("snapshot_source") if isinstance(agent_input.metadata, dict) else None,
+                "snapshot_last_sync": raw_snapshot.get("last_sync")
+                or snapshot_payload.get("last_sync"),
+                "snapshot_source": (agent_input.metadata or {}).get("snapshot_source")
+                if isinstance(agent_input.metadata, dict)
+                else None,
             },
         )
 
@@ -530,7 +582,9 @@ async def create_ceo_advisor_agent(agent_input: AgentInput, ctx: Dict[str, Any])
         "canon": {"read_only": True, "no_tools": True, "no_side_effects": True},
         # IMPORTANT: give LLM the SSOT payload (not wrapper noise)
         "snapshot": snapshot_payload,
-        "metadata": agent_input.metadata if isinstance(agent_input.metadata, dict) else {},
+        "metadata": agent_input.metadata
+        if isinstance(agent_input.metadata, dict)
+        else {},
     }
 
     if structured_mode:
@@ -562,7 +616,9 @@ async def create_ceo_advisor_agent(agent_input: AgentInput, ctx: Dict[str, Any])
             result = {"text": f"LLM unavailable: {e}"}
 
         text_out = _pick_text(result) or "CEO advisor nije vratio tekstualni output."
-        proposed_items = result.get("proposed_commands") if isinstance(result, dict) else None
+        proposed_items = (
+            result.get("proposed_commands") if isinstance(result, dict) else None
+        )
         proposed = _to_proposed_commands(proposed_items)
     else:
         if structured_mode:
@@ -578,7 +634,11 @@ async def create_ceo_advisor_agent(agent_input: AgentInput, ctx: Dict[str, Any])
     if proposed:
         first_cmd = getattr(proposed[0], "command", None)
         if first_cmd in ("create_task", "create_goal"):
-            p0 = proposed_items[0] if isinstance(proposed_items, list) and proposed_items else None
+            p0 = (
+                proposed_items[0]
+                if isinstance(proposed_items, list) and proposed_items
+                else None
+            )
             p0d = p0 if isinstance(p0, dict) else {}
 
             ai_cmd = None
@@ -631,8 +691,14 @@ async def create_ceo_advisor_agent(agent_input: AgentInput, ctx: Dict[str, Any])
     trace["llm_used"] = use_llm
     trace["snapshot_wrapper_present"] = isinstance(raw_snapshot.get("payload"), dict)
     trace["snapshot_ready"] = raw_snapshot.get("ready")
-    trace["snapshot_last_sync"] = raw_snapshot.get("last_sync") or snapshot_payload.get("last_sync")
-    trace["snapshot_source"] = (agent_input.metadata or {}).get("snapshot_source") if isinstance(agent_input.metadata, dict) else None
+    trace["snapshot_last_sync"] = raw_snapshot.get("last_sync") or snapshot_payload.get(
+        "last_sync"
+    )
+    trace["snapshot_source"] = (
+        (agent_input.metadata or {}).get("snapshot_source")
+        if isinstance(agent_input.metadata, dict)
+        else None
+    )
 
     return AgentOutput(
         text=text_out,

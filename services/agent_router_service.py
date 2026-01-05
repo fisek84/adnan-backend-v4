@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import importlib
 import inspect
-import re
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Tuple
 
 from models.agent_contract import AgentInput, AgentOutput, ProposedCommand
 from services.agent_registry_service import AgentRegistryEntry, AgentRegistryService
@@ -115,7 +114,9 @@ class AgentRouterService:
         callable_fn = self._load_callable(selected.entrypoint)
 
         try:
-            routed = callable_fn(agent_input, {"registry_entry": selected, "trace": trace})
+            routed = callable_fn(
+                agent_input, {"registry_entry": selected, "trace": trace}
+            )
             if inspect.isawaitable(routed):
                 routed = await routed
             out = routed
@@ -180,9 +181,18 @@ class AgentRouterService:
             try:
                 if isinstance(pc, dict):
                     pc = ProposedCommand(
-                        command=str(pc.get("command") or pc.get("command_type") or pc.get("type") or ""),
-                        args=pc.get("args") if isinstance(pc.get("args"), dict) else (
-                            pc.get("payload") if isinstance(pc.get("payload"), dict) else {}
+                        command=str(
+                            pc.get("command")
+                            or pc.get("command_type")
+                            or pc.get("type")
+                            or ""
+                        ),
+                        args=pc.get("args")
+                        if isinstance(pc.get("args"), dict)
+                        else (
+                            pc.get("payload")
+                            if isinstance(pc.get("payload"), dict)
+                            else {}
                         ),
                         reason=pc.get("reason"),
                         requires_approval=pc.get("requires_approval", True),
@@ -200,7 +210,11 @@ class AgentRouterService:
                 pc_requires = True
                 try:
                     if hasattr(pc, "requires_approval"):
-                        pc_requires = bool(pc.requires_approval) if pc.requires_approval is not None else True
+                        pc_requires = (
+                            bool(pc.requires_approval)
+                            if pc.requires_approval is not None
+                            else True
+                        )
                 except Exception:
                     pc_requires = True
 
@@ -287,7 +301,9 @@ class AgentRouterService:
         mod = importlib.import_module(module_path)
         fn = getattr(mod, fn_name, None)
         if fn is None or not callable(fn):
-            raise ValueError(f"Invalid agent entrypoint; callable not found: {entrypoint}")
+            raise ValueError(
+                f"Invalid agent entrypoint; callable not found: {entrypoint}"
+            )
         return fn
 
 
