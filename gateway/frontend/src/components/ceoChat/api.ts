@@ -8,7 +8,7 @@
 // Ovaj file:
 // - normalizuje response (normalize.ts)
 // - podržava streaming (ne konzumira stream ovdje; UI ga čita)
-// - daje helper metode za Notion Ops read/search (GET /notion-ops/databases, POST /notion-ops/bulk/query)
+// - daje helper metode za Notion Ops read/search (GET /api/notion-ops/databases, POST /api/notion-ops/bulk/query)
 
 import { normalizeConsoleResponse, streamTextFromResponse } from "./normalize";
 
@@ -127,8 +127,10 @@ function isChatEndpoint(url: string): boolean {
 function deriveNotionOpsUrl(fromBaseUrl: string, path: string): string {
   const p = path.startsWith("/") ? path : `/${path}`;
 
-  // Ako je base relative (npr. "/api/chat"), vrati relativnu notion-ops rutu.
-  if (!/^https?:\/\//i.test(fromBaseUrl)) return p;
+  // FIX:
+  // Ako je base relative (npr. "/api/chat"), Notion Ops endpointi moraju ići kroz isti /api prefiks.
+  // Inače frontend gađa "/notion-ops/..." i dobija 404 na deploymentu.
+  if (!/^https?:\/\//i.test(fromBaseUrl)) return `/api${p}`;
 
   try {
     return new URL(p, fromBaseUrl).toString();
@@ -227,7 +229,9 @@ function normalizeRawToUi(raw: any, sourceEndpoint: string, headers?: Headers): 
 
 function buildPayload(endpointUrl: string, req: CeoCommandRequest): any {
   const text = extractText(req);
-  const initiator = (req as any)?.initiator || "ceo_dashboard";
+
+  // CHANGED: default initiator to chat (prevents dashboard-mode defaults if caller forgot to set it)
+  const initiator = (req as any)?.initiator || "ceo_chat";
 
   // /api/chat shape (AgentRouter / canon)
   if (isChatEndpoint(endpointUrl)) {
@@ -261,22 +265,6 @@ function buildPayload(endpointUrl: string, req: CeoCommandRequest): any {
     context_hint: (req as any)?.context_hint ?? null,
     smart_context: (req as any)?.smart_context ?? null,
   };
-}
-
-function hasExecutionOrApproval(raw: any): boolean {
-  if (!raw || typeof raw !== "object") return false;
-
-  const execState = raw?.execution_state ?? raw?.executionState;
-  const execId = raw?.execution_id ?? raw?.executionId;
-  const approvalId = extractApprovalId(raw);
-  const hasApprovalObj = !!raw?.approval;
-
-  return (
-    isNonEmptyString(execState) ||
-    isNonEmptyString(execId) ||
-    isNonEmptyString(approvalId) ||
-    hasApprovalObj
-  );
 }
 
 async function fetchJsonOrText(res: Response): Promise<any> {
