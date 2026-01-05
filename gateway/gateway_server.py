@@ -960,6 +960,8 @@ _ALLOWED_BULK_TYPES = {
     "agent_exchange",
     "ai_summary",
 }
+
+
 # ================================================================
 # NOTION OPS — LIST DATABASES (READ ONLY)
 # ================================================================
@@ -996,7 +998,6 @@ async def notion_ops_list_databases():
         "ops_safe_mode": _ops_safe_mode(),
         "databases": dbs,
     }
-
 
 
 def _validate_bulk_items(items: Any) -> List[Dict[str, Any]]:
