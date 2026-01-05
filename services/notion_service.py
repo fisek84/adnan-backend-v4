@@ -565,12 +565,50 @@ class NotionService:
         return goal_name, status, priority, description
 
     # --------------------------------------------------
+    # WRAPPER UNWRAP (NEW)
+    # --------------------------------------------------
+
+    def _unwrap_ai_command(self, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        Supports payload shapes:
+          params = {"ai_command": {...}}  # dict
+          params = {"ai_command": AICommandLike}  # object with intent/params
+        Returns dict: {"intent": str, "params": dict} or None.
+        """
+        if not isinstance(params, dict):
+            return None
+
+        ai = params.get("ai_command")
+        if ai is None:
+            return None
+
+        # dict shape from API payload
+        if isinstance(ai, dict):
+            inner_intent = ai.get("intent")
+            inner_params = ai.get("params")
+            if isinstance(inner_intent, str) and isinstance(inner_params, dict):
+                return {"intent": inner_intent, "params": inner_params}
+            return None
+
+        # object-like
+        inner_intent = getattr(ai, "intent", None)
+        inner_params = getattr(ai, "params", None)
+        if isinstance(inner_intent, str) and isinstance(inner_params, dict):
+            return {"intent": inner_intent, "params": inner_params}
+
+        return None
+
+    # --------------------------------------------------
     # EXECUTION ENTRY POINT
     # --------------------------------------------------
 
     async def execute(self, command) -> Dict[str, Any]:
         """
         command očekujemo kao AICommand-like: ima intent + params.
+
+        IMPORTANT:
+        - orchestrator/UI često šalje wrapper intent: "notion_write"
+          a stvarni Notion intent je u params.ai_command.intent (npr. "create_page").
         """
         if not getattr(command, "intent", None):
             raise RuntimeError("NotionService called without intent")
@@ -578,23 +616,17 @@ class NotionService:
         intent = command.intent
         params = command.params or {}
 
-        # ----------------------------
-        # ✅ COMPAT: notion_write wrapper (frontend/legacy proposals)
-        # Some clients send intent="notion_write" with params.ai_command={intent, params}
-        # We unwrap and dispatch to the real intent (e.g., create_page).
-        # ----------------------------
-        if isinstance(intent, str) and intent.strip() == "notion_write":
-            ai = params.get("ai_command")
-            if isinstance(ai, dict):
-                inner_intent = ai.get("intent")
-                inner_params = ai.get("params") or {}
-                if isinstance(inner_intent, str) and inner_intent.strip():
-                    intent = inner_intent.strip()
-                    params = inner_params if isinstance(inner_params, dict) else {}
-                else:
-                    raise RuntimeError("notion_write missing ai_command.intent")
-            else:
-                raise RuntimeError("notion_write missing ai_command payload")
+        # ✅ FIX: unwrap outer "notion_write"/"notion_read" envelope into inner Notion intent
+        if intent in ("notion_write", "notion_read"):
+            unwrapped = self._unwrap_ai_command(
+                params if isinstance(params, dict) else {}
+            )
+            if not unwrapped:
+                raise RuntimeError(
+                    "notion_write/notion_read requires params.ai_command with inner intent/params"
+                )
+            intent = unwrapped["intent"]
+            params = unwrapped["params"]
 
         # ----------------------------
         # LEGACY: create_goal
@@ -1154,7 +1186,6 @@ class NotionService:
         all_errors = error_keys + extra_error_keys
 
         if not has_any_data:
-            # Do NOT overwrite the last good snapshot with an empty one
             logger.warning(
                 ">> Snapshot refresh produced NO DATA. core_total=%s errors=%s",
                 core_total,
@@ -1182,7 +1213,7 @@ class NotionService:
         )
 
         # ----------------------------
-        # ✅ ADDITION: core DB failure should mark ok=False
+        # ✅ core DB failure should mark ok=False
         # ----------------------------
         core_error_keys: List[str] = []
         if self.goals_db_id and snapshot.get("goals_error"):
