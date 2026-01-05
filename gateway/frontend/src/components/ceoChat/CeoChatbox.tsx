@@ -48,9 +48,7 @@ const makeSystemProcessingItem = (requestId?: string): ChatMessageItem => ({
   requestId,
 });
 
-const toGovernanceCard = (
-  resp: NormalizedConsoleResponse
-): GovernanceEventItem | null => {
+const toGovernanceCard = (resp: NormalizedConsoleResponse): GovernanceEventItem | null => {
   const gov = (resp as any)?.governance;
   if (!gov) return null;
   return {
@@ -118,23 +116,35 @@ const _pickText = (x: any): string => {
   if (!x || typeof x !== "object") return "";
   const keys = ["summary", "text", "message", "output_text", "outputText", "detail"];
   for (const k of keys) {
-    const v = x[k];
+    const v = (x as any)[k];
     if (typeof v === "string" && v.trim()) return v.trim();
   }
   return "";
 };
 
 const _looksLikeFailedAgentRun = (resp: any): boolean => {
-  const t =
-    String(resp?.systemText ?? resp?.text ?? resp?.summary ?? "").toLowerCase() ||
-    "";
+  const t = String(resp?.systemText ?? resp?.text ?? resp?.summary ?? "").toLowerCase() || "";
   if (t.includes("agent execution failed")) return true;
   if (t.includes("failed") && t.includes("agent")) return true;
-  // if router picked notion_ops for a CEO advisory style prompt, treat as suspicious
   const preferred = String(resp?.raw?.trace?.preferred_agent_id ?? "").toLowerCase();
   if (preferred === "notion_ops" && t.includes("failed")) return true;
   return false;
 };
+
+function safeJsonStringify(x: any, maxLen = 6000): string {
+  try {
+    const s = JSON.stringify(x, null, 2);
+    if (s.length <= maxLen) return s;
+    return s.slice(0, maxLen) + "\n…(truncated)…";
+  } catch {
+    return String(x ?? "");
+  }
+}
+
+function isAbortError(e: unknown): boolean {
+  const msg = e instanceof Error ? e.message : String(e ?? "");
+  return msg.toLowerCase().includes("aborted") || msg.toLowerCase().includes("abort");
+}
 
 export const CeoChatbox: React.FC<CeoChatboxProps> = ({
   ceoCommandUrl,
@@ -145,20 +155,19 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
   onOpenApprovals,
   className,
 }) => {
-  const ui = useMemo(
-    () => ({ ...defaultStrings, ...(strings ?? {}) }),
-    [strings]
-  );
+  const ui = useMemo(() => ({ ...defaultStrings, ...(strings ?? {}) }), [strings]);
 
-  // Keep compatibility regardless of api.ts signature (we do not rely on config being used).
+  // Ensure api always has a usable approveUrl (avoid undefined inside api.ts).
+  const effectiveApproveUrl = approveUrl?.trim() ? approveUrl : "/api/ai-ops/approval/approve";
+
   const api: CeoConsoleApi = useMemo(
     () =>
       (createCeoConsoleApi as any)({
         ceoCommandUrl,
-        approveUrl,
+        approveUrl: effectiveApproveUrl,
         headers,
       }) as CeoConsoleApi,
-    [ceoCommandUrl, approveUrl, headers]
+    [ceoCommandUrl, effectiveApproveUrl, headers]
   );
 
   const [items, setItems] = useState<ChatItem[]>([]);
@@ -179,11 +188,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
   }, []);
 
   const updateItem = useCallback((id: string, patch: Partial<ChatItem>) => {
-    setItems((prev) =>
-      prev.map((x) =>
-        x.id === id ? ({ ...x, ...(patch as any) } as ChatItem) : x
-      )
-    );
+    setItems((prev) => prev.map((x) => (x.id === id ? ({ ...x, ...(patch as any) } as ChatItem) : x)));
   }, []);
 
   const stopCurrent = useCallback(() => {
@@ -196,13 +201,9 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
   const resolveUrl = useCallback(
     (maybeUrl: string | undefined, fallbackPath: string): string => {
       try {
-        if (maybeUrl && maybeUrl.trim()) {
-          // If it's already absolute, keep. If it's relative, resolve against ceoCommandUrl.
-          return new URL(maybeUrl, ceoCommandUrl).toString();
-        }
+        if (maybeUrl && maybeUrl.trim()) return new URL(maybeUrl, ceoCommandUrl).toString();
         return new URL(fallbackPath, ceoCommandUrl).toString();
       } catch {
-        // last resort: relative to current origin
         return maybeUrl && maybeUrl.trim() ? maybeUrl : fallbackPath;
       }
     },
@@ -225,9 +226,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         signal,
       });
       const txt = await res.text();
-      if (!res.ok) {
-        throw new Error(`${url} failed (${res.status}): ${txt || "no body"}`);
-      }
+      if (!res.ok) throw new Error(`${url} failed (${res.status}): ${txt || "no body"}`);
       try {
         return txt ? JSON.parse(txt) : {};
       } catch {
@@ -239,7 +238,6 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
 
   const flushResponseToUi = useCallback(
     async (placeholderId: string, resp: NormalizedConsoleResponse) => {
-      // If your api layer supports streaming, keep it.
       if ((resp as any).stream) {
         setBusy("streaming");
         updateItem(placeholderId, { content: "", status: "streaming" });
@@ -264,19 +262,12 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         return;
       }
 
-      // IMPORTANT: backend returns { text/summary, proposed_commands: [...] }
-      const sysText =
-        (resp as any).systemText ??
-        (resp as any).summary ??
-        (resp as any).text ??
-        "";
-
+      const sysText = (resp as any).systemText ?? (resp as any).summary ?? (resp as any).text ?? "";
       updateItem(placeholderId, { content: sysText, status: "final" });
 
       const gov = toGovernanceCard(resp);
       if (gov) appendItem(gov);
 
-      // NEW: always render proposals (even if there is no approval_id yet)
       const proposals = _extractProposedCommands(resp as any);
       if (proposals.length > 0) {
         appendItem({
@@ -285,12 +276,10 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
           createdAt: now(),
           state: "BLOCKED",
           title: "Proposed commands",
-          summary:
-            "Select a proposal to create an approval and execute (governance gate).",
+          summary: "Select a proposal to create an approval and execute (governance gate).",
           reasons: proposals.map((p) => p.command_type),
           approvalRequestId: undefined,
           requestId: (resp as any)?.requestId,
-          // attach payload for renderer
           proposedCommands: proposals,
         } as any);
       }
@@ -309,11 +298,10 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
 
       const first = proposed[0];
       const cmd = first.command_type;
-
       if (cmd !== "refresh_snapshot") return null;
 
       const execUrl = resolveUrl(executeRawUrl, "/api/execute/raw");
-      const appUrl = resolveUrl(approveUrl, "/api/ai-ops/approval/approve");
+      const appUrl = resolveUrl(effectiveApproveUrl, "/api/ai-ops/approval/approve");
 
       const execBody = {
         command: cmd,
@@ -327,38 +315,26 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       const execJson = await postJson(execUrl, execBody, signal);
 
       const approvalId: string | null =
-        typeof execJson?.approval_id === "string" && execJson.approval_id
-          ? execJson.approval_id
-          : null;
+        typeof execJson?.approval_id === "string" && execJson.approval_id ? execJson.approval_id : null;
 
       if (!approvalId) return execJson;
 
-      const approveJson = await postJson(
-        appUrl,
-        { approval_id: approvalId },
-        signal
-      );
-
+      const approveJson = await postJson(appUrl, { approval_id: approvalId }, signal);
       return approveJson;
     },
-    [approveUrl, executeRawUrl, postJson, resolveUrl]
+    [effectiveApproveUrl, executeRawUrl, postJson, resolveUrl]
   );
 
   const handleOpenApprovals = useCallback(
     (approvalRequestId?: string) => {
       if (onOpenApprovals) onOpenApprovals(approvalRequestId);
       else {
-        window.dispatchEvent(
-          new CustomEvent("ceo:openApprovals", {
-            detail: { approvalRequestId },
-          })
-        );
+        window.dispatchEvent(new CustomEvent("ceo:openApprovals", { detail: { approvalRequestId } }));
       }
     },
     [onOpenApprovals]
   );
 
-  // NEW: Execute proposal -> create approval via /api/execute/raw
   const handleCreateApprovalFromProposal = useCallback(
     async (proposal: ProposedCmd) => {
       if (busy === "submitting" || busy === "streaming") return;
@@ -374,32 +350,23 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
 
       try {
         const execUrl = resolveUrl(executeRawUrl, "/api/execute/raw");
-
         const execBody = {
           command: proposal.command_type,
           intent: proposal.command_type,
           params: proposal.payload || {},
           initiator: "ceo",
           read_only: false,
-          metadata: {
-            origin: "ceo_chatbox_proposal",
-            proposal_command_type: proposal.command_type,
-          },
+          metadata: { origin: "ceo_chatbox_proposal", proposal_command_type: proposal.command_type },
         };
 
         const execJson = await postJson(execUrl, execBody, controller.signal);
 
         const approvalId: string | null =
-          typeof execJson?.approval_id === "string" && execJson.approval_id
-            ? execJson.approval_id
-            : null;
+          typeof execJson?.approval_id === "string" && execJson.approval_id ? execJson.approval_id : null;
 
-        const msg =
-          approvalId?.trim()
-            ? `Approval created: ${approvalId}`
-            : _pickText(execJson) || "Approval created.";
-
+        const msg = approvalId?.trim() ? `Approval created: ${approvalId}` : _pickText(execJson) || "Approval created.";
         updateItem(placeholder.id, { content: msg, status: "final" });
+
         abortRef.current = null;
         setBusy("idle");
         setLastError(null);
@@ -409,22 +376,13 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         abortRef.current = null;
         const msg = e instanceof Error ? e.message : String(e);
         updateItem(placeholder.id, { status: "error", content: "" });
-        setBusy("error");
-        setLastError(msg);
+        setBusy(isAbortError(e) ? "idle" : "error");
+        setLastError(isAbortError(e) ? null : msg);
       }
     },
-    [
-      appendItem,
-      busy,
-      executeRawUrl,
-      handleOpenApprovals,
-      postJson,
-      resolveUrl,
-      updateItem,
-    ]
+    [appendItem, busy, executeRawUrl, handleOpenApprovals, postJson, resolveUrl, updateItem]
   );
 
-  // NEW: Approve & execute immediately (happy-path)
   const handleApproveAndExecuteProposal = useCallback(
     async (proposal: ProposedCmd) => {
       if (busy === "submitting" || busy === "streaming") return;
@@ -440,7 +398,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
 
       try {
         const execUrl = resolveUrl(executeRawUrl, "/api/execute/raw");
-        const appUrl = resolveUrl(approveUrl, "/api/ai-ops/approval/approve");
+        const appUrl = resolveUrl(effectiveApproveUrl, "/api/ai-ops/approval/approve");
 
         const execBody = {
           command: proposal.command_type,
@@ -448,25 +406,17 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
           params: proposal.payload || {},
           initiator: "ceo",
           read_only: false,
-          metadata: {
-            origin: "ceo_chatbox_proposal",
-            proposal_command_type: proposal.command_type,
-          },
+          metadata: { origin: "ceo_chatbox_proposal", proposal_command_type: proposal.command_type },
         };
 
         const execJson = await postJson(execUrl, execBody, controller.signal);
 
         const approvalId: string | null =
-          typeof execJson?.approval_id === "string" && execJson.approval_id
-            ? execJson.approval_id
-            : null;
+          typeof execJson?.approval_id === "string" && execJson.approval_id ? execJson.approval_id : null;
 
         if (!approvalId) {
           const msg =
-            _pickText(execJson) ||
-            (execJson?.execution_state
-              ? `Execution: ${execJson.execution_state}`
-              : "Executed.");
+            _pickText(execJson) || (execJson?.execution_state ? `Execution: ${execJson.execution_state}` : "Executed.");
           updateItem(placeholder.id, { content: msg, status: "final" });
           abortRef.current = null;
           setBusy("idle");
@@ -474,17 +424,11 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
           return;
         }
 
-        const approveJson = await postJson(
-          appUrl,
-          { approval_id: approvalId },
-          controller.signal
-        );
+        const approveJson = await postJson(appUrl, { approval_id: approvalId }, controller.signal);
 
         const msg =
           _pickText(approveJson) ||
-          (approveJson?.execution_state
-            ? `Execution: ${approveJson.execution_state}`
-            : "Approved & executed.");
+          (approveJson?.execution_state ? `Execution: ${approveJson.execution_state}` : "Approved & executed.");
 
         updateItem(placeholder.id, { content: msg, status: "final" });
         abortRef.current = null;
@@ -494,12 +438,117 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         abortRef.current = null;
         const msg = e instanceof Error ? e.message : String(e);
         updateItem(placeholder.id, { status: "error", content: "" });
-        setBusy("error");
-        setLastError(msg);
+        setBusy(isAbortError(e) ? "idle" : "error");
+        setLastError(isAbortError(e) ? null : msg);
       }
     },
-    [appendItem, approveUrl, busy, executeRawUrl, postJson, resolveUrl, updateItem]
+    [appendItem, effectiveApproveUrl, busy, executeRawUrl, postJson, resolveUrl, updateItem]
   );
+
+  // ------------------------------
+  // NOTION SEARCH (generic DB)
+  // ------------------------------
+  const [notionDbs, setNotionDbs] = useState<Record<string, string>>({});
+  const [notionDbKey, setNotionDbKey] = useState<string>("__ALL__");
+  const [notionContains, setNotionContains] = useState<string>("");
+  const [notionLoading, setNotionLoading] = useState<boolean>(false);
+  const [notionLastError, setNotionLastError] = useState<string | null>(null);
+
+  const reloadNotionDatabases = useCallback(
+    async (signal?: AbortSignal) => {
+      setNotionLastError(null);
+      setNotionLoading(true);
+      try {
+        const res = await (api as any).listNotionDatabases?.(signal);
+        const dbs = res?.databases && typeof res.databases === "object" ? res.databases : {};
+        setNotionDbs(dbs);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        if (!isAbortError(e)) setNotionLastError(msg);
+      } finally {
+        setNotionLoading(false);
+      }
+    },
+    [api]
+  );
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void reloadNotionDatabases(controller.signal);
+    return () => controller.abort();
+  }, [reloadNotionDatabases]);
+
+  const runNotionSearch = useCallback(async () => {
+    const q = notionContains.trim();
+    if (!q) {
+      setNotionLastError("Unesi tekst za pretragu (contains).");
+      return;
+    }
+    if (busy === "submitting" || busy === "streaming") return;
+
+    const dbKeys = Object.keys(notionDbs || {});
+    const keysToSearch = notionDbKey === "__ALL__" ? dbKeys : notionDbKey ? [notionDbKey] : [];
+
+    if (!keysToSearch.length) {
+      setNotionLastError("Nema dostupnih Notion baza (db_key list je prazna).");
+      return;
+    }
+
+    setNotionLastError(null);
+    setNotionLoading(true);
+
+    const placeholder = makeSystemProcessingItem("notion_search");
+    appendItem(placeholder);
+
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    try {
+      // PO BAZI: hvataj error i nastavi
+      const results: Record<string, any> = {};
+
+      for (const k of keysToSearch) {
+        try {
+          // Best-effort filter: Name.title.contains (najčešći)
+          const spec = {
+            db_key: k,
+            filter: {
+              property: "Name",
+              title: { contains: q },
+            },
+            page_size: 10,
+          };
+
+          const r = await (api as any).notionBulkQuery?.({ queries: [spec] }, controller.signal);
+          results[k] = r;
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          results[k] = { ok: false, error: msg };
+          if (isAbortError(e)) break;
+        }
+      }
+
+      const text =
+        `Notion Search (contains="${q}")\n` +
+        `Baze: ${keysToSearch.join(", ")}\n\n` +
+        safeJsonStringify(results);
+
+      updateItem(placeholder.id, { content: text, status: "final" });
+
+      abortRef.current = null;
+      setNotionLoading(false);
+      setBusy("idle");
+      setLastError(null);
+    } catch (e) {
+      abortRef.current = null;
+      const msg = e instanceof Error ? e.message : String(e);
+      updateItem(placeholder.id, { status: "error", content: "" });
+      setNotionLoading(false);
+      setBusy(isAbortError(e) ? "idle" : "error");
+      setNotionLastError(isAbortError(e) ? null : msg);
+      setLastError(isAbortError(e) ? null : msg);
+    }
+  }, [api, appendItem, busy, notionContains, notionDbKey, notionDbs, updateItem]);
 
   const submit = useCallback(async () => {
     const trimmed = draft.trim();
@@ -531,17 +580,14 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
     abortRef.current = controller;
 
     try {
-      // Backend expects: { text, initiator, session_id?, context_hint? }
       const req: any = {
         text: trimmed,
         initiator: "ceo_dashboard",
         context_hint: {},
       };
 
-      // 1) Try ceo/command via api layer
       let resp = await api.sendCommand(req, controller.signal);
 
-      // 2) If no proposals and it looks like a failed/incorrect agent run, retry via /api/chat (happy-path)
       const proposals1 = _extractProposedCommands(resp as any);
       if (
         proposals1.length < 1 &&
@@ -555,13 +601,8 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
           controller.signal
         );
 
-        // Make a minimal normalized response for UI
         resp = {
-          systemText:
-            (chatJson?.text as any) ??
-            (chatJson?.summary as any) ??
-            (chatJson?.message as any) ??
-            "",
+          systemText: (chatJson?.text as any) ?? (chatJson?.summary as any) ?? (chatJson?.message as any) ?? "",
           raw: chatJson,
           proposed_commands: chatJson?.proposed_commands ?? chatJson?.proposedCommands ?? [],
         } as any;
@@ -569,18 +610,14 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
 
       abortRef.current = null;
 
-      // show advisor response + proposals
       await flushResponseToUi(placeholder.id, resp);
 
-      // auto-exec (only refresh_snapshot)
       try {
         const execResult = await autoExecuteFirstProposed(resp, controller.signal);
         if (execResult) {
           const text =
             _pickText(execResult) ||
-            (execResult?.execution_state
-              ? `Izvršeno: ${execResult.execution_state}`
-              : "Izvršeno.");
+            (execResult?.execution_state ? `Izvršeno: ${execResult.execution_state}` : "Izvršeno.");
 
           appendItem({
             id: uid(),
@@ -611,20 +648,10 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       abortRef.current = null;
       const msg = e instanceof Error ? e.message : String(e);
       updateItem(placeholder.id, { status: "error", content: "" });
-      setBusy("error");
-      setLastError(msg);
+      setBusy(isAbortError(e) ? "idle" : "error");
+      setLastError(isAbortError(e) ? null : msg);
     }
-  }, [
-    api,
-    appendItem,
-    autoExecuteFirstProposed,
-    busy,
-    draft,
-    flushResponseToUi,
-    postJson,
-    resolveUrl,
-    updateItem,
-  ]);
+  }, [api, appendItem, autoExecuteFirstProposed, busy, draft, flushResponseToUi, postJson, resolveUrl, updateItem]);
 
   const onKeyDown = useCallback(
     (ev: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -642,8 +669,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
 
   const handleApprove = useCallback(
     async (approvalId: string) => {
-      const appUrl = resolveUrl(approveUrl, "/api/ai-ops/approval/approve");
-
+      const appUrl = resolveUrl(effectiveApproveUrl, "/api/ai-ops/approval/approve");
       if (busy === "submitting" || busy === "streaming") return;
 
       setBusy("submitting");
@@ -656,17 +682,11 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       abortRef.current = controller;
 
       try {
-        const approveJson = await postJson(
-          appUrl,
-          { approval_id: approvalId },
-          controller.signal
-        );
+        const approveJson = await postJson(appUrl, { approval_id: approvalId }, controller.signal);
 
         const msg =
           _pickText(approveJson) ||
-          (approveJson?.execution_state
-            ? `Execution: ${approveJson.execution_state}`
-            : "Approved.");
+          (approveJson?.execution_state ? `Execution: ${approveJson.execution_state}` : "Approved.");
 
         updateItem(placeholder.id, { content: msg, status: "final" });
         abortRef.current = null;
@@ -676,16 +696,17 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         abortRef.current = null;
         const msg = e instanceof Error ? e.message : String(e);
         updateItem(placeholder.id, { status: "error", content: "" });
-        setBusy("error");
-        setLastError(msg);
+        setBusy(isAbortError(e) ? "idle" : "error");
+        setLastError(isAbortError(e) ? null : msg);
       }
     },
-    [appendItem, approveUrl, busy, postJson, resolveUrl, updateItem]
+    [appendItem, effectiveApproveUrl, busy, postJson, resolveUrl, updateItem]
   );
 
   const retryLast = useCallback(() => {
     setBusy("idle");
     setLastError(null);
+    setNotionLastError(null);
   }, []);
 
   return (
@@ -699,7 +720,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
                 {ui.jumpToLatestLabel}
               </button>
             )}
-            {(busy === "submitting" || busy === "streaming") && (
+            {(busy === "submitting" || busy === "streaming" || notionLoading) && (
               <button className="ceoHeaderButton" onClick={stopCurrent}>
                 Stop
               </button>
@@ -715,17 +736,12 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
             if (it.kind === "message") {
               const rowSide = it.role === "ceo" ? "right" : "left";
               const dotCls =
-                it.status === "error"
-                  ? "ceoStatusDot err"
-                  : it.status === "final"
-                  ? "ceoStatusDot ok"
-                  : "ceoStatusDot";
+                it.status === "error" ? "ceoStatusDot err" : it.status === "final" ? "ceoStatusDot ok" : "ceoStatusDot";
+
               return (
                 <div className={`ceoRow ${rowSide}`} key={it.id}>
                   <div className={`ceoBubble ${it.role}`}>
-                    {it.role === "system" &&
-                    it.status === "streaming" &&
-                    !it.content ? (
+                    {it.role === "system" && it.status === "streaming" && !it.content ? (
                       <span className="ceoTyping">
                         <span>{ui.processingLabel}</span>
                         <span className="ceoDots" aria-hidden="true">
@@ -747,21 +763,11 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
             }
 
             const badgeClass =
-              it.state === "BLOCKED"
-                ? "blocked"
-                : it.state === "APPROVED"
-                ? "approved"
-                : "executed";
+              it.state === "BLOCKED" ? "blocked" : it.state === "APPROVED" ? "approved" : "executed";
 
-            const badgeText =
-              it.state === "BLOCKED"
-                ? ui.blockedLabel
-                : it.state === "APPROVED"
-                ? ui.approvedLabel
-                : ui.executedLabel;
+            const badgeText = it.state === "BLOCKED" ? ui.blockedLabel : it.state === "APPROVED" ? ui.approvedLabel : ui.executedLabel;
 
-            const proposedCommands: ProposedCmd[] =
-              ((it as any)?.proposedCommands as ProposedCmd[]) ?? [];
+            const proposedCommands: ProposedCmd[] = ((it as any)?.proposedCommands as ProposedCmd[]) ?? [];
 
             return (
               <div className="ceoRow left" key={it.id}>
@@ -772,9 +778,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
                   </div>
 
                   <div className="govBody">
-                    {it.summary ? (
-                      <div className="govSummary">{it.summary}</div>
-                    ) : null}
+                    {it.summary ? <div className="govSummary">{it.summary}</div> : null}
 
                     {it.reasons && it.reasons.length > 0 ? (
                       <ul className="govReasons">
@@ -784,7 +788,6 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
                       </ul>
                     ) : null}
 
-                    {/* NEW: Render proposals with action buttons */}
                     {proposedCommands.length > 0 ? (
                       <div style={{ marginTop: 10 }}>
                         <div className="govSummary" style={{ marginBottom: 8 }}>
@@ -796,23 +799,14 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
                             <li key={`${it.id}_p_${idx}`}>
                               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                                 <span style={{ fontWeight: 600 }}>{p.command_type}</span>
-                                {p.required_approval ? (
-                                  <span style={{ opacity: 0.8 }}>(approval)</span>
-                                ) : null}
+                                {p.required_approval ? <span style={{ opacity: 0.8 }}>(approval)</span> : null}
                               </div>
 
-                              <div
-                                style={{
-                                  display: "flex",
-                                  gap: 8,
-                                  marginTop: 8,
-                                  flexWrap: "wrap",
-                                }}
-                              >
+                              <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
                                 <button
                                   className="govButton"
                                   onClick={() => void handleApproveAndExecuteProposal(p)}
-                                  disabled={busy === "submitting" || busy === "streaming"}
+                                  disabled={busy === "submitting" || busy === "streaming" || notionLoading}
                                 >
                                   Approve & Execute
                                 </button>
@@ -820,7 +814,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
                                 <button
                                   className="govButton"
                                   onClick={() => void handleCreateApprovalFromProposal(p)}
-                                  disabled={busy === "submitting" || busy === "streaming"}
+                                  disabled={busy === "submitting" || busy === "streaming" || notionLoading}
                                 >
                                   Create Approval
                                 </button>
@@ -832,10 +826,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
                     ) : null}
 
                     <div className="govActions">
-                      <button
-                        className="govButton"
-                        onClick={() => handleOpenApprovals(it.approvalRequestId)}
-                      >
+                      <button className="govButton" onClick={() => handleOpenApprovals(it.approvalRequestId)}>
                         {ui.openApprovalsLabel}
                       </button>
 
@@ -843,7 +834,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
                         <button
                           className="govButton"
                           onClick={() => void handleApprove(it.approvalRequestId!)}
-                          disabled={busy === "submitting" || busy === "streaming"}
+                          disabled={busy === "submitting" || busy === "streaming" || notionLoading}
                         >
                           {ui.approveLabel}
                         </button>
@@ -855,7 +846,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
             );
           })}
 
-          {lastError ? (
+          {lastError || notionLastError ? (
             <div className="ceoRow left">
               <div className="govCard">
                 <div className="govTop">
@@ -863,7 +854,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
                   <div className="govBadge blocked">{ui.blockedLabel}</div>
                 </div>
                 <div className="govBody">
-                  <div className="govSummary">{lastError}</div>
+                  <div className="govSummary">{notionLastError ? `Notion search: ${notionLastError}` : lastError}</div>
                   <div className="govActions">
                     <button className="govButton" onClick={retryLast}>
                       {ui.retryLabel}
@@ -877,6 +868,86 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       </div>
 
       <footer className="ceoComposer">
+        {/* NOTION SEARCH PANEL */}
+        <div
+          style={{
+            display: "flex",
+            gap: 8,
+            flexWrap: "wrap",
+            alignItems: "center",
+            padding: "8px 0 10px 0",
+            borderTop: "1px solid rgba(255,255,255,0.08)",
+            marginTop: 8,
+          }}
+        >
+          <div style={{ fontWeight: 600, opacity: 0.9 }}>{(ui as any).searchNotionLabel ?? "Search Notion"}</div>
+
+          <select
+            value={notionDbKey}
+            onChange={(e) => setNotionDbKey(e.target.value)}
+            disabled={notionLoading || busy === "submitting" || busy === "streaming"}
+            style={{
+              padding: "8px 10px",
+              borderRadius: 10,
+              border: "1px solid rgba(255,255,255,0.12)",
+              background: "transparent",
+              color: "inherit",
+              minWidth: 180,
+            }}
+            title={(ui as any).chooseDatabaseLabel ?? "Database"}
+          >
+            <option value="__ALL__">ALL databases</option>
+            {Object.keys(notionDbs || {})
+              .sort()
+              .map((k) => (
+                <option key={k} value={k}>
+                  {k}
+                </option>
+              ))}
+          </select>
+
+          <input
+            value={notionContains}
+            onChange={(e) => setNotionContains(e.target.value)}
+            placeholder={(ui as any).searchQueryPlaceholder ?? 'Search text…'}
+            disabled={notionLoading || busy === "submitting" || busy === "streaming"}
+            style={{
+              padding: "8px 10px",
+              borderRadius: 10,
+              border: "1px solid rgba(255,255,255,0.12)",
+              background: "transparent",
+              color: "inherit",
+              flex: "1 1 280px",
+              minWidth: 220,
+            }}
+          />
+
+          <button
+            className="ceoHeaderButton"
+            onClick={() => void runNotionSearch()}
+            disabled={notionLoading || busy === "submitting" || busy === "streaming" || !notionContains.trim()}
+            title="POST /notion-ops/bulk/query"
+          >
+            {notionLoading ? ((ui as any).searchingLabel ?? "Searching…") : ((ui as any).runSearchLabel ?? "Search")}
+          </button>
+
+          <button
+            className="ceoHeaderButton"
+            onClick={() => {
+              const controller = new AbortController();
+              abortRef.current = controller;
+              void reloadNotionDatabases(controller.signal);
+            }}
+            disabled={notionLoading || busy === "submitting" || busy === "streaming"}
+            title="Reload list of databases"
+          >
+            {(ui as any).loadDatabasesLabel ?? "Load databases"}
+          </button>
+
+          <div style={{ opacity: 0.7, fontSize: 12 }}>DBs: {Object.keys(notionDbs || {}).length}</div>
+        </div>
+
+        {/* CHAT COMPOSER */}
         <div className="ceoComposerInner">
           <textarea
             className="ceoTextarea"
@@ -887,11 +958,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
             disabled={busy === "submitting" || busy === "streaming"}
             rows={1}
           />
-          <button
-            className="ceoSendBtn"
-            onClick={() => void submit()}
-            disabled={!canSend}
-          >
+          <button className="ceoSendBtn" onClick={() => void submit()} disabled={!canSend}>
             {ui.sendLabel}
           </button>
         </div>

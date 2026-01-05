@@ -30,6 +30,25 @@ export type GovernanceCard = {
   requestId?: string;
 };
 
+// ------------------------------
+// Proposed commands (UI-friendly)
+// ------------------------------
+export type ProposedCommand = {
+  // tolerant: backend ponekad šalje različite kombinacije
+  command_type?: string;
+  payload?: Record<string, any>;
+  required_approval?: boolean;
+  status?: string;
+
+  // tolerant aliases
+  command?: string;
+  intent?: string;
+  params?: Record<string, any>;
+  args?: Record<string, any>;
+
+  [k: string]: any;
+};
+
 export type GovernanceEventItem = {
   id: string;
   kind: "governance";
@@ -39,23 +58,89 @@ export type GovernanceEventItem = {
   reasons?: string[];
   approvalRequestId?: string;
 
+  // allow governance cards to carry proposals for UI actions
+  proposedCommands?: ProposedCommand[];
+
   createdAt: number;
   requestId?: string;
 };
 
 export type ChatItem = ChatMessageItem | GovernanceEventItem;
 
+// ------------------------------
+// Notion Search (generic)
+// ------------------------------
+export type NotionDatabasesResponse = {
+  ok?: boolean;
+  read_only?: boolean;
+  // db_key -> database_id
+  databases: Record<string, string>;
+};
+
+export type NotionQuerySpec = {
+  // prefer db_key, ali toleriramo i database_id
+  db_key?: string;
+  database_id?: string;
+
+  filter?: Record<string, any> | null;
+  sorts?: Array<Record<string, any>> | null;
+  start_cursor?: string | null;
+  page_size?: number | null;
+
+  // tolerant passthrough
+  [k: string]: any;
+};
+
+export type NotionBulkQueryPayload = {
+  queries: NotionQuerySpec[];
+};
+
+// “Generic” query result (backend može vratiti results: [...])
+export type NotionBulkQueryResponse = {
+  results?: Array<any>;
+  [k: string]: any;
+};
+
+// ------------------------------
+// UI strings
+// ------------------------------
+// IMPORTANT: Ovo mora odgovarati defaultStrings u strings.ts
 export type UiStrings = {
   headerTitle: string;
   headerSubtitle: string;
-  processingLabel: string;
-  jumpToLatestLabel: string;
+
   inputPlaceholder: string;
   sendLabel: string;
+
+  processingLabel: string;
+  jumpToLatestLabel: string;
+
+  blockedLabel: string;
+  approvedLabel: string;
+  executedLabel: string;
+
+  openApprovalsLabel: string;
+  approveLabel: string;
+  retryLabel: string;
+
+  // ------------------------------
+  // Notion Search (generic)
+  // ------------------------------
+  searchNotionLabel: string; // naziv sekcije/akcije
+  chooseDatabaseLabel: string; // label za dropdown
+  databasePlaceholder: string; // placeholder kad nema izbora
+  loadDatabasesLabel: string; // dugme: load/refresh
+  runSearchLabel: string; // dugme: search
+  searchQueryPlaceholder: string; // input placeholder za search
+  searchingLabel: string; // status tokom query
+  noResultsLabel: string; // kad nema rezultata
 };
 
 export type CeoCommandRequest = {
-  input_text: string;
+  // tolerantan input (api.ts koristi extractText)
+  text?: string;
+  input_text?: string;
+
   smart_context?: Record<string, any>;
   source?: string;
 
@@ -77,14 +162,17 @@ export type NormalizedConsoleResponse = {
 
   governance?: GovernanceCard;
 
-  // opciono za streaming (ako ikad dodaš)
+  // opciono za streaming
   stream?: AsyncIterable<string>;
 
   // omogućava UI da renderuje proposals i kad nisu mapirani u governance
-  proposed_commands?: RawCeoConsoleResponse["proposed_commands"];
+  proposed_commands?: ProposedCommand[];
 
   // raw response za debug/compat (nikad ne gubi polja)
   raw?: RawCeoConsoleResponse;
+
+  // optional: source endpoint
+  source_endpoint?: string;
 };
 
 // Backend shape (CEOCommandResponse iz FastAPI)
@@ -110,7 +198,11 @@ export type RawCeoConsoleResponse = {
     intent?: string;
     params?: Record<string, any>;
     args?: Record<string, any>;
+
+    [k: string]: any;
   }>;
 
   trace?: Record<string, any>;
+
+  [k: string]: any;
 };
