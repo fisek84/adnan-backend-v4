@@ -25,6 +25,7 @@ let lastProposalId = null;
     return u;
   }
 
+  // Legacy endpoints (NOT CANON for Jan 2026 flow)
   const ceoCommandUrl = resolveUrl(cfg.ceoCommandUrl || "/api/ceo-console/command");
   const approveUrl = resolveUrl(cfg.approveUrl || "/api/ai-ops/approval/approve");
   const proposalsExecuteUrl = resolveUrl(cfg.proposalsExecuteUrl || "/api/proposals/execute");
@@ -70,27 +71,50 @@ let lastProposalId = null;
     return { status: resp.status, data };
   }
 
-  // Expose API for UI code that already exists in this file
+  // Expose API for any legacy UI code that still references it.
+  // CANON SAFETY:
+  // - No implicit reuse of lastApprovalId/lastProposalId
+  // - Disallow non-canonical proposal execute endpoint
   window.CEO_CHATBOX_API = {
     async sendCommand(payload) {
       const { status, data } = await postJson(ceoCommandUrl, payload);
-      // Capture approval/proposal IDs if present
+
+      // Capture IDs for debugging only (NOT as implicit fallbacks)
       if (data && data.context && data.context.last_approval_id) lastApprovalId = data.context.last_approval_id;
       if (data && data.last_approval_id) lastApprovalId = data.last_approval_id;
       if (data && data.last_proposal_id) lastProposalId = data.last_proposal_id;
+
       return { status, data };
     },
 
     async approve(approval_id) {
-      const id = approval_id || lastApprovalId;
-      if (!id) return { status: 400, data: { ok: false, error: "Missing approval_id" } };
-      return postJson(approveUrl, { approval_id: id });
+      // CANON: approval must be explicit; never fallback to stale lastApprovalId
+      if (!approval_id) {
+        return {
+          status: 400,
+          data: {
+            ok: false,
+            error:
+              "Missing approval_id (canon requires explicit approval_id; implicit lastApprovalId fallback is disabled).",
+            debug_lastApprovalId: lastApprovalId,
+          },
+        };
+      }
+      return postJson(approveUrl, { approval_id });
     },
 
-    async executeProposal(proposal_id) {
-      const id = proposal_id || lastProposalId;
-      if (!id) return { status: 400, data: { ok: false, error: "Missing proposal_id" } };
-      return postJson(proposalsExecuteUrl, { proposal_id: id });
+    async executeProposal(_proposal_id) {
+      // NOT CANON: proposalsExecuteUrl is not part of CEO_CONSOLE_EXECUTION_FLOW.md
+      return {
+        status: 410,
+        data: {
+          ok: false,
+          error:
+            "Endpoint /api/proposals/execute is disabled (not canonical). Use /api/execute/raw with a selected proposal, then /api/ai-ops/approval/approve.",
+          debug_lastProposalId: lastProposalId,
+          proposalsExecuteUrl,
+        },
+      };
     },
 
     _debug: {
@@ -98,6 +122,8 @@ let lastProposalId = null;
       approveUrl,
       proposalsExecuteUrl,
       apiOrigin,
+      lastApprovalId: () => lastApprovalId,
+      lastProposalId: () => lastProposalId,
     },
   };
 })();

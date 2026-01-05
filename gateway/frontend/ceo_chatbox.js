@@ -1,52 +1,60 @@
 // gateway/frontend/ceo_chatbox.js
 (function () {
   try {
+    // ------------------------------
+    // CANON SAFETY: legacy chatbox MUST NOT run alongside React app
+    // ------------------------------
+    // Rule:
+    // - Default: DO NOT mount legacy UI.
+    // - Allow only if explicitly enabled via:
+    //   window.__EVO_UI__.enableLegacyChatbox === true
+    //
+    // This prevents double UI / stale proposal bugs (A typed, B executed).
+    const cfg = (window.__EVO_UI__ = window.__EVO_UI__ || {});
+
+    const explicitlyEnabled = cfg.enableLegacyChatbox === true;
+
+    // If React root exists, assume React app owns the page. Do not mount legacy unless explicitly enabled.
+    const reactRoot = document.getElementById("root");
+    const reactLikelyMounted = !!(reactRoot && reactRoot.childNodes && reactRoot.childNodes.length > 0);
+
+    if (!explicitlyEnabled && reactRoot) {
+      // Even if React isn't mounted yet, this build is React-first. Avoid legacy mount.
+      console.log("[CEO_CHATBOX][legacy] skipped: React root detected; enableLegacyChatbox !== true");
+      return;
+    }
+
+    // Prevent multiple mounts
     if (window.__CEO_CHATBOX_APP__) return;
     window.__CEO_CHATBOX_APP__ = true;
 
-    const cfg = (window.__EVO_UI__ = window.__EVO_UI__ || {});
     const mountSelector = cfg.mountSelector || "#ceo-left-panel";
 
-    // CEO Console endpoints
-    const ceoCommandUrl = cfg.ceoCommandUrl || "/api/ceo-console/command";
+    // ------------------------------
+    // CANON endpoints
+    // ------------------------------
+    const chatUrl = cfg.chatUrl || "/api/chat";
     const ceoStatusUrl = cfg.ceoStatusUrl || "/api/ceo-console/status";
-
-    // CANON governance endpoints (enabled)
     const executeRawUrl = cfg.executeRawUrl || "/api/execute/raw";
     const approveUrl = cfg.approveUrl || "/api/ai-ops/approval/approve";
 
-    const headers = Object.assign(
-      { "Content-Type": "application/json" },
-      cfg.headers || {}
-    );
+    const headers = Object.assign({ "Content-Type": "application/json" }, cfg.headers || {});
 
-    // --- NEW: stable session_id (persist in localStorage) ---
-    const SESSION_STORAGE_KEY =
-      cfg.sessionStorageKey || "ceo_console_session_id";
+    // --- stable session_id (persist in localStorage) ---
+    const SESSION_STORAGE_KEY = cfg.sessionStorageKey || "ceo_console_session_id";
 
     function genSessionId() {
       try {
-        if (typeof crypto !== "undefined" && crypto.randomUUID) {
-          return crypto.randomUUID();
-        }
+        if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
       } catch {
         // ignore
       }
-      // fallback
-      return (
-        "sess_" +
-        Math.random().toString(36).slice(2) +
-        "_" +
-        Date.now().toString(36)
-      );
+      return "sess_" + Math.random().toString(36).slice(2) + "_" + Date.now().toString(36);
     }
 
     function getOrCreateSessionId() {
       try {
-        // allow hard override if set in cfg
-        if (cfg.session_id && typeof cfg.session_id === "string") {
-          return cfg.session_id;
-        }
+        if (cfg.session_id && typeof cfg.session_id === "string") return cfg.session_id;
 
         const existing = localStorage.getItem(SESSION_STORAGE_KEY);
         if (existing && typeof existing === "string") return existing;
@@ -55,19 +63,19 @@
         localStorage.setItem(SESSION_STORAGE_KEY, created);
         return created;
       } catch {
-        // if storage blocked, at least return an in-memory id
         return cfg.session_id || genSessionId();
       }
     }
 
-    // ensure cfg has a session_id for subsequent calls
     cfg.session_id = getOrCreateSessionId();
-    // --- /NEW ---
+    // --- /session_id ---
 
     const host = document.querySelector(mountSelector);
-    if (!host) return;
+    if (!host) {
+      console.log("[CEO_CHATBOX][legacy] skipped: mount element not found", { mountSelector });
+      return;
+    }
 
-    // legacy ostaje, ali je već skriven u index.html (#ceo-chat-legacy display:none)
     host.innerHTML = "";
 
     const root = document.createElement("div");
@@ -78,8 +86,7 @@
 
     const empty = document.createElement("div");
     empty.className = "ceo-chatbox-empty";
-    empty.textContent =
-      "Napiši CEO komandu ispod. History je scroll, input je fiksno na dnu.";
+    empty.textContent = "Legacy chatbox (debug only). Chat is read-only; execution is approval-gated.";
     history.appendChild(empty);
 
     const scrollBtn = document.createElement("button");
@@ -97,21 +104,19 @@
 
     const textarea = document.createElement("textarea");
     textarea.className = "ceo-chatbox-textarea";
-    textarea.placeholder =
-      "Unesi CEO COMMAND… (Enter = pošalji, Shift+Enter = novi red)";
+    textarea.placeholder = "Unesi poruku CEO Advisor-u… (Enter = pošalji, Shift+Enter = novi red)";
 
     const sendBtn = document.createElement("button");
     sendBtn.className = "ceo-chatbox-btn primary";
     sendBtn.type = "button";
     sendBtn.textContent = "Pošalji";
 
-    // Approve button ENABLED (disabled only when there is no approval_id or when busy)
     const approveBtn = document.createElement("button");
     approveBtn.className = "ceo-chatbox-btn";
     approveBtn.type = "button";
     approveBtn.textContent = "Odobri";
     approveBtn.disabled = true;
-    approveBtn.title = "Odobri zadnju izvršenu komandu (approval_id).";
+    approveBtn.title = "Odobri zadnju BLOCKED komandu (approval_id).";
 
     composer.appendChild(textarea);
     composer.appendChild(sendBtn);
@@ -125,22 +130,15 @@
 
     let busy = false;
     let lastRole = null;
-
-    // governance state
     let currentApprovalId = null;
 
     function isNearBottom() {
       const threshold = 120;
-      return (
-        history.scrollHeight - (history.scrollTop + history.clientHeight) <
-        threshold
-      );
+      return history.scrollHeight - (history.scrollTop + history.clientHeight) < threshold;
     }
 
     function scrollToBottom(force = false) {
-      if (force || isNearBottom()) {
-        history.scrollTop = history.scrollHeight;
-      }
+      if (force || isNearBottom()) history.scrollTop = history.scrollHeight;
     }
 
     function updateScrollBtn() {
@@ -206,8 +204,6 @@
       sendBtn.disabled = next;
       textarea.disabled = next;
       typing.style.display = next ? "block" : "none";
-
-      // approve enabled only if we have approval_id and not busy
       approveBtn.disabled = next || !currentApprovalId;
     }
 
@@ -217,15 +213,8 @@
     }
 
     textarea.addEventListener("input", autosize);
-
     textarea.addEventListener("keydown", (e) => {
-      if (
-        e.key === "Enter" &&
-        !e.shiftKey &&
-        !e.ctrlKey &&
-        !e.altKey &&
-        !e.metaKey
-      ) {
+      if (e.key === "Enter" && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
         e.preventDefault();
         sendBtn.click();
       }
@@ -247,7 +236,6 @@
       }
     }
 
-    // NEW: fetch latest status snapshot from server (used as context_hint)
     async function fetchLatestStatus() {
       try {
         const res = await fetch(ceoStatusUrl, { method: "GET", headers });
@@ -259,71 +247,14 @@
       }
     }
 
-    // More robust dashboard extraction (backend shapes vary)
-    function extractDashboard(data) {
-      if (!data || typeof data !== "object") return null;
-
-      // Original expected path
-      let dash =
-        data?.context?.snapshot?.ceo_dashboard_snapshot?.dashboard || null;
-
-      // Common alternates
-      dash =
-        dash ||
-        data?.snapshot?.ceo_dashboard_snapshot?.dashboard ||
-        data?.context?.ceo_dashboard_snapshot?.dashboard ||
-        data?.ceo_dashboard_snapshot?.dashboard ||
-        data?.dashboard ||
-        null;
-
-      // Sometimes status endpoint returns directly { dashboard: {...} } or { data: { dashboard: ... } }
-      dash = dash || data?.data?.dashboard || null;
-
-      return dash || null;
-    }
-
-    function formatDashboard(dash) {
-      if (!dash) return "";
-      const goals = Array.isArray(dash.goals) ? dash.goals : [];
-      const tasks = Array.isArray(dash.tasks) ? dash.tasks : [];
-
-      const gTop = goals
-        .slice(0, 3)
-        .map(
-          (g, i) =>
-            `${i + 1}) ${g.name || g.title || "?"} [${g.status || "?"}]`
-        )
-        .join("\n");
-
-      const tTop = tasks
-        .slice(0, 5)
-        .map(
-          (t, i) =>
-            `${i + 1}) ${t.title || t.name || "?"} [${t.status || "?"}]`
-        )
-        .join("\n");
-
-      return `\n\nGOALS (top 3)\n${gTop || "-"}\n\nTASKS (top 5)\n${tTop || "-"}`;
-    }
-
-    function pickExecutePayload(p) {
-      // Prefer shapes that match your backend responses (payload_summary from approvals)
-      if (p && p.payload_summary && typeof p.payload_summary === "object")
-        return p.payload_summary;
-      if (p && p.payload && typeof p.payload === "object") return p.payload;
-      if (p && p.raw_payload && typeof p.raw_payload === "object")
-        return p.raw_payload;
-
-      const cmd = (p && (p.command_type || p.command)) || "unknown_command";
-      return { command: cmd, intent: cmd, params: (p && p.params) || {} };
-    }
-
-    async function executeProposal(p) {
+    // NOTE:
+    // This legacy UI is debug-only; it should not be used for canonical execution in production.
+    async function executeProposal(proposal) {
       if (busy) return;
       setBusy(true);
 
       try {
-        const payload = pickExecutePayload(p);
+        const payload = proposal;
 
         const res = await fetch(executeRawUrl, {
           method: "POST",
@@ -333,17 +264,12 @@
 
         const raw = await readBodyAsText(res);
         if (!res.ok) {
-          addMessage("sys", `Execute greška: ${res.status}\n${raw || "N/A"}`, {
-            state: "ERROR",
-          });
+          addMessage("sys", `Execute/raw greška: ${res.status}\n${raw || "N/A"}`, { state: "ERROR" });
           return;
         }
 
         const data = safeJsonParse(raw) || {};
-        const approvalId =
-          data.approval_id ||
-          (data.approval && data.approval.approval_id) ||
-          null;
+        const approvalId = data.approval_id || (data.approval && data.approval.approval_id) || null;
 
         currentApprovalId = approvalId;
         approveBtn.disabled = !currentApprovalId;
@@ -351,13 +277,13 @@
         addMessage(
           "sys",
           approvalId
-            ? `Komanda poslana. BLOCKED (approval_id=${approvalId})`
-            : `Komanda poslana. (nema approval_id u response)`,
+            ? `Komanda registrovana (BLOCKED). approval_id=${approvalId}`
+            : `Komanda registrovana. (nema approval_id u response)`,
           { state: approvalId ? "BLOCKED" : "OK" }
         );
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        addMessage("sys", `Execute greška.\n${msg}`, { state: "ERROR" });
+        addMessage("sys", `Execute/raw greška.\n${msg}`, { state: "ERROR" });
       } finally {
         setBusy(false);
       }
@@ -376,35 +302,20 @@
 
         const raw = await readBodyAsText(res);
         if (!res.ok) {
-          addMessage("sys", `Approve greška: ${res.status}\n${raw || "N/A"}`, {
-            state: "ERROR",
-          });
+          addMessage("sys", `Approve greška: ${res.status}\n${raw || "N/A"}`, { state: "ERROR" });
           return;
         }
 
         const data = safeJsonParse(raw) || {};
-        const state =
-          data.execution_state ||
-          (data.approval && data.approval.status) ||
-          "APPROVED";
+        const state = data.execution_state || (data.approval && data.approval.status) || "APPROVED";
 
         addMessage("sys", `Approve OK. ${state}`, { state });
 
-        // Clear approval_id after approval
         currentApprovalId = null;
         approveBtn.disabled = true;
 
-        // NEW: immediately load status and show short confirmation
         const statusData = await fetchLatestStatus();
-        if (statusData && statusData.ok) {
-          const dash = extractDashboard(statusData);
-          const dashText = dash ? formatDashboard(dash) : "";
-          if (dashText) {
-            addMessage("sys", `Snapshot osvježen.${dashText}`, { state: "OK" });
-          } else {
-            addMessage("sys", "Snapshot osvježen (status OK).", { state: "OK" });
-          }
-        }
+        if (statusData && statusData.ok) addMessage("sys", "Snapshot osvježen (status OK).", { state: "OK" });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         addMessage("sys", `Approve greška.\n${msg}`, { state: "ERROR" });
@@ -434,14 +345,12 @@
 
         const label = document.createElement("div");
         label.style.whiteSpace = "pre-wrap";
-        label.textContent = `${idx + 1}) ${cmd} | ${status}${
-          risk ? ` | risk=${risk}` : ""
-        }`;
+        label.textContent = `${idx + 1}) ${cmd} | ${status}${risk ? ` | risk=${risk}` : ""}`;
 
         const btn = document.createElement("button");
         btn.type = "button";
         btn.className = "ceo-chatbox-btn";
-        btn.textContent = "Execute (raw)";
+        btn.textContent = "Create execution (BLOCKED)";
         btn.addEventListener("click", () => executeProposal(p));
 
         row.appendChild(label);
@@ -452,21 +361,6 @@
       return wrap;
     }
 
-    async function pingStatus() {
-      try {
-        const res = await fetch(ceoStatusUrl, { method: "GET", headers });
-        if (!res.ok) return;
-        const t = await readBodyAsText(res);
-        const j = safeJsonParse(t);
-        if (j && j.ok) {
-          // optional: show status once
-          // addMessage("sys", "CEO Console: online", { state: "OK" });
-        }
-      } catch {
-        // ignore
-      }
-    }
-
     async function sendCommand() {
       const text = (textarea.value || "").trim();
       if (!text || busy) return;
@@ -475,26 +369,20 @@
       setBusy(true);
 
       try {
-        // NEW: always fetch latest status/snapshot and pass it to backend as context_hint
         const statusData = await fetchLatestStatus();
 
         const payload = {
-          text,
-
-          // CHANGED: default to ceo_chat (instead of ceo_dashboard)
-          initiator: cfg.initiator || "ceo_chat",
-
-          // CHANGED: ensure session_id is always present
-          session_id: cfg.session_id || getOrCreateSessionId(),
-
-          // Provide server status/snapshot as context hint, fallback to cfg.context_hint if provided
-          context_hint: statusData || cfg.context_hint || undefined,
-
-          // CHANGED: scope aligned with chat (harmless if backend ignores)
-          snapshot_scope: cfg.snapshot_scope || "ceo_chat",
+          message: text,
+          preferred_agent_id: cfg.preferred_agent_id || "ceo_advisor",
+          metadata: {
+            initiator: cfg.initiator || "ceo_chat",
+            source: "ceo_chatbox_legacy",
+            session_id: cfg.session_id || getOrCreateSessionId(),
+            context_hint: statusData || cfg.context_hint || null,
+          },
         };
 
-        const res = await fetch(ceoCommandUrl, {
+        const res = await fetch(chatUrl, {
           method: "POST",
           headers,
           body: JSON.stringify(payload),
@@ -502,31 +390,22 @@
 
         const raw = await readBodyAsText(res);
         if (!res.ok) {
-          addMessage("sys", `Greška: ${res.status}\n${raw || "N/A"}`, {
-            state: "ERROR",
-          });
+          addMessage("sys", `Greška (chat): ${res.status}\n${raw || "N/A"}`, { state: "ERROR" });
           return;
         }
 
         const data = safeJsonParse(raw) || {};
 
-        // If snapshot exists, show it and ignore misleading summary/text
-        const dash = extractDashboard(data) || extractDashboard(statusData);
-        const dashText = dash ? formatDashboard(dash) : "";
-
-        const summary =
-          dashText ||
-          (typeof data.summary === "string" && data.summary.trim()) ||
+        const textOut =
           (typeof data.text === "string" && data.text.trim()) ||
+          (typeof data.summary === "string" && data.summary.trim()) ||
+          (typeof data.message === "string" && data.message.trim()) ||
           (raw && raw.trim()) ||
           "Nema odgovora.";
 
-        // Proposed commands from backend
-        const proposed = Array.isArray(data.proposed_commands)
-          ? data.proposed_commands
-          : [];
+        const proposed = Array.isArray(data.proposed_commands) ? data.proposed_commands : [];
 
-        const row = addMessage("sys", summary, { state: "OK" });
+        const row = addMessage("sys", textOut, { state: "CHAT" });
 
         const proposalsNode = renderProposalsWithButtons(proposed);
         if (proposalsNode) {
@@ -538,9 +417,7 @@
         autosize();
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        addMessage("sys", `Greška pri slanju naredbe.\n${msg}`, {
-          state: "ERROR",
-        });
+        addMessage("sys", `Greška pri slanju poruke.\n${msg}`, { state: "ERROR" });
       } finally {
         setBusy(false);
         textarea.focus();
@@ -549,21 +426,22 @@
 
     sendBtn.addEventListener("click", sendCommand);
 
-    // start
     autosize();
     setTimeout(() => textarea.focus(), 60);
-    setTimeout(pingStatus, 50);
 
-    console.log("[CEO_CHATBOX] mounted", {
+    console.log("[CEO_CHATBOX][legacy] mounted (debug-only)", {
       mountSelector,
-      ceoCommandUrl,
+      chatUrl,
       ceoStatusUrl,
       executeRawUrl,
       approveUrl,
       session_id: cfg.session_id,
       initiator: cfg.initiator || "ceo_chat",
+      enableLegacyChatbox: cfg.enableLegacyChatbox === true,
+      reactRootDetected: !!reactRoot,
+      reactLikelyMounted,
     });
   } catch (e) {
-    console.error("[CEO_CHATBOX] init failed", e);
+    console.error("[CEO_CHATBOX][legacy] init failed", e);
   }
 })();

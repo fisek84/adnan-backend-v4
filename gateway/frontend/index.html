@@ -8,25 +8,27 @@
   <body>
     <div id="root"></div>
 
-    <!-- Runtime config (PROD SAFE):
+    <!-- Runtime config (CANON, PROD SAFE):
          - apiOrigin MUST be same-origin in production (Render)
-         - In dev (Vite), it will still be http://localhost:5173 and you can proxy if needed
+         - Canon endpoints:
+           - POST /api/chat
+           - POST /api/execute/raw
+           - POST /api/ai-ops/approval/approve
+
+         IMPORTANT (CANON):
+         - Do NOT mirror to window.__EVO_UI__.
+         - Legacy gateway/frontend/ceo_chatbox.js must not run in this build.
     -->
     <script>
       (function () {
-        const origin = window.location.origin; // e.g. https://adnan-backend-v4.onrender.com
-
-        // If something already injected config, keep it, but enforce apiOrigin sanity.
+        const origin = window.location.origin;
         const existing = window.CEO_CHATBOX_CONFIG || {};
 
         window.CEO_CHATBOX_CONFIG = {
-          // CRITICAL FIX: never default to localhost in production
-          apiOrigin: existing.apiOrigin && existing.apiOrigin.trim() ? existing.apiOrigin : origin,
-
-          // Canon endpoints
-          ceoCommandUrl: existing.ceoCommandUrl || "/api/ceo/command",
+          apiOrigin: existing.apiOrigin && String(existing.apiOrigin).trim() ? existing.apiOrigin : origin,
+          chatUrl: existing.chatUrl || "/api/chat",
+          executeRawUrl: existing.executeRawUrl || "/api/execute/raw",
           approveUrl: existing.approveUrl || "/api/ai-ops/approval/approve",
-          proposalsExecuteUrl: existing.proposalsExecuteUrl || "/api/proposals/execute",
         };
       })();
     </script>

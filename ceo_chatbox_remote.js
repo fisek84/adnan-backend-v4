@@ -91,6 +91,20 @@
       .ceo-chatbox-btn:disabled { opacity: .55; cursor: not-allowed; }
       .ceo-chatbox-btn.primary { background: rgba(34,197,94,.18); border-color: rgba(34,197,94,.35); }
       .ceo-chatbox-typing { opacity:.75; font-size: 12px; margin-top: 8px; color: rgba(255,255,255,.68); }
+
+      .ceo-proposals { margin-top: 10px; border-top: 1px dashed rgba(255,255,255,.12); padding-top: 10px; }
+      .ceo-proposals-title { font-size: 12px; opacity: .85; margin-bottom: 8px; }
+      .ceo-proposal-item {
+        display:flex; gap:10px; align-items:flex-start;
+        padding: 8px 10px; border-radius: 12px;
+        border: 1px solid rgba(255,255,255,.10);
+        background: rgba(0,0,0,.10);
+        margin: 8px 0;
+      }
+      .ceo-proposal-radio { margin-top: 3px; }
+      .ceo-proposal-body { flex:1; }
+      .ceo-proposal-label { font-size: 12px; font-weight: 700; opacity: .92; margin-bottom: 6px; }
+      .ceo-proposal-json { font-size: 11px; opacity: .85; white-space: pre-wrap; word-break: break-word; }
     `;
     document.head.appendChild(style);
 
@@ -112,8 +126,7 @@
 
     const textarea = document.createElement("textarea");
     textarea.className = "ceo-chatbox-textarea";
-    textarea.placeholder =
-      'Chat ili komanda. Primjeri:\n- "Ko si ti?"\n- "Kreiraj cilj ..."';
+    textarea.placeholder = 'Chat ili komanda. Primjeri:\n- "Ko si ti?"\n- "Kreiraj cilj ..."';
 
     const sendBtn = document.createElement("button");
     sendBtn.className = "ceo-chatbox-btn primary";
@@ -123,7 +136,7 @@
     const approveBtn = document.createElement("button");
     approveBtn.className = "ceo-chatbox-btn";
     approveBtn.type = "button";
-    approveBtn.textContent = "Odobri predloženo";
+    approveBtn.textContent = "Kreiraj execution (BLOCKED)";
     approveBtn.disabled = true;
 
     composer.appendChild(textarea);
@@ -136,8 +149,14 @@
     host.appendChild(root);
 
     let pending = 0;
-    let lastProposals = [];
-    let lastBlocked = [];
+
+    // Source-of-truth state (MUST be reset on each chat submit)
+    let lastChatProposals = [];
+    let selectedProposalIndex = -1;
+
+    // Approval-gated state for the currently selected proposal (exactly one)
+    let pendingApprovalId = null;
+    let pendingExecutionId = null;
 
     function scrollToBottom() {
       history.scrollTop = history.scrollHeight;
@@ -216,45 +235,97 @@
       }
     });
 
-    // --- Minimal deterministic command detection (no LLM guessing) ---
-    function looksLikeCommand(text) {
-      const t = (text || "").trim().toLowerCase();
-      // Deterministički: samo jasne imperative koji mapiraju na write tok.
-      // Ovo je minimalno da riješimo bug "komanda ide u chat".
-      return (
-        t.startsWith("kreiraj ") ||
-        t.startsWith("napravi ") ||
-        t.startsWith("dodaj ") ||
-        t.startsWith("create ") ||
-        t.startsWith("add ") ||
-        t.includes('kreiraj cilj') ||
-        t.includes('napravi cilj') ||
-        t.includes('dodaj cilj') ||
-        t.includes('create goal') ||
-        t.includes('add goal')
-      );
+    function resetProposalState() {
+      lastChatProposals = [];
+      selectedProposalIndex = -1;
+      pendingApprovalId = null;
+      pendingExecutionId = null;
+      approveBtn.disabled = true;
+      approveBtn.textContent = "Kreiraj execution (BLOCKED)";
     }
 
-    function buildExecuteRawTextPayload(text) {
-      // Reuse backend /api/execute UX: it expects { text: "..." } in your PS tests.
-      return {
-        text,
-        metadata: {
-          source: "ceoChatbox",
-          canon: "CEO_CONSOLE_APPROVAL_GATED_EXECUTION",
-          initiator: "ceo_dashboard",
-        },
-      };
+    function renderProposals() {
+      // remove existing proposals panel if present
+      const existing = history.querySelector(".ceo-proposals");
+      if (existing) existing.remove();
+
+      if (!Array.isArray(lastChatProposals) || lastChatProposals.length === 0) return;
+
+      const panel = document.createElement("div");
+      panel.className = "ceo-proposals";
+
+      const title = document.createElement("div");
+      title.className = "ceo-proposals-title";
+      title.textContent = "Predložene akcije (odaberi tačno jednu):";
+      panel.appendChild(title);
+
+      lastChatProposals.forEach((p, idx) => {
+        const item = document.createElement("div");
+        item.className = "ceo-proposal-item";
+
+        const radio = document.createElement("input");
+        radio.type = "radio";
+        radio.name = "ceo_proposal_select";
+        radio.className = "ceo-proposal-radio";
+        radio.checked = idx === selectedProposalIndex;
+        radio.addEventListener("change", () => {
+          selectedProposalIndex = idx;
+          // Selecting a different proposal invalidates any pending approval state
+          pendingApprovalId = null;
+          pendingExecutionId = null;
+          approveBtn.textContent = "Kreiraj execution (BLOCKED)";
+          approveBtn.disabled = selectedProposalIndex < 0;
+          renderProposals();
+        });
+
+        const body = document.createElement("div");
+        body.className = "ceo-proposal-body";
+
+        const label = document.createElement("div");
+        label.className = "ceo-proposal-label";
+        label.textContent = `Proposal #${idx + 1}`;
+
+        const json = document.createElement("div");
+        json.className = "ceo-proposal-json";
+        try {
+          json.textContent = JSON.stringify(p, null, 2);
+        } catch (_) {
+          json.textContent = String(p);
+        }
+
+        body.appendChild(label);
+        body.appendChild(json);
+
+        item.appendChild(radio);
+        item.appendChild(body);
+
+        panel.appendChild(item);
+      });
+
+      history.appendChild(panel);
+      scrollToBottom();
     }
 
-    async function execApproveFromText(text) {
+    function getSelectedProposal() {
+      if (!Array.isArray(lastChatProposals)) return null;
+      if (selectedProposalIndex < 0 || selectedProposalIndex >= lastChatProposals.length) return null;
+      return lastChatProposals[selectedProposalIndex];
+    }
+
+    async function createExecutionBlockedFromSelectedProposal() {
+      const proposal = getSelectedProposal();
+      if (!proposal) {
+        addMessage("sys", "Nije odabran nijedan proposal.", { state: "ERROR" });
+        return;
+      }
+
       bumpPending(+1);
       try {
-        // 1) Create approval (BLOCKED) using /api/execute/raw
         const executeRes = await fetch(executeRawUrl, {
           method: "POST",
           headers,
-          body: JSON.stringify(buildExecuteRawTextPayload(text)),
+          // CANON: execute/raw payload MUST be exactly the selected proposal object
+          body: JSON.stringify(proposal),
         });
 
         if (!executeRes.ok) {
@@ -268,10 +339,11 @@
         const executionId = execData.execution_id || execData.executionId || null;
         const state = execData.state || execData.execution_state || "BLOCKED";
 
-        lastBlocked.push({ approval_id: approvalId, execution_id: executionId, state });
+        pendingApprovalId = approvalId;
+        pendingExecutionId = executionId;
 
-        addMessage("sys", "Komanda registrovana (BLOCKED) i čeka odobrenje.", {
-          state: "BLOCKED",
+        addMessage("sys", "Execution kreiran i čeka odobrenje (BLOCKED).", {
+          state: state || "BLOCKED",
           approval_id: approvalId || "–",
           execution_id: executionId || "–",
         });
@@ -281,8 +353,8 @@
           return;
         }
 
-        // Enable approve button and store a synthetic proposal record
-        lastProposals = [{ __from_text__: true, text }];
+        // Step 2 is now available
+        approveBtn.textContent = "Potvrdi odobrenje (EXECUTE)";
         approveBtn.disabled = false;
       } catch (err) {
         addMessage("sys", "Greška pri execute/raw toku.", { state: "ERROR" });
@@ -291,56 +363,62 @@
       }
     }
 
-    async function approveProposals() {
-      if (!Array.isArray(lastProposals) || lastProposals.length === 0) return;
-
-      approveBtn.disabled = true;
-
-      // If proposals are from raw-text (we already created approval), just approve latest blocked
-      // Minimal approach: approve all pending approvals created in this session.
-      for (let i = 0; i < lastBlocked.length; i++) {
-        const b = lastBlocked[i];
-        const approvalId = b.approval_id;
-        if (!approvalId) continue;
-
-        bumpPending(+1);
-        try {
-          const approveRes = await fetch(approveUrl, {
-            method: "POST",
-            headers,
-            body: JSON.stringify({ approval_id: approvalId }),
-          });
-
-          if (!approveRes.ok) {
-            const detail = await approveRes.text();
-            addMessage("sys", `Greška (approve): ${approveRes.status}\n${detail || ""}`, {
-              state: "ERROR",
-              approval_id: approvalId,
-            });
-            continue;
-          }
-
-          const approveData = await approveRes.json();
-          const finalState =
-            approveData.execution_state || approveData.state || approveData.status || "APPROVED/EXECUTED";
-
-          addMessage("sys", "Odobreno i poslano u execution pipeline.", {
-            state: finalState,
-            approval_id: approvalId,
-            execution_id: b.execution_id || approveData.execution_id || "–",
-          });
-
-          const snapBtn = document.getElementById("refresh-snapshot-btn");
-          if (snapBtn) snapBtn.click();
-        } catch (err) {
-          addMessage("sys", "Greška pri approve toku.", { state: "ERROR" });
-        } finally {
-          bumpPending(-1);
-        }
+    async function approvePendingApproval() {
+      if (!pendingApprovalId) {
+        addMessage("sys", "Nema pending approval_id. Prvo kreiraj execution (BLOCKED).", { state: "ERROR" });
+        return;
       }
 
-      lastProposals = [];
-      lastBlocked = [];
+      approveBtn.disabled = true;
+      bumpPending(+1);
+
+      try {
+        const approveRes = await fetch(approveUrl, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ approval_id: pendingApprovalId }),
+        });
+
+        if (!approveRes.ok) {
+          const detail = await approveRes.text();
+          addMessage("sys", `Greška (approve): ${approveRes.status}\n${detail || ""}`, {
+            state: "ERROR",
+            approval_id: pendingApprovalId,
+          });
+          approveBtn.disabled = false;
+          return;
+        }
+
+        const approveData = await approveRes.json();
+        const finalState = approveData.execution_state || approveData.state || approveData.status || "COMPLETED";
+
+        addMessage("sys", "Odobreno i izvršeno kroz execution pipeline.", {
+          state: finalState,
+          approval_id: pendingApprovalId,
+          execution_id: pendingExecutionId || approveData.execution_id || "–",
+        });
+
+        const snapBtn = document.getElementById("refresh-snapshot-btn");
+        if (snapBtn) snapBtn.click();
+
+        // Clear state after completion
+        resetProposalState();
+        renderProposals();
+      } catch (err) {
+        addMessage("sys", "Greška pri approve toku.", { state: "ERROR" });
+        approveBtn.disabled = false;
+      } finally {
+        bumpPending(-1);
+      }
+    }
+
+    async function onApproveClick() {
+      // CANON: Exactly one proposal, approval-gated, 2-step
+      if (pendingApprovalId) {
+        await approvePendingApproval();
+      } else {
+        await createExecutionBlockedFromSelectedProposal();
+      }
     }
 
     async function sendMessage() {
@@ -352,15 +430,9 @@
       textarea.value = "";
       autosize();
 
-      approveBtn.disabled = true;
-      lastProposals = [];
-      lastBlocked = [];
-
-      // Deterministic routing: command -> execute pipeline; otherwise -> chat
-      if (looksLikeCommand(text)) {
-        await execApproveFromText(text);
-        return;
-      }
+      // IMPORTANT: reset proposals + approval state on each new chat submit
+      resetProposalState();
+      renderProposals();
 
       bumpPending(+1);
       try {
@@ -388,15 +460,20 @@
         const data = await res.json();
         addMessage("sys", (data && data.text) || "(no text)", { state: "CHAT" });
 
-        // Keep backward compatibility if backend ever returns proposed_commands
         const proposals = Array.isArray(data.proposed_commands) ? data.proposed_commands : [];
         if (proposals.length > 0) {
-          lastProposals = proposals;
+          // Source-of-truth: last /api/chat proposals only
+          lastChatProposals = proposals;
+          selectedProposalIndex = 0; // default: first proposal selected
           approveBtn.disabled = false;
+          approveBtn.textContent = "Kreiraj execution (BLOCKED)";
+
           addMessage("sys", "Predložene su akcije koje zahtijevaju odobrenje.", {
             state: "PROPOSALS_READY",
             count: proposals.length,
           });
+
+          renderProposals();
         }
 
         const snapBtn = document.getElementById("refresh-snapshot-btn");
@@ -409,11 +486,11 @@
     }
 
     sendBtn.addEventListener("click", sendMessage);
-    approveBtn.addEventListener("click", approveProposals);
+    approveBtn.addEventListener("click", onApproveClick);
 
     addMessage(
       "sys",
-      "CEO Chatbox: chat ide na /api/chat (read-only), komande idu na approval-gated /api/execute/raw. Ako je komanda BLOCKED, klikni 'Odobri predloženo'.",
+      "CEO Chatbox (CANON): chat ide na /api/chat (read-only). LLM vraća proposed_commands. CEO odabere TAČNO JEDAN proposal → (1) kreira execution BLOCKED (/api/execute/raw) → (2) potvrdi odobrenje (/api/ai-ops/approval/approve).",
       { state: "READY" }
     );
 

@@ -29,7 +29,7 @@ const formatTime = (ms: number) => {
 type CeoChatboxProps = {
   ceoCommandUrl: string;
   approveUrl?: string; // POST { approval_id }
-  executeRawUrl?: string; // POST { command,intent,params,initiator,read_only,metadata }
+  executeRawUrl?: string; // POST canonical proposal payload (opaque)
   headers?: Record<string, string>;
   strings?: Partial<UiStrings>;
   onOpenApprovals?: (approvalRequestId?: string) => void;
@@ -64,12 +64,12 @@ const toGovernanceCard = (resp: NormalizedConsoleResponse): GovernanceEventItem 
   };
 };
 
-type ProposedCmd = {
-  command_type: string;
-  payload: Record<string, any>;
-  required_approval?: boolean;
-  status?: string;
-};
+/**
+ * CANON:
+ * proposed_commands from /api/chat must be treated as an OPAQUE, ready-to-send execute/raw payload.
+ * Frontend must NOT re-map/normalize/rebuild it (no command_type/payload transformations).
+ */
+type ProposedCmd = Record<string, any>;
 
 const _extractProposedCommands = (resp: any): ProposedCmd[] => {
   const candidates = [
@@ -84,26 +84,11 @@ const _extractProposedCommands = (resp: any): ProposedCmd[] => {
 
   for (const c of candidates) {
     if (!Array.isArray(c)) continue;
+
     const out: ProposedCmd[] = [];
     for (const x of c) {
-      if (!x || typeof x !== "object") continue;
-      const command_type = String(
-        x.command_type ?? x.commandType ?? x.command ?? x.command_name ?? ""
-      ).trim();
-      const payloadRaw = x.payload ?? x.args ?? x.params ?? {};
-      const payload =
-        payloadRaw && typeof payloadRaw === "object" && !Array.isArray(payloadRaw)
-          ? payloadRaw
-          : {};
-      if (!command_type) continue;
-      out.push({
-        command_type,
-        payload,
-        required_approval: Boolean(
-          x.required_approval ?? x.requires_approval ?? x.requiresApproval ?? true
-        ),
-        status: typeof x.status === "string" ? x.status : undefined,
-      });
+      if (!x || typeof x !== "object" || Array.isArray(x)) continue;
+      out.push(x as ProposedCmd);
     }
     return out;
   }
@@ -120,15 +105,6 @@ const _pickText = (x: any): string => {
     if (typeof v === "string" && v.trim()) return v.trim();
   }
   return "";
-};
-
-const _looksLikeFailedAgentRun = (resp: any): boolean => {
-  const t = String(resp?.systemText ?? resp?.text ?? resp?.summary ?? "").toLowerCase() || "";
-  if (t.includes("agent execution failed")) return true;
-  if (t.includes("failed") && t.includes("agent")) return true;
-  const preferred = String(resp?.raw?.trace?.preferred_agent_id ?? "").toLowerCase();
-  if (preferred === "notion_ops" && t.includes("failed")) return true;
-  return false;
 };
 
 function safeJsonStringify(x: any, maxLen = 6000): string {
@@ -276,8 +252,18 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
           createdAt: now(),
           state: "BLOCKED",
           title: "Proposed commands",
-          summary: "Select a proposal to create an approval and execute (governance gate).",
-          reasons: proposals.map((p) => p.command_type),
+          summary: "Select EXACTLY ONE proposal to create execution (BLOCKED). Then approve via approval_id (approval gate).",
+          reasons: proposals.map((p, idx) => {
+            const label =
+              typeof (p as any)?.command === "string"
+                ? (p as any).command
+                : typeof (p as any)?.intent === "string"
+                  ? (p as any).intent
+                  : typeof (p as any)?.command_type === "string"
+                    ? (p as any).command_type
+                    : `proposal_${idx + 1}`;
+            return label;
+          }),
           approvalRequestId: undefined,
           requestId: (resp as any)?.requestId,
           proposedCommands: proposals,
@@ -290,59 +276,27 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
     [appendItem, updateItem, isPinnedToBottom, scrollToBottom]
   );
 
-  // Optional: auto execute only refresh_snapshot
-  const autoExecuteFirstProposed = useCallback(
-    async (resp: NormalizedConsoleResponse, signal: AbortSignal) => {
-      const proposed = _extractProposedCommands(resp as any);
-      if (!proposed.length) return null;
-
-      const first = proposed[0];
-      const cmd = first.command_type;
-      if (cmd !== "refresh_snapshot") return null;
-
-      const execUrl = resolveUrl(executeRawUrl, "/api/execute/raw");
-      const appUrl = resolveUrl(effectiveApproveUrl, "/api/ai-ops/approval/approve");
-
-      const execBody = {
-        command: cmd,
-        intent: cmd,
-        params: { source: "ceo_dashboard", ...(first.payload || {}) },
-        initiator: "ceo",
-        read_only: false,
-        metadata: { origin: "ceo_chatbox_auto" },
-      };
-
-      const execJson = await postJson(execUrl, execBody, signal);
-
-      const approvalId: string | null =
-        typeof execJson?.approval_id === "string" && execJson.approval_id ? execJson.approval_id : null;
-
-      if (!approvalId) return execJson;
-
-      const approveJson = await postJson(appUrl, { approval_id: approvalId }, signal);
-      return approveJson;
-    },
-    [effectiveApproveUrl, executeRawUrl, postJson, resolveUrl]
-  );
-
   const handleOpenApprovals = useCallback(
     (approvalRequestId?: string) => {
       if (onOpenApprovals) onOpenApprovals(approvalRequestId);
-      else {
-        window.dispatchEvent(new CustomEvent("ceo:openApprovals", { detail: { approvalRequestId } }));
-      }
+      else window.dispatchEvent(new CustomEvent("ceo:openApprovals", { detail: { approvalRequestId } }));
     },
     [onOpenApprovals]
   );
 
-  const handleCreateApprovalFromProposal = useCallback(
+  /**
+   * CANON step 1:
+   * Create execution (BLOCKED) from the EXACT proposal object (opaque payload) returned by /api/chat.
+   * DO NOT rebuild/transform the proposal.
+   */
+  const handleCreateExecutionFromProposal = useCallback(
     async (proposal: ProposedCmd) => {
       if (busy === "submitting" || busy === "streaming") return;
 
       setBusy("submitting");
       setLastError(null);
 
-      const placeholder = makeSystemProcessingItem("proposal");
+      const placeholder = makeSystemProcessingItem("proposal_create_execution");
       appendItem(placeholder);
 
       const controller = new AbortController();
@@ -350,28 +304,42 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
 
       try {
         const execUrl = resolveUrl(executeRawUrl, "/api/execute/raw");
-        const execBody = {
-          command: proposal.command_type,
-          intent: proposal.command_type,
-          params: proposal.payload || {},
-          initiator: "ceo",
-          read_only: false,
-          metadata: { origin: "ceo_chatbox_proposal", proposal_command_type: proposal.command_type },
-        };
 
-        const execJson = await postJson(execUrl, execBody, controller.signal);
+        // CANON: send proposal object 1:1
+        const execJson = await postJson(execUrl, proposal, controller.signal);
 
         const approvalId: string | null =
           typeof execJson?.approval_id === "string" && execJson.approval_id ? execJson.approval_id : null;
 
-        const msg = approvalId?.trim() ? `Approval created: ${approvalId}` : _pickText(execJson) || "Approval created.";
+        const executionId: string | null =
+          typeof execJson?.execution_id === "string" && execJson.execution_id ? execJson.execution_id : null;
+
+        const msg =
+          approvalId?.trim()
+            ? `Execution created (BLOCKED). approval_id: ${approvalId}`
+            : _pickText(execJson) || "Execution created.";
+
         updateItem(placeholder.id, { content: msg, status: "final" });
+
+        if (approvalId) {
+          appendItem({
+            id: uid(),
+            kind: "governance",
+            createdAt: now(),
+            state: "BLOCKED",
+            title: "Execution pending approval",
+            summary: executionId ? `execution_id: ${executionId}` : "Execution created and waiting for approval.",
+            reasons: [],
+            approvalRequestId: approvalId,
+            requestId: (execJson as any)?.requestId,
+          } as GovernanceEventItem);
+
+          handleOpenApprovals(approvalId);
+        }
 
         abortRef.current = null;
         setBusy("idle");
         setLastError(null);
-
-        if (approvalId) handleOpenApprovals(approvalId);
       } catch (e) {
         abortRef.current = null;
         const msg = e instanceof Error ? e.message : String(e);
@@ -383,52 +351,30 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
     [appendItem, busy, executeRawUrl, handleOpenApprovals, postJson, resolveUrl, updateItem]
   );
 
-  const handleApproveAndExecuteProposal = useCallback(
-    async (proposal: ProposedCmd) => {
+  /**
+   * CANON step 2:
+   * Approve using explicit approval_id (no implicit cached IDs).
+   */
+  const handleApprove = useCallback(
+    async (approvalId: string) => {
+      const appUrl = resolveUrl(effectiveApproveUrl, "/api/ai-ops/approval/approve");
       if (busy === "submitting" || busy === "streaming") return;
 
       setBusy("submitting");
       setLastError(null);
 
-      const placeholder = makeSystemProcessingItem("proposal_execute");
+      const placeholder = makeSystemProcessingItem(approvalId);
       appendItem(placeholder);
 
       const controller = new AbortController();
       abortRef.current = controller;
 
       try {
-        const execUrl = resolveUrl(executeRawUrl, "/api/execute/raw");
-        const appUrl = resolveUrl(effectiveApproveUrl, "/api/ai-ops/approval/approve");
-
-        const execBody = {
-          command: proposal.command_type,
-          intent: proposal.command_type,
-          params: proposal.payload || {},
-          initiator: "ceo",
-          read_only: false,
-          metadata: { origin: "ceo_chatbox_proposal", proposal_command_type: proposal.command_type },
-        };
-
-        const execJson = await postJson(execUrl, execBody, controller.signal);
-
-        const approvalId: string | null =
-          typeof execJson?.approval_id === "string" && execJson.approval_id ? execJson.approval_id : null;
-
-        if (!approvalId) {
-          const msg =
-            _pickText(execJson) || (execJson?.execution_state ? `Execution: ${execJson.execution_state}` : "Executed.");
-          updateItem(placeholder.id, { content: msg, status: "final" });
-          abortRef.current = null;
-          setBusy("idle");
-          setLastError(null);
-          return;
-        }
-
         const approveJson = await postJson(appUrl, { approval_id: approvalId }, controller.signal);
 
         const msg =
           _pickText(approveJson) ||
-          (approveJson?.execution_state ? `Execution: ${approveJson.execution_state}` : "Approved & executed.");
+          (approveJson?.execution_state ? `Execution: ${approveJson.execution_state}` : "Approved.");
 
         updateItem(placeholder.id, { content: msg, status: "final" });
         abortRef.current = null;
@@ -442,7 +388,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         setLastError(isAbortError(e) ? null : msg);
       }
     },
-    [appendItem, effectiveApproveUrl, busy, executeRawUrl, postJson, resolveUrl, updateItem]
+    [appendItem, effectiveApproveUrl, busy, postJson, resolveUrl, updateItem]
   );
 
   // ------------------------------
@@ -504,18 +450,13 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
     abortRef.current = controller;
 
     try {
-      // PO BAZI: hvataj error i nastavi
       const results: Record<string, any> = {};
 
       for (const k of keysToSearch) {
         try {
-          // Best-effort filter: Name.title.contains (najčešći)
           const spec = {
             db_key: k,
-            filter: {
-              property: "Name",
-              title: { contains: q },
-            },
+            filter: { property: "Name", title: { contains: q } },
             page_size: 10,
           };
 
@@ -580,67 +521,19 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
     abortRef.current = controller;
 
     try {
+      // CANON: CeoCommandRequest (api.ts will build /api/chat payload)
       const req: any = {
         text: trimmed,
-        initiator: "ceo_dashboard",
-        context_hint: {},
+        initiator: "ceo_chat",
+        context_hint: {
+          preferred_agent_id: "ceo_advisor",
+        },
       };
 
-      let resp = await api.sendCommand(req, controller.signal);
-
-      const proposals1 = _extractProposedCommands(resp as any);
-      if (
-        proposals1.length < 1 &&
-        (_looksLikeFailedAgentRun(resp as any) ||
-          String((resp as any)?.systemText ?? "").toLowerCase().includes("failed"))
-      ) {
-        const chatUrl = resolveUrl(undefined, "/api/chat");
-        const chatJson = await postJson(
-          chatUrl,
-          { message: trimmed, initiator: "ceo_dashboard", context_hint: req.context_hint },
-          controller.signal
-        );
-
-        resp = {
-          systemText: (chatJson?.text as any) ?? (chatJson?.summary as any) ?? (chatJson?.message as any) ?? "",
-          raw: chatJson,
-          proposed_commands: chatJson?.proposed_commands ?? chatJson?.proposedCommands ?? [],
-        } as any;
-      }
+      const resp = await api.sendCommand(req, controller.signal);
 
       abortRef.current = null;
-
       await flushResponseToUi(placeholder.id, resp);
-
-      try {
-        const execResult = await autoExecuteFirstProposed(resp, controller.signal);
-        if (execResult) {
-          const text =
-            _pickText(execResult) ||
-            (execResult?.execution_state ? `Izvršeno: ${execResult.execution_state}` : "Izvršeno.");
-
-          appendItem({
-            id: uid(),
-            kind: "message",
-            role: "system",
-            content: text,
-            status: "final",
-            createdAt: now(),
-            requestId: clientRequestId,
-          } as ChatMessageItem);
-        }
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        appendItem({
-          id: uid(),
-          kind: "message",
-          role: "system",
-          content: `Auto-exec nije uspio.\n${msg}`,
-          status: "final",
-          createdAt: now(),
-          requestId: clientRequestId,
-        } as ChatMessageItem);
-      }
 
       setBusy("idle");
       setLastError(null);
@@ -651,7 +544,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       setBusy(isAbortError(e) ? "idle" : "error");
       setLastError(isAbortError(e) ? null : msg);
     }
-  }, [api, appendItem, autoExecuteFirstProposed, busy, draft, flushResponseToUi, postJson, resolveUrl, updateItem]);
+  }, [api, appendItem, busy, draft, flushResponseToUi, updateItem]);
 
   const onKeyDown = useCallback(
     (ev: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -666,42 +559,6 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
   const canSend = busy === "idle" && draft.trim().length > 0;
   const showTyping = busy === "submitting" || busy === "streaming";
   const jumpToLatest = useCallback(() => scrollToBottom(true), [scrollToBottom]);
-
-  const handleApprove = useCallback(
-    async (approvalId: string) => {
-      const appUrl = resolveUrl(effectiveApproveUrl, "/api/ai-ops/approval/approve");
-      if (busy === "submitting" || busy === "streaming") return;
-
-      setBusy("submitting");
-      setLastError(null);
-
-      const placeholder = makeSystemProcessingItem(approvalId);
-      appendItem(placeholder);
-
-      const controller = new AbortController();
-      abortRef.current = controller;
-
-      try {
-        const approveJson = await postJson(appUrl, { approval_id: approvalId }, controller.signal);
-
-        const msg =
-          _pickText(approveJson) ||
-          (approveJson?.execution_state ? `Execution: ${approveJson.execution_state}` : "Approved.");
-
-        updateItem(placeholder.id, { content: msg, status: "final" });
-        abortRef.current = null;
-        setBusy("idle");
-        setLastError(null);
-      } catch (e) {
-        abortRef.current = null;
-        const msg = e instanceof Error ? e.message : String(e);
-        updateItem(placeholder.id, { status: "error", content: "" });
-        setBusy(isAbortError(e) ? "idle" : "error");
-        setLastError(isAbortError(e) ? null : msg);
-      }
-    },
-    [appendItem, effectiveApproveUrl, busy, postJson, resolveUrl, updateItem]
-  );
 
   const retryLast = useCallback(() => {
     setBusy("idle");
@@ -736,7 +593,11 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
             if (it.kind === "message") {
               const rowSide = it.role === "ceo" ? "right" : "left";
               const dotCls =
-                it.status === "error" ? "ceoStatusDot err" : it.status === "final" ? "ceoStatusDot ok" : "ceoStatusDot";
+                it.status === "error"
+                  ? "ceoStatusDot err"
+                  : it.status === "final"
+                    ? "ceoStatusDot ok"
+                    : "ceoStatusDot";
 
               return (
                 <div className={`ceoRow ${rowSide}`} key={it.id}>
@@ -765,7 +626,8 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
             const badgeClass =
               it.state === "BLOCKED" ? "blocked" : it.state === "APPROVED" ? "approved" : "executed";
 
-            const badgeText = it.state === "BLOCKED" ? ui.blockedLabel : it.state === "APPROVED" ? ui.approvedLabel : ui.executedLabel;
+            const badgeText =
+              it.state === "BLOCKED" ? ui.blockedLabel : it.state === "APPROVED" ? ui.approvedLabel : ui.executedLabel;
 
             const proposedCommands: ProposedCmd[] = ((it as any)?.proposedCommands as ProposedCmd[]) ?? [];
 
@@ -791,36 +653,42 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
                     {proposedCommands.length > 0 ? (
                       <div style={{ marginTop: 10 }}>
                         <div className="govSummary" style={{ marginBottom: 8 }}>
-                          Proposals (requires approval):
+                          Proposals (select EXACTLY ONE by clicking its button):
                         </div>
 
                         <ul className="govReasons" style={{ marginTop: 0 }}>
-                          {proposedCommands.map((p, idx) => (
-                            <li key={`${it.id}_p_${idx}`}>
-                              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                                <span style={{ fontWeight: 600 }}>{p.command_type}</span>
-                                {p.required_approval ? <span style={{ opacity: 0.8 }}>(approval)</span> : null}
-                              </div>
+                          {proposedCommands.map((p, idx) => {
+                            const label =
+                              typeof (p as any)?.command === "string"
+                                ? (p as any).command
+                                : typeof (p as any)?.intent === "string"
+                                  ? (p as any).intent
+                                  : typeof (p as any)?.command_type === "string"
+                                    ? (p as any).command_type
+                                    : `proposal_${idx + 1}`;
 
-                              <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
-                                <button
-                                  className="govButton"
-                                  onClick={() => void handleApproveAndExecuteProposal(p)}
-                                  disabled={busy === "submitting" || busy === "streaming" || notionLoading}
-                                >
-                                  Approve & Execute
-                                </button>
+                            return (
+                              <li key={`${it.id}_p_${idx}`}>
+                                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                                  <span style={{ fontWeight: 600 }}>{label}</span>
+                                </div>
 
-                                <button
-                                  className="govButton"
-                                  onClick={() => void handleCreateApprovalFromProposal(p)}
-                                  disabled={busy === "submitting" || busy === "streaming" || notionLoading}
-                                >
-                                  Create Approval
-                                </button>
-                              </div>
-                            </li>
-                          ))}
+                                <div style={{ marginTop: 8, opacity: 0.85, fontSize: 12, whiteSpace: "pre-wrap" }}>
+                                  {safeJsonStringify(p, 1200)}
+                                </div>
+
+                                <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+                                  <button
+                                    className="govButton"
+                                    onClick={() => void handleCreateExecutionFromProposal(p)}
+                                    disabled={busy === "submitting" || busy === "streaming" || notionLoading}
+                                  >
+                                    Create execution (BLOCKED)
+                                  </button>
+                                </div>
+                              </li>
+                            );
+                          })}
                         </ul>
                       </div>
                     ) : null}
@@ -909,7 +777,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
           <input
             value={notionContains}
             onChange={(e) => setNotionContains(e.target.value)}
-            placeholder={(ui as any).searchQueryPlaceholder ?? 'Search text…'}
+            placeholder={(ui as any).searchQueryPlaceholder ?? "Search text…"}
             disabled={notionLoading || busy === "submitting" || busy === "streaming"}
             style={{
               padding: "8px 10px",
