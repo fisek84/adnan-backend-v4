@@ -960,6 +960,43 @@ _ALLOWED_BULK_TYPES = {
     "agent_exchange",
     "ai_summary",
 }
+# ================================================================
+# NOTION OPS — LIST DATABASES (READ ONLY)
+# ================================================================
+@app.get("/notion-ops/databases")
+@app.get("/api/notion-ops/databases")
+async def notion_ops_list_databases():
+    from services.notion_service import get_notion_service
+
+    ns = get_notion_service()
+
+    # Tolerantno pokupi poznate DB id-jeve ako postoje na NotionService
+    candidates = {
+        "goals": ["goals_db_id", "_goals_db_id"],
+        "tasks": ["tasks_db_id", "_tasks_db_id"],
+        "projects": ["projects_db_id", "_projects_db_id"],
+        "kpi": ["kpi_db_id", "_kpi_db_id"],
+        "leads": ["leads_db_id", "_leads_db_id"],
+        "agent_exchange": ["agent_exchange_db_id", "_agent_exchange_db_id"],
+        "ai_summary": ["ai_summary_db_id", "_ai_summary_db_id"],
+    }
+
+    dbs: Dict[str, str] = {}
+    for key, attrs in candidates.items():
+        for a in attrs:
+            v = getattr(ns, a, None)
+            if isinstance(v, str) and v.strip():
+                dbs[key] = v.strip()
+                break
+
+    # Ako nema ništa setovano, vrati empty map (UI će bar prestati da puca na 404)
+    return {
+        "ok": True,
+        "read_only": True,
+        "ops_safe_mode": _ops_safe_mode(),
+        "databases": dbs,
+    }
+
 
 
 def _validate_bulk_items(items: Any) -> List[Dict[str, Any]]:
