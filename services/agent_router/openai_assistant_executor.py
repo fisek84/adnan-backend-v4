@@ -868,26 +868,33 @@ class OpenAIAssistantExecutor:
 
         except Exception as exc:  # noqa: BLE001
             elapsed_ms = int((time.monotonic() - t0) * 1000)
-
             logger.exception("CEO advisory failed (assistant_id=%s)", assistant_id)
 
-            debug_errors = os.getenv("DEBUG_CEO_ADVISOR_ERRORS") == "1"
+            # Deterministic error info for diagnosis (NO guessing)
+            err_type = exc.__class__.__name__
+            err_msg = str(exc)[:2000]
+            err_repr = repr(exc)[:2000]
 
+            # Keep user-facing text stable; put root cause in trace
             if isinstance(exc, ReadOnlyToolCallAttempt):
                 summary = (
                     "CEO advisory je pokušao tool poziv u read-only modu (blokirano)."
                 )
                 text_out = (
                     "CEO advisory je pokušao tool poziv u read-only modu, što je zabranjeno.\n"
-                    "Ovo obično znači da je Assistant konfiguracija ili prompt interno agresivno podešen na tool usage.\n"
-                    "Rješenje: obavezno držati tool_choice='none' (ako SDK podržava) i provjeriti assistant instrukcije."
+                    "Provjeri Assistant instrukcije i konfiguraciju; read-only path mora biti bez tool poziva."
                 )
             else:
-                summary = "CEO advisory nije mogao završiti (internal error) [EXECUTOR_MARK_20260105]."
-                text_out = "CEO advisory nije mogao završiti (internal error) [EXECUTOR_MARK_20260105]."
+                summary = (
+                    f"CEO advisory nije mogao završiti (internal error: {err_type})."
+                )
+                text_out = (
+                    f"CEO advisory nije mogao završiti (internal error: {err_type})."
+                )
 
-            if debug_errors:
-                text_out = f"{text_out}\n\nDEBUG_ERROR:\n{repr(exc)}"
+            # Optional: include repr in text only when explicitly enabled
+            if os.getenv("DEBUG_CEO_ADVISOR_ERRORS") == "1":
+                text_out = f"{text_out}\n\nDEBUG_ERROR:\n{err_repr}"
 
             return {
                 "summary": summary,
@@ -902,7 +909,9 @@ class OpenAIAssistantExecutor:
                     "run_id": getattr(run, "id", None) if run else None,
                     "read_only_guard": True,
                     "no_tools_guard": True,
-                    "error": repr(exc),
+                    "error_type": err_type,
+                    "error_message": err_msg,
+                    "error_repr": err_repr,
                     "elapsed_ms": elapsed_ms,
                     "shrink_trace": shrink_trace,
                     "dashboard_contract_enforced": bool(enforce_dashboard_text),

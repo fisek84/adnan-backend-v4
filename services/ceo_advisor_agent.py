@@ -292,11 +292,9 @@ def _normalize_date_iso(v: Any) -> Optional[str]:
     if not s:
         return None
 
-    # already ISO
     if len(s) == 10 and s[4] == "-" and s[7] == "-":
         return s
 
-    # dd.mm.yyyy
     if len(s) == 10 and s[2] == "." and s[5] == ".":
         dd, mm, yyyy = s.split(".")
         if len(yyyy) == 4:
@@ -317,7 +315,6 @@ def _extract_deadline_from_text(text: str) -> Optional[str]:
     """
     t = (text or "").strip()
 
-    # 1) dd.mm.yyyy
     m = re.search(
         r"(deadline|rok|due date|duedate|due)\s*[:=]?\s*(\d{2}\.\d{2}\.\d{4})",
         t,
@@ -326,7 +323,6 @@ def _extract_deadline_from_text(text: str) -> Optional[str]:
     if m:
         return _normalize_date_iso(m.group(2))
 
-    # 2) yyyy-mm-dd
     m = re.search(
         r"(deadline|rok|due date|duedate|due)\s*[:=]?\s*(\d{4}-\d{2}-\d{2})",
         t,
@@ -615,6 +611,14 @@ async def create_ceo_advisor_agent(
         except Exception as e:
             result = {"text": f"LLM unavailable: {e}"}
 
+        # -----------------------------
+        # DEBUG/OBSERVABILITY:
+        # If executor returned trace, preserve it so router response can show root cause.
+        # -----------------------------
+        exec_trace = result.get("trace") if isinstance(result, dict) else None
+        if isinstance(exec_trace, dict):
+            result["_executor_trace"] = exec_trace
+
         text_out = _pick_text(result) or "CEO advisor nije vratio tekstualni output."
         proposed_items = (
             result.get("proposed_commands") if isinstance(result, dict) else None
@@ -684,6 +688,7 @@ async def create_ceo_advisor_agent(
     trace = ctx.get("trace") if isinstance(ctx, dict) else {}
     if not isinstance(trace, dict):
         trace = {}
+
     trace["agent_output_text_len"] = len(text_out)
     trace["structured_mode"] = structured_mode
     trace["propose_only"] = propose_only
@@ -699,6 +704,10 @@ async def create_ceo_advisor_agent(
         if isinstance(agent_input.metadata, dict)
         else None
     )
+
+    # Attach executor trace (root-cause) if present
+    if isinstance(result, dict) and isinstance(result.get("_executor_trace"), dict):
+        trace["executor"] = result["_executor_trace"]
 
     return AgentOutput(
         text=text_out,
