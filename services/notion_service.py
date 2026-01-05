@@ -260,7 +260,9 @@ class NotionService:
 
         k = self._normalize_db_key(db_key)
         if not k:
-            raise RuntimeError("Database not specified (db_key or database_id required).")
+            raise RuntimeError(
+                "Database not specified (db_key or database_id required)."
+            )
 
         # direktno
         if k in self.db_ids:

@@ -326,10 +326,14 @@ def _filter_ai_command_payload(data: Dict[str, Any]) -> Dict[str, Any]:
         return {
             "command": data.get("command"),
             "intent": data.get("intent"),
-            "params": data.get("params") if isinstance(data.get("params"), dict) else {},
+            "params": data.get("params")
+            if isinstance(data.get("params"), dict)
+            else {},
             "initiator": data.get("initiator") or "ceo",
             "read_only": bool(data.get("read_only", False)),
-            "metadata": data.get("metadata") if isinstance(data.get("metadata"), dict) else {},
+            "metadata": data.get("metadata")
+            if isinstance(data.get("metadata"), dict)
+            else {},
             "execution_id": data.get("execution_id"),
             "approval_id": data.get("approval_id"),
         }
@@ -372,7 +376,9 @@ def _unwrap_proposal_wrapper_or_raise(
     read_only: bool,
     metadata: Dict[str, Any],
 ) -> AICommand:
-    is_wrapper = (intent == PROPOSAL_WRAPPER_INTENT) or (command == PROPOSAL_WRAPPER_INTENT)
+    is_wrapper = (intent == PROPOSAL_WRAPPER_INTENT) or (
+        command == PROPOSAL_WRAPPER_INTENT
+    )
     if not is_wrapper:
         return AICommand(
             command=command,
@@ -484,7 +490,9 @@ async def lifespan(_: FastAPI):
                     orchestrator=_execution_orchestrator,
                     approvals=get_approval_state(),
                 )
-                logger.info("AI Ops router services injected (shared orchestrator/approvals)")
+                logger.info(
+                    "AI Ops router services injected (shared orchestrator/approvals)"
+                )
         except Exception as exc:  # noqa: BLE001
             _append_boot_error(f"ai_ops_injection_failed:{exc}")
             logger.warning("AI Ops services injection failed: %s", exc)
@@ -577,7 +585,9 @@ class ProposalExecuteInput(BaseModel):
 # ================================================================
 # HELPERS
 # ================================================================
-def _preprocess_ceo_nl_input(raw_text: str, smart_context: Optional[Dict[str, Any]]) -> str:
+def _preprocess_ceo_nl_input(
+    raw_text: str, smart_context: Optional[Dict[str, Any]]
+) -> str:
     text = (raw_text or "").strip()
     if not text:
         return text
@@ -612,12 +622,18 @@ def _preprocess_ceo_nl_input(raw_text: str, smart_context: Optional[Dict[str, An
     return cleaned or text
 
 
-def _derive_legacy_goal_task_summaries_from_ceo_snapshot(ceo_dash_snapshot: Dict[str, Any]) -> Dict[str, List[Dict[str, Any]]]:
+def _derive_legacy_goal_task_summaries_from_ceo_snapshot(
+    ceo_dash_snapshot: Dict[str, Any],
+) -> Dict[str, List[Dict[str, Any]]]:
     goals_summary: List[Dict[str, Any]] = []
     tasks_summary: List[Dict[str, Any]] = []
 
     try:
-        dashboard = ceo_dash_snapshot.get("dashboard") if isinstance(ceo_dash_snapshot, dict) else None
+        dashboard = (
+            ceo_dash_snapshot.get("dashboard")
+            if isinstance(ceo_dash_snapshot, dict)
+            else None
+        )
         if not isinstance(dashboard, dict):
             return {"goals_summary": goals_summary, "tasks_summary": tasks_summary}
 
@@ -633,7 +649,10 @@ def _derive_legacy_goal_task_summaries_from_ceo_snapshot(ceo_dash_snapshot: Dict
                         "name": g.get("name") or g.get("title") or "(bez naziva)",
                         "status": g.get("status") or "-",
                         "priority": g.get("priority") or "-",
-                        "due_date": g.get("deadline") or g.get("due_date") or g.get("due") or "-",
+                        "due_date": g.get("deadline")
+                        or g.get("due_date")
+                        or g.get("due")
+                        or "-",
                     }
                 )
 
@@ -646,7 +665,10 @@ def _derive_legacy_goal_task_summaries_from_ceo_snapshot(ceo_dash_snapshot: Dict
                         "title": t.get("title") or t.get("name") or "(bez naziva)",
                         "status": t.get("status") or "-",
                         "priority": t.get("priority") or "-",
-                        "due_date": t.get("due_date") or t.get("deadline") or t.get("due") or "-",
+                        "due_date": t.get("due_date")
+                        or t.get("deadline")
+                        or t.get("due")
+                        or "-",
                     }
                 )
     except Exception:
@@ -745,7 +767,9 @@ async def execute_command(payload: ExecuteInput):
     )
     approval_id = approval.get("approval_id")
     if not approval_id:
-        raise HTTPException(status_code=500, detail="Approval create failed: missing approval_id")
+        raise HTTPException(
+            status_code=500, detail="Approval create failed: missing approval_id"
+        )
 
     _ensure_trace_on_command(ai_command, approval_id=approval_id)
 
@@ -792,7 +816,9 @@ async def execute_raw_command(payload: ExecuteRawInput2):
     )
     approval_id = approval.get("approval_id")
     if not approval_id:
-        raise HTTPException(status_code=500, detail="Approval create failed: missing approval_id")
+        raise HTTPException(
+            status_code=500, detail="Approval create failed: missing approval_id"
+        )
 
     _ensure_trace_on_command(ai_command, approval_id=approval_id)
 
@@ -803,7 +829,11 @@ async def execute_raw_command(payload: ExecuteRawInput2):
         "execution_state": "BLOCKED",
         "approval_id": approval_id,
         "execution_id": execution_id,
-        "command": (ai_command.model_dump() if hasattr(ai_command, "model_dump") else _to_serializable(ai_command)),
+        "command": (
+            ai_command.model_dump()
+            if hasattr(ai_command, "model_dump")
+            else _to_serializable(ai_command)
+        ),
     }
 
 
@@ -818,12 +848,18 @@ async def execute_proposal(payload: ProposalExecuteInput):
 
     if isinstance(proposal, dict):
         proposal_cmd = proposal.get("command")
-        proposal_args = proposal.get("args") if isinstance(proposal.get("args"), dict) else {}
+        proposal_args = (
+            proposal.get("args") if isinstance(proposal.get("args"), dict) else {}
+        )
         proposal_scope = proposal.get("scope")
         proposal_risk = proposal.get("risk")
     else:
         proposal_cmd = getattr(proposal, "command", None)
-        proposal_args = getattr(proposal, "args", {}) if isinstance(getattr(proposal, "args", None), dict) else {}
+        proposal_args = (
+            getattr(proposal, "args", {})
+            if isinstance(getattr(proposal, "args", None), dict)
+            else {}
+        )
         proposal_scope = getattr(proposal, "scope", None)
         proposal_risk = getattr(proposal, "risk", None)
 
@@ -832,7 +868,9 @@ async def execute_proposal(payload: ProposalExecuteInput):
     if proposal_cmd == "ceo.command.propose":
         prompt = args.get("prompt")
         if not isinstance(prompt, str) or not prompt.strip():
-            raise HTTPException(status_code=400, detail="ceo.command.propose requires args.prompt")
+            raise HTTPException(
+                status_code=400, detail="ceo.command.propose requires args.prompt"
+            )
 
         ai_command = coo_translation_service.translate(
             raw_input=prompt.strip(),
@@ -840,7 +878,9 @@ async def execute_proposal(payload: ProposalExecuteInput):
             context={"mode": "execute", "via": "proposal_promotion"},
         )
         if not ai_command:
-            raise HTTPException(status_code=400, detail="Could not translate proposal prompt to command")
+            raise HTTPException(
+                status_code=400, detail="Could not translate proposal prompt to command"
+            )
 
         ai_command.initiator = initiator
 
@@ -871,7 +911,9 @@ async def execute_proposal(payload: ProposalExecuteInput):
         )
         approval_id = approval.get("approval_id")
         if not approval_id:
-            raise HTTPException(status_code=500, detail="Approval create failed: missing approval_id")
+            raise HTTPException(
+                status_code=500, detail="Approval create failed: missing approval_id"
+            )
 
         _ensure_trace_on_command(ai_command, approval_id=approval_id)
         _execution_registry.register(ai_command)
@@ -970,7 +1012,9 @@ def _validate_bulk_items(items: Any) -> List[Dict[str, Any]]:
             raise HTTPException(status_code=400, detail="each item must be an object")
         t = it.get("type")
         if not isinstance(t, str) or not t.strip():
-            raise HTTPException(status_code=400, detail="each item must have non-empty 'type'")
+            raise HTTPException(
+                status_code=400, detail="each item must have non-empty 'type'"
+            )
         tt = t.strip().lower()
         if tt not in _ALLOWED_BULK_TYPES:
             raise HTTPException(status_code=400, detail=f"invalid type: {t}")
@@ -1081,15 +1125,21 @@ def _resolve_db_id_from_service(notion_service: Any, db_key: str) -> str:
     # 2) Legacy fallback: attributes
     for candidate in (lk, lk.rstrip("s"), lk + "s"):
         if candidate == "goals":
-            v = getattr(notion_service, "goals_db_id", None) or getattr(notion_service, "_goals_db_id", None)
+            v = getattr(notion_service, "goals_db_id", None) or getattr(
+                notion_service, "_goals_db_id", None
+            )
             if isinstance(v, str) and v.strip():
                 return v.strip()
         if candidate == "tasks":
-            v = getattr(notion_service, "tasks_db_id", None) or getattr(notion_service, "_tasks_db_id", None)
+            v = getattr(notion_service, "tasks_db_id", None) or getattr(
+                notion_service, "_tasks_db_id", None
+            )
             if isinstance(v, str) and v.strip():
                 return v.strip()
         if candidate == "projects":
-            v = getattr(notion_service, "projects_db_id", None) or getattr(notion_service, "_projects_db_id", None)
+            v = getattr(notion_service, "projects_db_id", None) or getattr(
+                notion_service, "_projects_db_id", None
+            )
             if isinstance(v, str) and v.strip():
                 return v.strip()
 
@@ -1156,7 +1206,9 @@ async def _query_notion_database(db_key: str, query: Dict[str, Any]) -> Dict[str
         or (os.getenv("NOTION_API_KEY") or os.getenv("NOTION_TOKEN") or "").strip()
     )
     if not isinstance(api_key, str) or not api_key.strip():
-        raise HTTPException(status_code=500, detail="NOTION_API_KEY/NOTION_TOKEN not set")
+        raise HTTPException(
+            status_code=500, detail="NOTION_API_KEY/NOTION_TOKEN not set"
+        )
 
     db_id = _resolve_db_id_from_service(notion_service, db_key)
 
@@ -1164,9 +1216,13 @@ async def _query_notion_database(db_key: str, query: Dict[str, Any]) -> Dict[str
 
     try:
         # notion_client is sync; run in a thread to avoid blocking event loop
-        res = await asyncio.to_thread(lambda: client.databases.query(database_id=db_id, **(query or {})))
+        res = await asyncio.to_thread(
+            lambda: client.databases.query(database_id=db_id, **(query or {}))
+        )
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=f"Notion databases.query failed: {exc}") from exc
+        raise HTTPException(
+            status_code=500, detail=f"Notion databases.query failed: {exc}"
+        ) from exc
 
     if not isinstance(res, dict):
         return {
@@ -1228,7 +1284,11 @@ async def notion_bulk_query(payload: Dict[str, Any] = Body(...)):
 
         nq = _normalize_notion_query_payload(q)
         res = await _query_notion_database(db_key.strip(), nq)
-        items = res.get("results") if isinstance(res, dict) and isinstance(res.get("results"), list) else []
+        items = (
+            res.get("results")
+            if isinstance(res, dict) and isinstance(res.get("results"), list)
+            else []
+        )
         out.append({"query": q, "items": items, "response": res})
 
     return {"results": out}
@@ -1261,7 +1321,12 @@ def _extract_smart_context(payload: Any) -> Optional[Dict[str, Any]]:
         return None
 
     def _pick(d: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        sc = d.get("smart_context") or d.get("context") or d.get("context_hint") or d.get("ui_context_hint")
+        sc = (
+            d.get("smart_context")
+            or d.get("context")
+            or d.get("context_hint")
+            or d.get("ui_context_hint")
+        )
         return sc if isinstance(sc, dict) else None
 
     sc = _pick(payload)
