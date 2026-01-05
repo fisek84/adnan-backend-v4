@@ -165,12 +165,6 @@ class NotionService:
     # --------------------------------------------------
     # SESSION + REQUEST
     # --------------------------------------------------
-    async def aclose(self) -> None:
-        """Close underlying aiohttp session (called on app shutdown)."""
-        if self.session is not None and not self.session.closed:
-            await self.session.close()
-        self.session = None
-
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if not self.api_key:
@@ -539,10 +533,6 @@ class NotionService:
                 raw_name
             )
 
-            # NOTE:
-            # U ovom workspace-u "Status" je SELECT (ne Notion property type "status"),
-            # zato MUST šaljemo {"select": {"name": ...}} da izbjegnemo:
-            # "Status is expected to be select."
             properties: Dict[str, Any] = {
                 "Name": {"title": [{"text": {"content": str(goal_name or raw_name)}}]},
             }
@@ -574,9 +564,6 @@ class NotionService:
                 "database_id": self.goals_db_id,
             }
 
-        # ----------------------------
-        # create_page (canonical write)
-        # ----------------------------
         if intent == "create_page":
             db_key = params.get("db_key")
             database_id = params.get("database_id")
@@ -605,9 +592,6 @@ class NotionService:
                 "database_id": db_id,
             }
 
-        # ----------------------------
-        # update_page (canonical write)
-        # ----------------------------
         if intent == "update_page":
             page_id = params.get("page_id")
             if not page_id:
@@ -639,9 +623,6 @@ class NotionService:
                 "url": result.get("url"),
             }
 
-        # ----------------------------
-        # query_database (read)
-        # ----------------------------
         if intent == "query_database":
             db_key = params.get("db_key")
             database_id = params.get("database_id")
@@ -680,9 +661,6 @@ class NotionService:
                 "next_cursor": result.get("next_cursor"),
             }
 
-        # ----------------------------
-        # retrieve_page_content (read)
-        # ----------------------------
         if intent == "retrieve_page_content":
             page_id = params.get("page_id")
             if not page_id:
@@ -701,17 +679,10 @@ class NotionService:
                 "blocks": blocks_resp.get("results", []),
             }
 
-        # ----------------------------
-        # refresh_snapshot (read-only)
-        # ----------------------------
         if intent == "refresh_snapshot":
             return await self.sync_knowledge_snapshot()
 
         raise RuntimeError(f"Unsupported intent: {command.intent}")
-
-    # --------------------------------------------------
-    # build properties from specs (used by agents)
-    # --------------------------------------------------
 
     def _build_properties_from_specs(
         self, specs: Optional[Dict[str, Any]]
@@ -740,9 +711,6 @@ class NotionService:
                     props[prop_name] = {"select": {"name": name}}
 
             elif spec_type == "status":
-                # COMPAT:
-                # U našem Notion setup-u "Status" je često SELECT (ne Notion "status" type).
-                # Zato ovdje canonical mapiramo status-spec na select payload.
                 name = spec.get("name")
                 if name:
                     props[prop_name] = {"select": {"name": name}}
@@ -788,10 +756,6 @@ class NotionService:
 
         return props
 
-    # --------------------------------------------------
-    # READ-ONLY SNAPSHOT
-    # --------------------------------------------------
-
     async def sync_knowledge_snapshot(self):
         logger.info(">> Syncing Notion knowledge snapshot")
 
@@ -835,7 +799,6 @@ class NotionService:
         agent_exchange_results: List[Dict[str, Any]] = []
         ai_summary_results: List[Dict[str, Any]] = []
 
-        # CORE: GOALS
         if self.goals_db_id:
             try:
                 goals_results = await self._query_db(
@@ -851,7 +814,6 @@ class NotionService:
                 logger.info("Failed to sync goals snapshot from Notion: %s", exc)
                 snapshot["goals_error"] = str(exc)
 
-        # CORE: TASKS
         if self.tasks_db_id:
             try:
                 tasks_results = await self._query_db(
@@ -867,7 +829,6 @@ class NotionService:
                 logger.info("Failed to sync tasks snapshot from Notion: %s", exc)
                 snapshot["tasks_error"] = str(exc)
 
-        # CORE: PROJECTS
         projects_db_id = self.projects_db_id or self.db_ids.get("projects")
         if projects_db_id:
             try:
@@ -882,7 +843,6 @@ class NotionService:
                 logger.info("Failed to sync projects snapshot from Notion: %s", exc)
                 snapshot["projects_error"] = str(exc)
 
-        # CORE: KPI
         kpi_db_id = self.db_ids.get("kpi")
         if kpi_db_id:
             try:
@@ -895,7 +855,6 @@ class NotionService:
                 logger.info("Failed to sync KPI snapshot from Notion: %s", exc)
                 snapshot["kpi_error"] = str(exc)
 
-        # CORE: LEADS
         leads_db_id = self.db_ids.get("leads") or self.db_ids.get("lead")
         if leads_db_id:
             try:
@@ -912,7 +871,6 @@ class NotionService:
                 )
                 snapshot["leads_error"] = str(exc)
 
-        # CORE: AGENT EXCHANGE
         agent_exchange_db_id = self.db_ids.get("agent_exchange")
         if agent_exchange_db_id:
             try:
@@ -929,7 +887,6 @@ class NotionService:
                 )
                 snapshot["agent_exchange_error"] = str(exc)
 
-        # CORE: AI SUMMARY
         ai_summary_db_id = self.db_ids.get("ai_summary") or self.db_ids.get(
             "ai_weekly_summary"
         )
@@ -946,7 +903,6 @@ class NotionService:
                 )
                 snapshot["ai_summary_error"] = str(exc)
 
-        # EXTRA: everything else (DB or PAGE)
         core_keys = {
             "goals",
             "tasks",
@@ -963,12 +919,10 @@ class NotionService:
             if db_key in core_keys:
                 continue
 
-            # 1) pokušaj kao DB
             try:
                 rows = await self._query_db(db_id, self._snapshot_page_size)
                 snapshot["extra_databases"][db_key] = maybe_compact(rows)
 
-                # blocks (samo ako je DB i traženo)
                 if (
                     self._snapshot_include_blocks
                     and db_key in self._snapshot_blocks_db_keys
@@ -993,7 +947,6 @@ class NotionService:
             except Exception as exc:
                 msg = str(exc)
 
-                # 2) DB configured but is PAGE -> fallback on page read
                 if self._looks_like_page_not_db(msg):
                     if db_key not in self._warned_page_fallback:
                         self._warned_page_fallback.add(db_key)
@@ -1030,7 +983,6 @@ class NotionService:
                         )
                     continue
 
-                # 3) Not accessible (permissions / not found)
                 if self._is_no_access(msg) or self._is_object_not_found(msg):
                     snapshot["extra_databases"][f"{db_key}__error"] = msg
                     if db_key not in self._warned_inaccessible:
@@ -1042,11 +994,9 @@ class NotionService:
                         )
                     continue
 
-                # 4) Other unexpected error
                 snapshot["extra_databases"][f"{db_key}__error"] = msg
                 logger.info("Failed to sync db_key='%s' from Notion: %s", db_key, msg)
 
-        # TIME MANAGEMENT PAGE (optional)
         if self._time_management_page_id:
             try:
                 page = await self._retrieve_page(self._time_management_page_id)
