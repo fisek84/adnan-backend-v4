@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from models.ai_command import AICommand
+from models.agent_contract import AgentInput, AgentOutput, ProposedCommand
 from services.notion_service import NotionService, get_notion_service
 
 logger = logging.getLogger(__name__)
@@ -19,6 +20,11 @@ class NotionOpsAgent:
     - jedini agent koji izvršava write prema Notionu (preko NotionService)
     - NE gradi raw Notion API payload (radi NotionService)
     - workflow-e (goal_task_workflow, KPI, itd.) primarno orkestrira Orchestrator
+
+    VAŽNO:
+    - OVA KLASA NIJE router-entrypoint direktno, jer AgentRouterService očekuje
+      callable(agent_input, ctx), a ne klasu koja se poziva sa (agent_input, ctx).
+    - Router treba da koristi funkciju `notion_ops_agent` kao entrypoint.
     """
 
     def __init__(self, notion: NotionService):
@@ -148,7 +154,88 @@ class NotionOpsAgent:
 
 
 # ============================================================
-# FACTORY ENTRYPOINT (Router must use this, not the class)
+# FACTORY (korisno za druge servise / wiring)
 # ============================================================
 def create_notion_ops_agent() -> NotionOpsAgent:
     return NotionOpsAgent(get_notion_service())
+
+
+# ============================================================
+# ROUTER ENTRYPOINT (AgentRouterService expects this shape)
+# entrypoint u agents.json treba biti:
+#   "services.notion_ops_agent:notion_ops_agent"
+# ============================================================
+async def notion_ops_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> AgentOutput:
+    """
+    Router-callable adapter.
+
+    Namjena:
+    - sprječava crash (jer entrypoint nije klasa nego funkcija)
+    - u chat/ceo-console kontekstu vraća ProposedCommand (approval-gated),
+      a izvršenje ide kroz postojeći approval/execution pipeline.
+
+    Napomena:
+    - Router već radi gating (read_only/require_approval) i postavlja status/dry_run.
+    - Ovdje namjerno NE izvršavamo Notion write direktno.
+    """
+    msg = (getattr(agent_input, "message", None) or "").strip()
+
+    md = getattr(agent_input, "metadata", None)
+    if not isinstance(md, dict):
+        md = {}
+
+    read_only = bool(md.get("read_only", True))
+    require_approval = bool(md.get("require_approval", True))
+
+    proposed: List[ProposedCommand] = []
+
+    if msg:
+        # Standardni wrapper koji gateway zna unwrap-ati / promovirati u execution.
+        proposed.append(
+            ProposedCommand(
+                command="ceo.command.propose",
+                args={"prompt": msg},
+                reason="Notion write intent ide kroz approval pipeline; predlažem komandu za promotion/execute.",
+                requires_approval=True if require_approval else True,
+                risk="HIGH",
+                dry_run=True,
+            )
+        )
+
+    text_parts: List[str] = []
+    if read_only:
+        text_parts.append(
+            "Notion Ops: Detektovan je write zahtjev, ali trenutni režim je read-only. "
+            "Vraćam prijedlog komande za approval."
+        )
+    else:
+        text_parts.append(
+            "Notion Ops: Vraćam prijedlog komande za approval (execution ide kroz orchestrator)."
+        )
+
+    if not msg:
+        text_parts.append("Nedostaje text/prompt u requestu.")
+
+    trace: Dict[str, Any] = {}
+    base_trace = None
+    if isinstance(ctx, dict):
+        base_trace = ctx.get("trace")
+    if isinstance(base_trace, dict):
+        trace.update(base_trace)
+
+    trace.update(
+        {
+            "agent": "notion_ops",
+            "read_only": read_only,
+            "require_approval": require_approval,
+            "adapter": "services.notion_ops_agent:notion_ops_agent",
+        }
+    )
+
+    return AgentOutput(
+        text="\n".join(text_parts),
+        proposed_commands=proposed,
+        agent_id="notion_ops",
+        read_only=read_only,
+        trace=trace,
+    )

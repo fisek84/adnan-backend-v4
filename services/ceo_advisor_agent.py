@@ -48,6 +48,24 @@ def _wants_goal(user_text: str) -> bool:
 
 
 # -------------------------------
+# Snapshot unwrapping (CANON)
+# -------------------------------
+def _unwrap_snapshot(snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Supports both shapes:
+      A) raw payload: {"goals": [...], "tasks": [...], ...}
+      B) wrapper: {"ready":..., "last_sync":..., "payload": {...}, ...}
+    Returns the payload dict.
+    """
+    if not isinstance(snapshot, dict):
+        return {}
+    payload = snapshot.get("payload")
+    if isinstance(payload, dict):
+        return payload
+    return snapshot
+
+
+# -------------------------------
 # Snapshot-structured mode (as-is)
 # -------------------------------
 def _format_enforcer(user_text: str) -> str:
@@ -77,6 +95,27 @@ def _needs_structured_snapshot_answer(user_text: str) -> bool:
 
     # IMPORTANT: propose-only is NOT structured dashboard mode
     if _is_propose_only_request(t):
+        return False
+
+    # If user is issuing an action (create/update/etc.), this is NOT dashboard mode.
+    action_signals = (
+        "napravi",
+        "kreiraj",
+        "create",
+        "dodaj",
+        "upisi",
+        "upiši",
+        "azuriraj",
+        "ažuriraj",
+        "update",
+        "promijeni",
+        "promeni",
+        "move",
+        "premjesti",
+        "pošalji",
+        "posalji",
+    )
+    if any(a in t for a in action_signals):
         return False
 
     keywords = (
@@ -114,8 +153,8 @@ def _needs_structured_snapshot_answer(user_text: str) -> bool:
     return any(k in t for k in keywords)
 
 
-def _extract_goals_tasks(snapshot: Dict[str, Any]) -> Tuple[Any, Any]:
-    dashboard = snapshot.get("dashboard") if isinstance(snapshot, dict) else {}
+def _extract_goals_tasks(snapshot_payload: Dict[str, Any]) -> Tuple[Any, Any]:
+    dashboard = snapshot_payload.get("dashboard") if isinstance(snapshot_payload, dict) else {}
     goals = None
     tasks = None
 
@@ -124,9 +163,9 @@ def _extract_goals_tasks(snapshot: Dict[str, Any]) -> Tuple[Any, Any]:
         tasks = dashboard.get("tasks")
 
     if goals is None:
-        goals = snapshot.get("goals") if isinstance(snapshot, dict) else None
+        goals = snapshot_payload.get("goals") if isinstance(snapshot_payload, dict) else None
     if tasks is None:
-        tasks = snapshot.get("tasks") if isinstance(snapshot, dict) else None
+        tasks = snapshot_payload.get("tasks") if isinstance(snapshot_payload, dict) else None
 
     return goals, tasks
 
@@ -146,9 +185,7 @@ def _render_snapshot_summary(goals: Any, tasks: Any) -> str:
         lines.append("NEMA DOVOLJNO PODATAKA U SNAPSHOT-U")
     else:
         for i, it in enumerate(g[:3], start=1):
-            name = str(
-                it.get("name") or it.get("Name") or it.get("title") or "-"
-            ).strip()
+            name = str(it.get("name") or it.get("Name") or it.get("title") or "-").strip()
             status = str(it.get("status") or it.get("Status") or "-").strip()
             priority = str(it.get("priority") or it.get("Priority") or "-").strip()
             lines.append(f"{i}) {name} | {status} | {priority}")
@@ -158,9 +195,7 @@ def _render_snapshot_summary(goals: Any, tasks: Any) -> str:
         lines.append("NEMA DOVOLJNO PODATAKA U SNAPSHOT-U")
     else:
         for i, it in enumerate(t[:5], start=1):
-            title = str(
-                it.get("title") or it.get("Name") or it.get("name") or "-"
-            ).strip()
+            title = str(it.get("title") or it.get("Name") or it.get("name") or "-").strip()
             status = str(it.get("status") or it.get("Status") or "-").strip()
             priority = str(it.get("priority") or it.get("Priority") or "-").strip()
             lines.append(f"{i}) {title} | {status} | {priority}")
@@ -173,27 +208,13 @@ def _render_snapshot_summary(goals: Any, tasks: Any) -> str:
 # -------------------------------
 def _pick_text(result: Any) -> str:
     if isinstance(result, dict):
-        for k in (
-            "text",
-            "summary",
-            "assistant_text",
-            "message",
-            "output_text",
-            "response",
-        ):
+        for k in ("text", "summary", "assistant_text", "message", "output_text", "response"):
             v = result.get(k)
             if isinstance(v, str) and v.strip():
                 return v.strip()
         raw = result.get("raw")
         if isinstance(raw, dict):
-            for k in (
-                "text",
-                "summary",
-                "assistant_text",
-                "message",
-                "output_text",
-                "response",
-            ):
+            for k in ("text", "summary", "assistant_text", "message", "output_text", "response"):
                 v = raw.get(k)
                 if isinstance(v, str) and v.strip():
                     return v.strip()
@@ -292,9 +313,7 @@ def _extract_deadline_from_text(text: str) -> Optional[str]:
 # ---------------------------------------
 # Translation: create_task/create_goal -> ai_command
 # ---------------------------------------
-def _translate_create_task_to_ai_command(
-    proposal: Dict[str, Any],
-) -> Optional[Dict[str, Any]]:
+def _translate_create_task_to_ai_command(proposal: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if not isinstance(proposal, dict):
         return None
 
@@ -313,17 +332,13 @@ def _translate_create_task_to_ai_command(
     priority = _normalize_priority(args.get("Priority") or args.get("priority"))
     status = _normalize_status(args.get("Status") or args.get("status"))
 
-    # optional deadline/due
-    date_iso = _normalize_date_iso(
-        args.get("Deadline") or args.get("Due Date") or args.get("due_date")
-    )
+    date_iso = _normalize_date_iso(args.get("Deadline") or args.get("Due Date") or args.get("due_date"))
     property_specs: Dict[str, Any] = {
         "Name": {"type": "title", "text": title},
         "Priority": {"type": "select", "name": priority},
         "Status": {"type": "select", "name": status},
     }
     if date_iso:
-        # your Tasks DB uses "Deadline" (based on your screenshot)
         property_specs["Deadline"] = {"type": "date", "start": date_iso}
 
     return {
@@ -333,9 +348,7 @@ def _translate_create_task_to_ai_command(
     }
 
 
-def _translate_create_goal_to_ai_command(
-    proposal: Dict[str, Any],
-) -> Optional[Dict[str, Any]]:
+def _translate_create_goal_to_ai_command(proposal: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if not isinstance(proposal, dict):
         return None
 
@@ -352,13 +365,9 @@ def _translate_create_goal_to_ai_command(
         or "E2E Chat Goal"
     )
     priority = _normalize_priority(args.get("Priority") or args.get("priority"))
-    status = (
-        str(args.get("Status") or args.get("status") or "Active").strip() or "Active"
-    )
+    status = str(args.get("Status") or args.get("status") or "Active").strip() or "Active"
 
-    date_iso = _normalize_date_iso(
-        args.get("Deadline") or args.get("deadline") or args.get("Due date")
-    )
+    date_iso = _normalize_date_iso(args.get("Deadline") or args.get("deadline") or args.get("Due date"))
 
     property_specs: Dict[str, Any] = {
         "Name": {"type": "title", "text": name},
@@ -366,7 +375,6 @@ def _translate_create_goal_to_ai_command(
         "Status": {"type": "select", "name": status},
     }
     if date_iso:
-        # your Goals DB uses "Deadline" (you proved it in terminal)
         property_specs["Deadline"] = {"type": "date", "start": date_iso}
 
     return {
@@ -376,9 +384,7 @@ def _translate_create_goal_to_ai_command(
     }
 
 
-def _wrap_as_proposed_command_with_ai_command(
-    ai_cmd: Dict[str, Any], reason: str, risk: str = "LOW"
-) -> ProposedCommand:
+def _wrap_as_proposed_command_with_ai_command(ai_cmd: Dict[str, Any], reason: str, risk: str = "LOW") -> ProposedCommand:
     return ProposedCommand(
         command="notion_write",
         args={"ai_command": ai_cmd},
@@ -408,13 +414,9 @@ def _to_proposed_commands(items: Any) -> List[ProposedCommand]:
         intent = x.get("intent")
         params = x.get("params")
 
-        # If LLM returns executable raw triple, wrap into ai_command
         if isinstance(intent, str) and intent.strip() and isinstance(params, dict):
             args = dict(args)
-            args.setdefault(
-                "ai_command",
-                {"command": cmd, "intent": intent.strip(), "params": params},
-            )
+            args.setdefault("ai_command", {"command": cmd, "intent": intent.strip(), "params": params})
 
         out.append(
             ProposedCommand(
@@ -429,17 +431,61 @@ def _to_proposed_commands(items: Any) -> List[ProposedCommand]:
     return out
 
 
+def _deterministic_notion_ai_command_from_text(text: str) -> Optional[Dict[str, Any]]:
+    """
+    Deterministic fallback when LLM is unavailable OR returns no usable proposed_commands.
+    Only creates *proposal* (approval-gated), no execution.
+    """
+    base = (text or "").strip()
+    if not base:
+        return None
+
+    deadline_iso = _extract_deadline_from_text(base)
+
+    if _wants_task(base):
+        property_specs: Dict[str, Any] = {
+            "Name": {"type": "title", "text": "E2E Chat Task"},
+            "Priority": {"type": "select", "name": "High"},
+            "Status": {"type": "select", "name": "To Do"},
+        }
+        if deadline_iso:
+            property_specs["Deadline"] = {"type": "date", "start": deadline_iso}
+
+        return {
+            "command": "notion_write",
+            "intent": "create_page",
+            "params": {"db_key": "tasks", "property_specs": property_specs},
+        }
+
+    if _wants_goal(base):
+        property_specs: Dict[str, Any] = {
+            "Name": {"type": "title", "text": "E2E Chat Goal"},
+            "Priority": {"type": "select", "name": "High"},
+            "Status": {"type": "select", "name": "Active"},
+        }
+        if deadline_iso:
+            property_specs["Deadline"] = {"type": "date", "start": deadline_iso}
+
+        return {
+            "command": "notion_write",
+            "intent": "create_page",
+            "params": {"db_key": "goals", "property_specs": property_specs},
+        }
+
+    return None
+
+
 # -------------------------------
 # Main agent entrypoint
 # -------------------------------
-async def create_ceo_advisor_agent(
-    agent_input: AgentInput, ctx: Dict[str, Any]
-) -> AgentOutput:
+async def create_ceo_advisor_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> AgentOutput:
     base_text = (agent_input.message or "").strip()
     if not base_text:
         base_text = "Reci ukratko šta možeš i kako mogu tražiti akciju."
 
-    snapshot = agent_input.snapshot if isinstance(agent_input.snapshot, dict) else {}
+    raw_snapshot = agent_input.snapshot if isinstance(agent_input.snapshot, dict) else {}
+    snapshot_payload = _unwrap_snapshot(raw_snapshot)
+
     structured_mode = _needs_structured_snapshot_answer(base_text)
 
     propose_only = _is_propose_only_request(base_text)
@@ -448,7 +494,7 @@ async def create_ceo_advisor_agent(
     # =========================================================
     # SNAPSHOT GUARD — only for structured dashboard requests
     # =========================================================
-    goals, tasks = _extract_goals_tasks(snapshot)
+    goals, tasks = _extract_goals_tasks(snapshot_payload)
     if structured_mode and not goals and not tasks:
         return AgentOutput(
             text=(
@@ -469,8 +515,11 @@ async def create_ceo_advisor_agent(
             read_only=True,
             trace={
                 "snapshot_empty": True,
-                "snapshot_source": snapshot.get("source"),
                 "structured_mode": True,
+                "snapshot_wrapper_present": isinstance(raw_snapshot.get("payload"), dict),
+                "snapshot_ready": raw_snapshot.get("ready"),
+                "snapshot_last_sync": raw_snapshot.get("last_sync") or snapshot_payload.get("last_sync"),
+                "snapshot_source": (agent_input.metadata or {}).get("snapshot_source") if isinstance(agent_input.metadata, dict) else None,
             },
         )
 
@@ -479,10 +528,9 @@ async def create_ceo_advisor_agent(
     # =========================================================
     safe_context: Dict[str, Any] = {
         "canon": {"read_only": True, "no_tools": True, "no_side_effects": True},
-        "snapshot": snapshot,
-        "metadata": agent_input.metadata
-        if isinstance(agent_input.metadata, dict)
-        else {},
+        # IMPORTANT: give LLM the SSOT payload (not wrapper noise)
+        "snapshot": snapshot_payload,
+        "metadata": agent_input.metadata if isinstance(agent_input.metadata, dict) else {},
     }
 
     if structured_mode:
@@ -494,15 +542,13 @@ async def create_ceo_advisor_agent(
             "Ne izvršavaj ništa."
         )
 
-    # IMPORTANT:
-    # - propose_only workflows MUST be deterministic and CI-safe
-    # - structured_mode can fall back to snapshot rendering if LLM is unavailable
     result: Dict[str, Any] = {}
     proposed_items: Any = None
     proposed: List[ProposedCommand] = []
     text_out: str = ""
 
-    use_llm = not propose_only  # keep propose-only deterministic (no OpenAI dependency)
+    # keep propose-only deterministic (no OpenAI dependency)
+    use_llm = not propose_only
 
     if use_llm:
         try:
@@ -513,40 +559,32 @@ async def create_ceo_advisor_agent(
             else:
                 result = {"text": str(raw)}
         except Exception as e:
-            # CI / missing key / transient failures
             result = {"text": f"LLM unavailable: {e}"}
 
         text_out = _pick_text(result) or "CEO advisor nije vratio tekstualni output."
-        proposed_items = (
-            result.get("proposed_commands") if isinstance(result, dict) else None
-        )
+        proposed_items = result.get("proposed_commands") if isinstance(result, dict) else None
         proposed = _to_proposed_commands(proposed_items)
     else:
-        # deterministic text for propose-only
         if structured_mode:
             text_out = _render_snapshot_summary(goals, tasks)
         else:
             text_out = "OK. Predložiću akciju (propose-only), bez izvršavanja."
 
     # =========================================================
-    # CANON: translate create_task/create_goal -> notion_write executable ai_command
+    # CANON: always ensure Notion write requests can produce a deterministic proposal
     # =========================================================
-    if propose_only and wants_notion:
-        # If LLM provided structured items anyway (some routers might), we still translate them.
-        first_cmd = getattr(proposed[0], "command", None) if proposed else None
 
+    # 1) If LLM returned create_task/create_goal, translate to notion_write ai_command
+    if proposed:
+        first_cmd = getattr(proposed[0], "command", None)
         if first_cmd in ("create_task", "create_goal"):
-            p0 = (
-                proposed_items[0]
-                if isinstance(proposed_items, list) and proposed_items
-                else None
-            )
+            p0 = proposed_items[0] if isinstance(proposed_items, list) and proposed_items else None
             p0d = p0 if isinstance(p0, dict) else {}
 
             ai_cmd = None
             if first_cmd == "create_task":
                 ai_cmd = _translate_create_task_to_ai_command(p0d)
-            if first_cmd == "create_goal":
+            elif first_cmd == "create_goal":
                 ai_cmd = _translate_create_goal_to_ai_command(p0d)
 
             if isinstance(ai_cmd, dict):
@@ -558,59 +596,20 @@ async def create_ceo_advisor_agent(
                     )
                 ]
 
-        # If we still have nothing usable, force deterministic proposal
-        if not proposed or (
-            proposed and getattr(proposed[0], "command", None) in ("refresh_snapshot",)
-        ):
-            if _wants_task(base_text):
-                deadline_iso = _extract_deadline_from_text(base_text)
+    # 2) If user wants Notion action and we have no usable proposal -> deterministic fallback proposal
+    if wants_notion and not proposed:
+        ai_cmd = _deterministic_notion_ai_command_from_text(base_text)
+        if isinstance(ai_cmd, dict):
+            proposed = [
+                _wrap_as_proposed_command_with_ai_command(
+                    ai_cmd,
+                    reason="Deterministic Notion proposal (approval-gated).",
+                    risk="LOW",
+                )
+            ]
 
-                property_specs: Dict[str, Any] = {
-                    "Name": {"type": "title", "text": "E2E Chat Task"},
-                    "Priority": {"type": "select", "name": "High"},
-                    "Status": {"type": "select", "name": "To Do"},
-                }
-                if deadline_iso:
-                    property_specs["Deadline"] = {"type": "date", "start": deadline_iso}
-
-                ai_cmd = {
-                    "command": "notion_write",
-                    "intent": "create_page",
-                    "params": {"db_key": "tasks", "property_specs": property_specs},
-                }
-                proposed = [
-                    _wrap_as_proposed_command_with_ai_command(
-                        ai_cmd,
-                        reason="Deterministic propose-only Notion task command (snapshot not required).",
-                        risk="LOW",
-                    )
-                ]
-            elif _wants_goal(base_text):
-                deadline_iso = _extract_deadline_from_text(base_text)
-
-                property_specs = {
-                    "Name": {"type": "title", "text": "E2E Chat Goal"},
-                    "Priority": {"type": "select", "name": "High"},
-                    "Status": {"type": "select", "name": "Active"},
-                }
-                if deadline_iso:
-                    property_specs["Deadline"] = {"type": "date", "start": deadline_iso}
-
-                ai_cmd = {
-                    "command": "notion_write",
-                    "intent": "create_page",
-                    "params": {"db_key": "goals", "property_specs": property_specs},
-                }
-                proposed = [
-                    _wrap_as_proposed_command_with_ai_command(
-                        ai_cmd,
-                        reason="Deterministic propose-only Notion goal command (snapshot not required).",
-                        risk="LOW",
-                    )
-                ]
-
-    # Structured-mode default action
-    if structured_mode and not proposed:
+    # 3) Structured-mode default action (only when NOT a Notion write ask)
+    if structured_mode and (not wants_notion) and not proposed:
         proposed.append(
             ProposedCommand(
                 command="refresh_snapshot",
@@ -630,6 +629,10 @@ async def create_ceo_advisor_agent(
     trace["propose_only"] = propose_only
     trace["wants_notion"] = wants_notion
     trace["llm_used"] = use_llm
+    trace["snapshot_wrapper_present"] = isinstance(raw_snapshot.get("payload"), dict)
+    trace["snapshot_ready"] = raw_snapshot.get("ready")
+    trace["snapshot_last_sync"] = raw_snapshot.get("last_sync") or snapshot_payload.get("last_sync")
+    trace["snapshot_source"] = (agent_input.metadata or {}).get("snapshot_source") if isinstance(agent_input.metadata, dict) else None
 
     return AgentOutput(
         text=text_out,

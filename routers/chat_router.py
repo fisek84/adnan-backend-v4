@@ -1,23 +1,40 @@
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter
 
 from models.agent_contract import AgentInput, AgentOutput
-from services.knowledge_snapshot_service import KnowledgeSnapshotService
 from services.ceo_advisor_agent import create_ceo_advisor_agent
+from services.knowledge_snapshot_service import KnowledgeSnapshotService
 
 
-def build_chat_router(_agent_router=None) -> APIRouter:
+def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
+    """
+    /api/chat je READ/PROPOSE ONLY.
+    - nikad ne izvršava side-effect
+    - injektuje server snapshot ako klijent ne pošalje snapshot
+    """
+
     router = APIRouter()
 
     def _ensure_dict(v: Any) -> Dict[str, Any]:
         return v if isinstance(v, dict) else {}
 
+    def _snapshot_meta(snap: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(snap, dict):
+            return {"is_empty": True}
+        return {
+            "is_empty": not bool(snap),
+            "last_sync": snap.get("last_sync"),
+            "ready": snap.get("ready"),
+            "keys": sorted(list(snap.keys())) if isinstance(snap, dict) else [],
+        }
+
     def _enforce_input_read_only(payload: AgentInput) -> None:
         md = _ensure_dict(getattr(payload, "metadata", None))
         md["read_only"] = True
+        md["require_approval"] = True
         md["endpoint"] = "/api/chat"
         md["canon"] = "read_propose_only"
         payload.metadata = md  # type: ignore[assignment]
@@ -34,23 +51,37 @@ def build_chat_router(_agent_router=None) -> APIRouter:
             if isinstance(snap, dict) and snap:
                 md = _ensure_dict(getattr(payload, "metadata", None))
                 md.setdefault("snapshot_source", "client")
+                md["snapshot_meta"] = _snapshot_meta(snap)
                 payload.metadata = md  # type: ignore[assignment]
                 return
 
-            payload.snapshot = KnowledgeSnapshotService.get_snapshot() or {}  # type: ignore[assignment]
+            server_snap = KnowledgeSnapshotService.get_snapshot() or {}
+            payload.snapshot = server_snap  # type: ignore[assignment]
+
             md = _ensure_dict(getattr(payload, "metadata", None))
             md["snapshot_source"] = "server"
+            md["snapshot_meta"] = _snapshot_meta(server_snap)
             payload.metadata = md  # type: ignore[assignment]
         except Exception:
-            # fail-soft
-            pass
+            md = _ensure_dict(getattr(payload, "metadata", None))
+            md["snapshot_source"] = md.get("snapshot_source") or "error"
+            md["snapshot_meta"] = md.get("snapshot_meta") or {
+                "is_empty": True,
+                "error": True,
+            }
+            payload.metadata = md  # type: ignore[assignment]
 
-    def _enforce_output_read_only(out: AgentOutput) -> AgentOutput:
+    def _enforce_output_read_only(out: AgentOutput, payload: AgentInput) -> AgentOutput:
         out.read_only = True
 
         trace = _ensure_dict(getattr(out, "trace", None))
         trace["endpoint"] = "/api/chat"
         trace["canon"] = "read_propose_only"
+
+        md = _ensure_dict(getattr(payload, "metadata", None))
+        trace["snapshot_source"] = md.get("snapshot_source")
+        trace["snapshot_meta"] = md.get("snapshot_meta")
+
         out.trace = trace  # type: ignore[assignment]
 
         pcs = getattr(out, "proposed_commands", None) or []
@@ -73,11 +104,19 @@ def build_chat_router(_agent_router=None) -> APIRouter:
         out.proposed_commands = pcs  # type: ignore[assignment]
         return out
 
-    async def _call_ceo_advisor(payload: AgentInput) -> AgentOutput:
-        # create_ceo_advisor_agent je ASYNC funkcija sa (agent_input, ctx)
-        ctx: Dict[str, Any] = {
-            "trace": {"selected_by": "chat_router_direct"},
-        }
+    async def _call_agent(payload: AgentInput) -> AgentOutput:
+        # Ako imaš registry/router u gateway_serveru, možeš ga koristiti,
+        # ali /api/chat i dalje ostaje READ-only.
+        if agent_router and hasattr(agent_router, "route"):
+            try:
+                out = await agent_router.route(payload)  # type: ignore[attr-defined]
+                if isinstance(out, AgentOutput):
+                    return out
+            except Exception:
+                pass
+
+        # Fallback: direktno CEO advisor agent
+        ctx: Dict[str, Any] = {"trace": {"selected_by": "chat_router_direct"}}
         out = await create_ceo_advisor_agent(payload, ctx)
 
         if isinstance(out, AgentOutput):
@@ -100,7 +139,7 @@ def build_chat_router(_agent_router=None) -> APIRouter:
         _enforce_input_read_only(payload)
         _inject_server_snapshot_if_missing(payload)
 
-        out = await _call_ceo_advisor(payload)
-        return _enforce_output_read_only(out)
+        out = await _call_agent(payload)
+        return _enforce_output_read_only(out, payload)
 
     return router

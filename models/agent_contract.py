@@ -1,3 +1,4 @@
+# models/agent_contract.py
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
@@ -101,13 +102,22 @@ class ProposedCommand(_AllowExtraBaseModel):
 
             if isinstance(args, dict) and not args_dict and params_dict:
                 merged = dict(params_dict)
-                merged.update(args_dict)  # args wins
+                merged.update(args_dict)  # args wins (though args_dict is empty here)
                 data["args"] = merged
                 return data
 
             if args is None:
                 data["args"] = {}
             return data
+
+        @field_validator("command", mode="before")
+        @classmethod
+        def _command_strip_nonempty(cls, v):
+            s = "" if v is None else str(v)
+            s = s.strip()
+            if not s:
+                raise ValueError("command must be a non-empty string")
+            return s
 
         @field_validator("args", mode="before")
         @classmethod
@@ -152,13 +162,21 @@ class ProposedCommand(_AllowExtraBaseModel):
 
             if isinstance(args, dict) and not args_dict and params_dict:
                 merged = dict(params_dict)
-                merged.update(args_dict)  # args wins
+                merged.update(args_dict)  # args wins (though args_dict is empty here)
                 values["args"] = merged
                 return values
 
             if args is None:
                 values["args"] = {}
             return values
+
+        @validator("command", pre=True, always=True)
+        def _command_strip_nonempty(cls, v):
+            s = "" if v is None else str(v)
+            s = s.strip()
+            if not s:
+                raise ValueError("command must be a non-empty string")
+            return s
 
         @validator("args", pre=True, always=True)
         def _args_none_to_dict(cls, v):
@@ -203,6 +221,16 @@ class AgentInput(_AllowExtraBaseModel):
     if _is_pydantic_v2():
         from pydantic import field_validator  # type: ignore
 
+        @field_validator("message", mode="before")
+        @classmethod
+        def _message_any_to_str(cls, v):
+            # Allow null/number/object from clients; normalize deterministically.
+            if v is None:
+                return ""
+            if isinstance(v, str):
+                return v
+            return str(v)
+
         @field_validator("identity_pack", mode="before")
         @classmethod
         def _idpack_none_to_dict(cls, v):
@@ -219,6 +247,14 @@ class AgentInput(_AllowExtraBaseModel):
             return v or {}
     else:
         from pydantic import validator  # type: ignore
+
+        @validator("message", pre=True, always=True)
+        def _message_any_to_str(cls, v):
+            if v is None:
+                return ""
+            if isinstance(v, str):
+                return v
+            return str(v)
 
         @validator("identity_pack", pre=True, always=True)
         def _idpack_none_to_dict(cls, v):

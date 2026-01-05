@@ -41,7 +41,7 @@
       "name": "Notion Ops",
       "enabled": true,
       "priority": 90,
-      "entrypoint": "services.notion_ops_agent:NotionOpsAgent",
+      "entrypoint": "services.notion_ops_agent:notion_ops_agent",
       "keywords": [
         "notion",
         "database",

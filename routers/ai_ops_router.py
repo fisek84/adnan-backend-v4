@@ -10,11 +10,11 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, Body, HTTPException, Request
 
 from services.agent_health_service import AgentHealthService
+from services.alert_forwarding_service import AlertForwardingService
 from services.approval_state_service import get_approval_state
 from services.cron_service import CronService
 from services.execution_orchestrator import ExecutionOrchestrator
 from services.metrics_persistence_service import MetricsPersistenceService
-from services.alert_forwarding_service import AlertForwardingService
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -73,6 +73,76 @@ _approval_state_override: Optional[Any] = None
 
 def _get_approval_state() -> Any:
     return _approval_state_override or get_approval_state()
+
+
+# ------------------------------------------------------------
+# IDempotency cache (prevents double-write on repeated approve calls)
+# NOTE:
+# - This is process-local (in-memory). It eliminates accidental double-approve
+#   in the same running server process.
+# - True SSOT idempotency should also be enforced in ApprovalState/Orchestrator,
+#   but this router-level guard is the safest minimal fix you asked for.
+# ------------------------------------------------------------
+
+_APPROVAL_TO_EXECUTION: Dict[str, str] = {}
+_EXECUTION_RESULT_CACHE: Dict[str, Dict[str, Any]] = {}
+
+
+def _norm_status(v: Any) -> str:
+    return (v or "").__str__().strip().lower()
+
+
+def _try_get_existing_approval(approval_state: Any, approval_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Best-effort read without assuming an interface.
+    If ApprovalState exposes a getter, we use it; otherwise returns None.
+    """
+    if approval_state is None:
+        return None
+
+    # Common method names seen in similar codebases.
+    for meth_name in ("get", "read", "get_approval", "read_approval", "lookup"):
+        meth = getattr(approval_state, meth_name, None)
+        if callable(meth):
+            try:
+                a = meth(approval_id)
+                return a if isinstance(a, dict) else None
+            except Exception:
+                continue
+
+    return None
+
+
+def _extract_intent_from_approval(approval: Any) -> Optional[str]:
+    """
+    Best-effort extraction of intent/command from approval payload_summary, if present.
+    This is only a defensive UX error; SSOT fix is in gateway (unwrap before approval creation).
+    """
+    if not isinstance(approval, dict):
+        return None
+    ps = approval.get("payload_summary")
+    if not isinstance(ps, dict):
+        return None
+    intent = ps.get("intent") or ps.get("command")
+    return intent.strip() if isinstance(intent, str) and intent.strip() else None
+
+
+def _cached_response_for_approval(approval_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Return a stable response if we've already executed this approval in this process.
+    """
+    execution_id = _APPROVAL_TO_EXECUTION.get(approval_id)
+    if not execution_id:
+        return None
+    cached = _EXECUTION_RESULT_CACHE.get(execution_id)
+    if isinstance(cached, dict) and cached:
+        return cached
+    return None
+
+
+def _cache_execution_result(*, approval_id: str, execution_id: str, execution_result: Dict[str, Any]) -> None:
+    _APPROVAL_TO_EXECUTION[approval_id] = execution_id
+    _EXECUTION_RESULT_CACHE[execution_id] = execution_result
 
 
 # ------------------------------------------------------------
@@ -251,43 +321,74 @@ def list_pending() -> Dict[str, Any]:
     return {"approvals": pending, "read_only": True}
 
 
-def _extract_intent_from_approval(approval: Any) -> Optional[str]:
-    """
-    Best-effort extraction of intent/command from approval payload_summary, if present.
-    This is only a defensive UX error; SSOT fix is in gateway (unwrap before approval creation).
-    """
-    if not isinstance(approval, dict):
-        return None
-    ps = approval.get("payload_summary")
-    if not isinstance(ps, dict):
-        return None
-    intent = ps.get("intent") or ps.get("command")
-    return intent.strip() if isinstance(intent, str) and intent.strip() else None
-
-
 @router.post("/approval/approve")
 async def approve(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """
+    IMPORTANT FIX:
+    - Router-level idempotency guard to prevent repeated /approve calls from re-executing writes.
+    - If approval is already approved/completed, return cached result (same process),
+      or no-op response without invoking orchestrator.resume().
+    """
     _guard_write(request)
 
     approval_id = body.get("approval_id")
     if not isinstance(approval_id, str) or not approval_id.strip():
         raise HTTPException(400, detail="approval_id is required")
+    approval_id = approval_id.strip()
+
+    # 0) Fast path: if we already completed this approval in this process, return stable result.
+    cached = _cached_response_for_approval(approval_id)
+    if isinstance(cached, dict) and cached:
+        logger.info("ai_ops_router: approve idempotent hit (cached) approval_id=%s", approval_id)
+        return cached
 
     approved_by = body.get("approved_by", "unknown")
     note = body.get("note")
 
     approval_state = _get_approval_state()
 
+    # 1) Best-effort: detect already-approved BEFORE mutating state and BEFORE resuming orchestrator.
+    existing = _try_get_existing_approval(approval_state, approval_id)
+    if isinstance(existing, dict):
+        st = _norm_status(existing.get("status"))
+        # Treat both "approved" and "completed" as idempotent terminal-ish from router POV.
+        if st in ("approved", "completed"):
+            execution_id0 = existing.get("execution_id")
+            # If we have an execution_id and maybe cached result, return it. Otherwise no-op.
+            if isinstance(execution_id0, str) and execution_id0.strip():
+                cached2 = _EXECUTION_RESULT_CACHE.get(execution_id0.strip())
+                if isinstance(cached2, dict) and cached2:
+                    logger.info(
+                        "ai_ops_router: approve idempotent hit (existing+cache) approval_id=%s execution_id=%s",
+                        approval_id,
+                        execution_id0.strip(),
+                    )
+                    return cached2
+
+            logger.warning(
+                "ai_ops_router: approve called again for already-approved approval_id=%s; returning no-op",
+                approval_id,
+            )
+            return {
+                "execution_id": existing.get("execution_id"),
+                "execution_state": "COMPLETED" if st == "completed" else "APPROVED",
+                "result": existing.get("result"),  # may be absent in your current ApprovalState
+                "approval": existing,
+                "read_only": False,
+                "note": "idempotent_noop_already_approved",
+            }
+
+    # 2) Approve state transition (first time).
     try:
         approval = approval_state.approve(
-            approval_id.strip(),
+            approval_id,
             approved_by=approved_by if isinstance(approved_by, str) else "unknown",
             note=note if isinstance(note, str) else None,
         )
     except KeyError:
         raise HTTPException(status_code=404, detail="Approval not found")
 
-    # Optional guard: do not allow approving proposal wrappers (should be impossible after gateway unwrap).
+    # 3) Optional guard: do not allow approving proposal wrappers (should be impossible after gateway unwrap).
     intent = _extract_intent_from_approval(approval)
     if intent == PROPOSAL_WRAPPER_INTENT:
         raise HTTPException(
@@ -295,13 +396,13 @@ async def approve(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[st
             detail="cannot approve proposal wrapper (ceo.command.propose); unwrap required before approval is created",
         )
 
-    execution_id = approval.get("execution_id")
+    execution_id = approval.get("execution_id") if isinstance(approval, dict) else None
     if not isinstance(execution_id, str) or not execution_id.strip():
         # This should never be "normal": it means /api/execute didn't attach execution_id properly
         raise HTTPException(500, detail="Approval has no execution_id")
+    execution_id = execution_id.strip()
 
-    # Defensive: make failure mode explicit instead of a silent 500.
-    orch: Optional[ExecutionOrchestrator]
+    # 4) Defensive: make failure mode explicit instead of a silent 500.
     try:
         orch = _get_orchestrator()
     except Exception as exc:  # noqa: BLE001
@@ -312,12 +413,13 @@ async def approve(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[st
     if orch is None:
         raise HTTPException(500, detail="Orchestrator not initialized")
 
+    # 5) Execute ONCE.
     try:
-        execution_result = await orch.resume(execution_id.strip())
+        execution_result = await orch.resume(execution_id)
     except KeyError as exc:
         # Common case: execution_id not present in orchestrator registry/store.
         raise HTTPException(
-            404, detail=f"Execution not found for execution_id={execution_id.strip()}"
+            404, detail=f"Execution not found for execution_id={execution_id}"
         ) from exc
     except HTTPException:
         # Do not wrap explicit HTTP errors.
@@ -328,18 +430,31 @@ async def approve(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[st
             500, detail=f"approve_failed: {type(exc).__name__}: {exc}"
         ) from exc
 
-    # Ensure test can read execution_state at root.
+    # 6) Normalize response shape + cache result to prevent accidental re-run.
     if isinstance(execution_result, dict):
         execution_result.setdefault("approval", approval)
         execution_result.setdefault("read_only", False)
+
+        # Cache by approval_id and execution_id (process-local idempotency).
+        _cache_execution_result(
+            approval_id=approval_id,
+            execution_id=execution_id,
+            execution_result=execution_result,
+        )
+
         return execution_result
 
-    return {
+    # Non-dict execution_result: wrap it, but still cache a stable dict response.
+    wrapped = {
         "ok": True,
+        "execution_id": execution_id,
+        "execution_state": "COMPLETED",
         "execution": execution_result,
         "approval": approval,
         "read_only": False,
     }
+    _cache_execution_result(approval_id=approval_id, execution_id=execution_id, execution_result=wrapped)
+    return wrapped
 
 
 @router.post("/approval/reject")
