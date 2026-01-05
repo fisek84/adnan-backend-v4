@@ -324,12 +324,6 @@ def _ensure_contract(
     """
     Ensure canonical CEO advisory result:
       summary, text, questions, plan, options, proposed_commands, trace
-
-    If enforce_dashboard_text=True:
-      - try to extract/force GOALS/TASKS block into 'text' when possible
-      - set trace['format_fallback']=True when we couldn't produce block
-    Else:
-      - do NOT force GOALS/TASKS; keep assistant's normal text/summary
     """
     if not isinstance(parsed, dict):
         parsed = {"raw": str(parsed)}
@@ -649,6 +643,73 @@ class OpenAIAssistantExecutor:
         except Exception:
             return {"raw": cleaned}
 
+    async def _create_run_best_effort(
+        self,
+        *,
+        thread_id: str,
+        assistant_id: str,
+        instructions: Optional[str] = None,
+        tool_choice: Optional[str] = None,
+    ):
+        """
+        Compatibility layer for SDK / API shape changes.
+        Tries progressively simpler run.create signatures.
+        """
+        attempts: list[Dict[str, Any]] = []
+
+        # Most strict: instructions + tool_choice
+        kw0: Dict[str, Any] = {"thread_id": thread_id, "assistant_id": assistant_id}
+        if instructions is not None:
+            kw0["instructions"] = instructions
+        if tool_choice is not None:
+            kw0["tool_choice"] = tool_choice
+        attempts.append(kw0)
+
+        # Drop tool_choice
+        kw1 = dict(kw0)
+        kw1.pop("tool_choice", None)
+        attempts.append(kw1)
+
+        # Drop instructions (in case SDK doesn't accept it)
+        kw2 = dict(kw1)
+        kw2.pop("instructions", None)
+        attempts.append(kw2)
+
+        last_exc: Optional[Exception] = None
+        for i, kwargs in enumerate(attempts, start=1):
+            try:
+                return await self._to_thread(
+                    self.client.beta.threads.runs.create, **kwargs
+                )
+            except TypeError as e:
+                last_exc = e
+                logger.warning(
+                    "runs.create TypeError on attempt %s/%s: %s", i, len(attempts), e
+                )
+                continue
+            except Exception as e:  # noqa: BLE001
+                # Some SDKs throw 400 unknown parameter rather than TypeError
+                msg = str(e).lower()
+                if ("tool_choice" in msg or "instructions" in msg) and (
+                    "unknown" in msg
+                    or "unrecognized" in msg
+                    or "unexpected" in msg
+                    or "invalid" in msg
+                ):
+                    last_exc = e
+                    logger.warning(
+                        "runs.create param rejected on attempt %s/%s: %s",
+                        i,
+                        len(attempts),
+                        e,
+                    )
+                    continue
+                raise
+
+        if last_exc:
+            raise last_exc
+        raise RuntimeError("runs.create failed for unknown reasons")
+
     async def execute(self, task: Dict[str, Any]) -> Dict[str, Any]:
         if not isinstance(task, dict):
             raise ValueError("Agent task must be a dict")
@@ -731,7 +792,6 @@ class OpenAIAssistantExecutor:
             }
 
         enforce_dashboard_text = _is_dashboard_query(t)
-
         thread = await self._to_thread(self.client.beta.threads.create)
 
         safe_context = dict(context)
@@ -745,6 +805,13 @@ class OpenAIAssistantExecutor:
         if knowledge_block:
             safe_context["identity_knowledge"] = knowledge_block
 
+        run_instructions = (
+            _CEO_ADVISORY_DASHBOARD_JSON_INSTRUCTIONS
+            if enforce_dashboard_text
+            else _CEO_ADVISORY_JSON_ONLY_INSTRUCTIONS
+        )
+
+        # Put instructions also inside payload for robustness (if run.instructions is not supported)
         advisory_contract = {
             "type": "ceo_advice",
             "text": t,
@@ -755,6 +822,7 @@ class OpenAIAssistantExecutor:
                 "no_side_effects": True,
                 "return_json": True,
             },
+            "run_instructions": run_instructions,
             "output_schema": {
                 "summary": "string",
                 "text": "string",
@@ -775,37 +843,16 @@ class OpenAIAssistantExecutor:
             content=content,
         )
 
-        # IMPORTANT:
-        # Always enforce JSON output.
-        # Dashboard queries additionally enforce GOALS/TASKS text formatting.
-        run_instructions = (
-            _CEO_ADVISORY_DASHBOARD_JSON_INSTRUCTIONS
-            if enforce_dashboard_text
-            else _CEO_ADVISORY_JSON_ONLY_INSTRUCTIONS
-        )
-
-        # BEST-EFFORT: explicitly disable tool calls for read-only advisory
-        run_create_kwargs: Dict[str, Any] = {
-            "thread_id": thread.id,
-            "assistant_id": assistant_id,
-            "instructions": run_instructions,
-        }
-
-        # Newer SDKs support tool_choice="none" on Assistants runs
-        run_create_kwargs["tool_choice"] = "none"
-
         t0 = time.monotonic()
+        run = None
         try:
-            try:
-                run = await self._to_thread(
-                    self.client.beta.threads.runs.create, **run_create_kwargs
-                )
-            except TypeError:
-                # Older SDK: no tool_choice parameter
-                run_create_kwargs.pop("tool_choice", None)
-                run = await self._to_thread(
-                    self.client.beta.threads.runs.create, **run_create_kwargs
-                )
+            # BEST-EFFORT: explicitly disable tool calls for read-only advisory
+            run = await self._create_run_best_effort(
+                thread_id=thread.id,
+                assistant_id=assistant_id,
+                instructions=run_instructions,
+                tool_choice="none",
+            )
 
             await self._wait_for_run_completion(
                 thread_id=thread.id, run_id=run.id, allow_tools=False
@@ -818,10 +865,14 @@ class OpenAIAssistantExecutor:
             parsed = _ensure_contract(
                 parsed, enforce_dashboard_text=enforce_dashboard_text
             )
+
         except Exception as exc:  # noqa: BLE001
             elapsed_ms = int((time.monotonic() - t0) * 1000)
 
-            # Return canonical schema, but do NOT mask the root cause with a generic message
+            logger.exception("CEO advisory failed (assistant_id=%s)", assistant_id)
+
+            debug_errors = os.getenv("DEBUG_CEO_ADVISOR_ERRORS") == "1"
+
             if isinstance(exc, ReadOnlyToolCallAttempt):
                 summary = (
                     "CEO advisory je pokušao tool poziv u read-only modu (blokirano)."
@@ -835,6 +886,9 @@ class OpenAIAssistantExecutor:
                 summary = "CEO advisory nije mogao završiti (internal error)."
                 text_out = "CEO advisory nije mogao završiti (internal error)."
 
+            if debug_errors:
+                text_out = f"{text_out}\n\nDEBUG_ERROR:\n{repr(exc)}"
+
             return {
                 "summary": summary,
                 "text": text_out,
@@ -845,7 +899,7 @@ class OpenAIAssistantExecutor:
                 "trace": {
                     "assistant_id": assistant_id,
                     "thread_id": getattr(thread, "id", None),
-                    "run_id": getattr(locals().get("run"), "id", None),
+                    "run_id": getattr(run, "id", None) if run else None,
                     "read_only_guard": True,
                     "no_tools_guard": True,
                     "error": repr(exc),
