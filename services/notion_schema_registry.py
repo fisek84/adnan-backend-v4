@@ -42,7 +42,8 @@ class NotionSchemaRegistry:
         # =======================
         # Fallback: ako posebni view DB_ID nije setovan, koristi primarni goals DB.
         "active_goals": {
-            "db_id": os.getenv("NOTION_ACTIVE_GOALS_DB_ID") or os.getenv("NOTION_GOALS_DB_ID"),
+            "db_id": os.getenv("NOTION_ACTIVE_GOALS_DB_ID")
+            or os.getenv("NOTION_GOALS_DB_ID"),
             "entity": "Goal",
             "write_enabled": False,
             "properties": {
@@ -88,7 +89,8 @@ class NotionSchemaRegistry:
             },
         },
         "blocked_goals": {
-            "db_id": os.getenv("NOTION_BLOCKED_GOALS_DB_ID") or os.getenv("NOTION_GOALS_DB_ID"),
+            "db_id": os.getenv("NOTION_BLOCKED_GOALS_DB_ID")
+            or os.getenv("NOTION_GOALS_DB_ID"),
             "entity": "Goal",
             "write_enabled": False,
             "properties": {
@@ -99,7 +101,8 @@ class NotionSchemaRegistry:
             },
         },
         "completed_goals": {
-            "db_id": os.getenv("NOTION_COMPLETED_GOALS_DB_ID") or os.getenv("NOTION_GOALS_DB_ID"),
+            "db_id": os.getenv("NOTION_COMPLETED_GOALS_DB_ID")
+            or os.getenv("NOTION_GOALS_DB_ID"),
             "entity": "Goal",
             "write_enabled": False,
             "properties": {

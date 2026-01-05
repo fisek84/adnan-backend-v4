@@ -1034,12 +1034,8 @@ class NotionService:
                     except Exception as exc2:
                         # ✅ soft-ignore for derived views if it's access/not-found
                         msg2 = str(exc2)
-                        if (
-                            db_key in self._SOFT_DERIVED_VIEW_KEYS
-                            and (
-                                self._is_no_access(msg2)
-                                or self._is_object_not_found(msg2)
-                            )
+                        if db_key in self._SOFT_DERIVED_VIEW_KEYS and (
+                            self._is_no_access(msg2) or self._is_object_not_found(msg2)
                         ):
                             continue
                         snapshot["extra_databases"][f"{db_key}__error"] = msg2
@@ -1069,9 +1065,8 @@ class NotionService:
                     continue
 
                 # ✅ soft-ignore for derived views if it's access/not-found (belt+suspenders)
-                if (
-                    db_key in self._SOFT_DERIVED_VIEW_KEYS
-                    and (self._is_no_access(msg) or self._is_object_not_found(msg))
+                if db_key in self._SOFT_DERIVED_VIEW_KEYS and (
+                    self._is_no_access(msg) or self._is_object_not_found(msg)
                 ):
                     continue
 
