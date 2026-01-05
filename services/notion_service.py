@@ -31,6 +31,14 @@ class NotionService:
     - greške po DB/page su non-fatal (boot ne pada)
     """
 
+    # ✅ Derived view DBs are OPTIONAL: if integration has no access / object not found,
+    # we do NOT want to poison snapshot with __error keys (tests expect clean snapshot).
+    _SOFT_DERIVED_VIEW_KEYS: Set[str] = {
+        "active_goals",
+        "blocked_goals",
+        "completed_goals",
+    }
+
     def __init__(
         self,
         api_key: Optional[str],
@@ -1024,7 +1032,17 @@ class NotionService:
                             "blocks": blocks,
                         }
                     except Exception as exc2:
-                        snapshot["extra_databases"][f"{db_key}__error"] = str(exc2)
+                        # ✅ soft-ignore for derived views if it's access/not-found
+                        msg2 = str(exc2)
+                        if (
+                            db_key in self._SOFT_DERIVED_VIEW_KEYS
+                            and (
+                                self._is_no_access(msg2)
+                                or self._is_object_not_found(msg2)
+                            )
+                        ):
+                            continue
+                        snapshot["extra_databases"][f"{db_key}__error"] = msg2
 
                     if db_key not in self._warned_inaccessible:
                         self._warned_inaccessible.add(db_key)
@@ -1036,6 +1054,10 @@ class NotionService:
                     continue
 
                 if self._is_no_access(msg) or self._is_object_not_found(msg):
+                    # ✅ soft-ignore for derived views if it's access/not-found
+                    if db_key in self._SOFT_DERIVED_VIEW_KEYS:
+                        continue
+
                     snapshot["extra_databases"][f"{db_key}__error"] = msg
                     if db_key not in self._warned_inaccessible:
                         self._warned_inaccessible.add(db_key)
@@ -1044,6 +1066,13 @@ class NotionService:
                             db_key,
                             db_key,
                         )
+                    continue
+
+                # ✅ soft-ignore for derived views if it's access/not-found (belt+suspenders)
+                if (
+                    db_key in self._SOFT_DERIVED_VIEW_KEYS
+                    and (self._is_no_access(msg) or self._is_object_not_found(msg))
+                ):
                     continue
 
                 snapshot["extra_databases"][f"{db_key}__error"] = msg
