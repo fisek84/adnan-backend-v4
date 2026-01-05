@@ -28,6 +28,10 @@ _MAX_LIST_ITEMS = 30
 _MAX_TEXT_CHARS = 1200
 
 
+class ReadOnlyToolCallAttempt(RuntimeError):
+    """Raised when a run attempts tool calls in read-only / no-tools mode."""
+
+
 # -------------------------------------------------------------------
 # CEO ADVISORY OUTPUT CONTRACT (KANONSKI / STABILAN)
 # -------------------------------------------------------------------
@@ -517,14 +521,6 @@ class OpenAIAssistantExecutor:
             status = getattr(run_status, "status", None)
 
             if status == "requires_action":
-                if not allow_tools:
-                    await self._cancel_run_best_effort(
-                        thread_id=thread_id, run_id=run_id
-                    )
-                    raise RuntimeError(
-                        "Tool calls are not allowed for CEO advisory (read-only)"
-                    )
-
                 required_action = getattr(run_status, "required_action", None)
                 submit = (
                     getattr(required_action, "submit_tool_outputs", None)
@@ -532,6 +528,22 @@ class OpenAIAssistantExecutor:
                     else None
                 )
                 tool_calls = getattr(submit, "tool_calls", None) if submit else None
+
+                # READ-ONLY MODE: if tools are not allowed, cancel and raise a specific error
+                if not allow_tools:
+                    await self._cancel_run_best_effort(
+                        thread_id=thread_id, run_id=run_id
+                    )
+                    names: list[str] = []
+                    if tool_calls:
+                        for call in tool_calls:
+                            fn = getattr(call, "function", None)
+                            fn_name = getattr(fn, "name", None) if fn else None
+                            if fn_name:
+                                names.append(str(fn_name))
+                    raise ReadOnlyToolCallAttempt(
+                        f"Run attempted tool calls in read-only mode: {names or ['(unknown)']}"
+                    )
 
                 if not tool_calls:
                     raise RuntimeError(
@@ -772,18 +784,33 @@ class OpenAIAssistantExecutor:
             else _CEO_ADVISORY_JSON_ONLY_INSTRUCTIONS
         )
 
-        run = await self._to_thread(
-            self.client.beta.threads.runs.create,
-            thread_id=thread.id,
-            assistant_id=assistant_id,
-            instructions=run_instructions,
-        )
+        # BEST-EFFORT: explicitly disable tool calls for read-only advisory
+        run_create_kwargs: Dict[str, Any] = {
+            "thread_id": thread.id,
+            "assistant_id": assistant_id,
+            "instructions": run_instructions,
+        }
+
+        # Newer SDKs support tool_choice="none" on Assistants runs
+        run_create_kwargs["tool_choice"] = "none"
 
         t0 = time.monotonic()
         try:
+            try:
+                run = await self._to_thread(
+                    self.client.beta.threads.runs.create, **run_create_kwargs
+                )
+            except TypeError:
+                # Older SDK: no tool_choice parameter
+                run_create_kwargs.pop("tool_choice", None)
+                run = await self._to_thread(
+                    self.client.beta.threads.runs.create, **run_create_kwargs
+                )
+
             await self._wait_for_run_completion(
                 thread_id=thread.id, run_id=run.id, allow_tools=False
             )
+
             final_text = await self._get_final_assistant_message_text(
                 thread_id=thread.id
             )
@@ -793,27 +820,38 @@ class OpenAIAssistantExecutor:
             )
         except Exception as exc:  # noqa: BLE001
             elapsed_ms = int((time.monotonic() - t0) * 1000)
+
+            # Return canonical schema, but do NOT mask the root cause with a generic message
+            if isinstance(exc, ReadOnlyToolCallAttempt):
+                summary = (
+                    "CEO advisory je pokušao tool poziv u read-only modu (blokirano)."
+                )
+                text_out = (
+                    "CEO advisory je pokušao tool poziv u read-only modu, što je zabranjeno.\n"
+                    "Ovo obično znači da je Assistant konfiguracija ili prompt interno agresivno podešen na tool usage.\n"
+                    "Rješenje: obavezno držati tool_choice='none' (ako SDK podržava) i provjeriti assistant instrukcije."
+                )
+            else:
+                summary = "CEO advisory nije mogao završiti (internal error)."
+                text_out = "CEO advisory nije mogao završiti (internal error)."
+
             return {
-                "summary": "CEO advisory nije mogao sigurno završiti (read-only guard).",
-                "text": "CEO advisory nije mogao sigurno završiti (read-only guard).",
-                "questions": [
-                    "Da li želiš da preformulišem upit kao čisti READ zahtjev bez tool poziva?"
-                ],
-                "plan": [
-                    "Provjeri da li CEO Advisor Assistant ima instrukcije da nikad ne traži tool pozive.",
-                    "Ako je upit write-intent, koristi approval pipeline (proposed_commands) umjesto direktnog izvršenja.",
-                ],
+                "summary": summary,
+                "text": text_out,
+                "questions": [],
+                "plan": [],
                 "options": [],
                 "proposed_commands": [],
                 "trace": {
                     "assistant_id": assistant_id,
                     "thread_id": getattr(thread, "id", None),
-                    "run_id": getattr(run, "id", None),
+                    "run_id": getattr(locals().get("run"), "id", None),
                     "read_only_guard": True,
                     "no_tools_guard": True,
                     "error": repr(exc),
                     "elapsed_ms": elapsed_ms,
                     "shrink_trace": shrink_trace,
+                    "dashboard_contract_enforced": bool(enforce_dashboard_text),
                 },
             }
 
