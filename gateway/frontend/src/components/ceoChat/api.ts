@@ -247,7 +247,6 @@ function buildPayload(endpointUrl: string, req: CeoCommandRequest): any {
       metadata: {
         initiator,
         source: "ceoChatbox",
-        canon: "CEO_CONSOLE_APPROVAL_GATED_EXECUTION",
         context_hint: (req as any)?.context_hint ?? null,
         smart_context: (req as any)?.smart_context ?? null,
       },

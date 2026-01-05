@@ -256,6 +256,7 @@
     }
 
     function buildExecuteRawPayload(aiCommand) {
+      // CANON: canon ide SAMO na execute pipeline, ne na chat
       return {
         command: aiCommand.command,
         intent: aiCommand.intent,
@@ -295,6 +296,7 @@
           metadata: {
             initiator: "ceo_dashboard",
             source: "ceoChatbox",
+            // canon: "CEO_CONSOLE_APPROVAL_GATED_EXECUTION", // MUST NOT be sent for /api/chat
           },
         };
 
@@ -395,7 +397,7 @@
 
           if (!approveRes.ok) {
             const detail = await approveRes.text();
-            addMessage("sys", `Greška (approve): ${approveRes.status}\n${detail || ""}`, {
+            addMessage("sys", `Greška (approve): ${res.status}\n${detail || ""}`, {
               state: "ERROR",
               approval_id: approvalId,
             });
