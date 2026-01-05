@@ -1,6 +1,6 @@
 # gateway/gateway_server.py
 # ruff: noqa: E402
-# FULL FILE — zamijeni cijeli gateway_server.py ovim.
+# FULL FILE — replace the whole gateway_server.py with this.
 
 from __future__ import annotations
 
@@ -123,6 +123,28 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 logger = logging.getLogger("gateway")
+
+
+# ================================================================
+# RUNTIME ENV VALIDATION (SSOT when starting via gateway_server:app)
+# ================================================================
+REQUIRED_ENV_VARS = [
+    "OPENAI_API_KEY",
+    "NOTION_API_KEY",
+    "NOTION_GOALS_DB_ID",
+    "NOTION_TASKS_DB_ID",
+    "NOTION_PROJECTS_DB_ID",
+    "NOTION_OPS_ASSISTANT_ID",
+]
+
+
+def validate_runtime_env_or_raise() -> None:
+    missing = [k for k in REQUIRED_ENV_VARS if not (os.getenv(k) or "").strip()]
+    if missing:
+        logger.critical("Missing ENV vars: %s", ", ".join(missing))
+        raise RuntimeError(f"Missing ENV vars: {', '.join(missing)}")
+    logger.info("Environment variables validated.")
+
 
 # ================================================================
 # CORE SERVICES
@@ -318,28 +340,6 @@ def _to_serializable(obj: Any) -> Any:
     return str(obj)
 
 
-def _filter_ai_command_payload(data: Dict[str, Any]) -> Dict[str, Any]:
-    if not isinstance(data, dict):
-        return {}
-    fields = _ai_command_field_names()
-    if not fields:
-        return {
-            "command": data.get("command"),
-            "intent": data.get("intent"),
-            "params": data.get("params")
-            if isinstance(data.get("params"), dict)
-            else {},
-            "initiator": data.get("initiator") or "ceo",
-            "read_only": bool(data.get("read_only", False)),
-            "metadata": data.get("metadata")
-            if isinstance(data.get("metadata"), dict)
-            else {},
-            "execution_id": data.get("execution_id"),
-            "approval_id": data.get("approval_id"),
-        }
-    return {k: v for k, v in data.items() if k in fields}
-
-
 def _noop_executable_from_wrapper(
     *,
     wrapper_command: str,
@@ -454,6 +454,14 @@ async def lifespan(_: FastAPI):
     _BOOT_ERROR = None
 
     try:
+        # Fail-fast env validation (because we start via `uvicorn gateway.gateway_server:app`)
+        try:
+            validate_runtime_env_or_raise()
+        except Exception as exc:  # noqa: BLE001
+            _append_boot_error(f"env_invalid:{exc}")
+            logger.critical("Boot aborted due to invalid env: %s", exc)
+            raise
+
         bootstrap_application()
 
         try:
@@ -533,6 +541,22 @@ app = FastAPI(
     version=VERSION,
     lifespan=lifespan,
 )
+
+
+# ================================================================
+# REQUEST TRACE (gives you req_id + full traceback in logs)
+# ================================================================
+@app.middleware("http")
+async def request_trace_middleware(request: Request, call_next):
+    req_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+    request.state.req_id = req_id
+    try:
+        resp = await call_next(request)
+        resp.headers["X-Request-ID"] = req_id
+        return resp
+    except Exception:
+        logger.exception("REQ_FAIL req_id=%s path=%s", req_id, request.url.path)
+        raise
 
 
 # ================================================================
@@ -931,27 +955,6 @@ async def execute_proposal(payload: ProposalExecuteInput):
 # ================================================================
 # NOTION OPS — LIST DATABASES (READ ONLY) ✅ NOW RETURNS ALL db_ids
 # ================================================================
-def _collect_all_notion_db_ids_from_env() -> Dict[str, str]:
-    """
-    Fallback collector:
-      NOTION_<SOMETHING>_DB_ID -> key "<something_lower_snake>"
-    """
-    out: Dict[str, str] = {}
-    for env_name, raw_val in os.environ.items():
-        if not env_name.startswith("NOTION_") or not env_name.endswith("_DB_ID"):
-            continue
-        val = (raw_val or "").strip()
-        if not val:
-            continue
-        mid = env_name[len("NOTION_") : -len("_DB_ID")]
-        key = mid.strip().lower()
-        key = re.sub(r"\s+", "_", key)
-        key = re.sub(r"_+", "_", key).strip("_")
-        if key:
-            out[key] = val
-    return out
-
-
 @app.get("/api/notion-ops/databases")
 @app.get("/notion-ops/databases")
 async def notion_ops_list_databases():
@@ -963,7 +966,6 @@ async def notion_ops_list_databases():
 
     ns = get_notion_service()
 
-    # ✅ Return EVERYTHING NotionService knows about (includes auto-ingested NOTION_*_DB_ID)
     dbs: Dict[str, str] = {}
     if isinstance(getattr(ns, "db_ids", None), dict):
         for k, v in ns.db_ids.items():
@@ -979,6 +981,17 @@ async def notion_ops_list_databases():
         "ops_safe_mode": _ops_safe_mode(),
         "databases": dbs,
     }
+
+
+# Aliases (some frontend builds call these)
+@app.get("/databases")
+async def databases_alias():
+    return await notion_ops_list_databases()
+
+
+@app.get("/api/databases")
+async def databases_alias_api():
+    return await notion_ops_list_databases()
 
 
 # ================================================================
@@ -1067,13 +1080,6 @@ async def notion_bulk_update(request: Request, payload: Dict[str, Any] = Body(..
 
 
 def _normalize_notion_query_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Accept:
-      - {"query": {...}}
-      - {"filter": {...}, "page_size": N, "sorts": [...], "start_cursor": "..."}
-    Return:
-      - dict compatible with Notion databases.query body keys
-    """
     q = payload.get("query")
     if isinstance(q, dict):
         return dict(q)
@@ -1099,12 +1105,6 @@ def _looks_like_uuid(s: str) -> bool:
 
 
 def _resolve_db_id_from_service(notion_service: Any, db_key: str) -> str:
-    """
-    FIX:
-      - prvo podrži UUID direktno
-      - onda mapiraj preko notion_service.db_ids (SVE baze)
-      - tek onda legacy special-case goals/tasks/projects
-    """
     key = (db_key or "").strip()
     if not key:
         raise HTTPException(status_code=400, detail="db_key is required")
@@ -1114,7 +1114,6 @@ def _resolve_db_id_from_service(notion_service: Any, db_key: str) -> str:
 
     lk = key.lower()
 
-    # 1) Primarno: db_ids mapping (SSOT)
     db_ids = getattr(notion_service, "db_ids", None)
     if isinstance(db_ids, dict):
         for candidate in (lk, lk.rstrip("s"), lk + "s"):
@@ -1122,7 +1121,6 @@ def _resolve_db_id_from_service(notion_service: Any, db_key: str) -> str:
             if isinstance(v, str) and v.strip():
                 return v.strip()
 
-    # 2) Legacy fallback: attributes
     for candidate in (lk, lk.rstrip("s"), lk + "s"):
         if candidate == "goals":
             v = getattr(notion_service, "goals_db_id", None) or getattr(
@@ -1156,16 +1154,10 @@ async def _call_maybe_async(fn: Any, *args: Any, **kwargs: Any) -> Any:
 
 
 async def _query_notion_database(db_key: str, query: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Best-effort:
-      1) try NotionService methods if present
-      2) fallback to notion_client Client(auth=...)
-    """
     from services.notion_service import get_notion_service
 
     notion_service = get_notion_service()
 
-    # 1) Try NotionService public methods
     for name in ("query_database", "database_query", "query_db", "query"):
         fn = getattr(notion_service, name, None)
         if callable(fn):
@@ -1188,7 +1180,6 @@ async def _query_notion_database(db_key: str, query: Dict[str, Any]) -> Dict[str
             except TypeError:
                 pass
 
-    # 2) Fallback to notion_client
     try:
         from notion_client import Client  # type: ignore
     except Exception as exc:  # noqa: BLE001
@@ -1215,7 +1206,6 @@ async def _query_notion_database(db_key: str, query: Dict[str, Any]) -> Dict[str
     client = Client(auth=api_key.strip())
 
     try:
-        # notion_client is sync; run in a thread to avoid blocking event loop
         res = await asyncio.to_thread(
             lambda: client.databases.query(database_id=db_id, **(query or {}))
         )
@@ -1239,27 +1229,15 @@ async def _query_notion_database(db_key: str, query: Dict[str, Any]) -> Dict[str
 @app.post("/api/notion-ops/bulk/query")
 @app.post("/notion-ops/bulk/query")
 async def notion_bulk_query(payload: Dict[str, Any] = Body(...)):
-    """
-    Supports:
-      A) single query shape:
-         { "db_key": "tasks", "query": {...} }
-         { "db_key": "tasks", "filter": {...}, "page_size": 20 }
-
-      B) legacy batch:
-         { "queries": [ { "db_key": "...", "query": {...} }, ... ] }
-         -> { "results": [ { "query": <q>, "items": [...], "response": {...} }, ... ] }
-    """
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="payload must be an object")
 
-    # A) Single query
     if isinstance(payload.get("db_key"), str) and payload["db_key"].strip():
         db_key = payload["db_key"].strip()
         q = _normalize_notion_query_payload(payload)
         res = await _query_notion_database(db_key, q)
         return res
 
-    # B) Legacy batch
     queries = payload.get("queries")
     if queries is None:
         queries = []
@@ -1572,7 +1550,8 @@ app.include_router(ai_router_module.router, prefix="/api")
 app.include_router(ai_ops_router, prefix="/api")
 app.include_router(metrics_router, prefix="/api")
 app.include_router(alerting_router, prefix="/api")
-app.include_router(_chat_router, prefix="/api")
+app.include_router(_chat_router, prefix="/api")  # /api/chat
+app.include_router(_chat_router, prefix="")  # /chat alias
 app.include_router(ceo_console_module.router, prefix="/api/internal")
 
 
@@ -1591,11 +1570,12 @@ async def http_exception_handler(_: Request, exc: StarletteHTTPException):
 
 
 @app.exception_handler(Exception)
-async def global_exception_handler(_: Request, exc: Exception):
+async def global_exception_handler(request: Request, exc: Exception):
     logger.exception("GLOBAL ERROR")
+    req_id = getattr(getattr(request, "state", None), "req_id", None)
     return JSONResponse(
         status_code=500,
-        content={"status": "error", "message": str(exc)},
+        content={"status": "error", "message": str(exc), "req_id": req_id},
     )
 
 
