@@ -165,6 +165,12 @@ class NotionService:
     # --------------------------------------------------
     # SESSION + REQUEST
     # --------------------------------------------------
+    async def aclose(self) -> None:
+        """Close underlying aiohttp session (called on app shutdown)."""
+        if self.session is not None and not self.session.closed:
+            await self.session.close()
+        self.session = None
+
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if not self.api_key:
