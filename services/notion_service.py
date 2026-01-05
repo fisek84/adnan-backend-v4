@@ -1068,6 +1068,69 @@ class NotionService:
                 logger.info("Failed to sync Time Management page (non-fatal): %s", exc)
                 snapshot["time_management_error"] = str(exc)
 
+        # ----------------------------
+        # ✅ FIX: determine whether refresh produced any usable data
+        # ----------------------------
+        core_total = (
+            len(goals_results)
+            + len(tasks_results)
+            + len(projects_results)
+            + len(kpi_results)
+            + len(leads_results)
+            + len(agent_exchange_results)
+            + len(ai_summary_results)
+        )
+
+        # extra_databases can include errors too; only count non-empty lists/pages
+        extra_has_any_data = False
+        extra_db = snapshot.get("extra_databases") or {}
+        if isinstance(extra_db, dict):
+            for k, v in extra_db.items():
+                if k.endswith("__error"):
+                    continue
+                # list of rows
+                if isinstance(v, list) and len(v) > 0:
+                    extra_has_any_data = True
+                    break
+                # page fallback object
+                if isinstance(v, dict) and v.get("kind") == "page":
+                    extra_has_any_data = True
+                    break
+
+        has_any_data = (
+            (core_total > 0)
+            or extra_has_any_data
+            or bool(snapshot.get("time_management"))
+        )
+
+        error_keys = [
+            k
+            for k in snapshot.keys()
+            if isinstance(k, str) and k.endswith("_error") and snapshot.get(k)
+        ]
+        extra_error_keys = []
+        if isinstance(extra_db, dict):
+            extra_error_keys = [k for k in extra_db.keys() if k.endswith("__error")]
+
+        all_errors = error_keys + extra_error_keys
+
+        if not has_any_data:
+            # Do NOT overwrite the last good snapshot with an empty one
+            logger.warning(
+                ">> Snapshot refresh produced NO DATA. " "core_total=%s errors=%s",
+                core_total,
+                all_errors,
+            )
+            return {
+                "ok": False,
+                "reason": "SNAPSHOT_EMPTY_AFTER_REFRESH",
+                "last_sync": snapshot["last_sync"],
+                "core_total": core_total,
+                "errors": all_errors,
+                "time_management_loaded": bool(snapshot.get("time_management")),
+            }
+
+        # Only now commit snapshot
         self.knowledge_snapshot = snapshot
         KnowledgeSnapshotService.update_snapshot(snapshot)
 
