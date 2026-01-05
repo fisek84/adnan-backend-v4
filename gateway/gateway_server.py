@@ -922,6 +922,28 @@ async def execute_proposal(payload: ProposalExecuteInput):
 
 
 # ================================================================
+# NOTION OPS (READ: list databases)  ✅ FIX: add /api + non-/api
+# ================================================================
+@app.get("/api/notion-ops/databases")
+@app.get("/notion-ops/databases")
+async def notion_ops_databases():
+    """
+    Frontend expects:
+      { ok: true, read_only: true, databases: { <db_key>: <database_id>, ... } }
+    """
+    dbs: Dict[str, str] = {}
+    for key, env in [
+        ("goals", "NOTION_GOALS_DB_ID"),
+        ("tasks", "NOTION_TASKS_DB_ID"),
+        ("projects", "NOTION_PROJECTS_DB_ID"),
+    ]:
+        v = (os.getenv(env) or "").strip()
+        if v:
+            dbs[key] = v
+    return {"ok": True, "read_only": True, "databases": dbs}
+
+
+# ================================================================
 # NOTION BULK OPS
 # ================================================================
 _ALLOWED_BULK_TYPES = {
@@ -962,6 +984,7 @@ def _validate_bulk_items(items: Any) -> List[Dict[str, Any]]:
     return out
 
 
+@app.post("/api/notion-ops/bulk/create")
 @app.post("/notion-ops/bulk/create")
 async def notion_bulk_create(request: Request, payload: Dict[str, Any] = Body(...)):
     _guard_write_bulk(request)
@@ -983,6 +1006,7 @@ async def notion_bulk_create(request: Request, payload: Dict[str, Any] = Body(..
     return {"created": created}
 
 
+@app.post("/api/notion-ops/bulk/update")
 @app.post("/notion-ops/bulk/update")
 async def notion_bulk_update(request: Request, payload: Dict[str, Any] = Body(...)):
     _guard_write_bulk(request)
@@ -1133,8 +1157,12 @@ async def _query_notion_database(db_key: str, query: Dict[str, Any]) -> Dict[str
     db_id = _resolve_db_id_from_service(notion_service, db_key)
 
     client = Client(auth=api_key.strip())
+
     try:
-        res = client.databases.query(database_id=db_id, **(query or {}))
+        # IMPORTANT: notion_client is sync; run in a thread to avoid blocking event loop
+        res = await asyncio.to_thread(
+            lambda: client.databases.query(database_id=db_id, **(query or {}))
+        )
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(
             status_code=500, detail=f"Notion databases.query failed: {exc}"
@@ -1152,6 +1180,7 @@ async def _query_notion_database(db_key: str, query: Dict[str, Any]) -> Dict[str
     return res
 
 
+@app.post("/api/notion-ops/bulk/query")
 @app.post("/notion-ops/bulk/query")
 async def notion_bulk_query(payload: Dict[str, Any] = Body(...)):
     """
