@@ -7,10 +7,15 @@
 
     const cfg = (window.__EVO_UI__ = window.__EVO_UI__ || {});
     const mountSelector = cfg.mountSelector || "#ceo-left-panel";
-    const ceoCommandUrl = cfg.ceoCommandUrl || "/ceo/command";
-    const approveUrl = cfg.approveUrl || "/api/ai-ops/approval/approve";
-    const headers = Object.assign({ "Content-Type": "application/json" }, cfg.headers || {});
 
+    // CHAT (LLM) endpoint
+    const chatUrl = cfg.chatUrl || "/api/chat";
+
+    // EXECUTION (approval-gated) endpoints
+    const executeRawUrl = cfg.executeRawUrl || "/api/execute/raw";
+    const approveUrl = cfg.approveUrl || "/api/ai-ops/approval/approve";
+
+    const headers = Object.assign({ "Content-Type": "application/json" }, cfg.headers || {});
     const host = document.querySelector(mountSelector);
     if (!host) return;
 
@@ -28,7 +33,6 @@
     ];
     legacy.forEach((el) => {
       if (el && el.closest) {
-        // sakrij najbliži "blok" ako postoji
         const block =
           el.closest(".chat-input-bar") ||
           el.closest(".command-status") ||
@@ -104,8 +108,7 @@
 
     const textarea = document.createElement("textarea");
     textarea.className = "ceo-chatbox-textarea";
-    textarea.placeholder =
-      'Npr: Kreiraj centralni cilj "Implementirati FLP OS" sa due date 01.05.2025, prioritet Visok, status Aktivan...';
+    textarea.placeholder = 'Piši normalno (chat). Npr: "Ko si ti?", "Šta je prioritet danas?", "Kreiraj cilj ..."';
 
     const sendBtn = document.createElement("button");
     sendBtn.className = "ceo-chatbox-btn primary";
@@ -115,13 +118,13 @@
     const approveBtn = document.createElement("button");
     approveBtn.className = "ceo-chatbox-btn";
     approveBtn.type = "button";
-    approveBtn.textContent = "Odobri zadnji";
+    approveBtn.textContent = "Odobri predloženo";
     approveBtn.disabled = true;
 
     const typing = document.createElement("div");
     typing.className = "ceo-chatbox-typing";
     typing.style.display = "none";
-    typing.textContent = "SYSTEM obrađuje zahtjev…";
+    typing.textContent = "SYSTEM obrađuje…";
 
     composer.appendChild(textarea);
     composer.appendChild(sendBtn);
@@ -132,8 +135,12 @@
     root.appendChild(composer);
     host.appendChild(root);
 
-    let lastApprovalId = null;
-    let busy = false;
+    // NON-BLOCKING: ne gasimo input/send; samo pokazujemo typing dok ima zahtjeva
+    let pending = 0;
+
+    // State for approvals
+    let lastProposals = []; // proposals iz /api/chat
+    let lastBlocked = []; // { approval_id, execution_id, state }
 
     function scrollToBottom() {
       history.scrollTop = history.scrollHeight;
@@ -154,7 +161,7 @@
       row.appendChild(badge);
       row.appendChild(msg);
 
-      if (meta && (meta.state || meta.approval_id)) {
+      if (meta && (meta.state || meta.approval_id || meta.execution_id || meta.count)) {
         const metaRow = document.createElement("div");
         metaRow.className = "ceo-chatbox-meta";
 
@@ -162,6 +169,18 @@
           const pill = document.createElement("span");
           pill.className = "ceo-chatbox-pill";
           pill.innerHTML = `<strong>Status:</strong> ${meta.state}`;
+          metaRow.appendChild(pill);
+        }
+        if (typeof meta.count === "number") {
+          const pill = document.createElement("span");
+          pill.className = "ceo-chatbox-pill";
+          pill.innerHTML = `<strong>proposals:</strong> ${meta.count}`;
+          metaRow.appendChild(pill);
+        }
+        if (meta.execution_id) {
+          const pill = document.createElement("span");
+          pill.className = "ceo-chatbox-pill";
+          pill.innerHTML = `<strong>execution_id:</strong> ${meta.execution_id}`;
           metaRow.appendChild(pill);
         }
         if (meta.approval_id) {
@@ -178,11 +197,13 @@
       scrollToBottom();
     }
 
-    function setBusy(next) {
-      busy = next;
-      sendBtn.disabled = next;
-      textarea.disabled = next;
-      typing.style.display = next ? "block" : "none";
+    function setTyping(on) {
+      typing.style.display = on ? "block" : "none";
+    }
+
+    function bumpPending(delta) {
+      pending = Math.max(0, pending + delta);
+      setTyping(pending > 0);
     }
 
     function autosize() {
@@ -198,106 +219,227 @@
       }
     });
 
-    async function sendCommand() {
+    // ---- Canon mapping helpers ----
+
+    function proposalToAiCommand(proposal) {
+      if (!proposal || typeof proposal !== "object") return null;
+
+      // A) preferred: proposal.args.ai_command
+      if (proposal.args && proposal.args.ai_command && typeof proposal.args.ai_command === "object") {
+        const ai = proposal.args.ai_command;
+        return {
+          command: ai.command || ai.intent || null,
+          intent: ai.intent || ai.command || null,
+          params: ai.params || {},
+        };
+      }
+
+      // A alt: proposal.args.command/intent/params
+      if (proposal.args && (proposal.args.command || proposal.args.intent)) {
+        return {
+          command: proposal.args.command || proposal.args.intent || null,
+          intent: proposal.args.intent || proposal.args.command || null,
+          params: proposal.args.params || proposal.args.payload || {},
+        };
+      }
+
+      // B) legacy: proposal.command_type + proposal.payload
+      if (proposal.command_type) {
+        return {
+          command: proposal.command_type,
+          intent: proposal.command_type,
+          params: proposal.payload || {},
+        };
+      }
+
+      return null;
+    }
+
+    function buildExecuteRawPayload(aiCommand) {
+      return {
+        command: aiCommand.command,
+        intent: aiCommand.intent,
+        params: aiCommand.params || {},
+        initiator: "ceo",
+        read_only: false,
+        metadata: {
+          source: "ceoChatbox",
+          canon: "CEO_CONSOLE_APPROVAL_GATED_EXECUTION",
+        },
+      };
+    }
+
+    // ---- Chat (LLM) ----
+
+    async function sendMessage() {
       const text = (textarea.value || "").trim();
-      if (!text || busy) return;
+      if (!text) return;
 
       addMessage("ceo", text);
-      setBusy(true);
-      approveBtn.disabled = true;
-      lastApprovalId = null;
 
+      // clear immediately (non-blocking UX)
+      textarea.value = "";
+      autosize();
+
+      // reset proposals UI state
+      approveBtn.disabled = true;
+      lastProposals = [];
+      lastBlocked = [];
+
+      bumpPending(+1);
       try {
-        const res = await fetch(ceoCommandUrl, {
+        // KRITIČNO: bez metadata.canon u /api/chat
+        const body = {
+          message: text,
+          preferred_agent_id: "ceo_advisor",
+          metadata: {
+            initiator: "ceo_dashboard",
+            source: "ceoChatbox",
+          },
+        };
+
+        const res = await fetch(chatUrl, {
           method: "POST",
           headers,
-          body: JSON.stringify({
-            input_text: text,
-            smart_context: null,
-            source: "ceo_dashboard",
-          }),
+          body: JSON.stringify(body),
         });
 
         if (!res.ok) {
           const detail = await res.text();
-          addMessage("sys", `Greška: ${res.status}\n${detail || "N/A"}`, { state: "ERROR" });
+          addMessage("sys", `Greška (chat): ${res.status}\n${detail || "N/A"}`, { state: "ERROR" });
           return;
         }
 
         const data = await res.json();
-        lastApprovalId = data.approval_id || null;
 
-        // CANON: nakon CEO inputa, sistem vraća BLOCKED + approval_id (bez implicitnog izvršenja)
-        addMessage(
-          "sys",
-          "Naredba je primljena i prevedena. Zahtjev je u BLOCKED stanju i čeka eksplicitno odobrenje.",
-          { state: "BLOCKED", approval_id: lastApprovalId || "–" }
-        );
+        // normal chat odgovor
+        addMessage("sys", (data && data.text) || "(no text)", { state: "CHAT" });
 
-        if (lastApprovalId) approveBtn.disabled = false;
-
-        textarea.value = "";
-        autosize();
-
-        // refresh snapshot desno (re-use postojeći UI handler)
-        const snapBtn = document.getElementById("refresh-snapshot-btn");
-        if (snapBtn) snapBtn.click();
-      } catch (err) {
-        addMessage("sys", "Greška pri slanju naredbe.", { state: "ERROR" });
-      } finally {
-        setBusy(false);
-      }
-    }
-
-    async function approveLatest() {
-      if (!lastApprovalId || busy) return;
-
-      setBusy(true);
-      try {
-        const res = await fetch(approveUrl, {
-          method: "POST",
-          headers,
-          body: JSON.stringify({ approval_id: lastApprovalId }),
-        });
-
-        if (!res.ok) {
-          const detail = await res.text();
-          addMessage("sys", `Greška pri odobravanju: ${res.status}\n${detail || ""}`, { state: "ERROR" });
-          return;
+        // proposals (ako ih ima)
+        const proposals = Array.isArray(data.proposed_commands) ? data.proposed_commands : [];
+        if (proposals.length > 0) {
+          lastProposals = proposals;
+          approveBtn.disabled = false;
+          addMessage("sys", "Predložene su akcije koje zahtijevaju odobrenje.", {
+            state: "PROPOSALS_READY",
+            count: proposals.length,
+          });
         }
 
-        // Ne prikazujemo agent detalje — samo governance status
-        addMessage(
-          "sys",
-          "Zahtjev je odobren. Execution će biti vidljiv kroz KPI/snapshot i metrikama (bez prikaza agent detalja).",
-          { state: "APPROVED/EXECUTED", approval_id: lastApprovalId }
-        );
-
-        approveBtn.disabled = true;
-
+        // optional: refresh snapshot desno (ako postoji)
         const snapBtn = document.getElementById("refresh-snapshot-btn");
         if (snapBtn) snapBtn.click();
       } catch (err) {
-        addMessage("sys", "Greška pri odobravanju zahtjeva.", { state: "ERROR" });
+        addMessage("sys", "Greška pri chat pozivu.", { state: "ERROR" });
       } finally {
-        setBusy(false);
+        bumpPending(-1);
       }
     }
 
-    sendBtn.addEventListener("click", sendCommand);
-    approveBtn.addEventListener("click", approveLatest);
+    // ---- Approve & Execute (explicit click) ----
+
+    async function approveProposals() {
+      if (!Array.isArray(lastProposals) || lastProposals.length === 0) return;
+
+      // eksplicitna akcija CEO-a
+      approveBtn.disabled = true;
+
+      for (let i = 0; i < lastProposals.length; i++) {
+        const p = lastProposals[i];
+        const ai = proposalToAiCommand(p);
+
+        if (!ai || !ai.command || !ai.intent) {
+          addMessage("sys", `Nevalidan proposal (index ${i}).`, { state: "ERROR" });
+          continue;
+        }
+
+        bumpPending(+1);
+        try {
+          // 1) Create Approval (BLOCKED): /api/execute/raw
+          const executeRes = await fetch(executeRawUrl, {
+            method: "POST",
+            headers,
+            body: JSON.stringify(buildExecuteRawPayload(ai)),
+          });
+
+          if (!executeRes.ok) {
+            const detail = await executeRes.text();
+            addMessage("sys", `Greška (execute/raw): ${executeRes.status}\n${detail || ""}`, { state: "ERROR" });
+            continue;
+          }
+
+          const execData = await executeRes.json();
+          const approvalId = execData.approval_id || execData.approvalId || null;
+          const executionId = execData.execution_id || execData.executionId || null;
+          const state = execData.state || execData.execution_state || "BLOCKED";
+
+          lastBlocked.push({ approval_id: approvalId, execution_id: executionId, state });
+
+          addMessage("sys", "Zahtjev registrovan (BLOCKED) i čeka odobrenje.", {
+            state: "BLOCKED",
+            approval_id: approvalId || "–",
+            execution_id: executionId || "–",
+          });
+
+          if (!approvalId) {
+            addMessage("sys", "Nedostaje approval_id iz /api/execute/raw.", { state: "ERROR" });
+            continue;
+          }
+
+          // 2) Approve & Execute: /api/ai-ops/approval/approve
+          const approveRes = await fetch(approveUrl, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({ approval_id: approvalId }),
+          });
+
+          if (!approveRes.ok) {
+            const detail = await approveRes.text();
+            addMessage("sys", `Greška (approve): ${approveRes.status}\n${detail || ""}`, {
+              state: "ERROR",
+              approval_id: approvalId,
+            });
+            continue;
+          }
+
+          const approveData = await approveRes.json();
+          const finalState =
+            approveData.execution_state || approveData.state || approveData.status || "APPROVED/EXECUTED";
+
+          addMessage("sys", "Odobreno i poslano u execution pipeline.", {
+            state: finalState,
+            approval_id: approvalId,
+            execution_id: executionId || approveData.execution_id || "–",
+          });
+
+          // refresh snapshot desno
+          const snapBtn = document.getElementById("refresh-snapshot-btn");
+          if (snapBtn) snapBtn.click();
+        } catch (err) {
+          addMessage("sys", "Greška pri approval/execution toku.", { state: "ERROR" });
+        } finally {
+          bumpPending(-1);
+        }
+      }
+
+      // clear proposals after processing
+      lastProposals = [];
+    }
+
+    sendBtn.addEventListener("click", sendMessage);
+    approveBtn.addEventListener("click", approveProposals);
 
     // Initial system message
     addMessage(
       "sys",
-      "Dobrodošli u CEO Command. Ovo je CEO → SYSTEM kanal: unos prirodnog jezika, bez implicitnog izvršavanja. Tok: BLOCKED → APPROVAL → EXECUTED.",
-      { state: "WHOLE" }
+      "CEO Chat je aktivan (LLM). Ako agent predloži akcije (side-effects), pojaviće se dugme 'Odobri predloženo'. Chat ne šalje canon lock.",
+      { state: "READY" }
     );
 
     // Focus input
     setTimeout(() => textarea.focus(), 50);
 
-    console.log("[CEO_CHATBOX] mounted", { mountSelector, ceoCommandUrl, approveUrl });
+    console.log("[CEO_CHATBOX] mounted", { mountSelector, chatUrl, executeRawUrl, approveUrl });
   } catch (e) {
     console.error("[CEO_CHATBOX] init failed", e);
   }
