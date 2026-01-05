@@ -449,6 +449,43 @@ def _is_dashboard_query(user_text: str) -> bool:
     return any(k in t for k in keywords)
 
 
+def _run_last_error_details(run_status: Any) -> Dict[str, Any]:
+    """
+    Extract as much useful info as possible from a run object across SDK versions.
+    """
+    out: Dict[str, Any] = {}
+
+    status = getattr(run_status, "status", None)
+    if status is not None:
+        out["status"] = status
+
+    # Newer SDKs: run.last_error = {code, message}
+    last_error = getattr(run_status, "last_error", None)
+    if last_error is not None:
+        code = getattr(last_error, "code", None)
+        msg = getattr(last_error, "message", None)
+        out["last_error"] = {
+            "code": code if code is not None else None,
+            "message": msg
+            if isinstance(msg, str)
+            else (str(msg) if msg is not None else None),
+        }
+
+    # Sometimes present:
+    incomplete = getattr(run_status, "incomplete_details", None)
+    if incomplete is not None:
+        reason = getattr(incomplete, "reason", None)
+        out["incomplete_details"] = {"reason": reason if reason is not None else None}
+
+    # IDs are useful for correlating
+    for k in ("id", "assistant_id", "thread_id", "model"):
+        v = getattr(run_status, k, None)
+        if v is not None:
+            out[k] = v
+
+    return out
+
+
 class OpenAIAssistantExecutor:
     def __init__(
         self,
@@ -583,7 +620,10 @@ class OpenAIAssistantExecutor:
                 return
 
             elif status in {"failed", "cancelled", "expired"}:
-                raise RuntimeError(f"Assistant run failed with status: {status}")
+                details = _run_last_error_details(run_status)
+                raise RuntimeError(
+                    f"Assistant run failed with status: {status}; details={json.dumps(details, ensure_ascii=False)}"
+                )
 
             await asyncio.sleep(self._poll_interval_s)
 
@@ -649,11 +689,16 @@ class OpenAIAssistantExecutor:
         thread_id: str,
         assistant_id: str,
         instructions: Optional[str] = None,
-        tool_choice: Optional[str] = None,
+        tool_choice: Optional[Any] = None,
     ):
         """
         Compatibility layer for SDK / API shape changes.
         Tries progressively simpler run.create signatures.
+
+        Note: tool_choice in Assistants API has had multiple accepted shapes:
+          - "none"
+          - {"type": "none"}
+          - omitted
         """
         attempts: list[Dict[str, Any]] = []
 
@@ -664,6 +709,12 @@ class OpenAIAssistantExecutor:
         if tool_choice is not None:
             kw0["tool_choice"] = tool_choice
         attempts.append(kw0)
+
+        # If tool_choice is a string, also try dict variant first for robustness
+        if isinstance(tool_choice, str) and tool_choice.strip().lower() == "none":
+            kw0b = dict(kw0)
+            kw0b["tool_choice"] = {"type": "none"}
+            attempts.insert(0, kw0b)
 
         # Drop tool_choice
         kw1 = dict(kw0)
@@ -688,7 +739,6 @@ class OpenAIAssistantExecutor:
                 )
                 continue
             except Exception as e:  # noqa: BLE001
-                # Some SDKs throw 400 unknown parameter rather than TypeError
                 msg = str(e).lower()
                 if ("tool_choice" in msg or "instructions" in msg) and (
                     "unknown" in msg
@@ -811,7 +861,6 @@ class OpenAIAssistantExecutor:
             else _CEO_ADVISORY_JSON_ONLY_INSTRUCTIONS
         )
 
-        # Put instructions also inside payload for robustness (if run.instructions is not supported)
         advisory_contract = {
             "type": "ceo_advice",
             "text": t,
@@ -870,12 +919,10 @@ class OpenAIAssistantExecutor:
             elapsed_ms = int((time.monotonic() - t0) * 1000)
             logger.exception("CEO advisory failed (assistant_id=%s)", assistant_id)
 
-            # Deterministic error info for diagnosis (NO guessing)
             err_type = exc.__class__.__name__
             err_msg = str(exc)[:2000]
             err_repr = repr(exc)[:2000]
 
-            # Keep user-facing text stable; put root cause in trace
             if isinstance(exc, ReadOnlyToolCallAttempt):
                 summary = (
                     "CEO advisory je pokušao tool poziv u read-only modu (blokirano)."
@@ -892,7 +939,6 @@ class OpenAIAssistantExecutor:
                     f"CEO advisory nije mogao završiti (internal error: {err_type})."
                 )
 
-            # Optional: include repr in text only when explicitly enabled
             if os.getenv("DEBUG_CEO_ADVISOR_ERRORS") == "1":
                 text_out = f"{text_out}\n\nDEBUG_ERROR:\n{err_repr}"
 
@@ -933,7 +979,6 @@ class OpenAIAssistantExecutor:
             trace["identity_knowledge_injected"] = True
         parsed["trace"] = trace
 
-        # Hard guarantee: always return 'text' and 'summary'
         picked = _pick_text(parsed)
         if (
             picked

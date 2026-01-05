@@ -7,11 +7,15 @@ from pydantic import BaseModel, Field
 
 
 def _extra_allow_config_dict():
-    # Pydantic v2: ConfigDict exists; v1: doesn't.
+    """
+    Pydantic v2: ConfigDict exists; v1: doesn't.
+    We also enable populate_by_name / allow_population_by_field_name to be
+    tolerant to alias/name differences across callers.
+    """
     try:
         from pydantic import ConfigDict  # type: ignore
 
-        return ConfigDict(extra="allow")
+        return ConfigDict(extra="allow", populate_by_name=True)
     except Exception:
         return None
 
@@ -23,6 +27,7 @@ def _is_pydantic_v2() -> bool:
 class _AllowExtraBaseModel(BaseModel):
     """
     Pydantic v1/v2 compatible "extra=allow".
+    Also enables field-name population (alias tolerance).
     """
 
     _cfg = _extra_allow_config_dict()
@@ -32,6 +37,7 @@ class _AllowExtraBaseModel(BaseModel):
 
         class Config:
             extra = "allow"
+            allow_population_by_field_name = True
 
 
 class ProposedCommand(_AllowExtraBaseModel):
@@ -142,6 +148,7 @@ class ProposedCommand(_AllowExtraBaseModel):
         @classmethod
         def _dry_run_hard_true(cls, v):
             return True
+
     else:
         from pydantic import root_validator, validator  # type: ignore
 
@@ -203,6 +210,10 @@ class AgentInput(_AllowExtraBaseModel):
     """
     Minimalni input za agent layer.
     identity_pack + snapshot dolaze iz CANON-a; ovdje ih tretiramo kao opaque dict.
+
+    KEY FIX:
+      - prihvata i "message" i "text" (legacy / swagger / frontend razlike),
+        tako što u pre-validate fazi mapira text -> message ako message fali.
     """
 
     message: str = Field(..., description="User poruka.")
@@ -217,14 +228,40 @@ class AgentInput(_AllowExtraBaseModel):
     )
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
-    # Normalize incoming nulls from clients
     if _is_pydantic_v2():
-        from pydantic import field_validator  # type: ignore
+        from pydantic import field_validator, model_validator  # type: ignore
+
+        @model_validator(mode="before")
+        @classmethod
+        def _accept_text_as_message(cls, data: Any):
+            if not isinstance(data, dict):
+                return data
+
+            # If message missing, take text (common client shape)
+            if ("message" not in data or data.get("message") is None) and isinstance(
+                data.get("text"), (str, int, float, bool, dict, list)
+            ):
+                data["message"] = data.get("text")
+
+            # Some clients wrap payload in {"data": {...}}
+            if ("message" not in data or data.get("message") is None) and isinstance(
+                data.get("data"), dict
+            ):
+                d = data["data"]
+                if ("message" in d and d.get("message") is not None) or (
+                    "text" in d and d.get("text") is not None
+                ):
+                    data["message"] = d.get("message", d.get("text"))
+
+            # Ensure key exists so "required" doesn't throw 422
+            if "message" not in data:
+                data["message"] = ""
+
+            return data
 
         @field_validator("message", mode="before")
         @classmethod
         def _message_any_to_str(cls, v):
-            # Allow null/number/object from clients; normalize deterministically.
             if v is None:
                 return ""
             if isinstance(v, str):
@@ -245,8 +282,33 @@ class AgentInput(_AllowExtraBaseModel):
         @classmethod
         def _metadata_none_to_dict(cls, v):
             return v or {}
+
     else:
-        from pydantic import validator  # type: ignore
+        from pydantic import root_validator, validator  # type: ignore
+
+        @root_validator(pre=True)
+        def _accept_text_as_message(cls, values):
+            if not isinstance(values, dict):
+                return values
+
+            if ("message" not in values or values.get("message") is None) and (
+                "text" in values
+            ):
+                values["message"] = values.get("text")
+
+            if (
+                "message" not in values or values.get("message") is None
+            ) and isinstance(values.get("data"), dict):
+                d = values["data"]
+                if ("message" in d and d.get("message") is not None) or (
+                    "text" in d and d.get("text") is not None
+                ):
+                    values["message"] = d.get("message", d.get("text"))
+
+            if "message" not in values:
+                values["message"] = ""
+
+            return values
 
         @validator("message", pre=True, always=True)
         def _message_any_to_str(cls, v):
@@ -301,6 +363,7 @@ class AgentOutput(_AllowExtraBaseModel):
         @classmethod
         def _pcs_none_to_list(cls, v):
             return v or []
+
     else:
         from pydantic import validator  # type: ignore
 
