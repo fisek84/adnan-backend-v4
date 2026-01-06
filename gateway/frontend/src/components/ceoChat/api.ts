@@ -128,14 +128,17 @@ function deriveNotionOpsUrl(fromBaseUrl: string, path: string): string {
   const p = path.startsWith("/") ? path : `/${path}`;
 
   // FIX:
-  // Ako je base relative (npr. "/api/chat"), Notion Ops endpointi moraju ići kroz isti /api prefiks.
-  // Inače frontend gađa "/notion-ops/..." i dobija 404 na deploymentu.
+  // Notion Ops endpointi moraju ići kroz /api prefiks, bez obzira da li je base relative ili absolute.
+  // - relative base: "/api/chat" -> "/api/notion-ops/..."
+  // - absolute base: "https://host/api/chat" -> "https://host/api/notion-ops/..."
   if (!/^https?:\/\//i.test(fromBaseUrl)) return `/api${p}`;
 
   try {
-    return new URL(p, fromBaseUrl).toString();
+    const base = new URL(fromBaseUrl);
+    const apiPath = `/api${p}`;
+    return new URL(apiPath, base.origin).toString();
   } catch {
-    return p;
+    return `/api${p}`;
   }
 }
 

@@ -252,7 +252,8 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
           createdAt: now(),
           state: "BLOCKED",
           title: "Proposed commands",
-          summary: "Select EXACTLY ONE proposal to create execution (BLOCKED). Then approve via approval_id (approval gate).",
+          summary:
+            "Select EXACTLY ONE proposal to create execution (BLOCKED). Then approve via approval_id (approval gate).",
           reasons: proposals.map((p, idx) => {
             const label =
               typeof (p as any)?.command === "string"
@@ -314,10 +315,9 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         const executionId: string | null =
           typeof execJson?.execution_id === "string" && execJson.execution_id ? execJson.execution_id : null;
 
-        const msg =
-          approvalId?.trim()
-            ? `Execution created (BLOCKED). approval_id: ${approvalId}`
-            : _pickText(execJson) || "Execution created.";
+        const msg = approvalId?.trim()
+          ? `Execution created (BLOCKED). approval_id: ${approvalId}`
+          : _pickText(execJson) || "Execution created.";
 
         updateItem(placeholder.id, { content: msg, status: "final" });
 
@@ -372,9 +372,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       try {
         const approveJson = await postJson(appUrl, { approval_id: approvalId }, controller.signal);
 
-        const msg =
-          _pickText(approveJson) ||
-          (approveJson?.execution_state ? `Execution: ${approveJson.execution_state}` : "Approved.");
+        const msg = _pickText(approveJson) || (approveJson?.execution_state ? `Execution: ${approveJson.execution_state}` : "Approved.");
 
         updateItem(placeholder.id, { content: msg, status: "final" });
         abortRef.current = null;
@@ -522,9 +520,11 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
 
     try {
       // CANON: CeoCommandRequest (api.ts will build /api/chat payload)
+      // IMPORTANT: preferred_agent_id should be top-level for AgentInput compatibility.
       const req: any = {
         text: trimmed,
         initiator: "ceo_chat",
+        preferred_agent_id: "ceo_advisor",
         context_hint: {
           preferred_agent_id: "ceo_advisor",
         },
