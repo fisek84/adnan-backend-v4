@@ -609,6 +609,16 @@ class ProposalExecuteInput(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
+class ExecuteRawInput2(BaseModel):
+    # helper model we koristimo POSLIJE normalizacije payload-a, ne za direktan HTTP parsing
+    command: str
+    intent: str
+    params: Dict[str, Any] = Field(default_factory=dict)
+    initiator: str = "ceo"
+    read_only: bool = False
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
 # ================================================================
 # HELPERS
 # ================================================================
@@ -716,12 +726,12 @@ def _inject_fallback_proposed_commands(result: Dict[str, Any], *, prompt: str) -
     """
     CANON:
     Frontend expects proposed_commands as OPAQUE, ready-to-send /api/execute/raw payloads.
-    Do NOT emit legacy shapes (args/payload/command_type) here.
+    Do NOT emit legacy shapes (args/payload/command_type) ovdje ako ih nema.
     """
     pcs = result.get("proposed_commands")
     pcs_list = _ensure_list(pcs)
 
-    # If already present, keep as-is (opaque) but sanitize to list[dict]
+    # Ako agent već vrati proposed_commands, zadržavamo ih (sanitizujemo na list[dict])
     if len(pcs_list) > 0:
         out: List[Dict[str, Any]] = []
         for x in pcs_list:
@@ -736,7 +746,7 @@ def _inject_fallback_proposed_commands(result: Dict[str, Any], *, prompt: str) -
 
     safe_prompt = (prompt or "").strip() or "noop"
 
-    # OPAQUE wrapper proposal — 1:1 payload for /api/execute/raw
+    # OPAQUE wrapper proposal — 1:1 payload za /api/execute/raw
     result["proposed_commands"] = [
         {
             "command": PROPOSAL_WRAPPER_INTENT,
@@ -756,6 +766,71 @@ def _inject_fallback_proposed_commands(result: Dict[str, Any], *, prompt: str) -
     tr["fallback_proposed_commands"] = True
     tr["router_version"] = "gateway-fallback-proposed-commands-v2-opaque"
     result["trace"] = tr
+
+
+def _normalize_execute_raw_payload_dict(body: Dict[str, Any]) -> ExecuteRawInput2:
+    """
+    Prihvata:
+      - canonical: {command, intent, params, ...}
+      - legacy fallback: {command: 'ceo.command.propose', args: {prompt: ...}, ...}
+    i vraća normalizovani ExecuteRawInput2.
+    """
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Body must be an object")
+
+    cmd = body.get("command") or body.get("command_type") or body.get("type") or ""
+    if not isinstance(cmd, str) or not cmd.strip():
+        raise HTTPException(status_code=422, detail="Field 'command' is required")
+    cmd = cmd.strip()
+
+    intent_val = body.get("intent")
+    if isinstance(intent_val, str) and intent_val.strip():
+        intent = intent_val.strip()
+    else:
+        intent = cmd  # legacy: intent == command
+
+    params = body.get("params")
+    if not isinstance(params, dict):
+        params = {}
+
+    # Legacy fallback: ceo.command.propose + args.prompt
+    if intent == PROPOSAL_WRAPPER_INTENT and "prompt" not in params:
+        args = body.get("args")
+        if isinstance(args, dict):
+            prompt = args.get("prompt")
+            if isinstance(prompt, str) and prompt.strip():
+                params["prompt"] = prompt.strip()
+
+    initiator = body.get("initiator")
+    if not isinstance(initiator, str) or not initiator.strip():
+        initiator = "ceo"
+    else:
+        initiator = initiator.strip()
+
+    read_only = bool(body.get("read_only") or False)
+
+    metadata = body.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+    payload_summary = body.get("payload_summary")
+    if isinstance(payload_summary, dict):
+        # payload_summary info ne gubimo; merge u metadata
+        merged = dict(payload_summary)
+        merged.update(metadata)
+        metadata = merged
+
+    metadata.setdefault("canon", "CEO_CONSOLE_EXECUTION_FLOW")
+    metadata.setdefault("endpoint", "/api/execute/raw")
+    metadata.setdefault("source", metadata.get("source") or "ceo_console")
+
+    return ExecuteRawInput2(
+        command=cmd,
+        intent=intent,
+        params=params,
+        initiator=initiator,
+        read_only=read_only,
+        metadata=metadata,
+    )
 
 
 # ================================================================
@@ -821,24 +896,29 @@ async def execute_command(payload: ExecuteInput):
     return result
 
 
-class ExecuteRawInput2(BaseModel):
-    command: str
-    intent: str
-    params: Dict[str, Any] = Field(default_factory=dict)
-    initiator: str = "ceo"
-    read_only: bool = False
-    metadata: Dict[str, Any] = Field(default_factory=dict)
-
-
 @app.post("/api/execute/raw")
-async def execute_raw_command(payload: ExecuteRawInput2):
+async def execute_raw_command(payload: Dict[str, Any] = Body(...)):
+    """
+    Canonical execution entrypoint za CEO Console.
+
+    Prihvata:
+      - canonical payload: {command,intent,params,initiator,read_only,metadata,...}
+      - legacy proposal payload: {command:'ceo.command.propose', args:{prompt:...}, ...}
+
+    Sve normalizuje u ExecuteRawInput2 i prosljeđuje u approval/execution flow.
+    """
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Body must be an object")
+
+    normalized = _normalize_execute_raw_payload_dict(payload)
+
     ai_command = _unwrap_proposal_wrapper_or_raise(
-        command=payload.command,
-        intent=payload.intent,
-        params=payload.params if isinstance(payload.params, dict) else {},
-        initiator=payload.initiator,
-        read_only=payload.read_only,
-        metadata=payload.metadata if isinstance(payload.metadata, dict) else {},
+        command=normalized.command,
+        intent=normalized.intent,
+        params=normalized.params if isinstance(normalized.params, dict) else {},
+        initiator=normalized.initiator,
+        read_only=normalized.read_only,
+        metadata=normalized.metadata if isinstance(normalized.metadata, dict) else {},
     )
 
     execution_id = _ensure_execution_id(ai_command)
@@ -847,8 +927,8 @@ async def execute_raw_command(payload: ExecuteRawInput2):
     approval = approval_state.create(
         command=getattr(ai_command, "command", None) or "execute_raw",
         payload_summary=_safe_command_summary(ai_command),
-        scope="api_execute_raw",
-        risk_level="unknown",
+        scope=(payload.get("scope") or "api_execute_raw"),
+        risk_level=(payload.get("risk") or "unknown"),
         execution_id=execution_id,
     )
     approval_id = approval.get("approval_id")
