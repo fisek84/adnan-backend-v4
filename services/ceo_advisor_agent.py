@@ -457,12 +457,17 @@ def _to_proposed_commands(items: Any) -> List[ProposedCommand]:
                 {"command": cmd, "intent": intent.strip(), "params": params},
             )
 
+        # FIX: tolerate both "requires_approval" and "required_approval"
+        ra = x.get("requires_approval", None)
+        if ra is None:
+            ra = x.get("required_approval", True)
+
         out.append(
             ProposedCommand(
                 command=cmd,
                 args=args,
                 reason=str(x.get("reason") or "proposed by ceo_advisor").strip(),
-                requires_approval=bool(x.get("requires_approval", True)),
+                requires_approval=bool(ra),
                 risk=str(x.get("risk") or x.get("risk_hint") or "").strip() or "MEDIUM",
                 dry_run=True,
             )

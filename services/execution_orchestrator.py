@@ -296,7 +296,30 @@ class ExecutionOrchestrator:
                 if isinstance(meta_aid, str) and meta_aid:
                     parent_approval_id = meta_aid
 
-        goal_result = await self.notion_agent.execute(command)
+        # ----------------------------
+        # ✅ FIX (minimal): do NOT send workflow command to Notion agent.
+        # Create a proper Notion write command for the goal from params["goal"].
+        # ----------------------------
+        goal_payload = params.get("goal") or {}
+        if not isinstance(goal_payload, dict):
+            raise RuntimeError("goal_task_workflow requires params.goal dict")
+
+        goal_cmd = AICommand(
+            command="notion_write",
+            intent="create_page",
+            read_only=False,
+            params=goal_payload,
+            initiator=command.initiator,
+            validated=True,
+            metadata={
+                "context_type": "workflow",
+                "workflow": "goal_task_workflow",
+                "approval_id": parent_approval_id,
+                "trace_parent": command.execution_id,
+            },
+        )
+
+        goal_result = await self.notion_agent.execute(goal_cmd)
         goal_page_id = (
             goal_result.get("notion_page_id") if isinstance(goal_result, dict) else None
         )

@@ -792,7 +792,8 @@ class NotionService:
         if intent == "refresh_snapshot":
             return await self.sync_knowledge_snapshot()
 
-        raise RuntimeError(f"Unsupported intent: {command.intent}")
+        # ✅ FIX: report effective intent (after unwrap), not original command.intent
+        raise RuntimeError(f"Unsupported intent: {intent}")
 
     def _build_properties_from_specs(
         self, specs: Optional[Dict[str, Any]]
@@ -823,6 +824,8 @@ class NotionService:
             elif spec_type == "status":
                 name = spec.get("name")
                 if name:
+                    # ✅ FIX: većina tvojih DB-ova ima "Status" kao SELECT (ne Notion status-type).
+                    # Notion error iz testa: "Status is expected to be select."
                     props[prop_name] = {"select": {"name": name}}
 
             elif spec_type == "multi_select":
@@ -830,7 +833,10 @@ class NotionService:
                 props[prop_name] = {"multi_select": [{"name": n} for n in names if n]}
 
             elif spec_type == "relation":
-                page_ids = spec.get("page_ids") or []
+                # ✅ Support both keys: page_ids (expected here) and ids (used elsewhere)
+                page_ids = spec.get("page_ids") or spec.get("ids") or []
+                if not isinstance(page_ids, list):
+                    page_ids = []
                 props[prop_name] = {
                     "relation": [{"id": pid} for pid in page_ids if pid]
                 }
@@ -855,9 +861,19 @@ class NotionService:
                     props[prop_name] = {"number": value}
 
             elif spec_type == "people":
-                people = spec.get("people") or spec.get("ids")
-                if people is not None:
-                    props[prop_name] = {"people": people}
+                # ✅ Notion expects list of objects: [{"id": "..."}]
+                people = spec.get("people") or spec.get("ids") or []
+                norm: List[Dict[str, Any]] = []
+                if isinstance(people, list):
+                    for p in people:
+                        if isinstance(p, str) and p.strip():
+                            norm.append({"id": p.strip()})
+                        elif isinstance(p, dict):
+                            pid = p.get("id")
+                            if isinstance(pid, str) and pid.strip():
+                                norm.append({"id": pid.strip()})
+                if norm:
+                    props[prop_name] = {"people": norm}
 
             elif spec_type == "files":
                 files = spec.get("files")

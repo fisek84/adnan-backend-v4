@@ -710,38 +710,48 @@ def _ensure_dict(x: Any) -> Dict[str, Any]:
 
 
 def _inject_fallback_proposed_commands(result: Dict[str, Any], *, prompt: str) -> None:
+    """
+    CANON:
+    Frontend expects proposed_commands as OPAQUE, ready-to-send /api/execute/raw payloads.
+    Do NOT emit legacy shapes (args/payload/command_type) here.
+    """
     pcs = result.get("proposed_commands")
     pcs_list = _ensure_list(pcs)
 
+    # If already present, keep as-is (opaque) but sanitize to list[dict]
     if len(pcs_list) > 0:
-        result["proposed_commands"] = pcs_list
+        out: List[Dict[str, Any]] = []
+        for x in pcs_list:
+            if isinstance(x, dict):
+                out.append(x)
+        result["proposed_commands"] = out
         tr0 = _ensure_dict(result.get("trace"))
         tr0.setdefault("fallback_proposed_commands", False)
-        tr0.setdefault("router_version", "gateway-fallback-proposed-commands-v1")
+        tr0.setdefault("router_version", "gateway-fallback-proposed-commands-v2-opaque")
         result["trace"] = tr0
         return
 
     safe_prompt = (prompt or "").strip() or "noop"
 
+    # OPAQUE wrapper proposal — 1:1 payload for /api/execute/raw
     result["proposed_commands"] = [
         {
-            "command": "ceo.command.propose",
-            "args": {"prompt": safe_prompt},
-            "status": "BLOCKED",
-            "requires_approval": True,
-            "scope": "ceo_console",
-            "risk": "LOW",
-            "cost_hint": "Low",
-            "risk_hint": "Low",
-            "command_type": "ceo.command.propose",
-            "payload": {"prompt": safe_prompt},
-            "required_approval": True,
+            "command": PROPOSAL_WRAPPER_INTENT,
+            "intent": PROPOSAL_WRAPPER_INTENT,
+            "params": {"prompt": safe_prompt},
+            "initiator": "ceo",
+            "read_only": False,
+            "metadata": {
+                "source": "ceo_console",
+                "canon": "CEO_CONSOLE_EXECUTION_FLOW",
+                "endpoint": "/api/execute/raw",
+            },
         }
     ]
 
     tr = _ensure_dict(result.get("trace"))
     tr["fallback_proposed_commands"] = True
-    tr["router_version"] = "gateway-fallback-proposed-commands-v1"
+    tr["router_version"] = "gateway-fallback-proposed-commands-v2-opaque"
     result["trace"] = tr
 
 
@@ -866,90 +876,153 @@ async def execute_raw_command(payload: ExecuteRawInput2):
 # ================================================================
 @app.post("/api/proposals/execute")
 async def execute_proposal(payload: ProposalExecuteInput):
+    """
+    Back-compat endpoint. Accepts either:
+      - CANON OPAQUE proposal: {command,intent,params,...}
+      - legacy proposal: {command,args} or {command_type,payload}
+    Only wrapper 'ceo.command.propose' is supported here.
+    """
     proposal = payload.proposal
     initiator = (payload.initiator or "ceo").strip() or "ceo"
     meta_in = payload.metadata if isinstance(payload.metadata, dict) else {}
 
+    # --- normalize proposal fields ---
+    proposal_cmd: Optional[str] = None
+    proposal_intent: Optional[str] = None
+    proposal_params: Dict[str, Any] = {}
+    proposal_meta: Dict[str, Any] = {}
+
     if isinstance(proposal, dict):
-        proposal_cmd = proposal.get("command")
-        proposal_args = (
-            proposal.get("args") if isinstance(proposal.get("args"), dict) else {}
+        proposal_cmd = (
+            proposal.get("command")
+            or proposal.get("command_type")
+            or proposal.get("type")
         )
+        proposal_intent = proposal.get("intent") or proposal_cmd
+
+        # CANON params
+        p_params = proposal.get("params")
+        if isinstance(p_params, dict):
+            proposal_params = dict(p_params)
+
+        # legacy args/payload fallback
+        if not proposal_params:
+            p_args = proposal.get("args")
+            if isinstance(p_args, dict):
+                proposal_params = dict(p_args)
+        if not proposal_params:
+            p_payload = proposal.get("payload")
+            if isinstance(p_payload, dict):
+                proposal_params = dict(p_payload)
+
+        p_md = proposal.get("metadata")
+        if isinstance(p_md, dict):
+            proposal_meta = dict(p_md)
+
         proposal_scope = proposal.get("scope")
-        proposal_risk = proposal.get("risk")
+        proposal_risk = proposal.get("risk") or proposal.get("risk_hint")
     else:
-        proposal_cmd = getattr(proposal, "command", None)
-        proposal_args = (
-            getattr(proposal, "args", {})
-            if isinstance(getattr(proposal, "args", None), dict)
-            else {}
+        proposal_cmd = (
+            getattr(proposal, "command", None)
+            or getattr(proposal, "command_type", None)
+            or getattr(proposal, "type", None)
         )
+        proposal_intent = getattr(proposal, "intent", None) or proposal_cmd
+
+        p2 = getattr(proposal, "params", None)
+        if isinstance(p2, dict):
+            proposal_params = dict(p2)
+        if not proposal_params:
+            a2 = getattr(proposal, "args", None)
+            if isinstance(a2, dict):
+                proposal_params = dict(a2)
+        if not proposal_params:
+            pl2 = getattr(proposal, "payload", None)
+            if isinstance(pl2, dict):
+                proposal_params = dict(pl2)
+
+        m2 = getattr(proposal, "metadata", None)
+        if isinstance(m2, dict):
+            proposal_meta = dict(m2)
+
         proposal_scope = getattr(proposal, "scope", None)
-        proposal_risk = getattr(proposal, "risk", None)
-
-    args = proposal_args
-
-    if proposal_cmd == "ceo.command.propose":
-        prompt = args.get("prompt")
-        if not isinstance(prompt, str) or not prompt.strip():
-            raise HTTPException(
-                status_code=400, detail="ceo.command.propose requires args.prompt"
-            )
-
-        ai_command = coo_translation_service.translate(
-            raw_input=prompt.strip(),
-            source="system",
-            context={"mode": "execute", "via": "proposal_promotion"},
+        proposal_risk = getattr(proposal, "risk", None) or getattr(
+            proposal, "risk_hint", None
         )
-        if not ai_command:
-            raise HTTPException(
-                status_code=400, detail="Could not translate proposal prompt to command"
-            )
 
-        ai_command.initiator = initiator
+    proposal_cmd = (proposal_cmd or "").strip() or None
+    proposal_intent = (proposal_intent or "").strip() or None
 
-        md = getattr(ai_command, "metadata", None)
-        if not isinstance(md, dict):
-            md = {}
-        md.setdefault("promotion", {})
-        if isinstance(md.get("promotion"), dict):
-            md["promotion"].setdefault("source", "/api/chat")
-            md["promotion"].setdefault("proposal_command", proposal_cmd)
-            md["promotion"].setdefault("risk", proposal_risk)
-            md["promotion"].setdefault("scope", proposal_scope)
-        md.setdefault("endpoint", "/api/proposals/execute")
-        md.setdefault("canon", "proposal_promotion")
-        for k, v in meta_in.items():
-            md[k] = v
-        ai_command.metadata = md
-
-        execution_id = _ensure_execution_id(ai_command)
-
-        approval_state = get_approval_state()
-        approval = approval_state.create(
-            command=getattr(ai_command, "command", None) or "execute_proposal",
-            payload_summary=_safe_command_summary(ai_command),
-            scope=(proposal_scope or "api_proposals_execute"),
-            risk_level=(proposal_risk or "UNKNOWN"),
-            execution_id=execution_id,
+    if not proposal_cmd or not proposal_intent:
+        raise HTTPException(
+            status_code=400, detail="Invalid proposal: missing command/intent"
         )
-        approval_id = approval.get("approval_id")
-        if not approval_id:
-            raise HTTPException(
-                status_code=500, detail="Approval create failed: missing approval_id"
-            )
 
-        _ensure_trace_on_command(ai_command, approval_id=approval_id)
-        _execution_registry.register(ai_command)
+    # Only wrapper promotion supported
+    if (
+        proposal_cmd != PROPOSAL_WRAPPER_INTENT
+        and proposal_intent != PROPOSAL_WRAPPER_INTENT
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported proposal payload (only ceo.command.propose)",
+        )
 
-        result = await _execution_orchestrator.execute(ai_command)
-        if isinstance(result, dict):
-            result.setdefault("approval_id", approval_id)
-            result.setdefault("execution_id", execution_id)
-            result.setdefault("status", "BLOCKED")
-        return result
+    # Merge metadata (meta_in overrides)
+    merged_md: Dict[str, Any] = {}
+    if isinstance(proposal_meta, dict):
+        merged_md.update(proposal_meta)
+    if isinstance(meta_in, dict):
+        merged_md.update(meta_in)
 
-    raise HTTPException(status_code=400, detail="Unsupported proposal payload")
+    ai_command = _unwrap_proposal_wrapper_or_raise(
+        command=proposal_cmd,
+        intent=proposal_intent,
+        params=proposal_params if isinstance(proposal_params, dict) else {},
+        initiator=initiator,
+        read_only=False,
+        metadata=merged_md,
+    )
+
+    md = getattr(ai_command, "metadata", None)
+    if not isinstance(md, dict):
+        md = {}
+    md.setdefault("promotion", {})
+    if isinstance(md.get("promotion"), dict):
+        md["promotion"].setdefault("source", "/api/proposals/execute")
+        md["promotion"].setdefault("proposal_command", proposal_cmd)
+        md["promotion"].setdefault("proposal_intent", proposal_intent)
+        md["promotion"].setdefault("risk", proposal_risk)
+        md["promotion"].setdefault("scope", proposal_scope)
+    md.setdefault("endpoint", "/api/proposals/execute")
+    md.setdefault("canon", "proposal_promotion_v2_execute_raw_unwrap")
+    ai_command.metadata = md
+
+    execution_id = _ensure_execution_id(ai_command)
+
+    approval_state = get_approval_state()
+    approval = approval_state.create(
+        command=getattr(ai_command, "command", None) or "execute_proposal",
+        payload_summary=_safe_command_summary(ai_command),
+        scope=(proposal_scope or "api_proposals_execute"),
+        risk_level=(proposal_risk or "UNKNOWN"),
+        execution_id=execution_id,
+    )
+    approval_id = approval.get("approval_id")
+    if not approval_id:
+        raise HTTPException(
+            status_code=500, detail="Approval create failed: missing approval_id"
+        )
+
+    _ensure_trace_on_command(ai_command, approval_id=approval_id)
+    _execution_registry.register(ai_command)
+
+    result = await _execution_orchestrator.execute(ai_command)
+    if isinstance(result, dict):
+        result.setdefault("approval_id", approval_id)
+        result.setdefault("execution_id", execution_id)
+        result.setdefault("status", "BLOCKED")
+    return result
 
 
 # ================================================================

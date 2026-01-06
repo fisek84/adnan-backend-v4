@@ -31,6 +31,14 @@ class AICommand(BaseModel):
     executor: Optional[str] = None
 
     # ========================================================
+    # CONTEXT (OPTIONAL, BUT IMPORTANT FOR ORCHESTRATOR COMPAT)
+    # ========================================================
+    # ExecutionOrchestrator tries cmd.context_type first, then metadata["context_type"].
+    # With extra="forbid", missing field can cause ValidationError if some caller sends
+    # context_type as a top-level field.
+    context_type: Optional[str] = None
+
+    # ========================================================
     # PAYLOAD (SINGLE SOURCE OF TRUTH)
     # ========================================================
     params: Dict[str, Any] = Field(default_factory=dict)

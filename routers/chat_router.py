@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 
 from fastapi import APIRouter
 
-from models.agent_contract import AgentInput, AgentOutput
+from models.agent_contract import AgentInput, AgentOutput, ProposedCommand
 from services.ceo_advisor_agent import create_ceo_advisor_agent
 from services.knowledge_snapshot_service import KnowledgeSnapshotService
 
@@ -26,14 +26,17 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
     def _ensure_dict(v: Any) -> Dict[str, Any]:
         return v if isinstance(v, dict) else {}
 
-    def _snapshot_meta(snap: Dict[str, Any]) -> Dict[str, Any]:
-        if not isinstance(snap, dict):
-            return {"is_empty": True}
+    def _snapshot_meta(
+        *, wrapper: Dict[str, Any], payload: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        w = wrapper if isinstance(wrapper, dict) else {}
+        p = payload if isinstance(payload, dict) else {}
         return {
-            "is_empty": not bool(snap),
-            "last_sync": snap.get("last_sync"),
-            "ready": snap.get("ready"),
-            "keys": sorted(list(snap.keys())) if isinstance(snap, dict) else [],
+            "is_empty": not bool(p),
+            "last_sync": w.get("last_sync"),
+            "ready": w.get("ready"),
+            "payload_keys": sorted(list(p.keys())) if isinstance(p, dict) else [],
+            "wrapper_keys": sorted(list(w.keys())) if isinstance(w, dict) else [],
         }
 
     def _enforce_input_read_only(payload: AgentInput) -> None:
@@ -51,21 +54,52 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 pass
 
     def _inject_server_snapshot_if_missing(payload: AgentInput) -> None:
+        """
+        CRITICAL:
+        AgentInput.snapshot MUST be SSOT payload (KnowledgeSnapshotService.get_payload()).
+        Wrapper (ready/last_sync/trace) ide u metadata.snapshot_meta.
+        """
         try:
             snap = getattr(payload, "snapshot", None)
             if isinstance(snap, dict) and snap:
                 md = _ensure_dict(getattr(payload, "metadata", None))
                 md.setdefault("snapshot_source", "client")
-                md["snapshot_meta"] = _snapshot_meta(snap)
+                md["snapshot_meta"] = _snapshot_meta(wrapper={}, payload=snap)
                 payload.metadata = md  # type: ignore[assignment]
                 return
 
-            server_snap = KnowledgeSnapshotService.get_snapshot() or {}
-            payload.snapshot = server_snap  # type: ignore[assignment]
+            wrapper: Dict[str, Any] = {}
+            payload_dict: Dict[str, Any] = {}
+
+            # Wrapper (ready/last_sync/trace)
+            try:
+                wrapper = KnowledgeSnapshotService.get_snapshot() or {}
+                if not isinstance(wrapper, dict):
+                    wrapper = {}
+            except Exception:
+                wrapper = {}
+
+            # SSOT payload (goals/tasks/projects/...)
+            try:
+                get_payload = getattr(KnowledgeSnapshotService, "get_payload", None)
+                if callable(get_payload):
+                    payload_dict = get_payload() or {}
+                else:
+                    payload_dict = (
+                        wrapper.get("payload")
+                        if isinstance(wrapper.get("payload"), dict)
+                        else {}
+                    )
+                if not isinstance(payload_dict, dict):
+                    payload_dict = {}
+            except Exception:
+                payload_dict = {}
+
+            payload.snapshot = payload_dict  # type: ignore[assignment]
 
             md = _ensure_dict(getattr(payload, "metadata", None))
             md["snapshot_source"] = "server"
-            md["snapshot_meta"] = _snapshot_meta(server_snap)
+            md["snapshot_meta"] = _snapshot_meta(wrapper=wrapper, payload=payload_dict)
             payload.metadata = md  # type: ignore[assignment]
         except Exception:
             md = _ensure_dict(getattr(payload, "metadata", None))
@@ -83,12 +117,57 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 return v.strip()
         return ""
 
+    def _normalize_proposed_commands(raw: Any) -> List[ProposedCommand]:
+        """
+        CANON for /api/chat:
+        - proposed_commands MUST serialize to list[dict] with dry_run=True
+        - internally keep List[ProposedCommand] to avoid pydantic serializer warnings
+        - accept legacy 'params' alias -> normalize to 'args' via ProposedCommand validators
+        """
+        if raw is None:
+            return []
+        if isinstance(raw, dict):
+            return []
+
+        items = raw if isinstance(raw, list) else []
+        out: List[ProposedCommand] = []
+
+        for item in items:
+            try:
+                # Pydantic v2: ProposedCommand.model_validate
+                if hasattr(ProposedCommand, "model_validate"):
+                    pc = ProposedCommand.model_validate(item)  # type: ignore[attr-defined]
+                else:
+                    pc = ProposedCommand.parse_obj(item)  # type: ignore[attr-defined]
+            except Exception:
+                # Last resort: construct minimal compliant proposal
+                d = item if isinstance(item, dict) else {}
+                # alias params -> args
+                args = d.get("args")
+                if not isinstance(args, dict) and isinstance(d.get("params"), dict):
+                    args = d.get("params") or {}
+                if not isinstance(args, dict):
+                    args = {}
+
+                cmd = str(d.get("command") or "").strip() or PROPOSAL_WRAPPER_INTENT
+                pc = ProposedCommand(command=cmd, args=args)
+
+            # Defense-in-depth: /api/chat is always dry_run
+            try:
+                pc.dry_run = True  # type: ignore[assignment]
+            except Exception:
+                pass
+
+            out.append(pc)
+
+        return out
+
     def _inject_fallback_proposed_commands(out: AgentOutput, *, prompt: str) -> None:
         """
         Frontend expects proposed_commands as OPAQUE execute/raw payloads.
-        We provide a wrapper command that gateway_server.execute_raw_command can unwrap:
+        Provide wrapper command that /api/execute/raw can unwrap:
           command=intent="ceo.command.propose"
-          params={"prompt": "..."}
+          args(params alias)={"prompt": "..."}
         """
         pcs = getattr(out, "proposed_commands", None) or []
         if isinstance(pcs, dict):
@@ -99,25 +178,27 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
 
         safe_prompt = (prompt or "").strip() or "noop"
 
+        # Keep ProposedCommand instances (no serializer warnings)
         out.proposed_commands = [
-            {
-                # execute/raw payload (opaque for frontend)
-                "command": PROPOSAL_WRAPPER_INTENT,
-                "intent": PROPOSAL_WRAPPER_INTENT,
-                "params": {"prompt": safe_prompt},
-                "initiator": "ceo",
-                "read_only": False,
-                "metadata": {
-                    "source": "ceo_console",
-                    "canon": "CEO_CONSOLE_EXECUTION_FLOW",
+            ProposedCommand(
+                command=PROPOSAL_WRAPPER_INTENT,
+                args={"prompt": safe_prompt},
+                reason="Fallback proposal (no agent proposals returned).",
+                dry_run=True,
+                requires_approval=True,
+                risk="LOW",
+                scope="api_execute_raw",
+                payload_summary={
                     "endpoint": "/api/execute/raw",
+                    "canon": "CEO_CONSOLE_EXECUTION_FLOW",
+                    "source": "ceo_console",
                 },
-            }
+            )
         ]
 
         tr = _ensure_dict(getattr(out, "trace", None))
         tr["fallback_proposed_commands"] = True
-        tr["router_version"] = "chat-fallback-proposals-v2"
+        tr["router_version"] = "chat-fallback-proposals-v3"
         out.trace = tr  # type: ignore[assignment]
 
     def _enforce_output_read_only(out: AgentOutput, payload: AgentInput) -> AgentOutput:
@@ -133,12 +214,9 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
 
         out.trace = trace  # type: ignore[assignment]
 
-        pcs = getattr(out, "proposed_commands", None) or []
-        if isinstance(pcs, dict):
-            pcs = []
+        pcs = getattr(out, "proposed_commands", None)
+        out.proposed_commands = _normalize_proposed_commands(pcs)
 
-        # NOTE: proposals are dicts; keep them as-is (opaque).
-        out.proposed_commands = pcs  # type: ignore[assignment]
         return out
 
     async def _call_agent(payload: AgentInput) -> AgentOutput:

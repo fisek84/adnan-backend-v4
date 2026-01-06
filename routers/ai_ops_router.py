@@ -386,6 +386,14 @@ async def approve(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[st
                 "note": "idempotent_noop_already_approved",
             }
 
+        # FIX: if this approval is a proposal wrapper, block BEFORE state mutation.
+        intent0 = _extract_intent_from_approval(existing)
+        if intent0 == PROPOSAL_WRAPPER_INTENT:
+            raise HTTPException(
+                status_code=400,
+                detail="cannot approve proposal wrapper (ceo.command.propose); unwrap required before approval is created",
+            )
+
     # 2) Approve state transition (first time).
     try:
         approval = approval_state.approve(
@@ -395,14 +403,6 @@ async def approve(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[st
         )
     except KeyError:
         raise HTTPException(status_code=404, detail="Approval not found")
-
-    # 3) Optional guard: do not allow approving proposal wrappers (should be impossible after gateway unwrap).
-    intent = _extract_intent_from_approval(approval)
-    if intent == PROPOSAL_WRAPPER_INTENT:
-        raise HTTPException(
-            status_code=400,
-            detail="cannot approve proposal wrapper (ceo.command.propose); unwrap required before approval is created",
-        )
 
     execution_id = approval.get("execution_id") if isinstance(approval, dict) else None
     if not isinstance(execution_id, str) or not execution_id.strip():

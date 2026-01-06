@@ -20,6 +20,10 @@ class ExecutionGovernanceService:
       Njegova uloga je: validate + policy gate + approval verification.
     """
 
+    # Minimalni read-only direktivi koji NE TRAŽE approval.
+    # (Usklađeno sa COOTranslationService._KNOWN_COMMANDS i sistemskim pitanjima.)
+    _READ_ONLY_DIRECTIVES = {"system_query", "list_goals"}
+
     def __init__(self) -> None:
         self.policy = PolicyService()
         self.approvals = get_approval_state()
@@ -120,6 +124,22 @@ class ExecutionGovernanceService:
             )
 
         # --------------------------------------------------------
+        # READ-ONLY FAST PATH (NO APPROVAL)
+        # --------------------------------------------------------
+        if directive_norm in self._READ_ONLY_DIRECTIVES:
+            return {
+                "allowed": True,
+                "execution_id": execution_id_norm,
+                "approval_id": approval_id_norm,
+                "context_type": context_type_norm,
+                "directive": directive_norm,
+                "read_only": True,
+                "governance": self._governance_limits,
+                "timestamp": ts,
+                "policy": {"initiator": initiator_norm},
+            }
+
+        # --------------------------------------------------------
         # APPROVAL VERIFICATION (NO DUPLICATE CREATE)
         # --------------------------------------------------------
         if not approval_id_norm:
@@ -156,7 +176,6 @@ class ExecutionGovernanceService:
             "read_only": False,
             "governance": self._governance_limits,
             "timestamp": ts,
-            # debug/helpful but non-sensitive:
             "policy": {
                 "initiator": initiator_norm,
             },
