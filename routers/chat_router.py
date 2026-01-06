@@ -1,3 +1,5 @@
+# routers/chat_router.py
+
 from __future__ import annotations
 
 from typing import Any, Dict, Optional
@@ -7,6 +9,9 @@ from fastapi import APIRouter
 from models.agent_contract import AgentInput, AgentOutput
 from services.ceo_advisor_agent import create_ceo_advisor_agent
 from services.knowledge_snapshot_service import KnowledgeSnapshotService
+
+# Must match gateway_server.PROPOSAL_WRAPPER_INTENT
+PROPOSAL_WRAPPER_INTENT = "ceo.command.propose"
 
 
 def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
@@ -71,6 +76,50 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             }
             payload.metadata = md  # type: ignore[assignment]
 
+    def _extract_prompt(payload: AgentInput) -> str:
+        for k in ("message", "text", "input_text", "prompt"):
+            v = getattr(payload, k, None)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+        return ""
+
+    def _inject_fallback_proposed_commands(out: AgentOutput, *, prompt: str) -> None:
+        """
+        Frontend expects proposed_commands as OPAQUE execute/raw payloads.
+        We provide a wrapper command that gateway_server.execute_raw_command can unwrap:
+          command=intent="ceo.command.propose"
+          params={"prompt": "..."}
+        """
+        pcs = getattr(out, "proposed_commands", None) or []
+        if isinstance(pcs, dict):
+            pcs = []
+
+        if isinstance(pcs, list) and len(pcs) > 0:
+            return
+
+        safe_prompt = (prompt or "").strip() or "noop"
+
+        out.proposed_commands = [
+            {
+                # execute/raw payload (opaque for frontend)
+                "command": PROPOSAL_WRAPPER_INTENT,
+                "intent": PROPOSAL_WRAPPER_INTENT,
+                "params": {"prompt": safe_prompt},
+                "initiator": "ceo",
+                "read_only": False,
+                "metadata": {
+                    "source": "ceo_console",
+                    "canon": "CEO_CONSOLE_EXECUTION_FLOW",
+                    "endpoint": "/api/execute/raw",
+                },
+            }
+        ]
+
+        tr = _ensure_dict(getattr(out, "trace", None))
+        tr["fallback_proposed_commands"] = True
+        tr["router_version"] = "chat-fallback-proposals-v2"
+        out.trace = tr  # type: ignore[assignment]
+
     def _enforce_output_read_only(out: AgentOutput, payload: AgentInput) -> AgentOutput:
         out.read_only = True
 
@@ -88,25 +137,11 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         if isinstance(pcs, dict):
             pcs = []
 
-        for pc in pcs:
-            try:
-                if hasattr(pc, "dry_run"):
-                    pc.dry_run = True
-                if hasattr(pc, "execute"):
-                    pc.execute = False
-                if hasattr(pc, "approved"):
-                    pc.approved = False
-                if hasattr(pc, "requires_approval"):
-                    pc.requires_approval = True
-            except Exception:
-                continue
-
+        # NOTE: proposals are dicts; keep them as-is (opaque).
         out.proposed_commands = pcs  # type: ignore[assignment]
         return out
 
     async def _call_agent(payload: AgentInput) -> AgentOutput:
-        # Ako imaš registry/router u gateway_serveru, možeš ga koristiti,
-        # ali /api/chat i dalje ostaje READ-only.
         if agent_router and hasattr(agent_router, "route"):
             try:
                 out = await agent_router.route(payload)  # type: ignore[attr-defined]
@@ -115,7 +150,6 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             except Exception:
                 pass
 
-        # Fallback: direktno CEO advisor agent
         ctx: Dict[str, Any] = {"trace": {"selected_by": "chat_router_direct"}}
         out = await create_ceo_advisor_agent(payload, ctx)
 
@@ -140,6 +174,10 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         _inject_server_snapshot_if_missing(payload)
 
         out = await _call_agent(payload)
+
+        prompt = _extract_prompt(payload)
+        _inject_fallback_proposed_commands(out, prompt=prompt)
+
         return _enforce_output_read_only(out, payload)
 
     return router
