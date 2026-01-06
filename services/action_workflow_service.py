@@ -8,11 +8,14 @@ Uloga:
 - NE bira agente
 - NE shape-a UX response
 - koristi postojeće execution servise
+
+CANON (nakon ustava):
+- Primarni i podržani put: SOP execution plan ("type": "sop_execution").
+- Legacy "workflow" tip je onemogućen (ne izvršava akcije, ne zove LLM).
 """
 
-from typing import Dict, Any, List
+from typing import Dict, Any
 
-from services.action_execution_service import ActionExecutionService
 from services.sop_execution_manager import SOPExecutionManager
 
 
@@ -22,7 +25,6 @@ class ActionWorkflowService:
     """
 
     def __init__(self):
-        self._action_executor = ActionExecutionService()
         self._sop_executor = SOPExecutionManager()
 
     # ============================================================
@@ -70,40 +72,22 @@ class ActionWorkflowService:
             }
 
         # --------------------------------------------------------
-        # LEGACY WORKFLOW (STEP-BY-STEP)
+        # LEGACY WORKFLOW (ONEMOGUĆEN)
         # --------------------------------------------------------
         if workflow_type == "workflow":
-            steps = workflow.get("steps", [])
-            step_results: List[Dict[str, Any]] = []
-
-            for index, step in enumerate(steps):
-                directive = step.get("directive")
-                params = step.get("params", {})
-
-                if not directive:
-                    step_results.append(self._step_fail(index, "missing_directive"))
-                    break
-
-                result = self._action_executor.execute(directive, params)
-
-                step_results.append(
-                    {
-                        "step": index,
-                        "directive": directive,
-                        "executed": bool(result.get("executed")),
-                        "confirmed": bool(result.get("confirmed")),
-                        "result": result,
-                    }
-                )
-
-                if not result.get("confirmed"):
-                    break
-
+            # Ne pokušavamo da izvršimo korake, ne zovemo LLM niti ActionExecutionService.
+            # Jasno vraćamo da je ovaj put ugašen u korist canonical
+            # approval-based Notion Ops Executor-a.
             return {
-                "success": True,
+                "success": False,
                 "workflow_type": "workflow",
-                "confirmed": any(r.get("confirmed") for r in step_results),
-                "steps": step_results,
+                "confirmed": False,
+                "error": "legacy_workflow_disabled",
+                "message": (
+                    "Workflow type 'workflow' je legacy i onemogućen. "
+                    "Koristi SOP execution plan ('type': 'sop_execution') i "
+                    "canonical write path (approval-based Notion Ops Executor)."
+                ),
             }
 
         # --------------------------------------------------------
@@ -122,6 +106,8 @@ class ActionWorkflowService:
         }
 
     def _step_fail(self, step: int, error: str) -> Dict[str, Any]:
+        # Ostavljeno radi backward kompatibilnosti signatura,
+        # iako se više ne koristi u canonical putu.
         return {
             "step": step,
             "executed": False,

@@ -29,6 +29,10 @@ class OrchestratorService:
     Napomena (kompatibilnost):
     - dependencies.py (ili wiring) može proslijediti memory/agent_router/write_gateway.
       Orchestrator ih trenutno NE koristi, ali ih prihvatamo da mypy i runtime wiring budu stabilni.
+
+    Nakon ustava:
+    - LLM-based ActionExecutionService put (agent_execute → LLM → Notion) je onemogućen.
+    - Job type "agent_execute" se tretira kao legacy i ne izvršava side-effecte.
     """
 
     def __init__(
@@ -46,16 +50,9 @@ class OrchestratorService:
         self.agent_router = agent_router
         self.write_gateway = write_gateway
 
-        # Optional executor (ako postoji u projektu)
-        self._action_executor = None
-        try:
-            from services.action_execution_service import (  # type: ignore
-                ActionExecutionService,
-            )
-
-            self._action_executor = ActionExecutionService()
-        except Exception:
-            self._action_executor = None
+        # Legacy hook (ranije je ovdje živio ActionExecutionService).
+        # Zadržavamo atribut radi eventualne kompatibilnosti, ali je uvijek None.
+        self._action_executor: Optional[Any] = None
 
     async def submit(
         self,
@@ -159,6 +156,21 @@ class OrchestratorService:
         return {"approval_id": approval_id} if approval_id else {}
 
     async def _handle_agent_execute(self, job: Job) -> Dict[str, Any]:
+        """
+        Legacy job_type "agent_execute".
+
+        Historijski:
+        - payload.command se slao u ActionExecutionService (LLM-based Notion Ops).
+
+        Nakon ustava:
+        - LLM više ne smije biti na write path-u prema Notion-u.
+        - Ovaj put NE izvršava nikakve side-effecte.
+        - Job se završava sa jasnom porukom da je legacy onemogućen.
+
+        Napomena:
+        - I dalje enforce-amo approval gate (ako approval nije validan, baca PermissionError).
+        - Rezultat je dict koji će biti ACK-ovan u queue-u (da job ne loop-a).
+        """
         payload = job.payload if isinstance(job.payload, dict) else {}
         cmd = payload.get("command")
         if not isinstance(cmd, dict):
@@ -167,6 +179,7 @@ class OrchestratorService:
         command_id = str(cmd.get("id") or "agent_execute")
         command_type = str(cmd.get("type") or "agent_execute")
 
+        # Approval gate (read-only check, bez side-effecta)
         approval_ctx = self._extract_approval_context(payload)
         require_approval_or_block(
             command_id=command_id,
@@ -174,21 +187,15 @@ class OrchestratorService:
             context=approval_ctx,
         )
 
-        if self._action_executor is None:
-            raise RuntimeError(
-                "ActionExecutionService not available (cannot execute agent_execute)"
-            )
-
-        for meth in ("execute", "run", "dispatch"):
-            fn = getattr(self._action_executor, meth, None)
-            if fn and callable(fn):
-                out = fn(cmd)
-                if inspect.isawaitable(out):
-                    out = await out
-                if isinstance(out, dict):
-                    return out
-                return {"ok": True, "result": out}
-
-        raise RuntimeError(
-            "ActionExecutionService has no compatible execute/run/dispatch method"
-        )
+        # Legacy execution put je onemogućen:
+        return {
+            "ok": False,
+            "job_type": job.job_type,
+            "error": "agent_execute_disabled",
+            "message": (
+                "Job type 'agent_execute' (LLM-based ActionExecutionService) je legacy i onemogućen. "
+                "Koristi canonical approval-based Notion Ops Executor "
+                "(/api/execute/raw → approval → NotionService/ExecutionOrchestrator)."
+            ),
+            "approval_context": approval_ctx,
+        }

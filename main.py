@@ -1,4 +1,3 @@
-# main.py
 from __future__ import annotations
 
 import logging
@@ -36,16 +35,18 @@ logging.basicConfig(
 # ============================================================
 
 REQUIRED_ENV_VARS = [
-    # OpenAI
+    # OpenAI (CEO Advisor LLM)
     "OPENAI_API_KEY",
-    # Notion
+    # Notion (canonical backend write path)
     "NOTION_API_KEY",
     "NOTION_GOALS_DB_ID",
     "NOTION_TASKS_DB_ID",
     "NOTION_PROJECTS_DB_ID",
-    # Ops assistant / internal
-    "NOTION_OPS_ASSISTANT_ID",
 ]
+
+# NOTE:
+# - NOTION_OPS_ASSISTANT_ID (LLM ops agent) je sada opcioni / legacy.
+# - Canonical CEO Console + Notion Ops Executor NE zavise od njega za boot.
 
 
 def validate_runtime_env_or_raise() -> None:

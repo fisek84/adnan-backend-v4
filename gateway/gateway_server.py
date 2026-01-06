@@ -134,8 +134,11 @@ REQUIRED_ENV_VARS = [
     "NOTION_GOALS_DB_ID",
     "NOTION_TASKS_DB_ID",
     "NOTION_PROJECTS_DB_ID",
-    "NOTION_OPS_ASSISTANT_ID",
 ]
+
+# NOTE:
+# - NOTION_OPS_ASSISTANT_ID (LLM ops agent) je sada opcioni / legacy.
+# - Canonical CEO Console + Notion Ops Executor (NotionService) NE zavise od njega za boot.
 
 
 def validate_runtime_env_or_raise() -> None:

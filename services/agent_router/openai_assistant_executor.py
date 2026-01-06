@@ -1,4 +1,3 @@
-# services/agent_router/openai_assistant_executor.py
 from __future__ import annotations
 
 import asyncio
@@ -501,6 +500,12 @@ def _run_last_error_details(run_status: Any) -> Dict[str, Any]:
 
 
 class OpenAIAssistantExecutor:
+    """
+    CANON (nakon ustava):
+    - Ova klasa služi kao CEO Advisor (READ-ONLY, bez tool poziva).
+    - Legacy execution put (LLM Notion Ops) je onemogućen.
+    """
+
     def __init__(
         self,
         *,
@@ -574,7 +579,7 @@ class OpenAIAssistantExecutor:
                 )
                 tool_calls = getattr(submit, "tool_calls", None) if submit else None
 
-                # READ-ONLY MODE: if tools are not allowed, cancel and raise a specific error
+                # READ-ONLY MODE: ako tools nisu dozvoljeni, prekini i digni specifičnu grešku
                 if not allow_tools:
                     await self._cancel_run_best_effort(
                         thread_id=thread_id, run_id=run_id
@@ -595,6 +600,10 @@ class OpenAIAssistantExecutor:
                         "Assistant requires_action but has no tool calls"
                     )
 
+                # NOTE:
+                # Legacy Notion Ops preko perform_notion_action je sada konceptualno zabranjen
+                # (LLM ne smije pisati u Notion). Ovaj blok ostaje samo kao referenca, ali
+                # ne bi trebao biti aktiviran u canonical CEO advisory putanji (allow_tools=False).
                 tool_outputs = []
                 for call in tool_calls:
                     fn = getattr(call, "function", None)
@@ -775,62 +784,21 @@ class OpenAIAssistantExecutor:
         raise RuntimeError("runs.create failed for unknown reasons")
 
     async def execute(self, task: Dict[str, Any]) -> Dict[str, Any]:
-        if not isinstance(task, dict):
-            raise ValueError("Agent task must be a dict")
+        """
+        LEGACY (ONEMOGUĆENO):
 
-        command = task.get("command")
-        payload = task.get("payload")
+        - Ova metoda je ranije koristila LLM (NOTION_OPS_ASSISTANT_ID) da izvršava
+          Notion Ops preko perform_notion_action tool-a.
+        - U skladu sa ustavom ("LLM nikada ne piše direktno u Notion"),
+          ovaj execution put je ugašen.
 
-        if not isinstance(command, str) or not command.strip():
-            raise ValueError("Agent task requires 'command' (str)")
-        if not isinstance(payload, dict):
-            raise ValueError("Agent task requires 'payload' (dict)")
-
-        executor = task.get("executor") or task.get("agent") or task.get("role")
-        if executor and str(executor).lower() in {"ceo_advisor", "ceo", "advisor"}:
-            raise RuntimeError(
-                "CEO advisory cannot run execute() (side-effects forbidden)"
-            )
-
-        assistant_id = self._get_execution_assistant_id_or_raise()
-        thread = await self._to_thread(self.client.beta.threads.create)
-
-        execution_contract = {
-            "type": "agent_execution",
-            "command": command.strip(),
-            "payload": payload,
-        }
-        content, shrink_trace = _safe_dumps_for_openai(execution_contract)
-
-        await self._to_thread(
-            self.client.beta.threads.messages.create,
-            thread_id=thread.id,
-            role="user",
-            content=content,
+        Svaki poziv na execute() sada eksplicitno pada sa jasnom porukom.
+        """
+        raise RuntimeError(
+            "OpenAIAssistantExecutor.execute je onemogućen: "
+            "LLM-based Notion Ops execution path je uklonjen. "
+            "Koristi backend Notion Ops Executor / NotionService preko approval flow-a."
         )
-
-        run = await self._to_thread(
-            self.client.beta.threads.runs.create,
-            thread_id=thread.id,
-            assistant_id=assistant_id,
-        )
-
-        await self._wait_for_run_completion(
-            thread_id=thread.id, run_id=run.id, allow_tools=True
-        )
-
-        final_text = await self._get_final_assistant_message_text(thread_id=thread.id)
-        parsed = self._safe_json_parse(final_text)
-
-        return {
-            "agent": assistant_id,
-            "result": parsed,
-            "trace": {
-                "thread_id": thread.id,
-                "run_id": run.id,
-                "shrink_trace": shrink_trace,
-            },
-        }
 
     async def ceo_command(
         self, *, text: str, context: Dict[str, Any]

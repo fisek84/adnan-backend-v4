@@ -1,32 +1,36 @@
 """
-ACTION EXECUTION SERVICE — KANONSKI (EXECUTION ADAPTER)
+ACTION EXECUTION SERVICE — LEGACY (LLM EXECUTION DISABLED)
 
-- izvršava DOMAIN intent preko "glupog" agenta (OpenAI Assistant)
-- ne radi governance/approval
-- ne radi UX semantiku
-- write side-effects moraju ići kroz WriteGateway (SSOT), ovaj servis je adapter
+- historijski: izvršavao DOMAIN intent preko "glupog" agenta (OpenAI Assistant)
+- danas: LLM-based Notion Ops write path je onemogućen u skladu sa ustavom
+- governance/approval i write side-effects idu preko:
+    - CEO Console → /api/execute/raw → approval → Notion Ops Executor → NotionService
+- ovaj servis zadržava samo INTENT → NOTION mapiranje i vraća strukturiranu grešku
 """
 
 from typing import Dict, Any
 
-from services.agent_router.openai_assistant_executor import OpenAIAssistantExecutor
 from services.notion_schema_registry import NotionSchemaRegistry
 from services.failure_handler import FailureHandler
 
 
 class ActionExecutionService:
     """
-    Agent-backed executor for mapped actions (e.g. Notion).
+    Legacy agent-backed executor za mapirane akcije (npr. Notion).
+
+    CANON (nakon ustava):
+    - LLM više NE SMIJE biti na write path-u prema Notion-u.
+    - Ovaj servis više NE izvršava akcije preko OpenAI Assistants / perform_notion_action.
+    - Služi samo kao most za mapiranje intent → notion_action i vraća
+      jasnu poruku da je execution ugašen.
     """
 
-    AGENT_COMMAND = "perform_notion_action"
-
     def __init__(self):
-        self.openai_executor = OpenAIAssistantExecutor()
+        # Legacy OpenAIAssistantExecutor je uklonjen iz ove klase.
         self.failure_handler = FailureHandler()
 
     # ============================================================
-    # EXECUTE (INTENT → AGENT ACTION)
+    # EXECUTE (INTENT → NOTION ACTION) — LEGACY DISABLED
     # ============================================================
     async def execute(
         self,
@@ -35,7 +39,11 @@ class ActionExecutionService:
         payload: Dict[str, Any],
     ) -> Dict[str, Any]:
         """
-        Prima DOMAIN INTENT i izvršava ga preko agenta.
+        Prima DOMAIN INTENT i mapira ga na Notion akciju,
+        ali više NE izvršava akciju preko LLM agenta.
+
+        Svaki poziv vraća strukturiranu grešku da je ovaj execution put onemogućen
+        i da write side-effects moraju ići preko canonical approval-based Notion Ops Executor-a.
         """
 
         if not intent:
@@ -51,7 +59,7 @@ class ActionExecutionService:
             )
 
         # --------------------------------------------------------
-        # MAP INTENT → NOTION ACTION (MOZAK)
+        # MAP INTENT → NOTION ACTION (MOZAK OSTaje)
         # --------------------------------------------------------
         try:
             notion_action = self._map_intent_to_notion(intent, payload)
@@ -63,40 +71,25 @@ class ActionExecutionService:
             )
 
         # --------------------------------------------------------
-        # SEND TO AGENT (NO INTELLIGENCE)
+        # LLM-BASED EXECUTION JE ONEMOGUĆEN (CANON)
         # --------------------------------------------------------
-        try:
-            agent_result = await self.openai_executor.execute(
-                {
-                    "command": self.AGENT_COMMAND,
-                    "payload": notion_action,
-                }
-            )
-        except Exception as e:
-            return self.failure_handler.classify(
-                source="agent",
-                reason="Agent execution failed",
-                metadata={"error": str(e)},
-            )
-
-        # --------------------------------------------------------
-        # AGENT RESULT VALIDATION (KANONSKI)
-        # --------------------------------------------------------
-        if not agent_result:
-            return self.failure_handler.classify(
-                source="agent",
-                reason="Agent returned empty result",
-                metadata={"intent": intent},
-            )
-
-        return {
-            "success": True,
-            "execution_state": "SUCCESS",
-            "agent_result": agent_result,
-        }
+        return self.failure_handler.classify(
+            source="execution",
+            reason=(
+                "ActionExecutionService.execute (LLM-based Notion Ops) je onemogućen. "
+                "Write path mora ići preko approval-based Notion Ops Executor-a "
+                "(/api/execute/raw → approval → NotionService)."
+            ),
+            metadata={
+                "intent": intent,
+                "payload": payload,
+                "notion_action": notion_action,
+                "legacy_path": "disabled",
+            },
+        )
 
     # ============================================================
-    # INTENT → NOTION (KANONSKI MOST)
+    # INTENT → NOTION (KANONSKI MOST — LOGIKA OSTaje)
     # ============================================================
     def _map_intent_to_notion(
         self,
