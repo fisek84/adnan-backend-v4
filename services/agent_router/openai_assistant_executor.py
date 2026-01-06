@@ -591,7 +591,9 @@ class OpenAIAssistantExecutor:
                     )
 
                 if not tool_calls:
-                    raise RuntimeError("Assistant requires_action but has no tool calls")
+                    raise RuntimeError(
+                        "Assistant requires_action but has no tool calls"
+                    )
 
                 tool_outputs = []
                 for call in tool_calls:
@@ -644,7 +646,9 @@ class OpenAIAssistantExecutor:
             self.client.beta.threads.messages.list, thread_id=thread_id
         )
         data = getattr(messages, "data", None) or []
-        assistant_messages = [m for m in data if getattr(m, "role", None) == "assistant"]
+        assistant_messages = [
+            m for m in data if getattr(m, "role", None) == "assistant"
+        ]
 
         if not assistant_messages:
             raise RuntimeError("Assistant produced no response")
@@ -739,7 +743,9 @@ class OpenAIAssistantExecutor:
         last_exc: Optional[Exception] = None
         for i, kwargs in enumerate(attempts, start=1):
             try:
-                return await self._to_thread(self.client.beta.threads.runs.create, **kwargs)
+                return await self._to_thread(
+                    self.client.beta.threads.runs.create, **kwargs
+                )
             except TypeError as e:
                 last_exc = e
                 logger.warning(
@@ -782,7 +788,9 @@ class OpenAIAssistantExecutor:
 
         executor = task.get("executor") or task.get("agent") or task.get("role")
         if executor and str(executor).lower() in {"ceo_advisor", "ceo", "advisor"}:
-            raise RuntimeError("CEO advisory cannot run execute() (side-effects forbidden)")
+            raise RuntimeError(
+                "CEO advisory cannot run execute() (side-effects forbidden)"
+            )
 
         assistant_id = self._get_execution_assistant_id_or_raise()
         thread = await self._to_thread(self.client.beta.threads.create)
@@ -807,7 +815,9 @@ class OpenAIAssistantExecutor:
             assistant_id=assistant_id,
         )
 
-        await self._wait_for_run_completion(thread_id=thread.id, run_id=run.id, allow_tools=True)
+        await self._wait_for_run_completion(
+            thread_id=thread.id, run_id=run.id, allow_tools=True
+        )
 
         final_text = await self._get_final_assistant_message_text(thread_id=thread.id)
         parsed = self._safe_json_parse(final_text)
@@ -822,7 +832,9 @@ class OpenAIAssistantExecutor:
             },
         }
 
-    async def ceo_command(self, *, text: str, context: Dict[str, Any]) -> Dict[str, Any]:
+    async def ceo_command(
+        self, *, text: str, context: Dict[str, Any]
+    ) -> Dict[str, Any]:
         t = (text or "").strip()
         if not t:
             raise ValueError("text is required")
@@ -905,11 +917,17 @@ class OpenAIAssistantExecutor:
                 tool_choice="none",
             )
 
-            await self._wait_for_run_completion(thread_id=thread.id, run_id=run.id, allow_tools=False)
+            await self._wait_for_run_completion(
+                thread_id=thread.id, run_id=run.id, allow_tools=False
+            )
 
-            final_text = await self._get_final_assistant_message_text(thread_id=thread.id)
+            final_text = await self._get_final_assistant_message_text(
+                thread_id=thread.id
+            )
             parsed = self._safe_json_parse(final_text)
-            parsed = _ensure_contract(parsed, enforce_dashboard_text=enforce_dashboard_text)
+            parsed = _ensure_contract(
+                parsed, enforce_dashboard_text=enforce_dashboard_text
+            )
 
         except Exception as exc:  # noqa: BLE001
             elapsed_ms = int((time.monotonic() - t0) * 1000)
@@ -920,14 +938,20 @@ class OpenAIAssistantExecutor:
             err_repr = repr(exc)[:2000]
 
             if isinstance(exc, ReadOnlyToolCallAttempt):
-                summary = "CEO advisory je pokušao tool poziv u read-only modu (blokirano)."
+                summary = (
+                    "CEO advisory je pokušao tool poziv u read-only modu (blokirano)."
+                )
                 text_out = (
                     "CEO advisory je pokušao tool poziv u read-only modu, što je zabranjeno.\n"
                     "Provjeri Assistant instrukcije i konfiguraciju; read-only path mora biti bez tool poziva."
                 )
             else:
-                summary = f"CEO advisory nije mogao završiti (internal error: {err_type})."
-                text_out = f"CEO advisory nije mogao završiti (internal error: {err_type})."
+                summary = (
+                    f"CEO advisory nije mogao završiti (internal error: {err_type})."
+                )
+                text_out = (
+                    f"CEO advisory nije mogao završiti (internal error: {err_type})."
+                )
 
             if os.getenv("DEBUG_CEO_ADVISOR_ERRORS") == "1":
                 text_out = f"{text_out}\n\nDEBUG_ERROR:\n{err_repr}"
@@ -970,9 +994,17 @@ class OpenAIAssistantExecutor:
         parsed["trace"] = trace
 
         picked = _pick_text(parsed)
-        if picked and isinstance(parsed.get("text"), str) and not parsed["text"].strip():
+        if (
+            picked
+            and isinstance(parsed.get("text"), str)
+            and not parsed["text"].strip()
+        ):
             parsed["text"] = picked
-        if picked and isinstance(parsed.get("summary"), str) and not parsed["summary"].strip():
+        if (
+            picked
+            and isinstance(parsed.get("summary"), str)
+            and not parsed["summary"].strip()
+        ):
             parsed["summary"] = picked
 
         return parsed
