@@ -1,4 +1,4 @@
-# routers/ai_ops_router.py
+﻿# routers/ai_ops_router.py
 from __future__ import annotations
 
 import json
@@ -24,7 +24,7 @@ logger.setLevel(logging.INFO)
 # ------------------------------------------------------------
 
 # CANON: meta/proposal wrapper intents must never be approved/executed.
-PROPOSAL_WRAPPER_INTENT = "ceo.command.propose"
+from models.canon import PROPOSAL_WRAPPER_INTENT
 
 
 def _env_true(name: str, default: str = "false") -> bool:
@@ -560,3 +560,4 @@ def forward_alerts(request: Request) -> Dict[str, Any]:
 
 # Export name expected by gateway_server.py
 ai_ops_router = router
+

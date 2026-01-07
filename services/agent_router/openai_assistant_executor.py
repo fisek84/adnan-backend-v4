@@ -13,7 +13,6 @@ from uuid import UUID
 
 from openai import OpenAI
 
-from ext.notion.client import perform_notion_action
 from services.knowledge_service import KnowledgeService
 
 logger = logging.getLogger(__name__)
@@ -503,7 +502,7 @@ class OpenAIAssistantExecutor:
     """
     CANON (nakon ustava):
     - Ova klasa služi kao CEO Advisor (READ-ONLY, bez tool poziva).
-    - Legacy execution put (LLM Notion Ops) je onemogućen.
+    - Legacy execution put (LLM Notion Ops) je onemogućen i hard-blokiran.
     """
 
     def __init__(
@@ -555,6 +554,12 @@ class OpenAIAssistantExecutor:
         run_id: str,
         allow_tools: bool,
     ) -> None:
+        """
+        CANONICAL BEHAVIOR:
+        - Tool calls are ALWAYS disallowed in this executor, regardless of allow_tools.
+        - If a run enters `requires_action`, we cancel and raise ReadOnlyToolCallAttempt.
+        """
+        _ = allow_tools  # keep signature compatibility; tools are hard-disabled
         start = time.monotonic()
 
         while True:
@@ -571,6 +576,7 @@ class OpenAIAssistantExecutor:
             status = getattr(run_status, "status", None)
 
             if status == "requires_action":
+                # Hard block any tool calling in this executor (constitution).
                 required_action = getattr(run_status, "required_action", None)
                 submit = (
                     getattr(required_action, "submit_tool_outputs", None)
@@ -579,70 +585,24 @@ class OpenAIAssistantExecutor:
                 )
                 tool_calls = getattr(submit, "tool_calls", None) if submit else None
 
-                # READ-ONLY MODE: ako tools nisu dozvoljeni, prekini i digni specifičnu grešku
-                if not allow_tools:
-                    await self._cancel_run_best_effort(
-                        thread_id=thread_id, run_id=run_id
-                    )
-                    names: list[str] = []
-                    if tool_calls:
-                        for call in tool_calls:
-                            fn = getattr(call, "function", None)
-                            fn_name = getattr(fn, "name", None) if fn else None
-                            if fn_name:
-                                names.append(str(fn_name))
-                    raise ReadOnlyToolCallAttempt(
-                        f"Run attempted tool calls in read-only mode: {names or ['(unknown)']}"
-                    )
+                await self._cancel_run_best_effort(thread_id=thread_id, run_id=run_id)
 
-                if not tool_calls:
-                    raise RuntimeError(
-                        "Assistant requires_action but has no tool calls"
-                    )
+                names: list[str] = []
+                if tool_calls:
+                    for call in tool_calls:
+                        fn = getattr(call, "function", None)
+                        fn_name = getattr(fn, "name", None) if fn else None
+                        if fn_name:
+                            names.append(str(fn_name))
 
-                # NOTE:
-                # Legacy Notion Ops preko perform_notion_action je sada konceptualno zabranjen
-                # (LLM ne smije pisati u Notion). Ovaj blok ostaje samo kao referenca, ali
-                # ne bi trebao biti aktiviran u canonical CEO advisory putanji (allow_tools=False).
-                tool_outputs = []
-                for call in tool_calls:
-                    fn = getattr(call, "function", None)
-                    fn_name = getattr(fn, "name", None) if fn else None
-                    fn_args = getattr(fn, "arguments", None) if fn else None
-
-                    if fn_name != "perform_notion_action":
-                        raise RuntimeError(f"Unsupported tool call: {fn_name}")
-
-                    try:
-                        args = json.loads(fn_args or "{}")
-                    except Exception as e:
-                        raise RuntimeError(f"Invalid tool arguments JSON: {e}") from e
-
-                    if not isinstance(args, dict):
-                        raise RuntimeError("Tool arguments must be a JSON object")
-
-                    result = await self._to_thread(perform_notion_action, **args)
-
-                    tool_outputs.append(
-                        {
-                            "tool_call_id": call.id,
-                            "output": json.dumps(
-                                result, ensure_ascii=False, default=_json_default
-                            ),
-                        }
-                    )
-
-                await self._to_thread(
-                    self.client.beta.threads.runs.submit_tool_outputs,
-                    thread_id=thread_id,
-                    run_id=run_id,
-                    tool_outputs=tool_outputs,
+                raise ReadOnlyToolCallAttempt(
+                    f"Run attempted tool calls (hard-blocked): {names or ['(unknown)']}"
                 )
 
-            elif status == "completed":
+            if status == "completed":
                 return
 
-            elif status in {"failed", "cancelled", "expired"}:
+            if status in {"failed", "cancelled", "expired"}:
                 details = _run_last_error_details(run_status)
                 raise RuntimeError(
                     f"Assistant run failed with status: {status}; details={json.dumps(details, ensure_ascii=False)}"

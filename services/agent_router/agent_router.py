@@ -37,6 +37,7 @@ class AgentRouter:
     ):
         self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
+        # SOURCES OF TRUTH
         self._registry = registry or AgentRegistryService()
         self._load = load_balancer or AgentLoadBalancerService()
         self._health = health_service or AgentHealthService()
@@ -60,6 +61,7 @@ class AgentRouter:
             if not self._load.can_accept(name):
                 continue
 
+            # deterministički: prvi validan po registry redoslijedu
             return agent
 
         return None
@@ -82,16 +84,19 @@ class AgentRouter:
     # EXECUTE (CONTROLLED, BACKPRESSURE AWARE)
     # =====================================================
     async def execute(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        payload MUST contain:
+        - command
+        - payload (business data)
+        """
+
         command = payload.get("command")
         if not command:
             return {"success": False, "reason": "missing_command"}
 
         agent = self._select_agent(command)
         if not agent:
-            return {
-                "success": False,
-                "reason": "no_available_agent_or_backpressure",
-            }
+            return {"success": False, "reason": "no_available_agent_or_backpressure"}
 
         agent_name = agent["agent_name"]
         assistant_id = agent.get("metadata", {}).get("assistant_id")
@@ -103,7 +108,7 @@ class AgentRouter:
                 "agent": agent_name,
             }
 
-        # ✅ allow caller to pin execution_id (idempotency/orchestrator)
+        # allow caller to pin execution_id (idempotency/orchestrator)
         execution_id = payload.get("execution_id") or f"exec_{uuid.uuid4().hex}"
 
         # -------------------------------------------------
@@ -126,7 +131,8 @@ class AgentRouter:
                     "execution_id": execution_id,
                     "command": command,
                     "payload": payload.get("payload", {}),
-                }
+                },
+                ensure_ascii=False,
             )
 
             self.client.beta.threads.messages.create(
@@ -154,24 +160,36 @@ class AgentRouter:
 
             messages = self.client.beta.threads.messages.list(
                 thread_id=thread.id,
-                limit=1,
+                limit=10,
             )
 
-            if not messages.data:
+            if not getattr(messages, "data", None):
                 raise RuntimeError("no_agent_messages")
 
-            message = messages.data[0]
-            if not message.content:
+            # find the newest assistant message
+            assistant_msgs = [m for m in messages.data if getattr(m, "role", None) == "assistant"]
+            if not assistant_msgs:
+                raise RuntimeError("no_assistant_message")
+
+            def _created_at(m: Any) -> int:
+                ca = getattr(m, "created_at", None)
+                return int(ca) if isinstance(ca, int) else 0
+
+            msg = max(assistant_msgs, key=_created_at)
+
+            content = getattr(msg, "content", None)
+            if not content:
                 raise RuntimeError("empty_agent_message_content")
 
-            content_block = message.content[0]
-
+            # Expect JSON as text
+            content_block = content[0]
             if getattr(content_block, "type", None) != "text":
                 raise RuntimeError("invalid_agent_response_type")
 
             try:
                 text_value = content_block.text.value
             except AttributeError:
+                # fallback for dict-like blocks
                 text_value = content_block["text"]["value"]  # type: ignore[index]
 
             try:
@@ -179,6 +197,9 @@ class AgentRouter:
             except json.JSONDecodeError:
                 raise RuntimeError("invalid_json_response")
 
+            # ---------------------------------------------
+            # SUCCESS SIGNALS
+            # ---------------------------------------------
             self._load.record_success(agent_name)
             self._health.mark_heartbeat(agent_name)
 
@@ -191,6 +212,9 @@ class AgentRouter:
             }
 
         except Exception as e:
+            # ---------------------------------------------
+            # FAILURE CONTAINMENT
+            # ---------------------------------------------
             self._load.record_failure(agent_name)
             self._health.mark_unhealthy(agent_name, reason=str(e))
             self._isolation.isolate(agent_name)

@@ -8,7 +8,7 @@ from uuid import uuid4
 from typing import Any, Dict, List, Optional
 
 import httpx
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Body
 from pydantic import BaseModel, Field
 
 from services.approval_flow import require_approval_or_block
@@ -274,7 +274,7 @@ async def bulk_update(request: Request, payload: BulkUpdatePayload) -> Dict[str,
 
 
 @router.post("/bulk/query")
-async def bulk_query(payload: Any) -> Dict[str, Any]:
+async def bulk_query(payload: Any = Body(None)) -> Dict[str, Any]:
     """
     REAL query prema Notionu.
 

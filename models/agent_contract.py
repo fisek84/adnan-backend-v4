@@ -46,15 +46,30 @@ class ProposedCommand(_AllowExtraBaseModel):
 
     FAZA 5 canon:
       - stable fields:
-          command, args(params alias), dry_run, requires_approval, risk, reason
+          command, params(args internal), dry_run, requires_approval, risk, reason
       - optional:
-          scope, payload_summary
+          intent, scope, payload_summary
+
+    NOTE:
+      - Internal SSOT field is `args`
+      - External JSON should emit `params` (alias) per canon
     """
 
     command: str = Field(..., description="Kanonski naziv komande/operacije.")
 
-    # Canon: args is the SSOT payload. Input may provide `params` as alias.
-    args: Dict[str, Any] = Field(default_factory=dict, description="Argumenti komande.")
+    # Canon: internal field is args, but serialized as `params` (alias).
+    # Input may provide either `args` (field name) or `params` (alias).
+    args: Dict[str, Any] = Field(
+        default_factory=dict,
+        alias="params",
+        description="Argumenti komande (SSOT: args; JSON alias: params).",
+    )
+
+    # Optional: for wrappers that separate command vs intent (e.g. notion_write)
+    intent: Optional[str] = Field(
+        default=None,
+        description="Opcionalni intent (npr. notion_write). Ako nije setovan, može biti None.",
+    )
 
     reason: Optional[str] = Field(
         default=None, description="Zašto se predlaže ova komanda."
@@ -87,7 +102,6 @@ class ProposedCommand(_AllowExtraBaseModel):
         def _normalize_params_alias(cls, data: Any):
             """
             Accept input shape where payload is provided as `params` instead of `args`.
-            Canon output uses `args` as SSOT.
 
             Rules:
               - if args missing/None and params is dict -> args = params
@@ -149,6 +163,11 @@ class ProposedCommand(_AllowExtraBaseModel):
         def _dry_run_hard_true(cls, v):
             return True
 
+        @field_validator("requires_approval", mode="before")
+        @classmethod
+        def _requires_approval_hard_true(cls, v):
+            return True
+
     else:
         from pydantic import root_validator, validator  # type: ignore
 
@@ -203,6 +222,10 @@ class ProposedCommand(_AllowExtraBaseModel):
 
         @validator("dry_run", pre=True, always=True)
         def _dry_run_hard_true(cls, v):
+            return True
+
+        @validator("requires_approval", pre=True, always=True)
+        def _requires_approval_hard_true(cls, v):
             return True
 
 
