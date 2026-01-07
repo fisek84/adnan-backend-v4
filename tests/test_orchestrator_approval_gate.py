@@ -63,12 +63,12 @@ async def _run() -> None:
         },
     )
     r1 = await orch.process_once(timeout_seconds=0.1)
-    assert (
-        isinstance(r1, dict) and r1.get("ok") is False
-    ), f"Expected blocked, got: {r1}"
-    assert (
-        "not approved" in str(r1.get("error", "")).lower()
-    ), f"Expected approval error, got: {r1}"
+    assert isinstance(r1, dict) and r1.get("ok") is False, (
+        f"Expected blocked, got: {r1}"
+    )
+    assert "not approved" in str(r1.get("error", "")).lower(), (
+        f"Expected approval error, got: {r1}"
+    )
 
     # CASE B: APPROVED -> allowed
     fake.approve(approval_id)
