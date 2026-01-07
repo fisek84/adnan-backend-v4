@@ -106,92 +106,121 @@ function Get-ProposedCommandsFromResponse($data) {
 function Convert-ProposalToExecuteRawPayload($proposal) {
   if ($null -eq $proposal) { return $null }
 
-  # 1) args.ai_command
-  if ($proposal.PSObject.Properties.Name -contains "args") {
-    $args = $proposal.args
+  # Helper: safe get property
+  function Has-Prop($o, [string]$name) {
+    return ($null -ne $o) -and ($o.PSObject.Properties.Name -contains $name)
+  }
 
-    if ($args -and ($args.PSObject.Properties.Name -contains "ai_command")) {
-      $ai = $args.ai_command
-      if ($ai -and ($ai.PSObject.Properties.Name -contains "command") -and ($ai.PSObject.Properties.Name -contains "intent")) {
-        return @{
-          command   = [string]$ai.command
-          intent    = [string]$ai.intent
-          params    = $(if ($ai.PSObject.Properties.Name -contains "params") { $ai.params } else { @{} })
-          initiator = "ceo"
-          read_only = $false
-          metadata  = @{
-            canon  = "happy_path"
-            source = "test_happy_path.ps1"
-          }
-        }
-      }
-    }
+  # Helper: create common payload
+  function New-ExecPayload([string]$command, [string]$intent, $paramsObj) {
+    $p = $paramsObj
+    if ($null -eq $p) { $p = @{} }
 
-    # 2) args.command + args.intent
-    if ($args -and ($args.PSObject.Properties.Name -contains "command") -and ($args.PSObject.Properties.Name -contains "intent")) {
-      return @{
-        command   = [string]$args.command
-        intent    = [string]$args.intent
-        params    = $(if ($args.PSObject.Properties.Name -contains "params") { $args.params } else { @{} })
-        initiator = "ceo"
-        read_only = $false
-        metadata  = @{
-          canon  = "happy_path"
-          source = "test_happy_path.ps1"
-        }
+    return @{
+      command   = $command
+      intent    = $intent
+      params    = $p
+      initiator = "ceo"
+      read_only = $false
+      metadata  = @{
+        canon  = "happy_path"
+        source = "test_happy_path.ps1"
       }
     }
   }
 
+  # ----------------------------
+  # 0) HARD FIX: ceo.command.propose from /api/chat
+  # Chat contract: proposed_commands[0].args.prompt
+  # execute/raw contract: params.prompt
+  # ----------------------------
+  if (Has-Prop $proposal "command") {
+    $cmd0 = ([string]$proposal.command).Trim()
+    $intent0 = $cmd0
+    if (Has-Prop $proposal "intent") {
+      $intent0 = ([string]$proposal.intent).Trim()
+      if ($intent0.Length -eq 0) { $intent0 = $cmd0 }
+    }
+
+    $isWrapper = ($cmd0 -eq "ceo.command.propose") -or ($intent0 -eq "ceo.command.propose")
+    if ($isWrapper) {
+      # Prefer params.prompt if present
+      $p0 = $null
+      if (Has-Prop $proposal "params") { $p0 = $proposal.params }
+      elseif (Has-Prop $proposal "payload") { $p0 = $proposal.payload }
+
+      $prompt = $null
+      if ($p0 -and (Has-Prop $p0 "prompt")) { $prompt = $p0.prompt }
+
+      # Fallback: args.prompt (this is the critical missing bridge in the old test)
+      if (($null -eq $prompt -or ([string]$prompt).Trim().Length -eq 0) -and (Has-Prop $proposal "args")) {
+        $a0 = $proposal.args
+        if ($a0 -and (Has-Prop $a0 "prompt")) { $prompt = $a0.prompt }
+        # Extra safety: if args.params.prompt exists (rare shapes)
+        if (($null -eq $prompt -or ([string]$prompt).Trim().Length -eq 0) -and $a0 -and (Has-Prop $a0 "params")) {
+          $ap = $a0.params
+          if ($ap -and (Has-Prop $ap "prompt")) { $prompt = $ap.prompt }
+        }
+      }
+
+      if ($null -eq $prompt -or ([string]$prompt).Trim().Length -eq 0) {
+        return $null
+      }
+
+      $payload = New-ExecPayload -command $cmd0 -intent $intent0 -paramsObj @{ prompt = ([string]$prompt).Trim() }
+      return $payload
+    }
+  }
+
+  # 1) args.ai_command
+  if (Has-Prop $proposal "args") {
+    $args = $proposal.args
+
+    if ($args -and (Has-Prop $args "ai_command")) {
+      $ai = $args.ai_command
+      if ($ai -and (Has-Prop $ai "command") -and (Has-Prop $ai "intent")) {
+        $params1 = @{}
+        if (Has-Prop $ai "params") { $params1 = $ai.params }
+        return (New-ExecPayload -command ([string]$ai.command) -intent ([string]$ai.intent) -paramsObj $params1)
+      }
+    }
+
+    # 2) args.command + args.intent
+    if ($args -and (Has-Prop $args "command") -and (Has-Prop $args "intent")) {
+      $params2 = @{}
+      if (Has-Prop $args "params") { $params2 = $args.params }
+      return (New-ExecPayload -command ([string]$args.command) -intent ([string]$args.intent) -paramsObj $params2)
+    }
+  }
+
   # 3) root.command (+ intent)
-  if ($proposal.PSObject.Properties.Name -contains "command") {
+  if (Has-Prop $proposal "command") {
     $cmd = [string]$proposal.command
     if ($cmd.Trim().Length -gt 0) {
       $intent = $cmd
-      if ($proposal.PSObject.Properties.Name -contains "intent") {
+      if (Has-Prop $proposal "intent") {
         $intent = [string]$proposal.intent
         if ($intent.Trim().Length -eq 0) { $intent = $cmd }
       }
 
       $p = @{}
-      if ($proposal.PSObject.Properties.Name -contains "params") { $p = $proposal.params }
-      elseif ($proposal.PSObject.Properties.Name -contains "payload") { $p = $proposal.payload }
+      if (Has-Prop $proposal "params") { $p = $proposal.params }
+      elseif (Has-Prop $proposal "payload") { $p = $proposal.payload }
 
-      return @{
-        command   = $cmd
-        intent    = $intent
-        params    = $(if ($p) { $p } else { @{} })
-        initiator = "ceo"
-        read_only = $false
-        metadata  = @{
-          canon  = "happy_path"
-          source = "test_happy_path.ps1"
-        }
-      }
+      return (New-ExecPayload -command $cmd -intent $intent -paramsObj $(if ($p) { $p } else { @{} }))
     }
   }
 
   # 4) ceo_console_router shape: command_type + payload
-  if (($proposal.PSObject.Properties.Name -contains "command_type") -and
-      ($proposal.PSObject.Properties.Name -contains "payload")) {
-
+  if ((Has-Prop $proposal "command_type") -and (Has-Prop $proposal "payload")) {
     $ct = [string]$proposal.command_type
     if ($ct.Trim().Length -gt 0) {
       $p = $proposal.payload
       if ($null -eq $p) { $p = @{} }
 
-      return @{
-        command   = $ct
-        intent    = $ct
-        params    = $p
-        initiator = "ceo"
-        read_only = $false
-        metadata  = @{
-          canon  = "happy_path"
-          source = "test_happy_path.ps1"
-          proposal_shape = "command_type_payload"
-        }
-      }
+      $out = New-ExecPayload -command $ct -intent $ct -paramsObj $p
+      $out.metadata["proposal_shape"] = "command_type_payload"
+      return $out
     }
   }
 

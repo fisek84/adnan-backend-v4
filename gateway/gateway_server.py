@@ -1,4 +1,4 @@
-# gateway/gateway_server.py
+﻿# gateway/gateway_server.py
 # ruff: noqa: E402
 # FULL FILE — replace the whole gateway_server.py with this.
 
@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from system_version import ARCH_LOCK, RELEASE_CHANNEL, SYSTEM_NAME, VERSION
+from models.canon import PROPOSAL_WRAPPER_INTENT
 
 # ================================================================
 # ENV / BOOTSTRAP
@@ -226,7 +227,7 @@ from services.app_bootstrap import bootstrap_application
 # INITIAL LOAD
 # ================================================================
 if not OS_ENABLED:
-    logger.critical("OS_ENABLED=false — system will not start.")
+    logger.critical("OS_ENABLED=false â€” system will not start.")
     raise RuntimeError("OS is disabled by configuration.")
 
 identity = load_identity()
@@ -246,9 +247,10 @@ _execution_orchestrator = ExecutionOrchestrator()
 # ================================================================
 # META-COMMANDS MUST NOT ENTER EXECUTION/APPROVAL
 # ================================================================
-PROPOSAL_WRAPPER_INTENT = "ceo.command.propose"
-
-
+# NOTE:
+# - In execution endpoints (/api/execute/raw, /api/proposals/execute) we accept params (and back-compat args),
+#   but the stable "proposal contract" shape is:
+#     command, args, dry_run, requires_approval, risk, reason, intent?, scope?, payload_summary?
 def _ai_command_field_names() -> set[str]:
     model_fields = getattr(AICommand, "model_fields", None)
     if isinstance(model_fields, dict):
@@ -383,6 +385,7 @@ def _unwrap_proposal_wrapper_or_raise(
         command == PROPOSAL_WRAPPER_INTENT
     )
     if not is_wrapper:
+        # Execute/raw is a write-path: it must not execute now, but it must create an approval for a real AICommand.
         return AICommand(
             command=command,
             intent=intent,
@@ -457,7 +460,6 @@ async def lifespan(_: FastAPI):
     _BOOT_ERROR = None
 
     try:
-        # Fail-fast env validation (because we start via `uvicorn gateway.gateway_server:app`)
         try:
             validate_runtime_env_or_raise()
         except Exception as exc:  # noqa: BLE001
@@ -521,7 +523,6 @@ async def lifespan(_: FastAPI):
         logger.info("System boot completed. READY.")
         yield
     finally:
-        # ✅ close aiohttp ClientSession (prevents "Unclosed client session")
         try:
             from services.notion_service import get_notion_service
 
@@ -533,7 +534,7 @@ async def lifespan(_: FastAPI):
             logger.warning("NotionService shutdown close failed: %s", exc)
 
         _BOOT_READY = False
-        logger.info("System shutdown — boot_ready=False.")
+        logger.info("System shutdown â€” boot_ready=False.")
 
 
 # ================================================================
@@ -547,7 +548,7 @@ app = FastAPI(
 
 
 # ================================================================
-# REQUEST TRACE (gives you req_id + full traceback in logs)
+# REQUEST TRACE
 # ================================================================
 @app.middleware("http")
 async def request_trace_middleware(request: Request, call_next):
@@ -610,7 +611,6 @@ class ProposalExecuteInput(BaseModel):
 
 
 class ExecuteRawInput2(BaseModel):
-    # helper model we koristimo POSLIJE normalizacije payload-a, ne za direktan HTTP parsing
     command: str
     intent: str
     params: Dict[str, Any] = Field(default_factory=dict)
@@ -722,59 +722,93 @@ def _ensure_dict(x: Any) -> Dict[str, Any]:
     return x if isinstance(x, dict) else {}
 
 
+def _proposal_wrapper_dict(*, prompt: str, source: str) -> Dict[str, Any]:
+    """
+    Stable proposal contract shape (no initiator/read_only/metadata inside proposed_commands).
+    Keep 'args' as SSOT field for read/propose surfaces.
+    """
+    safe_prompt = (prompt or "").strip() or "noop"
+    return {
+        "command": PROPOSAL_WRAPPER_INTENT,
+        "args": {"prompt": safe_prompt},
+        "intent": None,
+        "reason": "Notion write intent ide kroz approval pipeline; predlaĹľem komandu za promotion/execute.",
+        "dry_run": True,
+        "requires_approval": True,
+        "risk": "LOW",
+        "scope": "api_execute_raw",
+        "payload_summary": {
+            "endpoint": "/api/execute/raw",
+            "canon": "CEO_CONSOLE_EXECUTION_FLOW",
+            "source": source,
+        },
+    }
+
+
+def _normalize_gateway_proposed_commands(pcs: Any) -> List[Dict[str, Any]]:
+    """
+    Normalize proposed_commands to list[dict] using SSOT field-names (args).
+    - Accept dict items
+    - Accept pydantic BaseModel items via model_dump(by_alias=False)
+    - Drop invalid items
+    """
+    items = _ensure_list(pcs)
+    out: List[Dict[str, Any]] = []
+    for it in items:
+        if isinstance(it, dict):
+            out.append(it)
+            continue
+        if hasattr(it, "model_dump"):
+            try:
+                d = it.model_dump(by_alias=False)  # type: ignore[attr-defined]
+                if isinstance(d, dict):
+                    out.append(d)
+                    continue
+            except Exception:
+                pass
+        if hasattr(it, "dict"):
+            try:
+                d = it.dict()  # type: ignore[attr-defined]
+                if isinstance(d, dict):
+                    out.append(d)
+                    continue
+            except Exception:
+                pass
+    return out
+
+
 def _inject_fallback_proposed_commands(result: Dict[str, Any], *, prompt: str) -> None:
     """
-    CANON:
-    Frontend expects proposed_commands as OPAQUE, ready-to-send /api/execute/raw payloads.
-    Do NOT emit legacy shapes (args/payload/command_type) ovdje ako ih nema.
+    Ensure proposed_commands exists and conforms to the stable proposal contract.
+
+    IMPORTANT:
+    - proposed_commands must be a list of *proposal contract* objects
+      (command/args/dry_run/requires_approval/risk/reason/intent?/scope?/payload_summary?)
+    - Do NOT embed execution payload fields (initiator/read_only/metadata) inside proposed_commands.
     """
     pcs = result.get("proposed_commands")
-    pcs_list = _ensure_list(pcs)
+    pcs_list = _normalize_gateway_proposed_commands(pcs)
 
-    # Ako agent već vrati proposed_commands, zadržavamo ih (sanitizujemo na list[dict])
     if len(pcs_list) > 0:
-        out: List[Dict[str, Any]] = []
-        for x in pcs_list:
-            if isinstance(x, dict):
-                out.append(x)
-        result["proposed_commands"] = out
+        result["proposed_commands"] = pcs_list
         tr0 = _ensure_dict(result.get("trace"))
         tr0.setdefault("fallback_proposed_commands", False)
-        tr0.setdefault("router_version", "gateway-fallback-proposed-commands-v2-opaque")
+        tr0.setdefault("router_version", "gateway-proposed-commands-normalize-v1")
         result["trace"] = tr0
         return
 
-    safe_prompt = (prompt or "").strip() or "noop"
-
-    # OPAQUE wrapper proposal — 1:1 payload za /api/execute/raw
+    # Inject a canonical wrapper proposal
     result["proposed_commands"] = [
-        {
-            "command": PROPOSAL_WRAPPER_INTENT,
-            "intent": PROPOSAL_WRAPPER_INTENT,
-            "params": {"prompt": safe_prompt},
-            "initiator": "ceo",
-            "read_only": False,
-            "metadata": {
-                "source": "ceo_console",
-                "canon": "CEO_CONSOLE_EXECUTION_FLOW",
-                "endpoint": "/api/execute/raw",
-            },
-        }
+        _proposal_wrapper_dict(prompt=(prompt or "").strip(), source="ceo_console")
     ]
 
     tr = _ensure_dict(result.get("trace"))
     tr["fallback_proposed_commands"] = True
-    tr["router_version"] = "gateway-fallback-proposed-commands-v2-opaque"
+    tr["router_version"] = "gateway-fallback-proposed-commands-v3-stable-contract"
     result["trace"] = tr
 
 
 def _normalize_execute_raw_payload_dict(body: Dict[str, Any]) -> ExecuteRawInput2:
-    """
-    Prihvata:
-      - canonical: {command, intent, params, ...}
-      - legacy fallback: {command: 'ceo.command.propose', args: {prompt: ...}, ...}
-    i vraća normalizovani ExecuteRawInput2.
-    """
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="Body must be an object")
 
@@ -787,13 +821,13 @@ def _normalize_execute_raw_payload_dict(body: Dict[str, Any]) -> ExecuteRawInput
     if isinstance(intent_val, str) and intent_val.strip():
         intent = intent_val.strip()
     else:
-        intent = cmd  # legacy: intent == command
+        intent = cmd
 
     params = body.get("params")
     if not isinstance(params, dict):
         params = {}
 
-    # Legacy fallback: ceo.command.propose + args.prompt
+    # Back-compat: accept args for wrapper prompt
     if intent == PROPOSAL_WRAPPER_INTENT and "prompt" not in params:
         args = body.get("args")
         if isinstance(args, dict):
@@ -814,7 +848,6 @@ def _normalize_execute_raw_payload_dict(body: Dict[str, Any]) -> ExecuteRawInput
         metadata = {}
     payload_summary = body.get("payload_summary")
     if isinstance(payload_summary, dict):
-        # payload_summary info ne gubimo; merge u metadata
         merged = dict(payload_summary)
         merged.update(metadata)
         metadata = merged
@@ -834,7 +867,7 @@ def _normalize_execute_raw_payload_dict(body: Dict[str, Any]) -> ExecuteRawInput
 
 
 # ================================================================
-# /api/execute — EXECUTION PATH (NL INPUT)
+# /api/execute â€” EXECUTION PATH (NL INPUT)
 # ================================================================
 @app.post("/api/execute")
 async def execute_command(payload: ExecuteInput):
@@ -885,6 +918,7 @@ async def execute_command(payload: ExecuteInput):
 
     _ensure_trace_on_command(ai_command, approval_id=approval_id)
 
+    _execution_orchestrator.registry.register(ai_command)
     _execution_registry.register(ai_command)
 
     result = await _execution_orchestrator.execute(ai_command)
@@ -898,15 +932,6 @@ async def execute_command(payload: ExecuteInput):
 
 @app.post("/api/execute/raw")
 async def execute_raw_command(payload: Dict[str, Any] = Body(...)):
-    """
-    Canonical execution entrypoint za CEO Console.
-
-    Prihvata:
-      - canonical payload: {command,intent,params,initiator,read_only,metadata,...}
-      - legacy proposal payload: {command:'ceo.command.propose', args:{prompt:...}, ...}
-
-    Sve normalizuje u ExecuteRawInput2 i prosljeđuje u approval/execution flow.
-    """
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Body must be an object")
 
@@ -939,6 +964,7 @@ async def execute_raw_command(payload: Dict[str, Any] = Body(...)):
 
     _ensure_trace_on_command(ai_command, approval_id=approval_id)
 
+    _execution_orchestrator.registry.register(ai_command)
     _execution_registry.register(ai_command)
 
     return {
@@ -959,17 +985,10 @@ async def execute_raw_command(payload: Dict[str, Any] = Body(...)):
 # ================================================================
 @app.post("/api/proposals/execute")
 async def execute_proposal(payload: ProposalExecuteInput):
-    """
-    Back-compat endpoint. Accepts either:
-      - CANON OPAQUE proposal: {command,intent,params,...}
-      - legacy proposal: {command,args} or {command_type,payload}
-    Only wrapper 'ceo.command.propose' is supported here.
-    """
     proposal = payload.proposal
     initiator = (payload.initiator or "ceo").strip() or "ceo"
     meta_in = payload.metadata if isinstance(payload.metadata, dict) else {}
 
-    # --- normalize proposal fields ---
     proposal_cmd: Optional[str] = None
     proposal_intent: Optional[str] = None
     proposal_params: Dict[str, Any] = {}
@@ -983,12 +1002,10 @@ async def execute_proposal(payload: ProposalExecuteInput):
         )
         proposal_intent = proposal.get("intent") or proposal_cmd
 
-        # CANON params
         p_params = proposal.get("params")
         if isinstance(p_params, dict):
             proposal_params = dict(p_params)
 
-        # legacy args/payload fallback
         if not proposal_params:
             p_args = proposal.get("args")
             if isinstance(p_args, dict):
@@ -1041,7 +1058,6 @@ async def execute_proposal(payload: ProposalExecuteInput):
             status_code=400, detail="Invalid proposal: missing command/intent"
         )
 
-    # Only wrapper promotion supported
     if (
         proposal_cmd != PROPOSAL_WRAPPER_INTENT
         and proposal_intent != PROPOSAL_WRAPPER_INTENT
@@ -1051,7 +1067,6 @@ async def execute_proposal(payload: ProposalExecuteInput):
             detail="Unsupported proposal payload (only ceo.command.propose)",
         )
 
-    # Merge metadata (meta_in overrides)
     merged_md: Dict[str, Any] = {}
     if isinstance(proposal_meta, dict):
         merged_md.update(proposal_meta)
@@ -1098,6 +1113,7 @@ async def execute_proposal(payload: ProposalExecuteInput):
         )
 
     _ensure_trace_on_command(ai_command, approval_id=approval_id)
+    _execution_orchestrator.registry.register(ai_command)
     _execution_registry.register(ai_command)
 
     result = await _execution_orchestrator.execute(ai_command)
@@ -1109,15 +1125,11 @@ async def execute_proposal(payload: ProposalExecuteInput):
 
 
 # ================================================================
-# NOTION OPS — LIST DATABASES (READ ONLY) ✅ NOW RETURNS ALL db_ids
+# NOTION OPS â€” LIST DATABASES (READ ONLY)
 # ================================================================
 @app.get("/api/notion-ops/databases")
 @app.get("/notion-ops/databases")
 async def notion_ops_list_databases():
-    """
-    Frontend expects:
-      { ok: true, read_only: true, ops_safe_mode: bool, databases: { <db_key>: <database_id>, ... } }
-    """
     from services.notion_service import get_notion_service
 
     ns = get_notion_service()
@@ -1139,7 +1151,6 @@ async def notion_ops_list_databases():
     }
 
 
-# Aliases (some frontend builds call these)
 @app.get("/databases")
 async def databases_alias():
     return await notion_ops_list_databases()
@@ -1236,6 +1247,12 @@ async def notion_bulk_update(request: Request, payload: Dict[str, Any] = Body(..
 
 
 def _normalize_notion_query_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Normalizuje query dio. Namjerno ignoriĹˇe db_key/database_id.
+    PodrĹľava:
+      - {"query": {...}}
+      - ili flat: {"filter":..., "sorts":..., "start_cursor":..., "page_size":...}
+    """
     q = payload.get("query")
     if isinstance(q, dict):
         return dict(q)
@@ -1300,6 +1317,19 @@ def _resolve_db_id_from_service(notion_service: Any, db_key: str) -> str:
     raise HTTPException(status_code=400, detail=f"Unknown db_key: {db_key}")
 
 
+def _extract_db_key_or_database_id(d: Dict[str, Any]) -> Optional[str]:
+    """
+    Back-compat: prihvati i db_key i database_id.
+    """
+    v = d.get("db_key")
+    if isinstance(v, str) and v.strip():
+        return v.strip()
+    v2 = d.get("database_id")
+    if isinstance(v2, str) and v2.strip():
+        return v2.strip()
+    return None
+
+
 async def _call_maybe_async(fn: Any, *args: Any, **kwargs: Any) -> Any:
     if inspect.iscoroutinefunction(fn):
         return await fn(*args, **kwargs)
@@ -1358,7 +1388,6 @@ async def _query_notion_database(db_key: str, query: Dict[str, Any]) -> Dict[str
         )
 
     db_id = _resolve_db_id_from_service(notion_service, db_key)
-
     client = Client(auth=api_key.strip())
 
     try:
@@ -1384,46 +1413,80 @@ async def _query_notion_database(db_key: str, query: Dict[str, Any]) -> Dict[str
 
 @app.post("/api/notion-ops/bulk/query")
 @app.post("/notion-ops/bulk/query")
-async def notion_bulk_query(payload: Dict[str, Any] = Body(...)):
+async def notion_bulk_query(payload: Any = Body(None)):
+    """
+    Back/forward compatible bulk query endpoint.
+
+    Accepts:
+      1) Empty / null body -> 200 {"results":[]}
+      2) Single query via {db_key|database_id, filter/sorts/page_size...} -> 200 {"results":[...]}
+      3) Multi query via {queries:[{db_key|database_id,...}, ...]} -> 200 {"results":[...]}
+    """
+    if payload is None:
+        return {"results": []}
+
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="payload must be an object")
 
-    if isinstance(payload.get("db_key"), str) and payload["db_key"].strip():
-        db_key = payload["db_key"].strip()
+    # --- SINGLE: db_key or database_id on top-level ---
+    top_db_key = _extract_db_key_or_database_id(payload)
+    if isinstance(top_db_key, str) and top_db_key.strip():
         q = _normalize_notion_query_payload(payload)
-        res = await _query_notion_database(db_key, q)
-        return res
+        res = await _query_notion_database(top_db_key.strip(), q)
+        items = res.get("results") if isinstance(res.get("results"), list) else []
+        return {
+            "results": [
+                {
+                    "query": {"db_key": top_db_key.strip(), **q},
+                    "db_key": top_db_key.strip(),
+                    "items": items,
+                    "notion": res,
+                    "response": res,  # legacy alias
+                }
+            ]
+        }
 
+    # --- MULTI: queries list (can be empty) ---
     queries = payload.get("queries")
     if queries is None:
         queries = []
     if not isinstance(queries, list):
         raise HTTPException(status_code=400, detail="queries must be a list")
 
+    if len(queries) == 0:
+        # This is exactly what tests expect: 200, not 422
+        return {"results": []}
+
     out: List[Dict[str, Any]] = []
-    for q in queries:
-        if not isinstance(q, dict):
+    for q0 in queries:
+        if not isinstance(q0, dict):
             raise HTTPException(status_code=400, detail="each query must be an object")
 
-        db_key = q.get("db_key")
+        db_key = _extract_db_key_or_database_id(q0)
         if not isinstance(db_key, str) or not db_key.strip():
             out.append(
                 {
-                    "query": q,
+                    "query": q0,
+                    "db_key": None,
                     "items": [],
-                    "response": {"results": [], "has_more": False},
+                    "notion": {"results": [], "has_more": False, "next_cursor": None},
+                    "response": {"results": [], "has_more": False, "next_cursor": None},
                 }
             )
             continue
 
-        nq = _normalize_notion_query_payload(q)
+        nq = _normalize_notion_query_payload(q0)
         res = await _query_notion_database(db_key.strip(), nq)
-        items = (
-            res.get("results")
-            if isinstance(res, dict) and isinstance(res.get("results"), list)
-            else []
+        items = res.get("results") if isinstance(res.get("results"), list) else []
+        out.append(
+            {
+                "query": {"db_key": db_key.strip(), **nq},
+                "db_key": db_key.strip(),
+                "items": items,
+                "notion": res,
+                "response": res,  # legacy alias
+            }
         )
-        out.append({"query": q, "items": items, "response": res})
 
     return {"results": out}
 
@@ -1510,7 +1573,15 @@ async def _ceo_command_core(payload_dict: Dict[str, Any]) -> JSONResponse:
     )
 
     result_obj = await ceo_console_module.ceo_command(req)
-    result = jsonable_encoder(result_obj)
+
+    # CRITICAL: keep SSOT field-names (args) for proposed_commands on read-only surfaces.
+    try:
+        if hasattr(result_obj, "model_dump"):
+            result = result_obj.model_dump(by_alias=False)  # type: ignore[attr-defined]
+        else:
+            result = jsonable_encoder(result_obj, by_alias=False)
+    except Exception:
+        result = jsonable_encoder(result_obj)
 
     if not isinstance(result, dict):
         result = {"ok": True, "summary": str(result_obj), "trace": {}}
@@ -1736,7 +1807,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 
 # ================================================================
-# REACT FRONTEND (PROD BUILD) — SERVE dist/
+# REACT FRONTEND (PROD BUILD) â€” SERVE dist/
 # ================================================================
 if not FRONTEND_DIST_DIR.is_dir():
     logger.warning("React dist directory not found: %s", FRONTEND_DIST_DIR)
@@ -1751,3 +1822,6 @@ else:
         StaticFiles(directory=str(FRONTEND_DIST_DIR), html=True),
         name="frontend",
     )
+
+
+

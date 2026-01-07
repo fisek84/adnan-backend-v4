@@ -1,4 +1,4 @@
-# CANON — Adnan.AI / Evolia OS (v2.1)
+# CANON — Adnan.AI / Evolia OS (v2.2)
 
 Adnan.AI is an AI Business Operating System.  
 It is not a chatbot, assistant, or feature-driven AI.
@@ -48,6 +48,59 @@ Stability is prioritized over apparent intelligence.
 ### WRITE (Execution) path
 - Requires: explicit approval gate
 - Executes: only after governance approval
+
+---
+
+## CEO Console Execution Flow (SSOT)
+
+### Canon
+- The LLM (CEO Advisor) is **READ-only** and advisory.
+- The LLM may propose commands but **never performs side effects**.
+- All side effects (e.g., Notion writes) must go through the approval-gated backend execution path.
+
+### Flow (immutable)
+1) `POST /api/chat` returns:
+   - `text`
+   - `trace` (including `trace.ops_plan` when present)
+   - `proposed_commands` (proposals only; no execution)
+2) User explicitly approves a proposal in UI:
+   - UI sends `POST /api/execute/raw` with the approved proposal payload (SSOT)
+   - Response must return `BLOCKED` + `approval_id` (+ execution tracking)
+3) UI calls `POST /api/ai-ops/approval/approve` with `approval_id`
+4) Deterministic executor performs the write:
+   - Notion Ops Executor runs `NotionService.execute(ai_command)`
+   - `notion_write` is a wrapper; the actual intent is `params.ai_command.intent`
+
+### Frontend truth constraints (immutable)
+- Frontend must not auto-execute proposals.
+- Frontend must not reuse old proposals or template user text.
+- The **approved proposal is the single source of truth** for the execution payload.
+- Execution payload must be derived from the approved proposal object exactly.
+
+---
+
+## Proposed Commands Canon (when ops_plan exists)
+
+### Rule
+When `trace.ops_plan` exists, `proposed_commands` MUST contain `notion_write` proposals with `params.ai_command`.
+
+- `ceo.command.propose` MUST NOT be added in this case.
+- `ceo.command.propose` is allowed ONLY as fallback when ops_plan is missing or plan generation fails.
+
+### Required proposed command envelope
+Each proposed command MUST follow this envelope:
+
+- `command`: `"notion_write"`
+- `intent`: `"notion_write"`
+- `dry_run`: `true`
+- `requires_approval`: `true`
+- `params`: `{ "ai_command": { ... } }`
+- `risk`: `"LOW"`
+- `scope`: `"api_execute_raw"`
+- `payload_summary`: must include:
+  - `endpoint`: `"/api/execute/raw"`
+  - `canon`: `"CEO_CONSOLE_EXECUTION_FLOW"`
+  - `source`: `"ceo_console"`
 
 ---
 

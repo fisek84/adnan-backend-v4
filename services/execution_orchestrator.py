@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import logging
 from typing import Any, Dict, List, Union
@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 # CANON: meta/proposal wrapper intents must never be executed/resumed
-PROPOSAL_WRAPPER_INTENT = "ceo.command.propose"
+from models.canon import PROPOSAL_WRAPPER_INTENT
 
 
 class ExecutionOrchestrator:
@@ -22,9 +22,9 @@ class ExecutionOrchestrator:
     CANONICAL EXECUTION ORCHESTRATOR
 
     - orkestrira lifecycle
-    - NE odlučuje policy (to radi ExecutionGovernanceService + PolicyService)
-    - NE izvršava write direktno (uvijek preko agenata)
-    - radi ISKLJUČIVO nad AICommand, uz ulaznu normalizaciju
+    - NE odluÄŤuje policy (to radi ExecutionGovernanceService + PolicyService)
+    - NE izvrĹˇava write direktno (uvijek preko agenata)
+    - radi ISKLJUÄŚIVO nad AICommand, uz ulaznu normalizaciju
     """
 
     def __init__(self) -> None:
@@ -66,7 +66,7 @@ class ExecutionOrchestrator:
         self, command: Union[AICommand, Dict[str, Any]]
     ) -> Dict[str, Any]:
         """
-        Ulaz može biti AICommand ili dict (npr. direktno iz API sloja).
+        Ulaz moĹľe biti AICommand ili dict (npr. direktno iz API sloja).
         CANON: ovdje se payload kanonizuje u AICommand, bez interpretacije intent-a.
         """
         cmd = self._normalize_command(command)
@@ -240,7 +240,7 @@ class ExecutionOrchestrator:
             else:
                 result = await self.notion_agent.execute(command)
 
-            # ✅ FAILURE DETECTION (explicit only)
+            # âś… FAILURE DETECTION (explicit only)
             if self._is_failure_result(result):
                 failure = {
                     "reason": result.get("reason")
@@ -297,7 +297,7 @@ class ExecutionOrchestrator:
                     parent_approval_id = meta_aid
 
         # ----------------------------
-        # ✅ FIX (minimal): do NOT send workflow command to Notion agent.
+        # âś… FIX (minimal): do NOT send workflow command to Notion agent.
         # Create a proper Notion write command for the goal from params["goal"].
         # ----------------------------
         goal_payload = params.get("goal") or {}
@@ -439,3 +439,4 @@ class ExecutionOrchestrator:
             data = {k: v for k, v in data.items() if k in allowed_fields}
 
         return AICommand(**data)
+
