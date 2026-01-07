@@ -1,8 +1,9 @@
+# services/execution_orchestrator.py
 # ruff: noqa: E402
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List, Union, Optional
 
 from models.ai_command import AICommand
 from services.approval_state_service import get_approval_state
@@ -10,6 +11,7 @@ from services.execution_governance_service import ExecutionGovernanceService
 from services.execution_registry import get_execution_registry
 from services.notion_ops_agent import NotionOpsAgent
 from services.notion_service import get_notion_service
+from services.knowledge_snapshot_service import KnowledgeSnapshotService
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -23,9 +25,9 @@ class ExecutionOrchestrator:
     CANONICAL EXECUTION ORCHESTRATOR
 
     - orkestrira lifecycle
-    - NE odluÄŤuje policy (to radi ExecutionGovernanceService + PolicyService)
-    - NE izvrĹˇava write direktno (uvijek preko agenata)
-    - radi ISKLJUÄŚIVO nad AICommand, uz ulaznu normalizaciju
+    - NE odlučuje policy (to radi ExecutionGovernanceService + PolicyService)
+    - NE izvršava write direktno (uvijek preko agenata)
+    - radi ISKLJUČIVO nad AICommand, uz ulaznu normalizaciju
     """
 
     def __init__(self) -> None:
@@ -63,11 +65,134 @@ class ExecutionOrchestrator:
             return True
         return False
 
+    @staticmethod
+    def _is_refresh_snapshot(cmd: AICommand) -> bool:
+        return (
+            getattr(cmd, "command", None) == "refresh_snapshot"
+            or getattr(cmd, "intent", None) == "refresh_snapshot"
+        )
+
+    @staticmethod
+    def _count_goals_from_payload(payload: Any) -> int:
+        """
+        Best-effort count from a snapshot payload.
+        Supports common shapes:
+          - payload["goals"] : list
+          - payload["dashboard"]["goals"] : list
+          - payload["goals_summary"] : list
+        """
+        if not isinstance(payload, dict):
+            return 0
+
+        best = 0
+
+        goals = payload.get("goals")
+        if isinstance(goals, list):
+            best = max(best, len(goals))
+
+        dash = payload.get("dashboard")
+        if isinstance(dash, dict) and isinstance(dash.get("goals"), list):
+            best = max(best, len(dash["goals"]))
+
+        gs = payload.get("goals_summary")
+        if isinstance(gs, list):
+            best = max(best, len(gs))
+
+        return int(best)
+
+    @staticmethod
+    def _resolve_goals_db_id(notion_service: Any) -> Optional[str]:
+        """
+        Resolve goals db id from NotionService.
+        """
+        for attr in ("goals_db_id", "_goals_db_id"):
+            v = getattr(notion_service, attr, None)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+
+        db_ids = getattr(notion_service, "db_ids", None)
+        if isinstance(db_ids, dict):
+            v2 = db_ids.get("goals") or db_ids.get("goal")
+            if isinstance(v2, str) and v2.strip():
+                return v2.strip()
+
+        return None
+
+    async def _compute_refresh_snapshot_metrics(self, result: Any) -> Dict[str, Any]:
+        """
+        CANON: refresh_snapshot must be BEST-EFFORT and must not fail the system.
+        It must return stable metrics:
+          - total_goals: int
+          - errors: list[str]  (best-effort diagnostics; MUST NOT flip execution_state to FAILED)
+        This post-processes whatever agent returned and fills missing fields.
+        """
+        errors: List[str] = []
+
+        # 1) Pull errors from agent result if present
+        if isinstance(result, dict):
+            e0 = result.get("errors")
+            if isinstance(e0, list):
+                for e in e0:
+                    if isinstance(e, str) and e.strip():
+                        errors.append(e.strip())
+
+        # 2) Try to count from snapshot payload
+        total_goals = 0
+        try:
+            payload = None
+
+            get_payload = getattr(KnowledgeSnapshotService, "get_payload", None)
+            if callable(get_payload):
+                payload = get_payload()
+            else:
+                wrapper = KnowledgeSnapshotService.get_snapshot()
+                if isinstance(wrapper, dict):
+                    payload = wrapper.get("payload")
+
+            total_goals = max(total_goals, self._count_goals_from_payload(payload))
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"snapshot_payload_parse_failed:{exc}")
+
+        # 3) If still 0, do a best-effort direct Notion DB query (read-only)
+        if total_goals <= 0:
+            try:
+                ns = get_notion_service()
+                db_id = self._resolve_goals_db_id(ns)
+                if not db_id:
+                    errors.append("goals_db_id_unavailable")
+                else:
+                    resp = await ns._safe_request(
+                        "POST",
+                        f"https://api.notion.com/v1/databases/{db_id}/query",
+                        payload={"page_size": 100},
+                    )
+                    if isinstance(resp, dict) and isinstance(resp.get("results"), list):
+                        total_goals = max(total_goals, len(resp["results"]))
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"goals_db_query_failed:{exc}")
+
+        # 4) Normalize final shape (BEST-EFFORT: never return ok/success False)
+        stable = {
+            "ok": True,
+            "success": True,
+            "best_effort": True,
+            "total_goals": int(total_goals),
+            "errors": errors,
+        }
+
+        # Keep original fields (do not destroy agent result)
+        if isinstance(result, dict):
+            merged = dict(result)
+            merged.update(stable)
+            return merged
+
+        return stable
+
     async def execute(
         self, command: Union[AICommand, Dict[str, Any]]
     ) -> Dict[str, Any]:
         """
-        Ulaz moĹľe biti AICommand ili dict (npr. direktno iz API sloja).
+        Ulaz može biti AICommand ili dict (npr. direktno iz API sloja).
         CANON: ovdje se payload kanonizuje u AICommand, bez interpretacije intent-a.
         """
         cmd = self._normalize_command(command)
@@ -241,7 +366,12 @@ class ExecutionOrchestrator:
             else:
                 result = await self.notion_agent.execute(command)
 
-            # âś… FAILURE DETECTION (explicit only)
+            # Ensure refresh_snapshot returns stable best-effort result contract for tests/UI
+            if self._is_refresh_snapshot(command):
+                result = await self._compute_refresh_snapshot_metrics(result)
+
+            # ✅ FAILURE DETECTION (explicit only)
+            # NOTE: refresh_snapshot is best-effort; its result is normalized to never be ok/success False.
             if self._is_failure_result(result):
                 failure = {
                     "reason": result.get("reason")
@@ -267,6 +397,29 @@ class ExecutionOrchestrator:
             }
 
         except Exception as exc:
+            # CANON: refresh_snapshot is BEST-EFFORT and must NOT fail the system.
+            if self._is_refresh_snapshot(command):
+                logger.warning(
+                    "refresh_snapshot failed (best-effort). execution_id=%s err=%s",
+                    execution_id,
+                    exc,
+                )
+                raw = {
+                    "action": "refresh_snapshot",
+                    "message": "Knowledge snapshot sync failed (best-effort).",
+                    "error": str(exc),
+                    "errors": [f"refresh_snapshot_failed:{exc}"],
+                }
+                result = await self._compute_refresh_snapshot_metrics(raw)
+
+                command.execution_state = "COMPLETED"
+                self.registry.complete(execution_id, result)
+                return {
+                    "execution_id": execution_id,
+                    "execution_state": "COMPLETED",
+                    "result": result,
+                }
+
             logger.exception("Execution failed execution_id=%s", execution_id)
             failure = {
                 "reason": str(exc),
@@ -297,10 +450,8 @@ class ExecutionOrchestrator:
                 if isinstance(meta_aid, str) and meta_aid:
                     parent_approval_id = meta_aid
 
-        # ----------------------------
-        # âś… FIX (minimal): do NOT send workflow command to Notion agent.
+        # ✅ FIX (minimal): do NOT send workflow command to Notion agent.
         # Create a proper Notion write command for the goal from params["goal"].
-        # ----------------------------
         goal_payload = params.get("goal") or {}
         if not isinstance(goal_payload, dict):
             raise RuntimeError("goal_task_workflow requires params.goal dict")

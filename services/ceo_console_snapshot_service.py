@@ -9,6 +9,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 from pydantic import BaseModel, Field
 
+from services.knowledge_snapshot_service import KnowledgeSnapshotService
+
 NOTION_API_URL = "https://api.notion.com/v1"
 DEFAULT_NOTION_VERSION = "2022-06-28"
 
@@ -111,9 +113,6 @@ class CeoGoal(BaseModel):
     deadline: Optional[dt.date] = None
 
     # KANON: expose Notion properties for deep READ introspection
-    # - properties: raw Notion property objects (sorted keys for deterministic dumps)
-    # - properties_text: normalized human-readable values (bounded, fail-soft)
-    # - properties_types: property type per key (best-effort)
     properties: Dict[str, Any] = Field(default_factory=dict)
     properties_text: Dict[str, Any] = Field(default_factory=dict)
     properties_types: Dict[str, str] = Field(default_factory=dict)
@@ -199,7 +198,6 @@ class _NotionConfig:
     excerpt_lines: int = DEFAULT_EXCERPT_LINES
 
     # KANON: detail controls (READ-only)
-    # Default MUST be compact; deep introspection only when explicitly enabled via env.
     include_properties: bool = False
     include_properties_text: bool = False
     include_raw_pages: bool = False  # very heavy; keep default OFF
@@ -383,8 +381,6 @@ class CeoConsoleSnapshotService:
         )
         version = cls._env_first("NOTION_VERSION") or DEFAULT_NOTION_VERSION
 
-        # Default MUST be compact for frontend and logs.
-        # Deep payload only when explicitly enabled via env vars.
         include_properties = _env_true("CEO_SNAPSHOT_INCLUDE_PROPERTIES", "false")
         include_properties_text = _env_true(
             "CEO_SNAPSHOT_INCLUDE_PROPERTIES_TEXT", "false"
@@ -473,11 +469,31 @@ class CeoConsoleSnapshotService:
         )
 
     def snapshot(self) -> Dict[str, Any]:
+        # Always expose KnowledgeSnapshot TTL state (CEO console needs it)
+        try:
+            ks = KnowledgeSnapshotService.get_snapshot()
+            if not isinstance(ks, dict):
+                ks = {"ready": False, "error": "knowledge_snapshot_not_dict"}
+        except Exception as e:
+            ks = {
+                "ready": False,
+                "error": str(e),
+                "source": "KnowledgeSnapshotService.get_snapshot",
+            }
+
+        trace = ks.get("trace") if isinstance(ks, dict) else {}
+        if not isinstance(trace, dict):
+            trace = {}
+
         if not self._ready:
             return {
                 "available": False,
                 "source": "ceo_console_snapshot_service",
                 "error": self._init_error or "snapshot service not configured",
+                "knowledge_snapshot": ks,
+                "ttl_seconds": trace.get("ttl_seconds"),
+                "age_seconds": trace.get("age_seconds"),
+                "is_expired": trace.get("is_expired"),
             }
 
         try:
@@ -489,12 +505,20 @@ class CeoConsoleSnapshotService:
                 "generated_at": dash.generated_at.isoformat(),
                 "dashboard": _safe_model_dump(dash),
                 "knowledge": extra,
+                "knowledge_snapshot": ks,
+                "ttl_seconds": trace.get("ttl_seconds"),
+                "age_seconds": trace.get("age_seconds"),
+                "is_expired": trace.get("is_expired"),
             }
         except Exception as e:
             return {
                 "available": False,
                 "source": "ceo_console_snapshot_service",
                 "error": str(e),
+                "knowledge_snapshot": ks,
+                "ttl_seconds": trace.get("ttl_seconds"),
+                "age_seconds": trace.get("age_seconds"),
+                "is_expired": trace.get("is_expired"),
             }
 
     def get_snapshot(self) -> Dict[str, Any]:
@@ -919,7 +943,6 @@ class CeoConsoleSnapshotService:
                 normalized = self._normalize_single_property(v)
                 text_map[k] = normalized
             except Exception:
-                # fail-soft
                 text_map[k] = None
                 type_map[k] = type_map.get(k, "unknown")
 
@@ -934,7 +957,6 @@ class CeoConsoleSnapshotService:
 
         t = prop.get("type")
         if not isinstance(t, str) or not t:
-            # best-effort heuristic
             if "title" in prop:
                 return (
                     _truncate_text(
@@ -1088,7 +1110,6 @@ class CeoConsoleSnapshotService:
                 if isinstance(val, (int, float, bool)):
                     return val
                 if isinstance(val, dict):
-                    # date formula
                     start = val.get("start")
                     end = val.get("end")
                     if isinstance(start, str) or isinstance(end, str):
@@ -1119,7 +1140,6 @@ class CeoConsoleSnapshotService:
                 return val
             return val
 
-        # Fallback: include minimal shape for unknown/unsupported types
         try:
             candidate = prop.get(t)
             if isinstance(candidate, str):
@@ -1127,7 +1147,6 @@ class CeoConsoleSnapshotService:
             if isinstance(candidate, (int, float, bool)):
                 return candidate
             if isinstance(candidate, dict):
-                # shallow, bounded
                 out = {}
                 for kk, vv in list(candidate.items())[:20]:
                     if isinstance(vv, str):

@@ -1149,10 +1149,23 @@ async def notion_read(payload: Any = Body(None)) -> Any:
       { "mode": "page_by_title", "query": "Outreach sop" }
     """
 
+    def _model_to_dict(m: NotionReadResponse) -> Dict[str, Any]:
+        if hasattr(m, "model_dump"):
+            try:
+                d = m.model_dump()  # type: ignore[attr-defined]
+                return d if isinstance(d, dict) else {}
+            except Exception:
+                pass
+        try:
+            d2 = m.dict()  # type: ignore[attr-defined]
+            return d2 if isinstance(d2, dict) else {}
+        except Exception:
+            return {}
+
     def _json(resp: NotionReadResponse) -> JSONResponse:
         # Force UTF-8 charset for clients like PowerShell that mis-decode without it.
         return JSONResponse(
-            content=resp.model_dump(),
+            content=_model_to_dict(resp),
             media_type="application/json; charset=utf-8",
         )
 
@@ -1205,7 +1218,7 @@ async def notion_read(payload: Any = Body(None)) -> Any:
         url = (url or "").strip()
         md = (md or "").strip()
 
-        # Service returns empty strings when not found -> normalize to spec.
+        # Not found -> explicit error
         if not title and not url and not md:
             return _json(
                 NotionReadResponse(
@@ -1788,6 +1801,12 @@ async def ceo_console_snapshot():
 
     ks = KnowledgeSnapshotService.get_snapshot()
 
+    knowledge_snapshot = {
+        "ready": ks.get("ready", False),
+        "last_sync": ks.get("last_sync"),
+        "trace": ks.get("trace", {}),
+    }
+
     ceo_dash = CEOConsoleSnapshotService().snapshot()
     legacy = _derive_legacy_goal_task_summaries_from_ceo_snapshot(ceo_dash)
 
@@ -1814,10 +1833,7 @@ async def ceo_console_snapshot():
             "failed_count": len(failed),
             "pending": pending,
         },
-        "knowledge_snapshot": {
-            "ready": ks.get("ready"),
-            "last_sync": ks.get("last_sync"),
-        },
+        "knowledge_snapshot": knowledge_snapshot,
         "ceo_dashboard_snapshot": _to_serializable(ceo_dash),
         "goals_summary": legacy["goals_summary"],
         "tasks_summary": legacy["tasks_summary"],

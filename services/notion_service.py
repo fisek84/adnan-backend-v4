@@ -5,7 +5,7 @@ import logging
 import os
 import re
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Union
 
 import aiohttp
 
@@ -13,6 +13,7 @@ from services.knowledge_snapshot_service import KnowledgeSnapshotService
 from services.notion_schema_registry import NotionSchemaRegistry
 
 NOTION_VERSION_DEFAULT = "2022-06-28"
+LAST_CREATED_GOAL_TOKEN = "LAST_CREATED_GOAL"
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -38,6 +39,14 @@ class NotionService:
         "active_goals",
         "blocked_goals",
         "completed_goals",
+    }
+
+    # ✅ Everything except the core operational DBs is treated as "soft optional" for snapshot.
+    # If Notion integration doesn't have access / object missing, snapshot should not accumulate errors.
+    _SNAPSHOT_HARD_REQUIRED_KEYS: Set[str] = {
+        "goals",
+        "tasks",
+        "projects",
     }
 
     def __init__(
@@ -102,10 +111,26 @@ class NotionService:
         self._ingest_all_env_db_ids()
 
         # 5) Alias mapiranja (kompatibilnost)
-        if "ai_summary" in self.db_ids:
-            self.db_ids.setdefault("ai_weekly_summary", self.db_ids["ai_summary"])
+        # ✅ FIX: enforce a SINGLE canonical ID for ai_summary/ai_weekly_summary.
+        # If both exist and differ, prefer ai_summary (workflow uses db_key="ai_summary")
+        if "ai_summary" in self.db_ids and "ai_weekly_summary" in self.db_ids:
+            if self.db_ids["ai_summary"] != self.db_ids["ai_weekly_summary"]:
+                logger.warning(
+                    "NotionService: ai_summary (%s) and ai_weekly_summary (%s) differ; "
+                    "forcing ai_weekly_summary to ai_summary.",
+                    self.db_ids["ai_summary"],
+                    self.db_ids["ai_weekly_summary"],
+                )
+            self.db_ids["ai_weekly_summary"] = self.db_ids["ai_summary"]
+        elif "ai_summary" in self.db_ids:
+            self.db_ids["ai_weekly_summary"] = self.db_ids["ai_summary"]
+        elif "ai_weekly_summary" in self.db_ids:
+            self.db_ids["ai_summary"] = self.db_ids["ai_weekly_summary"]
+
         if "lead" in self.db_ids:
             self.db_ids.setdefault("leads", self.db_ids["lead"])
+        if "leads" in self.db_ids:
+            self.db_ids.setdefault("lead", self.db_ids["leads"])
 
         # Canonical shortcuts (ostaju jer drugi dijelovi sistema ovo očekuju)
         self.goals_db_id = self.db_ids.get("goals")
@@ -133,7 +158,11 @@ class NotionService:
         )
         self._snapshot_include_blocks = os.getenv(
             "NOTION_SNAPSHOT_INCLUDE_BLOCKS", "false"
-        ).lower() in ("1", "true", "yes")
+        ).lower() in (
+            "1",
+            "true",
+            "yes",
+        )
         self._snapshot_blocks_page_limit = int(
             os.getenv("NOTION_SNAPSHOT_BLOCKS_PAGE_LIMIT", "5")
         )
@@ -153,6 +182,7 @@ class NotionService:
         # Log de-dupe (da ne spamuje na svaki reload)
         self._warned_inaccessible: Set[str] = set()
         self._warned_page_fallback: Set[str] = set()
+        self._warned_alias_conflict: Set[str] = set()
 
         # In-memory snapshot
         self.knowledge_snapshot: Dict[str, Any] = {
@@ -345,7 +375,7 @@ class NotionService:
 
         select = prop.get("select")
         if isinstance(select, dict) and select.get("name"):
-            return select["name"]
+            return select.get("name")
 
         return None
 
@@ -505,6 +535,12 @@ class NotionService:
             in (err or "").lower()
         )
 
+    def _is_soft_optional_snapshot_key(self, key: str) -> bool:
+        k = self._normalize_db_key(key) or key
+        if k in self._SNAPSHOT_HARD_REQUIRED_KEYS:
+            return False
+        return True
+
     async def _query_db(self, db_id: str, page_size: int) -> List[Dict[str, Any]]:
         resp = await self._safe_request(
             "POST",
@@ -605,19 +641,52 @@ class NotionService:
         return goal_name, status, priority, description
 
     # --------------------------------------------------
-    # WRAPPER UNWRAP (NEW)
+    # WRAPPER UNWRAP (NEW) + BATCH SUPPORT
     # --------------------------------------------------
 
-    def _unwrap_ai_command(self, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    def _unwrap_ai_command(
+        self, params: Dict[str, Any]
+    ) -> Optional[Union[Dict[str, Any], List[Dict[str, Any]]]]:
         """
         Supports payload shapes:
           params = {"ai_command": {...}}  # dict
           params = {"ai_command": AICommandLike}  # object with intent/params
-        Returns dict: {"intent": str, "params": dict} or None.
+          params = {"ai_commands": [{...}, {...}]}  # list (preferred)
+          params = {"ai_command": [{...}, {...}]}   # list (alias)
+        Returns:
+          - dict: {"intent": str, "params": dict}
+          - or list[dict] with the same shape (batch)
         """
         if not isinstance(params, dict):
             return None
 
+        # Batch support first
+        ai_list = params.get("ai_commands")
+        if not isinstance(ai_list, list):
+            ai_list = (
+                params.get("ai_command")
+                if isinstance(params.get("ai_command"), list)
+                else None
+            )
+
+        if isinstance(ai_list, list):
+            out: List[Dict[str, Any]] = []
+            for it in ai_list:
+                if isinstance(it, dict):
+                    inner_intent = it.get("intent")
+                    inner_params = it.get("params")
+                    if isinstance(inner_intent, str) and isinstance(inner_params, dict):
+                        out.append({"intent": inner_intent, "params": inner_params})
+                    continue
+
+                inner_intent = getattr(it, "intent", None)
+                inner_params = getattr(it, "params", None)
+                if isinstance(inner_intent, str) and isinstance(inner_params, dict):
+                    out.append({"intent": inner_intent, "params": inner_params})
+
+            return out if out else None
+
+        # Single support
         ai = params.get("ai_command")
         if ai is None:
             return None
@@ -635,6 +704,187 @@ class NotionService:
             return {"intent": inner_intent, "params": inner_params}
 
         return None
+
+    def _property_specs_has_last_created_goal_placeholder(self, specs: Any) -> bool:
+        if not isinstance(specs, dict):
+            return False
+        spec = specs.get("Goal")
+        if not isinstance(spec, dict):
+            return False
+        if spec.get("type") != "relation":
+            return False
+        return spec.get("related_to") == LAST_CREATED_GOAL_TOKEN
+
+    def _substitute_last_created_goal_placeholder(
+        self, specs: Dict[str, Any], *, last_goal_id: str
+    ) -> Dict[str, Any]:
+        """
+        Replaces:
+          "Goal": { "type":"relation", "related_to":"LAST_CREATED_GOAL" }
+        with:
+          "Goal": { "type":"relation", "page_ids":[<last_goal_id>] }
+        """
+        if not isinstance(specs, dict):
+            return {}
+        out: Dict[str, Any] = dict(specs)
+        spec = out.get("Goal")
+        if (
+            isinstance(spec, dict)
+            and spec.get("type") == "relation"
+            and spec.get("related_to") == LAST_CREATED_GOAL_TOKEN
+        ):
+            out["Goal"] = {"type": "relation", "page_ids": [last_goal_id]}
+        return out
+
+    def _is_goal_create_command(
+        self, *, intent: str, params: Dict[str, Any], result: Any
+    ) -> bool:
+        # Accept legacy goal intent too, for robustness
+        if intent == "create_goal":
+            return True
+
+        if intent != "create_page":
+            return False
+        if not isinstance(params, dict):
+            return False
+
+        db_key = params.get("db_key")
+        if isinstance(db_key, str) and self._normalize_db_key(db_key) == "goals":
+            return True
+
+        database_id = params.get("database_id")
+        if (
+            isinstance(database_id, str)
+            and self.goals_db_id
+            and database_id.strip() == str(self.goals_db_id).strip()
+        ):
+            return True
+
+        if isinstance(result, dict):
+            rid = result.get("database_id")
+            if (
+                isinstance(rid, str)
+                and self.goals_db_id
+                and rid.strip() == str(self.goals_db_id).strip()
+            ):
+                return True
+
+        return False
+
+    async def _execute_batch_ai_commands(
+        self, ai_commands: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """
+        Executes list of inner ai_commands sequentially.
+        Tracks last_created_goal_id and substitutes LAST_CREATED_GOAL in subsequent commands.
+        If no goal exists and a task asks for LAST_CREATED_GOAL: returns a per-item failure and continues.
+        """
+
+        class _CmdShim:
+            def __init__(self, intent: str, params: Dict[str, Any]) -> None:
+                self.intent = intent
+                self.params = params
+
+        results: List[Dict[str, Any]] = []
+        last_created_goal_id: Optional[str] = None
+        had_failures = False
+
+        for idx, item in enumerate(ai_commands, start=1):
+            intent = item.get("intent")
+            params = item.get("params")
+
+            if (
+                not isinstance(intent, str)
+                or not intent.strip()
+                or not isinstance(params, dict)
+            ):
+                had_failures = True
+                results.append(
+                    {
+                        "index": idx,
+                        "success": False,
+                        "reason": "invalid_ai_command_shape",
+                        "ai_command": item,
+                    }
+                )
+                continue
+
+            substituted = False
+            prop_specs = params.get("property_specs")
+
+            if isinstance(
+                prop_specs, dict
+            ) and self._property_specs_has_last_created_goal_placeholder(prop_specs):
+                if isinstance(last_created_goal_id, str) and last_created_goal_id:
+                    params = dict(params)
+                    params["property_specs"] = (
+                        self._substitute_last_created_goal_placeholder(
+                            prop_specs, last_goal_id=last_created_goal_id
+                        )
+                    )
+                    substituted = True
+                else:
+                    had_failures = True
+                    logger.warning(
+                        "Batch execution: missing last_created_goal_id for LAST_CREATED_GOAL placeholder (index=%s).",
+                        idx,
+                    )
+                    results.append(
+                        {
+                            "index": idx,
+                            "success": False,
+                            "reason": "missing_last_created_goal_id_for_relation",
+                            "placeholder": LAST_CREATED_GOAL_TOKEN,
+                        }
+                    )
+                    continue
+
+            try:
+                res = await self.execute(_CmdShim(intent=intent, params=params))
+            except Exception as exc:
+                had_failures = True
+                logger.exception(
+                    "Batch execution failed (index=%s intent=%s)", idx, intent
+                )
+                results.append(
+                    {
+                        "index": idx,
+                        "success": False,
+                        "reason": str(exc),
+                        "error_type": exc.__class__.__name__,
+                    }
+                )
+                continue
+
+            if self._is_goal_create_command(intent=intent, params=params, result=res):
+                pid = res.get("notion_page_id") if isinstance(res, dict) else None
+                if isinstance(pid, str) and pid:
+                    last_created_goal_id = pid
+
+            ok = True
+            if isinstance(res, dict) and (
+                res.get("success") is False or res.get("ok") is False
+            ):
+                ok = False
+                had_failures = True
+
+            results.append(
+                {
+                    "index": idx,
+                    "success": ok,
+                    "intent": intent,
+                    "substituted_last_created_goal": substituted,
+                    "result": res,
+                }
+            )
+
+        return {
+            "success": True,
+            "batch": True,
+            "had_failures": had_failures,
+            "last_created_goal_id": last_created_goal_id,
+            "results": results,
+        }
 
     # --------------------------------------------------
     # EXECUTION ENTRY POINT
@@ -661,8 +911,12 @@ class NotionService:
             )
             if not unwrapped:
                 raise RuntimeError(
-                    "notion_write/notion_read requires params.ai_command with inner intent/params"
+                    "notion_write/notion_read requires params.ai_command (or ai_commands) with inner intent/params"
                 )
+
+            if isinstance(unwrapped, list):
+                return await self._execute_batch_ai_commands(unwrapped)
+
             intent = unwrapped["intent"]
             params = unwrapped["params"]
 
@@ -947,11 +1201,28 @@ class NotionService:
 
         return props
 
-    async def sync_knowledge_snapshot(self):
-        logger.info(">> Syncing Notion knowledge snapshot")
+    # --------------------------------------------------
+    # SNAPSHOT (READ-ONLY)
+    # --------------------------------------------------
 
-        snapshot: Dict[str, Any] = {
-            "last_sync": datetime.utcnow().isoformat(),
+    async def build_knowledge_snapshot(self) -> Dict[str, Any]:
+        """
+        Read-only: queries configured Notion DBs and produces a stable wrapper:
+          {
+            "payload": { ... },
+            "meta": { "ok": bool, "errors": [...], "synced_at": iso, ... }
+          }
+
+        Best-effort:
+        - never raises
+        - soft derived DBs do not emit *__error keys
+        - IDs that are actually pages (common for SOP_* vars) auto-fallback to retrieve_page
+        """
+        synced_at = datetime.utcnow().isoformat() + "Z"
+        errors: List[str] = []
+
+        payload: Dict[str, Any] = {
+            "last_sync": synced_at,
             "goals": [],
             "tasks": [],
             "projects": [],
@@ -967,371 +1238,320 @@ class NotionService:
             "agent_exchange_summary": None,
             "extra_databases": {},
             "time_management": None,
-            "snapshot_meta": {
-                "page_size": self._snapshot_page_size,
-                "compact": self._snapshot_compact,
-                "include_blocks": self._snapshot_include_blocks,
-                "blocks_db_keys": self._snapshot_blocks_db_keys,
-                "blocks_page_limit": self._snapshot_blocks_page_limit,
-                "blocks_per_page_limit": self._snapshot_blocks_per_page_limit,
+            "snapshot_meta": {},
+        }
+
+        async def _fetch_db(db_key: str, db_id: str) -> List[Dict[str, Any]]:
+            results = await self._query_db(db_id, self._snapshot_page_size)
+
+            # Optional blocks (DB pages)
+            if (
+                self._snapshot_include_blocks
+                and self._snapshot_blocks_page_limit > 0
+                and self._snapshot_blocks_per_page_limit > 0
+                and db_key in set(self._snapshot_blocks_db_keys or [])
+            ):
+                limited_pages = results[: int(self._snapshot_blocks_page_limit)]
+                for p in limited_pages:
+                    pid = p.get("id")
+                    if isinstance(pid, str) and pid:
+                        try:
+                            p["__blocks"] = await self._retrieve_blocks_limited(
+                                pid, int(self._snapshot_blocks_per_page_limit)
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            if db_key not in self._warned_page_fallback:
+                                self._warned_page_fallback.add(db_key)
+                                logger.warning(
+                                    "Snapshot blocks fetch failed for %s: %s",
+                                    db_key,
+                                    exc,
+                                )
+
+            if self._snapshot_compact:
+                return [self._compact_page(p) for p in results if isinstance(p, dict)]
+            return [p for p in results if isinstance(p, dict)]
+
+        async def _fetch_page_as_list(
+            db_key: str, page_id: str
+        ) -> List[Dict[str, Any]]:
+            page = await self._retrieve_page(page_id)
+
+            # Optional blocks (single page)
+            if (
+                self._snapshot_include_blocks
+                and self._snapshot_blocks_per_page_limit > 0
+                and db_key in set(self._snapshot_blocks_db_keys or [])
+            ):
+                pid = page.get("id")
+                if isinstance(pid, str) and pid:
+                    try:
+                        page["__blocks"] = await self._retrieve_blocks_limited(
+                            pid, int(self._snapshot_blocks_per_page_limit)
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        if db_key not in self._warned_page_fallback:
+                            self._warned_page_fallback.add(db_key)
+                            logger.warning(
+                                "Snapshot blocks fetch failed for page %s: %s",
+                                db_key,
+                                exc,
+                            )
+
+            compact = self._compact_page(page) if self._snapshot_compact else page
+            return [compact] if isinstance(compact, dict) else [{"raw": compact}]
+
+        for db_key, db_id in sorted(self.db_ids.items(), key=lambda x: str(x[0])):
+            k = self._normalize_db_key(db_key) or db_key
+            if not isinstance(db_id, str) or not db_id.strip():
+                continue
+
+            try:
+                pages = await _fetch_db(k, db_id.strip())
+            except Exception as exc:  # noqa: BLE001
+                err_text = str(exc)
+
+                # 1) If ID is actually a page -> fallback to retrieve_page (no error)
+                if self._looks_like_page_not_db(err_text):
+                    try:
+                        pages = await _fetch_page_as_list(k, db_id.strip())
+                        if k not in self._warned_page_fallback:
+                            self._warned_page_fallback.add(k)
+                            logger.warning(
+                                "Snapshot: '%s' looks like page-id; using retrieve_page fallback.",
+                                k,
+                            )
+                    except Exception as exc2:  # noqa: BLE001
+                        # If fallback fails, treat as soft skip unless hard required
+                        err2 = str(exc2)
+                        if (
+                            self._is_soft_optional_snapshot_key(k)
+                            or k in self._SOFT_DERIVED_VIEW_KEYS
+                        ):
+                            if k not in self._warned_inaccessible:
+                                self._warned_inaccessible.add(k)
+                                logger.warning(
+                                    "Snapshot: '%s' page fallback failed (soft-skip): %s",
+                                    k,
+                                    err2,
+                                )
+                            continue
+                        errors.append(f"{k}__error:{err2}")
+                        logger.warning(
+                            "Snapshot: '%s' page fallback failed (hard): %s", k, err2
+                        )
+                        continue
+
+                # 2) Optional derived views: soft-skip (no error)
+                elif k in self._SOFT_DERIVED_VIEW_KEYS and (
+                    self._is_object_not_found(err_text)
+                    or self._is_no_access(err_text)
+                    or self._looks_like_page_not_db(err_text)
+                ):
+                    if k not in self._warned_inaccessible:
+                        self._warned_inaccessible.add(k)
+                        logger.warning(
+                            "Snapshot: derived view '%s' not accessible (soft-skip): %s",
+                            k,
+                            err_text,
+                        )
+                    continue
+
+                # 3) Soft optional keys: if no-access or not-found -> soft-skip (no error)
+                elif self._is_soft_optional_snapshot_key(k) and (
+                    self._is_object_not_found(err_text) or self._is_no_access(err_text)
+                ):
+                    if k not in self._warned_inaccessible:
+                        self._warned_inaccessible.add(k)
+                        logger.warning(
+                            "Snapshot: '%s' not accessible (soft-skip): %s", k, err_text
+                        )
+                    continue
+
+                # 4) Hard required -> record error
+                else:
+                    errors.append(f"{k}__error:{err_text}")
+                    logger.warning(
+                        "Snapshot: db '%s' query failed (best-effort): %s", k, err_text
+                    )
+                    continue
+
+            # --- store fetched content ---
+            if k == "goals":
+                payload["goals"] = pages
+                if not self._snapshot_compact:
+                    payload["goals_summary"] = self._build_status_priority_summary(
+                        pages, self.goals_status_prop, self.goals_priority_prop
+                    )
+                else:
+                    payload["goals_summary"] = {
+                        "total": len(pages),
+                        "by_status": {},
+                        "by_priority": {},
+                    }
+
+            elif k == "tasks":
+                payload["tasks"] = pages
+                if not self._snapshot_compact:
+                    payload["tasks_summary"] = self._build_status_priority_summary(
+                        pages, self.tasks_status_prop, self.tasks_priority_prop
+                    )
+                else:
+                    payload["tasks_summary"] = {
+                        "total": len(pages),
+                        "by_status": {},
+                        "by_priority": {},
+                    }
+
+            elif k == "projects":
+                payload["projects"] = pages
+                payload["projects_summary"] = {
+                    "total": len(pages),
+                    "by_status": {},
+                    "by_priority": {},
+                }
+
+            elif k == "kpi":
+                payload["kpi"] = pages
+                payload["kpi_summary"] = {"total": len(pages)}
+
+            elif k in ("leads", "lead"):
+                payload["leads"] = pages
+                payload["leads_summary"] = {"total": len(pages)}
+
+            elif k == "agent_exchange":
+                payload["agent_exchange"] = pages
+                payload["agent_exchange_summary"] = {"total": len(pages)}
+
+            elif k in ("ai_summary", "ai_weekly_summary"):
+                payload["ai_summary"] = pages
+
+            else:
+                payload["extra_databases"][k] = pages
+
+        if (
+            isinstance(self._time_management_page_id, str)
+            and self._time_management_page_id.strip()
+        ):
+            try:
+                page = await self._retrieve_page(self._time_management_page_id.strip())
+                payload["time_management"] = (
+                    self._compact_page(page) if self._snapshot_compact else page
+                )
+            except Exception as exc:  # noqa: BLE001
+                # time_management is soft optional
+                logger.warning(
+                    "Snapshot: time_management page not accessible (soft-skip): %s", exc
+                )
+
+        payload["snapshot_meta"] = {
+            "ok": True,
+            "errors": errors,
+            "synced_at": synced_at,
+            "page_size": int(self._snapshot_page_size),
+            "compact": bool(self._snapshot_compact),
+        }
+
+        self.knowledge_snapshot = dict(payload)
+
+        return {
+            "payload": payload,
+            "meta": {
+                "ok": True,
+                "success": True,
+                "best_effort": True,
+                "errors": errors,
+                "synced_at": synced_at,
+                "source": "notion_service.build_knowledge_snapshot",
             },
         }
 
-        def maybe_compact(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-            if not self._snapshot_compact:
-                return rows
-            return [self._compact_page(r) for r in rows]
+    async def sync_knowledge_snapshot(self) -> Dict[str, Any]:
+        """
+        Read-only snapshot sync used by refresh_snapshot intent.
 
-        goals_results: List[Dict[str, Any]] = []
-        tasks_results: List[Dict[str, Any]] = []
-        projects_results: List[Dict[str, Any]] = []
-        kpi_results: List[Dict[str, Any]] = []
-        leads_results: List[Dict[str, Any]] = []
-        agent_exchange_results: List[Dict[str, Any]] = []
-        ai_summary_results: List[Dict[str, Any]] = []
-
-        if self.goals_db_id:
-            try:
-                goals_results = await self._query_db(
-                    self.goals_db_id, self._snapshot_page_size
-                )
-                snapshot["goals"] = maybe_compact(goals_results)
-                snapshot["goals_summary"] = self._build_status_priority_summary(
-                    goals_results,
-                    status_prop_name=self.goals_status_prop,
-                    priority_prop_name=self.goals_priority_prop,
-                )
-            except Exception as exc:
-                logger.info("Failed to sync goals snapshot from Notion: %s", exc)
-                snapshot["goals_error"] = str(exc)
-
-        if self.tasks_db_id:
-            try:
-                tasks_results = await self._query_db(
-                    self.tasks_db_id, self._snapshot_page_size
-                )
-                snapshot["tasks"] = maybe_compact(tasks_results)
-                snapshot["tasks_summary"] = self._build_status_priority_summary(
-                    tasks_results,
-                    status_prop_name=self.tasks_status_prop,
-                    priority_prop_name=self.tasks_priority_prop,
-                )
-            except Exception as exc:
-                logger.info("Failed to sync tasks snapshot from Notion: %s", exc)
-                snapshot["tasks_error"] = str(exc)
-
-        projects_db_id = self.projects_db_id or self.db_ids.get("projects")
-        if projects_db_id:
-            try:
-                projects_results = await self._query_db(
-                    projects_db_id, self._snapshot_page_size
-                )
-                snapshot["projects"] = maybe_compact(projects_results)
-                snapshot["projects_summary"] = self._build_status_priority_summary(
-                    projects_results
-                )
-            except Exception as exc:
-                logger.info("Failed to sync projects snapshot from Notion: %s", exc)
-                snapshot["projects_error"] = str(exc)
-
-        kpi_db_id = self.db_ids.get("kpi")
-        if kpi_db_id:
-            try:
-                kpi_results = await self._query_db(kpi_db_id, self._snapshot_page_size)
-                snapshot["kpi"] = maybe_compact(kpi_results)
-                snapshot["kpi_summary"] = self._build_status_priority_summary(
-                    kpi_results
-                )
-            except Exception as exc:
-                logger.info("Failed to sync KPI snapshot from Notion: %s", exc)
-                snapshot["kpi_error"] = str(exc)
-
-        leads_db_id = self.db_ids.get("leads") or self.db_ids.get("lead")
-        if leads_db_id:
-            try:
-                leads_results = await self._query_db(
-                    leads_db_id, self._snapshot_page_size
-                )
-                snapshot["leads"] = maybe_compact(leads_results)
-                snapshot["leads_summary"] = self._build_status_priority_summary(
-                    leads_results
-                )
-            except Exception as exc:
-                logger.info(
-                    "Failed to sync leads snapshot from Notion (non-fatal): %s", exc
-                )
-                snapshot["leads_error"] = str(exc)
-
-        agent_exchange_db_id = self.db_ids.get("agent_exchange")
-        if agent_exchange_db_id:
-            try:
-                agent_exchange_results = await self._query_db(
-                    agent_exchange_db_id, self._snapshot_page_size
-                )
-                snapshot["agent_exchange"] = maybe_compact(agent_exchange_results)
-                snapshot["agent_exchange_summary"] = (
-                    self._build_status_priority_summary(agent_exchange_results)
-                )
-            except Exception as exc:
-                logger.info(
-                    "Failed to sync agent_exchange snapshot from Notion: %s", exc
-                )
-                snapshot["agent_exchange_error"] = str(exc)
-
-        ai_summary_db_id = self.db_ids.get("ai_summary") or self.db_ids.get(
-            "ai_weekly_summary"
-        )
-        if ai_summary_db_id:
-            try:
-                ai_summary_results = await self._query_db(
-                    ai_summary_db_id, self._snapshot_page_size
-                )
-                snapshot["ai_summary"] = maybe_compact(ai_summary_results)
-            except Exception as exc:
-                logger.info(
-                    "Failed to sync ai_summary snapshot from Notion (non-fatal): %s",
-                    exc,
-                )
-                snapshot["ai_summary_error"] = str(exc)
-
-        core_keys = {
-            "goals",
-            "tasks",
-            "projects",
-            "kpi",
-            "lead",
-            "leads",
-            "agent_exchange",
-            "ai_summary",
-            "ai_weekly_summary",
-        }
-
-        for db_key, db_id in self.db_ids.items():
-            if db_key in core_keys:
-                continue
-
-            try:
-                rows = await self._query_db(db_id, self._snapshot_page_size)
-                snapshot["extra_databases"][db_key] = maybe_compact(rows)
-
-                if (
-                    self._snapshot_include_blocks
-                    and db_key in self._snapshot_blocks_db_keys
-                ):
-                    pages = rows[: self._snapshot_blocks_page_limit]
-                    blocks_map: Dict[str, Any] = {}
-                    for p in pages:
-                        pid = p.get("id") if isinstance(p, dict) else None
-                        if not pid:
-                            continue
-                        try:
-                            blocks = await self._retrieve_blocks_limited(
-                                pid, self._snapshot_blocks_per_page_limit
-                            )
-                            blocks_map[pid] = blocks
-                        except Exception as exc:
-                            blocks_map[pid] = {"error": str(exc)}
-                    snapshot["extra_databases"][f"{db_key}__blocks"] = blocks_map
-
-                continue
-
-            except Exception as exc:
-                msg = str(exc)
-
-                if self._looks_like_page_not_db(msg):
-                    if db_key not in self._warned_page_fallback:
-                        self._warned_page_fallback.add(db_key)
-                        logger.info(
-                            "Notion source '%s' configured as DB but is a PAGE. Falling back to page read.",
-                            db_key,
-                        )
-                    try:
-                        page = await self._retrieve_page(db_id)
-                        blocks = None
-                        if (
-                            self._snapshot_include_blocks
-                            and db_key in self._snapshot_blocks_db_keys
-                        ):
-                            blocks = await self._retrieve_blocks_limited(
-                                db_id, self._snapshot_blocks_per_page_limit
-                            )
-                        snapshot["extra_databases"][db_key] = {
-                            "kind": "page",
-                            "page": self._compact_page(page)
-                            if self._snapshot_compact
-                            else page,
-                            "blocks": blocks,
-                        }
-                    except Exception as exc2:
-                        msg2 = str(exc2)
-                        if db_key in self._SOFT_DERIVED_VIEW_KEYS and (
-                            self._is_no_access(msg2) or self._is_object_not_found(msg2)
-                        ):
-                            continue
-                        snapshot["extra_databases"][f"{db_key}__error"] = msg2
-
-                    if db_key not in self._warned_inaccessible:
-                        self._warned_inaccessible.add(db_key)
-                        logger.info(
-                            "Notion source '%s' not accessible (share DB/page with integration). key=%s",
-                            db_key,
-                            db_key,
-                        )
-                    continue
-
-                if self._is_no_access(msg) or self._is_object_not_found(msg):
-                    if db_key in self._SOFT_DERIVED_VIEW_KEYS:
-                        continue
-
-                    snapshot["extra_databases"][f"{db_key}__error"] = msg
-                    if db_key not in self._warned_inaccessible:
-                        self._warned_inaccessible.add(db_key)
-                        logger.info(
-                            "Notion source '%s' not accessible (share DB/page with integration). key=%s",
-                            db_key,
-                            db_key,
-                        )
-                    continue
-
-                if db_key in self._SOFT_DERIVED_VIEW_KEYS and (
-                    self._is_no_access(msg) or self._is_object_not_found(msg)
-                ):
-                    continue
-
-                snapshot["extra_databases"][f"{db_key}__error"] = msg
-                logger.info("Failed to sync db_key='%s' from Notion: %s", db_key, msg)
-
-        if self._time_management_page_id:
-            try:
-                page = await self._retrieve_page(self._time_management_page_id)
-                blocks = None
-                if self._snapshot_include_blocks:
-                    blocks = await self._retrieve_blocks_limited(
-                        self._time_management_page_id,
-                        self._snapshot_blocks_per_page_limit,
-                    )
-                snapshot["time_management"] = {
-                    "page": self._compact_page(page)
-                    if self._snapshot_compact
-                    else page,
-                    "blocks": blocks,
+        Canon:
+        - MUST NOT raise
+        - MUST return stable dict result
+        - MUST update KnowledgeSnapshotService (wrapper with payload+meta)
+        """
+        try:
+            wrapper = await self.build_knowledge_snapshot()
+            if not isinstance(wrapper, dict) or not isinstance(
+                wrapper.get("payload"), dict
+            ):
+                wrapper = {
+                    "payload": dict(self.knowledge_snapshot),
+                    "meta": {
+                        "ok": True,
+                        "success": True,
+                        "best_effort": True,
+                        "errors": ["snapshot_wrapper_invalid"],
+                        "synced_at": datetime.utcnow().isoformat() + "Z",
+                        "source": "notion_service.sync_knowledge_snapshot",
+                    },
                 }
-            except Exception as exc:
-                logger.info("Failed to sync Time Management page (non-fatal): %s", exc)
-                snapshot["time_management_error"] = str(exc)
 
-        core_total = (
-            len(goals_results)
-            + len(tasks_results)
-            + len(projects_results)
-            + len(kpi_results)
-            + len(leads_results)
-            + len(agent_exchange_results)
-            + len(ai_summary_results)
-        )
+            try:
+                KnowledgeSnapshotService.update_snapshot(wrapper)
+            except Exception as exc:  # noqa: BLE001
+                meta = (
+                    wrapper.get("meta") if isinstance(wrapper.get("meta"), dict) else {}
+                )
+                errs = (
+                    meta.get("errors") if isinstance(meta.get("errors"), list) else []
+                )
+                errs.append(f"knowledge_snapshot_service_update_failed:{exc}")
+                meta["errors"] = errs
+                meta["ok"] = True
+                meta["success"] = True
+                wrapper["meta"] = meta
 
-        extra_has_any_data = False
-        extra_db = snapshot.get("extra_databases") or {}
-        if isinstance(extra_db, dict):
-            for k, v in extra_db.items():
-                if k.endswith("__error"):
-                    continue
-                if isinstance(v, list) and len(v) > 0:
-                    extra_has_any_data = True
-                    break
-                if isinstance(v, dict) and v.get("kind") == "page":
-                    extra_has_any_data = True
-                    break
-
-        has_any_data = (
-            (core_total > 0)
-            or extra_has_any_data
-            or bool(snapshot.get("time_management"))
-        )
-
-        error_keys = [
-            k
-            for k in snapshot.keys()
-            if isinstance(k, str) and k.endswith("_error") and snapshot.get(k)
-        ]
-        extra_error_keys: List[str] = []
-        if isinstance(extra_db, dict):
-            extra_error_keys = [k for k in extra_db.keys() if k.endswith("__error")]
-
-        all_errors = error_keys + extra_error_keys
-
-        if not has_any_data:
-            logger.warning(
-                ">> Snapshot refresh produced NO DATA. core_total=%s errors=%s",
-                core_total,
-                all_errors,
-            )
             return {
-                "ok": False,
-                "reason": "SNAPSHOT_EMPTY_AFTER_REFRESH",
-                "last_sync": snapshot["last_sync"],
-                "core_total": core_total,
-                "errors": all_errors,
-                "time_management_loaded": bool(snapshot.get("time_management")),
+                "success": True,
+                "ok": True,
+                "best_effort": True,
+                "action": "refresh_snapshot",
+                "payload": wrapper.get("payload"),
+                "meta": wrapper.get("meta"),
+                "errors": (wrapper.get("meta") or {}).get("errors", [])
+                if isinstance(wrapper.get("meta"), dict)
+                else [],
             }
 
-        self.knowledge_snapshot = snapshot
-        KnowledgeSnapshotService.update_snapshot(snapshot)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("sync_knowledge_snapshot failed (best-effort): %s", exc)
 
-        logger.info(
-            ">> Notion knowledge snapshot synced "
-            f"(goals={len(goals_results)}, tasks={len(tasks_results)}, "
-            f"projects={len(projects_results)}, kpi={len(kpi_results)}, "
-            f"leads={len(leads_results)}, agent_exchange={len(agent_exchange_results)}, "
-            f"ai_summary={len(ai_summary_results)}, extra_db={len(snapshot['extra_databases'])})"
-        )
+            wrapper = {
+                "payload": dict(self.knowledge_snapshot),
+                "meta": {
+                    "ok": True,
+                    "success": True,
+                    "best_effort": True,
+                    "errors": [f"sync_knowledge_snapshot_failed:{exc}"],
+                    "synced_at": datetime.utcnow().isoformat() + "Z",
+                    "source": "notion_service.sync_knowledge_snapshot",
+                },
+            }
+            try:
+                KnowledgeSnapshotService.update_snapshot(wrapper)
+            except Exception:
+                pass
 
-        core_error_keys: List[str] = []
-        if self.goals_db_id and snapshot.get("goals_error"):
-            core_error_keys.append("goals_error")
-        if self.tasks_db_id and snapshot.get("tasks_error"):
-            core_error_keys.append("tasks_error")
-
-        projects_db_id2 = self.projects_db_id or self.db_ids.get("projects")
-        if projects_db_id2 and snapshot.get("projects_error"):
-            core_error_keys.append("projects_error")
-
-        ok_flag = len(core_error_keys) == 0
-        failure_reason = None
-        if not ok_flag:
-            failure_reason = "refresh_snapshot failed for core databases: " + ", ".join(
-                core_error_keys
-            )
-
-        return {
-            "ok": ok_flag,
-            "reason": failure_reason,
-            "last_sync": snapshot["last_sync"],
-            "total_goals": len(goals_results),
-            "total_tasks": len(tasks_results),
-            "total_projects": len(projects_results),
-            "total_kpi": len(kpi_results),
-            "total_leads": len(leads_results),
-            "total_agent_exchange": len(agent_exchange_results),
-            "total_ai_summary": len(ai_summary_results),
-            "extra_databases_keys": list(snapshot["extra_databases"].keys()),
-            "time_management_loaded": bool(snapshot.get("time_management")),
-            "errors": all_errors,
-            "core_errors": core_error_keys,
-        }
+            return {
+                "success": True,
+                "ok": True,
+                "best_effort": True,
+                "action": "refresh_snapshot",
+                "payload": wrapper.get("payload"),
+                "meta": wrapper.get("meta"),
+                "errors": wrapper["meta"]["errors"],
+            }
 
     def get_knowledge_snapshot(self) -> Dict[str, Any]:
         return dict(self.knowledge_snapshot)
 
-    # --------------------------------------------------
-    # SHUTDOWN (close aiohttp session)
-    # --------------------------------------------------
-
     async def aclose(self) -> None:
-        """
-        Graceful shutdown for aiohttp session.
-        Eliminates: 'Unclosed client session' / 'Unclosed connector' on Ctrl+C / reload.
-        """
         sess = self.session
         self.session = None
         if sess is not None and not sess.closed:
@@ -1340,10 +1560,6 @@ class NotionService:
             except Exception:
                 pass
 
-
-# --------------------------------------------------
-# SINGLETON (KANONSKI)
-# --------------------------------------------------
 
 _NOTION_SERVICE_SINGLETON: Optional[NotionService] = None
 

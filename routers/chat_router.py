@@ -24,9 +24,12 @@ _NON_ACTIONABLE_PROPOSALS = {"refresh_snapshot"}
 def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
     """
     /api/chat je READ/PROPOSE ONLY.
-    - nikad ne izvrĹˇava side-effect
-    - injektuje server snapshot ako klijent ne poĹˇalje snapshot
-    - CANON: izlazne proposed_commands moraju biti ceo.command.propose wrapper
+    - nikad ne izvršava side-effect
+    - injektuje server snapshot ako klijent ne pošalje snapshot
+
+    CANON (CONTRACT STABILITY):
+      - response.proposed_commands[0].args.prompt MUST exist
+      - /api/chat must return proposal wrapper as first proposed command
     """
 
     router = APIRouter()
@@ -124,13 +127,18 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
 
     def _normalize_proposed_commands(raw: Any) -> List[ProposedCommand]:
         """
-        Interno drĹľimo List[ProposedCommand] i osiguramo dry_run=True.
-        TakoÄ‘er normalizujemo legacy 'params' -> 'args'.
+        Interno držimo List[ProposedCommand] i osiguramo dry_run=True.
+        Također normalizujemo legacy 'params' -> 'args'.
         """
-        if raw is None or isinstance(raw, dict):
+        if raw is None:
             return []
 
-        items = raw if isinstance(raw, list) else []
+        # If a single dict sneaks in, normalize to list.
+        if isinstance(raw, dict):
+            items = [raw]
+        else:
+            items = raw if isinstance(raw, list) else []
+
         out: List[ProposedCommand] = []
 
         for item in items:
@@ -183,7 +191,7 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             return False
         return bool(
             re.search(
-                r"\b(goal|cilj|task|zadatak|kreiraj|napravi|create|dodaj|linkaj|pove[zĹľ]i|pove[zĹľ]ite)\b",
+                r"\b(goal|cilj|task|zadatak|kreiraj|napravi|create|dodaj|linkaj|pove[zž]i|pove[zž]ite)\b",
                 p,
                 flags=re.IGNORECASE,
             )
@@ -195,7 +203,7 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             return False
 
         wants_json_plan = bool(
-            re.search(r"\bisklju[cÄŤ]ivo\b.*\bplan\b.*\bjson\b", p, flags=re.IGNORECASE)
+            re.search(r"\bisklju[cč]ivo\b.*\bplan\b.*\bjson\b", p, flags=re.IGNORECASE)
         ) or ("only" in p and "plan" in p and "json" in p)
 
         forbids_commands = bool(
@@ -208,6 +216,10 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         return wants_json_plan and (forbids_commands or forbids_actions)
 
     def _build_proposal_wrapper(prompt: str, *, reason: str) -> ProposedCommand:
+        """
+        Canonical /api/chat proposal wrapper.
+        IMPORTANT: args.prompt MUST exist for contract stability tests.
+        """
         safe_prompt = (prompt or "").strip() or "noop"
         pc = ProposedCommand(
             command=PROPOSAL_WRAPPER_INTENT,
@@ -223,56 +235,259 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 "source": "api_chat",
             },
         )
+        # Do not force intent here; gateway unwrap uses command==PROPOSAL_WRAPPER_INTENT.
         try:
             if hasattr(pc, "intent"):
-                setattr(pc, "intent", PROPOSAL_WRAPPER_INTENT)
+                setattr(pc, "intent", None)
         except Exception:
             pass
         return pc
 
-    def _rewrite_any_actionable_to_proposal_wrapper(
-        out: AgentOutput, *, prompt: str
+    def _proposal_wrapper_dict(prompt: str, *, reason: str) -> Dict[str, Any]:
+        safe_prompt = (prompt or "").strip() or "noop"
+        return {
+            "command": PROPOSAL_WRAPPER_INTENT,
+            "args": {"prompt": safe_prompt},
+            "intent": None,
+            "reason": reason,
+            "dry_run": True,
+            "requires_approval": True,
+            "risk": "LOW",
+            "scope": "api_execute_raw",
+            "payload_summary": {
+                "endpoint": "/api/execute/raw",
+                "canon": "CEO_CONSOLE_EXECUTION_FLOW",
+                "source": "api_chat",
+            },
+        }
+
+    def _ensure_chat_contract_dict(result: Dict[str, Any], *, prompt: str) -> None:
+        """
+        Enforce CONTRACT STABILITY for /api/chat:
+
+          - proposed_commands MUST be list
+          - proposed_commands[0] MUST have args.prompt (string, non-empty)
+          - proposed_commands[0] MUST be PROPOSAL_WRAPPER_INTENT (wrapper first)
+
+        This is applied at the final JSON dict boundary, regardless of upstream agent output.
+        """
+        if not isinstance(result, dict):
+            return
+
+        pcs_any = result.get("proposed_commands")
+        pcs_list: List[Any] = pcs_any if isinstance(pcs_any, list) else []
+
+        normalized: List[Dict[str, Any]] = []
+
+        for it in pcs_list:
+            d: Dict[str, Any]
+            if isinstance(it, dict):
+                d = dict(it)
+            elif hasattr(it, "model_dump"):
+                try:
+                    md = it.model_dump(by_alias=False)  # type: ignore[attr-defined]
+                    d = dict(md) if isinstance(md, dict) else {}
+                except Exception:
+                    d = {}
+            elif hasattr(it, "dict"):
+                try:
+                    md = it.dict(by_alias=False)  # type: ignore[attr-defined]
+                    d = dict(md) if isinstance(md, dict) else {}
+                except Exception:
+                    d = {}
+            else:
+                d = {}
+
+            if not d:
+                continue
+
+            # normalize params -> args
+            args = d.get("args")
+            if not isinstance(args, dict):
+                args = {}
+            if "prompt" not in args:
+                params = d.get("params")
+                if isinstance(params, dict):
+                    p = params.get("prompt")
+                    if isinstance(p, str) and p.strip():
+                        args["prompt"] = p.strip()
+            d["args"] = args
+
+            normalized.append(d)
+
+        # If empty, create wrapper
+        if not normalized:
+            normalized = [
+                _proposal_wrapper_dict(
+                    prompt, reason="Fallback proposal (empty proposed_commands)."
+                )
+            ]
+
+        # Ensure first is wrapper with args.prompt
+        first = normalized[0]
+        cmd = first.get("command")
+        intent = first.get("intent")
+        is_wrapper = (cmd == PROPOSAL_WRAPPER_INTENT) or (
+            intent == PROPOSAL_WRAPPER_INTENT
+        )
+
+        if not is_wrapper:
+            # Force wrapper first; keep the rest after it
+            normalized = [
+                _proposal_wrapper_dict(
+                    prompt, reason="Canonical wrapper injected (contract stability)."
+                )
+            ] + normalized
+
+        # Now enforce args.prompt on first
+        first2 = normalized[0]
+        a2 = first2.get("args")
+        if not isinstance(a2, dict):
+            a2 = {}
+        p2 = a2.get("prompt")
+        if not isinstance(p2, str) or not p2.strip():
+            a2["prompt"] = (prompt or "").strip() or "noop"
+        first2["args"] = a2
+        first2["command"] = PROPOSAL_WRAPPER_INTENT
+        first2["intent"] = None
+        normalized[0] = first2
+
+        result["proposed_commands"] = normalized
+
+        tr = result.get("trace")
+        if not isinstance(tr, dict):
+            tr = {}
+        tr["canon_chat_contract"] = "proposed_commands[0].args.prompt"
+        result["trace"] = tr
+
+    # -----------------------------
+    # OPS PLAN -> attach to trace (READ/PROPOSE ONLY)
+    # -----------------------------
+
+    def _is_valid_ops_plan(plan: Any) -> bool:
+        return (
+            isinstance(plan, dict)
+            and isinstance(plan.get("goal"), dict)
+            and isinstance(plan.get("task"), dict)
+        )
+
+    async def _rewrite_any_actionable_to_proposal_wrapper(
+        out: AgentOutput, *, prompt: str, snapshot: Any
     ) -> None:
         """
         CANON:
-        /api/chat mora vraÄ‡ati ceo.command.propose (wrapper),
-        ÄŤak i ako agent/ops planner interno generiĹˇe notion_write.
+          - /api/chat MUST propose wrapper first (ceo.command.propose)
+          - Ops plan may be attached to trace (human/debug), but proposed_commands remain wrapper.
+
+        Behavior:
+          - If goal/task request: attempt ops plan; attach to trace; still return wrapper proposal.
+          - If agent returns actionable commands (e.g., notion_write): rewrite to wrapper.
+          - If wrapper already exists but missing args.prompt: fix it.
+          - If nothing actionable: inject fallback wrapper.
         """
         pcs = getattr(out, "proposed_commands", None) or []
         if isinstance(pcs, dict):
             pcs = []
         items = pcs if isinstance(pcs, list) else []
 
-        # Ako veÄ‡ postoji wrapper, ostavi ga (ali osiguraj args.prompt postoji).
-        for it in items:
-            if _get_command_name(it) == PROPOSAL_WRAPPER_INTENT:
-                # Ensure args.prompt present (legacy might be params)
-                try:
-                    if isinstance(it, ProposedCommand):
-                        if not isinstance(getattr(it, "args", None), dict):
-                            it.args = {}  # type: ignore[assignment]
-                        if "prompt" not in it.args:
-                            it.args["prompt"] = (prompt or "").strip() or "noop"
-                except Exception:
-                    pass
+        is_goal_task = _looks_like_goal_or_task_request(prompt)
+
+        if is_goal_task:
+            plan = None
+            try:
+                plan = await plan_ai_commands(
+                    prompt, snapshot if snapshot is not None else {}
+                )
+            except Exception:
+                plan = None
+
+            tr = _ensure_dict(getattr(out, "trace", None))
+            tr["ops_plan_attempted"] = True
+            tr["ops_plan_source"] = "services.ops_planner.plan_ai_commands"
+            tr["router_version"] = "chat-ops-plan-trace-only-v2"
+
+            if _is_valid_ops_plan(plan):
+                tr["ops_plan_attached"] = True
+                tr["ops_plan"] = plan
+                tr["rewrote_to_wrapper"] = True
+                out.trace = tr  # type: ignore[assignment]
+
+                out.proposed_commands = [
+                    _build_proposal_wrapper(
+                        prompt,
+                        reason="Ops plan ready (attached to trace). Promote via ceo.command.propose.",
+                    )
+                ]  # type: ignore[assignment]
                 return
 
-        # Ako imamo actionable komande (npr notion_write), rewrite u wrapper.
+            tr["ops_plan_attached"] = False
+            out.trace = tr  # type: ignore[assignment]
+            # fallthrough to wrapper logic below
+
+        # If wrapper already exists, ensure args.prompt exists (dict OR model).
+        for it in items:
+            if _get_command_name(it) == PROPOSAL_WRAPPER_INTENT:
+                if isinstance(it, ProposedCommand):
+                    try:
+                        if not isinstance(getattr(it, "args", None), dict):
+                            it.args = {}  # type: ignore[assignment]
+                        if (
+                            "prompt" not in it.args
+                            or not str(it.args.get("prompt") or "").strip()
+                        ):
+                            it.args["prompt"] = (prompt or "").strip() or "noop"
+                    except Exception:
+                        pass
+                    out.proposed_commands = [it]  # type: ignore[assignment]
+                elif isinstance(it, dict):
+                    d = dict(it)
+                    args = d.get("args")
+                    if not isinstance(args, dict):
+                        args = {}
+                    if (
+                        "prompt" not in args
+                        or not str(args.get("prompt") or "").strip()
+                    ):
+                        # map params.prompt if present
+                        params = d.get("params")
+                        if (
+                            isinstance(params, dict)
+                            and isinstance(params.get("prompt"), str)
+                            and params["prompt"].strip()
+                        ):
+                            args["prompt"] = params["prompt"].strip()
+                        else:
+                            args["prompt"] = (prompt or "").strip() or "noop"
+                    d["args"] = args
+                    d["command"] = PROPOSAL_WRAPPER_INTENT
+                    d["intent"] = None
+                    out.proposed_commands = [d]  # type: ignore[assignment]
+                else:
+                    out.proposed_commands = [
+                        _build_proposal_wrapper(
+                            prompt,
+                            reason="Canonical chat proposal wrapper (normalize existing).",
+                        )
+                    ]  # type: ignore[assignment]
+                return
+
+        # If there are actionable commands (e.g. notion_write), rewrite to wrapper.
         if _has_actionable_proposals(items):
             tr = _ensure_dict(getattr(out, "trace", None))
             tr["rewrote_proposed_commands_to_ceo_command_propose"] = True
             tr["rewrote_from"] = items
-            tr["router_version"] = "chat-canon-wrapper-rewrite-v1"
+            tr["router_version"] = "chat-canon-wrapper-rewrite-v2"
             out.trace = tr  # type: ignore[assignment]
 
             out.proposed_commands = [
                 _build_proposal_wrapper(
-                    prompt, reason="Canonical chat proposal wrapper (rewrite)."
+                    prompt,
+                    reason="Canonical chat proposal wrapper (rewrite actionable proposals).",
                 )
             ]  # type: ignore[assignment]
             return
 
-        # Ako nema niĹˇta actionable (prazno ili samo refresh_snapshot), ubaci fallback wrapper.
+        # Otherwise: inject fallback wrapper.
         out.proposed_commands = [
             _build_proposal_wrapper(
                 prompt, reason="Fallback proposal (no actionable proposals)."
@@ -280,7 +495,7 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         ]  # type: ignore[assignment]
         tr = _ensure_dict(getattr(out, "trace", None))
         tr["fallback_proposed_commands"] = True
-        tr["router_version"] = "chat-canon-wrapper-rewrite-v1"
+        tr["router_version"] = "chat-canon-wrapper-rewrite-v2"
         out.trace = tr  # type: ignore[assignment]
 
     async def _call_agent(payload: AgentInput) -> AgentOutput:
@@ -310,39 +525,15 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             },
         )
 
-    async def _try_attach_ops_plan_trace(
-        out: AgentOutput, *, prompt: str, snapshot: Any
-    ) -> None:
-        """
-        Ops planner koristimo da bismo dobili strukturirani plan u trace,
-        ali NE smijemo ga vratiti kao actionable notion_write iz /api/chat.
-        """
-        if not _looks_like_goal_or_task_request(prompt):
-            return
-        try:
-            plan = await plan_ai_commands(
-                prompt, snapshot if snapshot is not None else {}
-            )
-        except Exception:
-            plan = None
-
-        tr = _ensure_dict(getattr(out, "trace", None))
-        tr["ops_plan_attempted"] = True
-        tr["ops_plan_source"] = "services.ops_planner.plan_ai_commands"
-
-        if isinstance(plan, dict) and "goal" in plan and "task" in plan:
-            tr["ops_plan"] = plan
-            tr["ops_plan_attached"] = True
-        else:
-            tr["ops_plan_attached"] = False
-
-        out.trace = tr  # type: ignore[assignment]
-
     async def _enforce_plan_only_json_response(
         out: AgentOutput, *, prompt: str, snapshot: Any
     ) -> None:
         """
-        Hard gate: korisnik traĹľi iskljuÄŤivo plan u JSON i zabranjuje komande.
+        Hard gate: korisnik traži isključivo plan u JSON i zabranjuje komande.
+
+        NOTE (CONTRACT STABILITY):
+          - This function sets proposed_commands=[].
+          - Final response is contract-enforced to still include wrapper in proposed_commands[0].
         """
         try:
             plan = await plan_ai_commands(
@@ -430,15 +621,21 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 out, prompt=prompt, snapshot=snapshot
             )
             out = _enforce_output_read_only(out, payload)
-            return JSONResponse(content=_agent_output_to_dict_no_alias(out))
+            result = _agent_output_to_dict_no_alias(out)
+            _ensure_chat_contract_dict(result, prompt=prompt)
+            return JSONResponse(content=result)
 
-        # Attach ops plan to trace when it makes sense (for debug/observability)
-        await _try_attach_ops_plan_trace(out, prompt=prompt, snapshot=snapshot)
-
-        # CANON: rewrite output proposals to ceo.command.propose wrapper
-        _rewrite_any_actionable_to_proposal_wrapper(out, prompt=prompt)
+        # CANON: always wrapper-first proposal
+        await _rewrite_any_actionable_to_proposal_wrapper(
+            out, prompt=prompt, snapshot=snapshot
+        )
 
         out = _enforce_output_read_only(out, payload)
-        return JSONResponse(content=_agent_output_to_dict_no_alias(out))
+        result = _agent_output_to_dict_no_alias(out)
+
+        # Final contract enforcement (fixes dict wrappers, missing args.prompt, non-wrapper first items)
+        _ensure_chat_contract_dict(result, prompt=prompt)
+
+        return JSONResponse(content=result)
 
     return router

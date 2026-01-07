@@ -211,19 +211,49 @@ class NotionSyncService:
         """
         Notion → KnowledgeSnapshotService
 
-        ❌ Ne dira postojeće sync flowove
-        ❌ Nema executiona
-        ❌ Read-only svijest sistema
+        - Read-only
+        - MUST NOT raise (best-effort)
         """
         self.logger.info("🧠 Syncing Notion knowledge snapshot...")
 
-        snapshot = await self.notion.build_knowledge_snapshot()
+        try:
+            snapshot = await self.notion.build_knowledge_snapshot()
+        except Exception as exc:
+            self.logger.exception(
+                "Knowledge snapshot sync failed (best-effort): %s", exc
+            )
+            # keep snapshot service consistent even on failure
+            try:
+                KnowledgeSnapshotService.update_snapshot(
+                    {
+                        "payload": {"goals": [], "tasks": [], "projects": []},
+                        "meta": {"ok": False, "error": str(exc)},
+                    }
+                )
+            except Exception:
+                pass
+            return False
 
         if not snapshot:
             self.logger.warning("⚠️ Knowledge snapshot empty or failed")
+            try:
+                KnowledgeSnapshotService.update_snapshot(
+                    {
+                        "payload": {"goals": [], "tasks": [], "projects": []},
+                        "meta": {"ok": False, "error": "empty_snapshot"},
+                    }
+                )
+            except Exception:
+                pass
             return False
 
-        KnowledgeSnapshotService.update_snapshot(snapshot)
+        try:
+            KnowledgeSnapshotService.update_snapshot(snapshot)
+        except Exception as exc:
+            self.logger.exception(
+                "KnowledgeSnapshotService.update_snapshot failed: %s", exc
+            )
+            return False
 
         self.logger.info("✅ Knowledge snapshot synced")
         return True

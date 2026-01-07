@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from threading import Lock
 from typing import Any, Dict, List, Optional
@@ -21,6 +21,13 @@ logger = logging.getLogger(__name__)
 #
 # Override (recommended for prod):
 #   APPROVAL_STATE_PATH=/var/data/adnan_ai/approval_state.json
+#
+# Pending TTL (prod-friendly hygiene):
+#   APPROVAL_PENDING_TTL_SECONDS=604800   (7 days)
+#   APPROVAL_PENDING_TTL_HOURS=168
+#   APPROVAL_PENDING_TTL_DAYS=7
+#
+# If TTL <= 0 -> expiration disabled (not recommended for prod)
 #
 
 
@@ -44,6 +51,59 @@ _APPROVAL_FILE = _resolve_approval_file()
 def _utc_now_iso() -> str:
     # timezone-aware ISO (stable for logs + comparisons)
     return datetime.now(timezone.utc).isoformat()
+
+
+def _parse_utc_iso(value: Any) -> Optional[datetime]:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    s = value.strip()
+    # tolerate "Z"
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(s)
+    except Exception:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _resolve_pending_ttl_seconds() -> int:
+    """
+    Returns TTL in seconds for PENDING approvals.
+    Priority: seconds -> hours -> days -> default(7 days).
+    """
+    raw_s = (os.getenv("APPROVAL_PENDING_TTL_SECONDS") or "").strip()
+    raw_h = (os.getenv("APPROVAL_PENDING_TTL_HOURS") or "").strip()
+    raw_d = (os.getenv("APPROVAL_PENDING_TTL_DAYS") or "").strip()
+
+    def _to_int(x: str) -> Optional[int]:
+        try:
+            return int(x)
+        except Exception:
+            return None
+
+    if raw_s:
+        v = _to_int(raw_s)
+        if v is not None:
+            return v
+
+    if raw_h:
+        v = _to_int(raw_h)
+        if v is not None:
+            return v * 3600
+
+    if raw_d:
+        v = _to_int(raw_d)
+        if v is not None:
+            return v * 86400
+
+    # default: 7 days
+    return 7 * 86400
+
+
+_PENDING_TTL_SECONDS = _resolve_pending_ttl_seconds()
 
 
 def _atomic_write_json(path: Path, data: Any) -> None:
@@ -72,7 +132,7 @@ class ApprovalStateService:
 
     - approval je VEZAN za execution_id
     - nema approvala bez execution_id
-    - approval lifecycle: pending -> approved | rejected
+    - approval lifecycle: pending -> approved | rejected | expired
 
     NOTE (stabilnost testova):
     - svi instance-i dijele isti backing store (class-level), da se izbjegne
@@ -81,6 +141,10 @@ class ApprovalStateService:
 
     NOTE (stabilnost runtime-a / reload):
     - approvals se persiste na disk (best-effort) da prežive uvicorn reload/restart.
+
+    NOTE (produkcijska higijena):
+    - pending approvals mogu isteći nakon TTL (env: APPROVAL_PENDING_TTL_*).
+      Expired se NE prikazuju u pending listi.
     """
 
     _GLOBAL_APPROVALS: Dict[str, Dict[str, Any]] = {}
@@ -98,6 +162,9 @@ class ApprovalStateService:
             if not ApprovalStateService._LOADED_FROM_DISK:
                 self._load_from_disk_locked()
                 ApprovalStateService._LOADED_FROM_DISK = True
+
+            # Hygiene: expire stale pending on startup (best-effort)
+            self._expire_stale_pending_locked()
 
     # ============================================================
     # CREATE
@@ -125,6 +192,9 @@ class ApprovalStateService:
             payload_key = "{}"
 
         with self._lock:
+            # Hygiene: expire stale pending before we decide replay
+            self._expire_stale_pending_locked()
+
             # replay: ako već postoji pending ili approved za isti execution_id+command+payload
             for approval in self._approvals.values():
                 if (
@@ -166,7 +236,13 @@ class ApprovalStateService:
         note: Optional[str] = None,
     ) -> Dict[str, Any]:
         with self._lock:
+            self._expire_stale_pending_locked()
+
             approval = self._require(approval_id)
+
+            # expired approvals cannot be approved
+            if approval.get("status") == "expired":
+                raise ValueError("Approval expired")
 
             # idempotent
             if approval.get("status") != "pending":
@@ -190,7 +266,13 @@ class ApprovalStateService:
         note: Optional[str] = None,
     ) -> Dict[str, Any]:
         with self._lock:
+            self._expire_stale_pending_locked()
+
             approval = self._require(approval_id)
+
+            # expired approvals cannot be rejected (they're already terminal)
+            if approval.get("status") == "expired":
+                return dict(approval)
 
             # idempotent
             if approval.get("status") != "pending":
@@ -212,15 +294,18 @@ class ApprovalStateService:
 
     def is_fully_approved(self, approval_id: str) -> bool:
         with self._lock:
+            self._expire_stale_pending_locked()
             approval = self._approvals.get(approval_id)
             return bool(approval and approval.get("status") == "approved")
 
     def get(self, approval_id: str) -> Dict[str, Any]:
         with self._lock:
+            self._expire_stale_pending_locked()
             return dict(self._require(approval_id))
 
     def list_approvals(self, status: Optional[str] = None) -> List[Dict[str, Any]]:
         with self._lock:
+            self._expire_stale_pending_locked()
             vals = list(self._approvals.values())
             if status:
                 vals = [a for a in vals if a.get("status") == status]
@@ -232,11 +317,54 @@ class ApprovalStateService:
     # Optional helper (non-breaking)
     def list_by_execution_id(self, execution_id: str) -> List[Dict[str, Any]]:
         with self._lock:
+            self._expire_stale_pending_locked()
             return [
                 dict(a)
                 for a in self._approvals.values()
                 if a.get("execution_id") == execution_id
             ]
+
+    # ============================================================
+    # TTL / EXPIRATION
+    # ============================================================
+
+    def expire_stale_pending(self) -> int:
+        """
+        Public helper (safe to call anywhere).
+        Returns number of newly expired approvals.
+        """
+        with self._lock:
+            return self._expire_stale_pending_locked()
+
+    def _expire_stale_pending_locked(self) -> int:
+        ttl = int(_PENDING_TTL_SECONDS or 0)
+        if ttl <= 0:
+            return 0
+
+        now = datetime.now(timezone.utc)
+        cutoff = now - timedelta(seconds=ttl)
+
+        changed = 0
+        for a in self._approvals.values():
+            if a.get("status") != "pending":
+                continue
+
+            created_at = _parse_utc_iso(a.get("created_at"))
+            if created_at is None:
+                # if we cannot parse, be conservative: do not expire
+                continue
+
+            if created_at < cutoff:
+                a["status"] = "expired"
+                a["expired_at"] = _utc_now_iso()
+                a.setdefault("decided_at", a["expired_at"])
+                a.setdefault("note", "expired_by_ttl")
+                changed += 1
+
+        if changed:
+            self._persist_to_disk_locked()
+
+        return changed
 
     # ============================================================
     # INTERNAL

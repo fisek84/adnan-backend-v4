@@ -3,6 +3,7 @@ NOTION SCHEMA REGISTRY — KANONSKI IZVOR ISTINE
 """
 
 from __future__ import annotations
+
 import os
 from typing import Any, Dict, List, Optional
 
@@ -10,11 +11,17 @@ from typing import Any, Dict, List, Optional
 class NotionSchemaRegistry:
     """
     Centralni Notion knowledge layer.
-    Svi DB-ovi koji su dostupni OS-u moraju biti registrovani ovdje.
+    Svi DB-ovi/PAGE-ovi koji su dostupni OS-u moraju biti registrovani ovdje.
+
+    object_type:
+      - "database" (default): query_database
+      - "page": retrieve_page (read-only)
+    optional:
+      - ako True, snapshot smije soft-skip bez __error spam-a kad nema access / object_not_found / page-not-db
     """
 
     # ============================================================
-    # DATABASE DEFINITIONS
+    # DATABASE/PAGE DEFINITIONS
     # ============================================================
 
     DATABASES: Dict[str, Dict[str, Any]] = {
@@ -24,6 +31,8 @@ class NotionSchemaRegistry:
         "goals": {
             "db_id": os.getenv("NOTION_GOALS_DB_ID"),
             "entity": "Goal",
+            "object_type": "database",
+            "optional": False,
             "write_enabled": True,
             "properties": {
                 "Name": {"type": "title", "required": True},
@@ -45,6 +54,8 @@ class NotionSchemaRegistry:
             "db_id": os.getenv("NOTION_ACTIVE_GOALS_DB_ID")
             or os.getenv("NOTION_GOALS_DB_ID"),
             "entity": "Goal",
+            "object_type": "database",
+            "optional": True,
             "write_enabled": False,
             "properties": {
                 "Name": {"type": "title", "required": True},
@@ -92,6 +103,8 @@ class NotionSchemaRegistry:
             "db_id": os.getenv("NOTION_BLOCKED_GOALS_DB_ID")
             or os.getenv("NOTION_GOALS_DB_ID"),
             "entity": "Goal",
+            "object_type": "database",
+            "optional": True,
             "write_enabled": False,
             "properties": {
                 "Name": {"type": "title", "required": True},
@@ -104,6 +117,8 @@ class NotionSchemaRegistry:
             "db_id": os.getenv("NOTION_COMPLETED_GOALS_DB_ID")
             or os.getenv("NOTION_GOALS_DB_ID"),
             "entity": "Goal",
+            "object_type": "database",
+            "optional": True,
             "write_enabled": False,
             "properties": {
                 "Name": {"type": "title", "required": True},
@@ -118,6 +133,8 @@ class NotionSchemaRegistry:
         "tasks": {
             "db_id": os.getenv("NOTION_TASKS_DB_ID"),
             "entity": "Task",
+            "object_type": "database",
+            "optional": False,
             "write_enabled": True,
             "properties": {
                 "Name": {"type": "title", "required": True},
@@ -146,6 +163,8 @@ class NotionSchemaRegistry:
         "projects": {
             "db_id": os.getenv("NOTION_PROJECTS_DB_ID"),
             "entity": "Project",
+            "object_type": "database",
+            "optional": False,
             "write_enabled": True,
             "properties": {
                 "Project Name": {"type": "title", "required": True},
@@ -173,6 +192,183 @@ class NotionSchemaRegistry:
                 "Handled By": {"type": "people", "required": False},
             },
         },
+        # =======================
+        # OPTIONAL SOURCES (SNAPSHOT + WORKFLOWS)
+        # =======================
+        # NOTE: kpi_weekly_summary workflow ti trenutno pokušava pisati u ai_summary.
+        # Zato ai_summary / ai_weekly_summary MORAJU biti write_enabled=True.
+        "ai_summary": {
+            "db_id": os.getenv("NOTION_AI_SUMMARY_DB_ID"),
+            "entity": "AISummary",
+            "object_type": "database",
+            "optional": True,
+            "write_enabled": True,  # <-- FIX: dozvoli pisanje
+            "properties": {
+                # Minimalni set: prilagodi imena ako tvoj DB koristi drugačije kolone
+                "Name": {"type": "title", "required": True},
+                "Summary": {"type": "rich_text", "required": False},
+            },
+        },
+        "ai_weekly_summary": {
+            "db_id": os.getenv("NOTION_AI_WEEKLY_SUMMARY_DB_ID")
+            or os.getenv("NOTION_AI_SUMMARY_DB_ID"),
+            "entity": "AIWeeklySummary",
+            "object_type": "database",
+            "optional": True,
+            "write_enabled": True,  # <-- FIX: dozvoli pisanje
+            "properties": {
+                "Name": {"type": "title", "required": True},
+                "Summary": {"type": "rich_text", "required": False},
+            },
+        },
+        "kpi": {
+            "db_id": os.getenv("NOTION_KPI_DB_ID"),
+            "entity": "KPI",
+            "object_type": "database",
+            "optional": True,
+            "write_enabled": False,
+            "properties": {},
+        },
+        "leads": {
+            "db_id": os.getenv("NOTION_LEAD_DB_ID") or os.getenv("NOTION_LEADS_DB_ID"),
+            "entity": "Lead",
+            "object_type": "database",
+            "optional": True,
+            "write_enabled": False,
+            "properties": {},
+        },
+        "agent_exchange": {
+            "db_id": os.getenv("NOTION_AGENT_EXCHANGE_DB_ID"),
+            "entity": "AgentExchange",
+            "object_type": "database",
+            "optional": True,
+            "write_enabled": False,
+            "properties": {},
+        },
+        # =======================
+        # SOP / OPS SOURCES (PAGES, NOT DATABASES)
+        # =======================
+        "outreach_sop": {
+            "db_id": os.getenv("NOTION_OUTREACH_SOP_DB_ID"),
+            "entity": "SOP",
+            "object_type": "page",
+            "optional": True,
+            "write_enabled": False,
+            "properties": {},
+        },
+        "qualification_sop": {
+            "db_id": os.getenv("NOTION_QUALIFICATION_SOP_DB_ID"),
+            "entity": "SOP",
+            "object_type": "page",
+            "optional": True,
+            "write_enabled": False,
+            "properties": {},
+        },
+        "follow_up_sop": {
+            "db_id": os.getenv("NOTION_FOLLOW_UP_SOP_DB_ID"),
+            "entity": "SOP",
+            "object_type": "page",
+            "optional": True,
+            "write_enabled": False,
+            "properties": {},
+        },
+        "fsc_sop": {
+            "db_id": os.getenv("NOTION_FSC_SOP_DB_ID"),
+            "entity": "SOP",
+            "object_type": "page",
+            "optional": True,
+            "write_enabled": False,
+            "properties": {},
+        },
+        "flp_ops_sop": {
+            "db_id": os.getenv("NOTION_FLP_OPS_SOP_DB_ID"),
+            "entity": "SOP",
+            "object_type": "page",
+            "optional": True,
+            "write_enabled": False,
+            "properties": {},
+        },
+        "lss_sop": {
+            "db_id": os.getenv("NOTION_LSS_SOP_DB_ID"),
+            "entity": "SOP",
+            "object_type": "page",
+            "optional": True,
+            "write_enabled": False,
+            "properties": {},
+        },
+        "partner_activation_sop": {
+            "db_id": os.getenv("NOTION_PARTNER_ACTIVATION_SOP_DB_ID"),
+            "entity": "SOP",
+            "object_type": "page",
+            "optional": True,
+            "write_enabled": False,
+            "properties": {},
+        },
+        "partner_performance_sop": {
+            "db_id": os.getenv("NOTION_PARTNER_PERFORMANCE_SOP_DB_ID"),
+            "entity": "SOP",
+            "object_type": "page",
+            "optional": True,
+            "write_enabled": False,
+            "properties": {},
+        },
+        "partner_leadership_sop": {
+            "db_id": os.getenv("NOTION_PARTNER_LEADERSHIP_SOP_DB_ID"),
+            "entity": "SOP",
+            "object_type": "page",
+            "optional": True,
+            "write_enabled": False,
+            "properties": {},
+        },
+        "partner_potential_sop": {
+            "db_id": os.getenv("NOTION_PARTNER_POTENTIAL_SOP_DB_ID"),
+            "entity": "SOP",
+            "object_type": "page",
+            "optional": True,
+            "write_enabled": False,
+            "properties": {},
+        },
+        "customer_onboarding_sop": {
+            "db_id": os.getenv("NOTION_CUSTOMER_ONBOARDING_SOP_DB_ID"),
+            "entity": "SOP",
+            "object_type": "page",
+            "optional": True,
+            "write_enabled": False,
+            "properties": {},
+        },
+        "customer_retention_sop": {
+            "db_id": os.getenv("NOTION_CUSTOMER_RETENTION_SOP_DB_ID"),
+            "entity": "SOP",
+            "object_type": "page",
+            "optional": True,
+            "write_enabled": False,
+            "properties": {},
+        },
+        "customer_performance_sop": {
+            "db_id": os.getenv("NOTION_CUSTOMER_PERFORMANCE_SOP_DB_ID"),
+            "entity": "SOP",
+            "object_type": "page",
+            "optional": True,
+            "write_enabled": False,
+            "properties": {},
+        },
+        "sales_closing_sop": {
+            "db_id": os.getenv("NOTION_SALES_CLOSING_SOP_DB_ID"),
+            "entity": "SOP",
+            "object_type": "page",
+            "optional": True,
+            "write_enabled": False,
+            "properties": {},
+        },
+        # FLP (u tvom outputu je "page, not database" -> tretiramo kao page)
+        "flp": {
+            "db_id": os.getenv("NOTION_FLP_DB_ID"),
+            "entity": "FLP",
+            "object_type": "page",
+            "optional": True,
+            "write_enabled": False,
+            "properties": {},
+        },
     }
 
     # ============================================================
@@ -188,16 +384,23 @@ class NotionSchemaRegistry:
     @classmethod
     def validate_payload(cls, db_key: str, payload: Dict[str, Any]) -> bool:
         db = cls.get_db(db_key)
-        props = db["properties"]
+
+        # payload validation only applies to databases used for create/update
+        if db.get("object_type") != "database":
+            raise ValueError(
+                f"Notion key '{db_key}' is not a database (object_type={db.get('object_type')})."
+            )
+
+        props = db.get("properties") or {}
         for name, spec in props.items():
             if spec.get("required") and name not in payload:
                 raise ValueError(
                     f"Missing required Notion property '{name}' for DB '{db_key}'"
                 )
-        for key in payload:
-            if key not in props:
+        for k in payload:
+            if k not in props:
                 raise ValueError(
-                    f"Property '{key}' is not defined in schema for DB '{db_key}'"
+                    f"Property '{k}' is not defined in schema for DB '{db_key}'"
                 )
         return True
 
@@ -215,13 +418,15 @@ class NotionSchemaRegistry:
     ) -> Dict[str, Any]:
         cls.validate_payload(db_key, properties)
         db = cls.get_db(db_key)
+
         notion_props: Dict[str, Any] = {}
-        db_props = db["properties"]
+        db_props = db.get("properties") or {}
 
         for prop, value in properties.items():
             p_type = db_props[prop]["type"]
             if p_type == "select_or_date":
                 p_type = "select"
+
             if p_type == "title":
                 notion_props[prop] = {"title": [{"text": {"content": str(value)}}]}
             elif p_type == "rich_text":

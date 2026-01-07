@@ -333,6 +333,7 @@ async def approve(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[st
     - Router-level idempotency guard to prevent repeated /approve calls from re-executing writes.
     - If approval is already approved/completed, return cached result (same process),
       or no-op response without invoking orchestrator.resume().
+    - TTL behavior (prod hygiene): if approval is expired, return 410 and do not execute.
     """
     _guard_write(request)
 
@@ -354,10 +355,15 @@ async def approve(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[st
 
     approval_state = _get_approval_state()
 
-    # 1) Best-effort: detect already-approved BEFORE mutating state and BEFORE resuming orchestrator.
+    # 1) Best-effort: detect terminal states BEFORE mutating state and BEFORE resuming orchestrator.
     existing = _try_get_existing_approval(approval_state, approval_id)
     if isinstance(existing, dict):
         st = _norm_status(existing.get("status"))
+
+        # TTL: expired approvals are terminal and must not execute.
+        if st == "expired":
+            raise HTTPException(status_code=410, detail="Approval expired")
+
         # Treat both "approved" and "completed" as idempotent terminal-ish from router POV.
         if st in ("approved", "completed"):
             execution_id0 = existing.get("execution_id")
@@ -379,13 +385,15 @@ async def approve(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[st
             return {
                 "execution_id": existing.get("execution_id"),
                 "execution_state": "COMPLETED" if st == "completed" else "APPROVED",
-                "result": existing.get(
-                    "result"
-                ),  # may be absent in your current ApprovalState
+                "result": existing.get("result"),
                 "approval": existing,
                 "read_only": False,
                 "note": "idempotent_noop_already_approved",
             }
+
+        # If already rejected: treat as terminal (do not resume).
+        if st == "rejected":
+            raise HTTPException(status_code=409, detail="Approval rejected")
 
         # FIX: if this approval is a proposal wrapper, block BEFORE state mutation.
         intent0 = _extract_intent_from_approval(existing)
@@ -404,6 +412,9 @@ async def approve(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[st
         )
     except KeyError:
         raise HTTPException(status_code=404, detail="Approval not found")
+    except ValueError as e:
+        # e.g. ApprovalStateService: "Approval expired"
+        raise HTTPException(status_code=410, detail=str(e) or "Approval expired")
 
     execution_id = approval.get("execution_id") if isinstance(approval, dict) else None
     if not isinstance(execution_id, str) or not execution_id.strip():
