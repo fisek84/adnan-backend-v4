@@ -113,25 +113,21 @@ class NotionService:
 
         # Property names
         self.goals_status_prop = os.getenv("NOTION_GOALS_STATUS_PROP_NAME", "Status")
-        self.goals_priority_prop = os.getenv(
-            "NOTION_GOALS_PRIORITY_PROP_NAME", "Priority"
-        )
+        self.goals_priority_prop = os.getenv("NOTION_GOALS_PRIORITY_PROP_NAME", "Priority")
         self.tasks_status_prop = os.getenv("NOTION_TASKS_STATUS_PROP_NAME", "Status")
-        self.tasks_priority_prop = os.getenv(
-            "NOTION_TASKS_PRIORITY_PROP_NAME", "Priority"
-        )
+        self.tasks_priority_prop = os.getenv("NOTION_TASKS_PRIORITY_PROP_NAME", "Priority")
 
         # Snapshot tuning
         self._snapshot_page_size = int(os.getenv("NOTION_SNAPSHOT_PAGE_SIZE", "50"))
-        self._snapshot_compact = os.getenv(
-            "NOTION_SNAPSHOT_COMPACT", "true"
-        ).lower() in ("1", "true", "yes")
+        self._snapshot_compact = os.getenv("NOTION_SNAPSHOT_COMPACT", "true").lower() in (
+            "1",
+            "true",
+            "yes",
+        )
         self._snapshot_include_blocks = os.getenv(
             "NOTION_SNAPSHOT_INCLUDE_BLOCKS", "false"
         ).lower() in ("1", "true", "yes")
-        self._snapshot_blocks_page_limit = int(
-            os.getenv("NOTION_SNAPSHOT_BLOCKS_PAGE_LIMIT", "5")
-        )
+        self._snapshot_blocks_page_limit = int(os.getenv("NOTION_SNAPSHOT_BLOCKS_PAGE_LIMIT", "5"))
         self._snapshot_blocks_per_page_limit = int(
             os.getenv("NOTION_SNAPSHOT_BLOCKS_PER_PAGE_LIMIT", "50")
         )
@@ -268,9 +264,7 @@ class NotionService:
 
         k = self._normalize_db_key(db_key)
         if not k:
-            raise RuntimeError(
-                "Database not specified (db_key or database_id required)."
-            )
+            raise RuntimeError("Database not specified (db_key or database_id required).")
 
         # direktno
         if k in self.db_ids:
@@ -401,9 +395,7 @@ class NotionService:
 
             if t == "multi_select":
                 vals = prop.get("multi_select") or []
-                names = [
-                    v.get("name") for v in vals if isinstance(v, dict) and v.get("name")
-                ]
+                names = [v.get("name") for v in vals if isinstance(v, dict) and v.get("name")]
                 return ", ".join(names) if names else None
 
             if t == "date":
@@ -446,6 +438,26 @@ class NotionService:
             "properties": compact_props,
         }
 
+    def _extract_page_title(self, page: Dict[str, Any]) -> str:
+        if not isinstance(page, dict):
+            return ""
+
+        props = page.get("properties") or {}
+        if not isinstance(props, dict):
+            return ""
+
+        for prop in props.values():
+            if not isinstance(prop, dict):
+                continue
+            if prop.get("type") != "title":
+                continue
+            title_items = prop.get("title") or []
+            if not isinstance(title_items, list):
+                return ""
+            return "".join((t.get("plain_text", "") or "") for t in title_items).strip()
+
+        return ""
+
     # --------------------------------------------------
     # NOTION ID TYPE DETECTION
     # --------------------------------------------------
@@ -460,10 +472,7 @@ class NotionService:
         )
 
     def _is_no_access(self, err: str) -> bool:
-        return (
-            "does not contain any data sources accessible by this api bot"
-            in (err or "").lower()
-        )
+        return "does not contain any data sources accessible by this api bot" in (err or "").lower()
 
     async def _query_db(self, db_id: str, page_size: int) -> List[Dict[str, Any]]:
         resp = await self._safe_request(
@@ -474,13 +483,9 @@ class NotionService:
         return resp.get("results", []) or []
 
     async def _retrieve_page(self, page_id: str) -> Dict[str, Any]:
-        return await self._safe_request(
-            "GET", f"https://api.notion.com/v1/pages/{page_id}"
-        )
+        return await self._safe_request("GET", f"https://api.notion.com/v1/pages/{page_id}")
 
-    async def _retrieve_blocks_limited(
-        self, block_id: str, limit: int
-    ) -> List[Dict[str, Any]]:
+    async def _retrieve_blocks_limited(self, block_id: str, limit: int) -> List[Dict[str, Any]]:
         results: List[Dict[str, Any]] = []
         next_cursor: Optional[str] = None
 
@@ -526,9 +531,7 @@ class NotionService:
             if idx != -1 and idx < first_kw_idx:
                 first_kw_idx = idx
 
-        name_segment = (
-            raw if first_kw_idx == len(raw) else raw[:first_kw_idx].strip(" ,.-")
-        )
+        name_segment = raw if first_kw_idx == len(raw) else raw[:first_kw_idx].strip(" ,.-")
 
         patterns = [
             r"(?i)create\s+goal",
@@ -582,7 +585,6 @@ class NotionService:
         if ai is None:
             return None
 
-        # dict shape from API payload
         if isinstance(ai, dict):
             inner_intent = ai.get("intent")
             inner_params = ai.get("params")
@@ -590,7 +592,6 @@ class NotionService:
                 return {"intent": inner_intent, "params": inner_params}
             return None
 
-        # object-like
         inner_intent = getattr(ai, "intent", None)
         inner_params = getattr(ai, "params", None)
         if isinstance(inner_intent, str) and isinstance(inner_params, dict):
@@ -607,8 +608,8 @@ class NotionService:
         command očekujemo kao AICommand-like: ima intent + params.
 
         IMPORTANT:
-        - orchestrator/UI često šalje wrapper intent: "notion_write"
-          a stvarni Notion intent je u params.ai_command.intent (npr. "create_page").
+        - orchestrator/UI često šalje wrapper intent: "notion_write"/"notion_read"
+          a stvarni Notion intent je u params.ai_command.intent.
         """
         if not getattr(command, "intent", None):
             raise RuntimeError("NotionService called without intent")
@@ -616,11 +617,9 @@ class NotionService:
         intent = command.intent
         params = command.params or {}
 
-        # ✅ FIX: unwrap outer "notion_write"/"notion_read" envelope into inner Notion intent
+        # unwrap outer envelope
         if intent in ("notion_write", "notion_read"):
-            unwrapped = self._unwrap_ai_command(
-                params if isinstance(params, dict) else {}
-            )
+            unwrapped = self._unwrap_ai_command(params if isinstance(params, dict) else {})
             if not unwrapped:
                 raise RuntimeError(
                     "notion_write/notion_read requires params.ai_command with inner intent/params"
@@ -639,9 +638,7 @@ class NotionService:
             if not raw_name:
                 raise RuntimeError("Missing goal name")
 
-            goal_name, status, priority, description = self._parse_goal_command_text(
-                raw_name
-            )
+            goal_name, status, priority, description = self._parse_goal_command_text(raw_name)
 
             properties: Dict[str, Any] = {
                 "Name": {"title": [{"text": {"content": str(goal_name or raw_name)}}]},
@@ -650,21 +647,12 @@ class NotionService:
             if status:
                 properties[self.goals_status_prop] = {"select": {"name": str(status)}}
             if priority:
-                properties[self.goals_priority_prop] = {
-                    "select": {"name": str(priority)}
-                }
+                properties[self.goals_priority_prop] = {"select": {"name": str(priority)}}
             if description:
-                properties["Description"] = {
-                    "rich_text": [{"text": {"content": str(description)}}]
-                }
+                properties["Description"] = {"rich_text": [{"text": {"content": str(description)}}]}
 
-            payload = {
-                "parent": {"database_id": self.goals_db_id},
-                "properties": properties,
-            }
-            result = await self._safe_request(
-                "POST", "https://api.notion.com/v1/pages", payload
-            )
+            payload = {"parent": {"database_id": self.goals_db_id}, "properties": properties}
+            result = await self._safe_request("POST", "https://api.notion.com/v1/pages", payload)
 
             return {
                 "success": True,
@@ -690,9 +678,7 @@ class NotionService:
                 raise RuntimeError("create_page requires properties or property_specs")
 
             payload = {"parent": {"database_id": db_id}, "properties": properties}
-            result = await self._safe_request(
-                "POST", "https://api.notion.com/v1/pages", payload
-            )
+            result = await self._safe_request("POST", "https://api.notion.com/v1/pages", payload)
 
             return {
                 "success": True,
@@ -771,33 +757,53 @@ class NotionService:
                 "next_cursor": result.get("next_cursor"),
             }
 
+        # ----------------------------
+        # ✅ READ: read page -> markdown (NO FALLBACK TO RANDOM PAGE)
+        # ----------------------------
+        if intent == "read_page_as_markdown":
+            query = params.get("query")
+            if not isinstance(query, str) or not query.strip():
+                raise RuntimeError("read_page_as_markdown requires params.query (non-empty string)")
+
+            # local import to avoid circular import at module import-time
+            from services.notion_read_service import NotionReadService
+
+            svc = NotionReadService(self)
+            page = await svc.get_page_by_title_contains(query.strip())
+
+            # ✅ If no title contains match -> return empty
+            if not page:
+                return {"success": True, "title": "", "url": "", "content_markdown": ""}
+
+            title = self._extract_page_title(page)
+            url = page.get("url") or ""
+            content_md = await svc.render_page_to_markdown(page)
+
+            return {
+                "success": True,
+                "title": title,
+                "url": url,
+                "content_markdown": content_md or "",
+            }
+
         if intent == "retrieve_page_content":
             page_id = params.get("page_id")
             if not page_id:
                 raise RuntimeError("retrieve_page_content requires page_id")
 
-            page = await self._safe_request(
-                "GET", f"https://api.notion.com/v1/pages/{page_id}"
-            )
+            page = await self._safe_request("GET", f"https://api.notion.com/v1/pages/{page_id}")
             blocks_resp = await self._safe_request(
                 "GET", f"https://api.notion.com/v1/blocks/{page_id}/children"
             )
 
-            return {
-                "success": True,
-                "page": page,
-                "blocks": blocks_resp.get("results", []),
-            }
+            return {"success": True, "page": page, "blocks": blocks_resp.get("results", [])}
 
         if intent == "refresh_snapshot":
             return await self.sync_knowledge_snapshot()
 
-        # ✅ FIX: report effective intent (after unwrap), not original command.intent
         raise RuntimeError(f"Unsupported intent: {intent}")
 
-    def _build_properties_from_specs(
-        self, specs: Optional[Dict[str, Any]]
-    ) -> Dict[str, Any]:
+    def _build_properties_from_specs(self, specs: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         props: Dict[str, Any] = {}
         if not specs:
             return props
@@ -824,8 +830,7 @@ class NotionService:
             elif spec_type == "status":
                 name = spec.get("name")
                 if name:
-                    # ✅ FIX: većina tvojih DB-ova ima "Status" kao SELECT (ne Notion status-type).
-                    # Notion error iz testa: "Status is expected to be select."
+                    # DB-ovi često imaju "Status" kao SELECT, ne notion status-type.
                     props[prop_name] = {"select": {"name": name}}
 
             elif spec_type == "multi_select":
@@ -833,13 +838,10 @@ class NotionService:
                 props[prop_name] = {"multi_select": [{"name": n} for n in names if n]}
 
             elif spec_type == "relation":
-                # ✅ Support both keys: page_ids (expected here) and ids (used elsewhere)
                 page_ids = spec.get("page_ids") or spec.get("ids") or []
                 if not isinstance(page_ids, list):
                     page_ids = []
-                props[prop_name] = {
-                    "relation": [{"id": pid} for pid in page_ids if pid]
-                }
+                props[prop_name] = {"relation": [{"id": pid} for pid in page_ids if pid]}
 
             elif spec_type == "date":
                 start = spec.get("start")
@@ -861,7 +863,6 @@ class NotionService:
                     props[prop_name] = {"number": value}
 
             elif spec_type == "people":
-                # ✅ Notion expects list of objects: [{"id": "..."}]
                 people = spec.get("people") or spec.get("ids") or []
                 norm: List[Dict[str, Any]] = []
                 if isinstance(people, list):
@@ -927,9 +928,7 @@ class NotionService:
 
         if self.goals_db_id:
             try:
-                goals_results = await self._query_db(
-                    self.goals_db_id, self._snapshot_page_size
-                )
+                goals_results = await self._query_db(self.goals_db_id, self._snapshot_page_size)
                 snapshot["goals"] = maybe_compact(goals_results)
                 snapshot["goals_summary"] = self._build_status_priority_summary(
                     goals_results,
@@ -942,9 +941,7 @@ class NotionService:
 
         if self.tasks_db_id:
             try:
-                tasks_results = await self._query_db(
-                    self.tasks_db_id, self._snapshot_page_size
-                )
+                tasks_results = await self._query_db(self.tasks_db_id, self._snapshot_page_size)
                 snapshot["tasks"] = maybe_compact(tasks_results)
                 snapshot["tasks_summary"] = self._build_status_priority_summary(
                     tasks_results,
@@ -958,13 +955,9 @@ class NotionService:
         projects_db_id = self.projects_db_id or self.db_ids.get("projects")
         if projects_db_id:
             try:
-                projects_results = await self._query_db(
-                    projects_db_id, self._snapshot_page_size
-                )
+                projects_results = await self._query_db(projects_db_id, self._snapshot_page_size)
                 snapshot["projects"] = maybe_compact(projects_results)
-                snapshot["projects_summary"] = self._build_status_priority_summary(
-                    projects_results
-                )
+                snapshot["projects_summary"] = self._build_status_priority_summary(projects_results)
             except Exception as exc:
                 logger.info("Failed to sync projects snapshot from Notion: %s", exc)
                 snapshot["projects_error"] = str(exc)
@@ -974,9 +967,7 @@ class NotionService:
             try:
                 kpi_results = await self._query_db(kpi_db_id, self._snapshot_page_size)
                 snapshot["kpi"] = maybe_compact(kpi_results)
-                snapshot["kpi_summary"] = self._build_status_priority_summary(
-                    kpi_results
-                )
+                snapshot["kpi_summary"] = self._build_status_priority_summary(kpi_results)
             except Exception as exc:
                 logger.info("Failed to sync KPI snapshot from Notion: %s", exc)
                 snapshot["kpi_error"] = str(exc)
@@ -984,17 +975,11 @@ class NotionService:
         leads_db_id = self.db_ids.get("leads") or self.db_ids.get("lead")
         if leads_db_id:
             try:
-                leads_results = await self._query_db(
-                    leads_db_id, self._snapshot_page_size
-                )
+                leads_results = await self._query_db(leads_db_id, self._snapshot_page_size)
                 snapshot["leads"] = maybe_compact(leads_results)
-                snapshot["leads_summary"] = self._build_status_priority_summary(
-                    leads_results
-                )
+                snapshot["leads_summary"] = self._build_status_priority_summary(leads_results)
             except Exception as exc:
-                logger.info(
-                    "Failed to sync leads snapshot from Notion (non-fatal): %s", exc
-                )
+                logger.info("Failed to sync leads snapshot from Notion (non-fatal): %s", exc)
                 snapshot["leads_error"] = str(exc)
 
         agent_exchange_db_id = self.db_ids.get("agent_exchange")
@@ -1004,29 +989,20 @@ class NotionService:
                     agent_exchange_db_id, self._snapshot_page_size
                 )
                 snapshot["agent_exchange"] = maybe_compact(agent_exchange_results)
-                snapshot["agent_exchange_summary"] = (
-                    self._build_status_priority_summary(agent_exchange_results)
+                snapshot["agent_exchange_summary"] = self._build_status_priority_summary(
+                    agent_exchange_results
                 )
             except Exception as exc:
-                logger.info(
-                    "Failed to sync agent_exchange snapshot from Notion: %s", exc
-                )
+                logger.info("Failed to sync agent_exchange snapshot from Notion: %s", exc)
                 snapshot["agent_exchange_error"] = str(exc)
 
-        ai_summary_db_id = self.db_ids.get("ai_summary") or self.db_ids.get(
-            "ai_weekly_summary"
-        )
+        ai_summary_db_id = self.db_ids.get("ai_summary") or self.db_ids.get("ai_weekly_summary")
         if ai_summary_db_id:
             try:
-                ai_summary_results = await self._query_db(
-                    ai_summary_db_id, self._snapshot_page_size
-                )
+                ai_summary_results = await self._query_db(ai_summary_db_id, self._snapshot_page_size)
                 snapshot["ai_summary"] = maybe_compact(ai_summary_results)
             except Exception as exc:
-                logger.info(
-                    "Failed to sync ai_summary snapshot from Notion (non-fatal): %s",
-                    exc,
-                )
+                logger.info("Failed to sync ai_summary snapshot from Notion (non-fatal): %s", exc)
                 snapshot["ai_summary_error"] = str(exc)
 
         core_keys = {
@@ -1049,10 +1025,7 @@ class NotionService:
                 rows = await self._query_db(db_id, self._snapshot_page_size)
                 snapshot["extra_databases"][db_key] = maybe_compact(rows)
 
-                if (
-                    self._snapshot_include_blocks
-                    and db_key in self._snapshot_blocks_db_keys
-                ):
+                if self._snapshot_include_blocks and db_key in self._snapshot_blocks_db_keys:
                     pages = rows[: self._snapshot_blocks_page_limit]
                     blocks_map: Dict[str, Any] = {}
                     for p in pages:
@@ -1083,22 +1056,16 @@ class NotionService:
                     try:
                         page = await self._retrieve_page(db_id)
                         blocks = None
-                        if (
-                            self._snapshot_include_blocks
-                            and db_key in self._snapshot_blocks_db_keys
-                        ):
+                        if self._snapshot_include_blocks and db_key in self._snapshot_blocks_db_keys:
                             blocks = await self._retrieve_blocks_limited(
                                 db_id, self._snapshot_blocks_per_page_limit
                             )
                         snapshot["extra_databases"][db_key] = {
                             "kind": "page",
-                            "page": self._compact_page(page)
-                            if self._snapshot_compact
-                            else page,
+                            "page": self._compact_page(page) if self._snapshot_compact else page,
                             "blocks": blocks,
                         }
                     except Exception as exc2:
-                        # ✅ soft-ignore for derived views if it's access/not-found
                         msg2 = str(exc2)
                         if db_key in self._SOFT_DERIVED_VIEW_KEYS and (
                             self._is_no_access(msg2) or self._is_object_not_found(msg2)
@@ -1116,7 +1083,6 @@ class NotionService:
                     continue
 
                 if self._is_no_access(msg) or self._is_object_not_found(msg):
-                    # ✅ soft-ignore for derived views if it's access/not-found
                     if db_key in self._SOFT_DERIVED_VIEW_KEYS:
                         continue
 
@@ -1130,7 +1096,6 @@ class NotionService:
                         )
                     continue
 
-                # ✅ soft-ignore for derived views if it's access/not-found (belt+suspenders)
                 if db_key in self._SOFT_DERIVED_VIEW_KEYS and (
                     self._is_no_access(msg) or self._is_object_not_found(msg)
                 ):
@@ -1149,18 +1114,13 @@ class NotionService:
                         self._snapshot_blocks_per_page_limit,
                     )
                 snapshot["time_management"] = {
-                    "page": self._compact_page(page)
-                    if self._snapshot_compact
-                    else page,
+                    "page": self._compact_page(page) if self._snapshot_compact else page,
                     "blocks": blocks,
                 }
             except Exception as exc:
                 logger.info("Failed to sync Time Management page (non-fatal): %s", exc)
                 snapshot["time_management_error"] = str(exc)
 
-        # ----------------------------
-        # ✅ FIX: determine whether refresh produced any usable data
-        # ----------------------------
         core_total = (
             len(goals_results)
             + len(tasks_results)
@@ -1184,16 +1144,10 @@ class NotionService:
                     extra_has_any_data = True
                     break
 
-        has_any_data = (
-            (core_total > 0)
-            or extra_has_any_data
-            or bool(snapshot.get("time_management"))
-        )
+        has_any_data = (core_total > 0) or extra_has_any_data or bool(snapshot.get("time_management"))
 
         error_keys = [
-            k
-            for k in snapshot.keys()
-            if isinstance(k, str) and k.endswith("_error") and snapshot.get(k)
+            k for k in snapshot.keys() if isinstance(k, str) and k.endswith("_error") and snapshot.get(k)
         ]
         extra_error_keys: List[str] = []
         if isinstance(extra_db, dict):
@@ -1202,11 +1156,7 @@ class NotionService:
         all_errors = error_keys + extra_error_keys
 
         if not has_any_data:
-            logger.warning(
-                ">> Snapshot refresh produced NO DATA. core_total=%s errors=%s",
-                core_total,
-                all_errors,
-            )
+            logger.warning(">> Snapshot refresh produced NO DATA. core_total=%s errors=%s", core_total, all_errors)
             return {
                 "ok": False,
                 "reason": "SNAPSHOT_EMPTY_AFTER_REFRESH",
@@ -1216,7 +1166,6 @@ class NotionService:
                 "time_management_loaded": bool(snapshot.get("time_management")),
             }
 
-        # Only now commit snapshot (even if partial); status will reflect core failures below.
         self.knowledge_snapshot = snapshot
         KnowledgeSnapshotService.update_snapshot(snapshot)
 
@@ -1228,9 +1177,6 @@ class NotionService:
             f"ai_summary={len(ai_summary_results)}, extra_db={len(snapshot['extra_databases'])})"
         )
 
-        # ----------------------------
-        # ✅ core DB failure should mark ok=False
-        # ----------------------------
         core_error_keys: List[str] = []
         if self.goals_db_id and snapshot.get("goals_error"):
             core_error_keys.append("goals_error")
@@ -1244,9 +1190,7 @@ class NotionService:
         ok_flag = len(core_error_keys) == 0
         failure_reason = None
         if not ok_flag:
-            failure_reason = "refresh_snapshot failed for core databases: " + ", ".join(
-                core_error_keys
-            )
+            failure_reason = "refresh_snapshot failed for core databases: " + ", ".join(core_error_keys)
 
         return {
             "ok": ok_flag,
