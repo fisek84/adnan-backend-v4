@@ -1,3 +1,4 @@
+# ruff: noqa: E402
 # routers/ai_ops_router.py
 from __future__ import annotations
 
