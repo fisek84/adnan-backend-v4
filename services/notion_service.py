@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -234,6 +235,10 @@ class NotionService:
         """
         - POST/PATCH/PUT: payload ide u JSON body
         - GET: payload se NE šalje; koristimo params
+
+        Production note:
+        - body čitamo jednom kao bytes i dekodiramo kao UTF-8 (error tekst i JSON)
+        - izbjegavamo dvostruko čitanje response body-a
         """
         session = await self._get_session()
         kwargs: Dict[str, Any] = {}
@@ -247,10 +252,21 @@ class NotionService:
                 kwargs["params"] = params
 
         async with session.request(m, url, **kwargs) as response:
-            text = await response.text()
+            body = await response.read()
+            text = body.decode("utf-8", errors="replace") if body else ""
+
             if response.status not in (200, 201, 202):
                 raise RuntimeError(f"Notion API error {response.status}: {text}")
-            return await response.json() if text else {}
+
+            if not text.strip():
+                return {}
+
+            try:
+                parsed = json.loads(text)
+            except Exception as exc:
+                raise RuntimeError(f"Notion API returned non-JSON body: {exc}: {text}")
+
+            return parsed if isinstance(parsed, dict) else {"raw": parsed}
 
     # --------------------------------------------------
     # HELPERS

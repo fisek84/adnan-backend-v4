@@ -620,6 +620,15 @@ class ExecuteRawInput2(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
+# --- NEW: /api/notion/read stable contract models ---
+class NotionReadResponse(BaseModel):
+    ok: bool
+    title: Optional[str] = None
+    notion_url: Optional[str] = None
+    content_markdown: Optional[str] = None
+    error: Optional[str] = None
+
+
 # ================================================================
 # HELPERS
 # ================================================================
@@ -1123,6 +1132,103 @@ async def execute_proposal(payload: ProposalExecuteInput):
         result.setdefault("execution_id", execution_id)
         result.setdefault("status", "BLOCKED")
     return result
+
+
+# ================================================================
+# NOTION READ — READ ONLY (NO APPROVAL / NO EXECUTION)
+# ================================================================
+@app.post("/api/notion/read", response_model=NotionReadResponse)
+async def notion_read(payload: Any = Body(None)) -> Any:
+    """
+    KANON:
+      - READ ONLY
+      - ne ide kroz approval
+      - ne kreira execute zapise
+      - stabilan response format (ne oslanja se na FastAPI 422)
+    Body:
+      { "mode": "page_by_title", "query": "Outreach sop" }
+    """
+
+    def _json(resp: NotionReadResponse) -> JSONResponse:
+        # Force UTF-8 charset for clients like PowerShell that mis-decode without it.
+        return JSONResponse(
+            content=resp.model_dump(),
+            media_type="application/json; charset=utf-8",
+        )
+
+    def _resp_err(msg: str) -> JSONResponse:
+        return _json(
+            NotionReadResponse(
+                ok=False,
+                title=None,
+                notion_url=None,
+                content_markdown=None,
+                error=msg,
+            )
+        )
+
+    if payload is None:
+        return _resp_err("Body must be an object")
+
+    if not isinstance(payload, dict):
+        return _resp_err("Body must be an object")
+
+    mode = payload.get("mode")
+    if not isinstance(mode, str) or not mode.strip():
+        return _resp_err("Field 'mode' is required")
+    mode = mode.strip()
+
+    if mode != "page_by_title":
+        return _resp_err("Unsupported mode. Allowed: 'page_by_title'")
+
+    query = payload.get("query")
+    if not isinstance(query, str) or not query.strip():
+        return _resp_err("Field 'query' is required")
+    query = query.strip()
+
+    try:
+        from services.notion_read_service import read_page_as_markdown
+
+        res = await read_page_as_markdown(query)
+        if not isinstance(res, dict):
+            return _resp_err("Notion read failed: invalid service response")
+
+        title = res.get("title") if isinstance(res.get("title"), str) else ""
+        url = res.get("url") if isinstance(res.get("url"), str) else ""
+        md = (
+            res.get("content_markdown")
+            if isinstance(res.get("content_markdown"), str)
+            else ""
+        )
+
+        title = (title or "").strip()
+        url = (url or "").strip()
+        md = (md or "").strip()
+
+        # Service returns empty strings when not found -> normalize to spec.
+        if not title and not url and not md:
+            return _json(
+                NotionReadResponse(
+                    ok=False,
+                    title=None,
+                    notion_url=None,
+                    content_markdown=None,
+                    error=f"Page not found for query: {query}",
+                )
+            )
+
+        return _json(
+            NotionReadResponse(
+                ok=True,
+                title=title or None,
+                notion_url=url or None,
+                content_markdown=md or None,
+                error=None,
+            )
+        )
+
+    except Exception as exc:  # noqa: BLE001
+        return _resp_err(f"Notion read failed: {exc}")
 
 
 # ================================================================
