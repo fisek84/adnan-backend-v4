@@ -1,4 +1,4 @@
-﻿# models/canon.py
+# models/canon.py
 # Single source of truth for canon constants + small helpers.
 
 from __future__ import annotations

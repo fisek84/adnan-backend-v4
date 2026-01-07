@@ -1,4 +1,4 @@
-﻿# routers/ai_ops_router.py
+# routers/ai_ops_router.py
 from __future__ import annotations
 
 import json
@@ -560,4 +560,3 @@ def forward_alerts(request: Request) -> Dict[str, Any]:
 
 # Export name expected by gateway_server.py
 ai_ops_router = router
-

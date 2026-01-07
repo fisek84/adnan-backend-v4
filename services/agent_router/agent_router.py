@@ -167,7 +167,9 @@ class AgentRouter:
                 raise RuntimeError("no_agent_messages")
 
             # find the newest assistant message
-            assistant_msgs = [m for m in messages.data if getattr(m, "role", None) == "assistant"]
+            assistant_msgs = [
+                m for m in messages.data if getattr(m, "role", None) == "assistant"
+            ]
             if not assistant_msgs:
                 raise RuntimeError("no_assistant_message")
 

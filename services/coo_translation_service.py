@@ -315,9 +315,7 @@ class COOTranslationService:
         # KPI WEEKLY SUMMARY
         if (
             re.search(r"\bkpi\b", t, flags=re.IGNORECASE)
-            and re.search(
-                r"\b(weekly|sedmic|sedmič|tjedn)\b", t, flags=re.IGNORECASE
-            )
+            and re.search(r"\b(weekly|sedmic|sedmič|tjedn)\b", t, flags=re.IGNORECASE)
             and re.search(
                 r"\b(summary|sažetak|sazetak|rezime|pregled|izvjestaj|izveštaj|report)\b",
                 t,
@@ -570,9 +568,7 @@ class COOTranslationService:
         has_create = bool(
             re.search(r"^(create|kreiraj|napravi|dodaj)\s+", t, re.IGNORECASE)
         )
-        has_name_kv = bool(
-            re.search(r"(?i)\b(name|naziv|ime|title)\b\s*[:=]\s*", t)
-        )
+        has_name_kv = bool(re.search(r"(?i)\b(name|naziv|ime|title)\b\s*[:=]\s*", t))
 
         fields = self._parse_common_fields(t, entity="goal")
         if not fields.title:
@@ -634,9 +630,7 @@ class COOTranslationService:
         has_task_word = bool(
             re.search(r"\b(task|zadatak|todo|to-do)\b", t, re.IGNORECASE)
         )
-        has_name_kv = bool(
-            re.search(r"(?i)\b(name|naziv|ime|title)\b\s*[:=]\s*", t)
-        )
+        has_name_kv = bool(re.search(r"(?i)\b(name|naziv|ime|title)\b\s*[:=]\s*", t))
 
         if not has_task_word or (not has_create and not has_name_kv):
             return None

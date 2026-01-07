@@ -1,4 +1,4 @@
-﻿# gateway/gateway_server.py
+# gateway/gateway_server.py
 # ruff: noqa: E402
 # FULL FILE — replace the whole gateway_server.py with this.
 
@@ -243,6 +243,7 @@ coo_conversation_service = COOConversationService()
 
 _execution_registry = get_execution_registry()
 _execution_orchestrator = ExecutionOrchestrator()
+
 
 # ================================================================
 # META-COMMANDS MUST NOT ENTER EXECUTION/APPROVAL
@@ -1822,6 +1823,3 @@ else:
         StaticFiles(directory=str(FRONTEND_DIST_DIR), html=True),
         name="frontend",
     )
-
-
-

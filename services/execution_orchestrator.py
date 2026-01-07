@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import logging
 from typing import Any, Dict, List, Union
@@ -439,4 +439,3 @@ class ExecutionOrchestrator:
             data = {k: v for k, v in data.items() if k in allowed_fields}
 
         return AICommand(**data)
-

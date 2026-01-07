@@ -1,4 +1,4 @@
-﻿# routers/chat_router.py
+# routers/chat_router.py
 
 from __future__ import annotations
 
@@ -34,7 +34,9 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
     def _ensure_dict(v: Any) -> Dict[str, Any]:
         return v if isinstance(v, dict) else {}
 
-    def _snapshot_meta(*, wrapper: Dict[str, Any], payload: Dict[str, Any]) -> Dict[str, Any]:
+    def _snapshot_meta(
+        *, wrapper: Dict[str, Any], payload: Dict[str, Any]
+    ) -> Dict[str, Any]:
         w = wrapper if isinstance(wrapper, dict) else {}
         p = payload if isinstance(payload, dict) else {}
         return {
@@ -107,7 +109,10 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         except Exception:
             md = _ensure_dict(getattr(payload, "metadata", None))
             md["snapshot_source"] = md.get("snapshot_source") or "error"
-            md["snapshot_meta"] = md.get("snapshot_meta") or {"is_empty": True, "error": True}
+            md["snapshot_meta"] = md.get("snapshot_meta") or {
+                "is_empty": True,
+                "error": True,
+            }
             payload.metadata = md  # type: ignore[assignment]
 
     def _extract_prompt(payload: AgentInput) -> str:
@@ -193,12 +198,12 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             re.search(r"\bisklju[cÄŤ]ivo\b.*\bplan\b.*\bjson\b", p, flags=re.IGNORECASE)
         ) or ("only" in p and "plan" in p and "json" in p)
 
-        forbids_commands = bool(re.search(r"\bne\b.*\bkomand", p, flags=re.IGNORECASE)) or bool(
-            re.search(r"\bno\b.*\bcommand", p, flags=re.IGNORECASE)
-        )
-        forbids_actions = bool(re.search(r"\bne\b.*\bakci", p, flags=re.IGNORECASE)) or bool(
-            re.search(r"\bno\b.*\baction", p, flags=re.IGNORECASE)
-        )
+        forbids_commands = bool(
+            re.search(r"\bne\b.*\bkomand", p, flags=re.IGNORECASE)
+        ) or bool(re.search(r"\bno\b.*\bcommand", p, flags=re.IGNORECASE))
+        forbids_actions = bool(
+            re.search(r"\bne\b.*\bakci", p, flags=re.IGNORECASE)
+        ) or bool(re.search(r"\bno\b.*\baction", p, flags=re.IGNORECASE))
 
         return wants_json_plan and (forbids_commands or forbids_actions)
 
@@ -225,7 +230,9 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             pass
         return pc
 
-    def _rewrite_any_actionable_to_proposal_wrapper(out: AgentOutput, *, prompt: str) -> None:
+    def _rewrite_any_actionable_to_proposal_wrapper(
+        out: AgentOutput, *, prompt: str
+    ) -> None:
         """
         CANON:
         /api/chat mora vraÄ‡ati ceo.command.propose (wrapper),
@@ -259,13 +266,17 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             out.trace = tr  # type: ignore[assignment]
 
             out.proposed_commands = [
-                _build_proposal_wrapper(prompt, reason="Canonical chat proposal wrapper (rewrite).")
+                _build_proposal_wrapper(
+                    prompt, reason="Canonical chat proposal wrapper (rewrite)."
+                )
             ]  # type: ignore[assignment]
             return
 
         # Ako nema niĹˇta actionable (prazno ili samo refresh_snapshot), ubaci fallback wrapper.
         out.proposed_commands = [
-            _build_proposal_wrapper(prompt, reason="Fallback proposal (no actionable proposals).")
+            _build_proposal_wrapper(
+                prompt, reason="Fallback proposal (no actionable proposals)."
+            )
         ]  # type: ignore[assignment]
         tr = _ensure_dict(getattr(out, "trace", None))
         tr["fallback_proposed_commands"] = True
@@ -299,7 +310,9 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             },
         )
 
-    async def _try_attach_ops_plan_trace(out: AgentOutput, *, prompt: str, snapshot: Any) -> None:
+    async def _try_attach_ops_plan_trace(
+        out: AgentOutput, *, prompt: str, snapshot: Any
+    ) -> None:
         """
         Ops planner koristimo da bismo dobili strukturirani plan u trace,
         ali NE smijemo ga vratiti kao actionable notion_write iz /api/chat.
@@ -307,7 +320,9 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         if not _looks_like_goal_or_task_request(prompt):
             return
         try:
-            plan = await plan_ai_commands(prompt, snapshot if snapshot is not None else {})
+            plan = await plan_ai_commands(
+                prompt, snapshot if snapshot is not None else {}
+            )
         except Exception:
             plan = None
 
@@ -323,12 +338,16 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
 
         out.trace = tr  # type: ignore[assignment]
 
-    async def _enforce_plan_only_json_response(out: AgentOutput, *, prompt: str, snapshot: Any) -> None:
+    async def _enforce_plan_only_json_response(
+        out: AgentOutput, *, prompt: str, snapshot: Any
+    ) -> None:
         """
         Hard gate: korisnik traĹľi iskljuÄŤivo plan u JSON i zabranjuje komande.
         """
         try:
-            plan = await plan_ai_commands(prompt, snapshot if snapshot is not None else {})
+            plan = await plan_ai_commands(
+                prompt, snapshot if snapshot is not None else {}
+            )
         except Exception:
             plan = None
 
@@ -407,7 +426,9 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
 
         # PLAN ONLY JSON (hard gate)
         if _wants_plan_only_json(prompt):
-            await _enforce_plan_only_json_response(out, prompt=prompt, snapshot=snapshot)
+            await _enforce_plan_only_json_response(
+                out, prompt=prompt, snapshot=snapshot
+            )
             out = _enforce_output_read_only(out, payload)
             return JSONResponse(content=_agent_output_to_dict_no_alias(out))
 
@@ -421,4 +442,3 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         return JSONResponse(content=_agent_output_to_dict_no_alias(out))
 
     return router
-

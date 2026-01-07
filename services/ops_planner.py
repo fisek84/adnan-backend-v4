@@ -203,7 +203,9 @@ class OpsPlanner:
         self.client = OpenAI(api_key=api_key)
 
     def _get_assistant_id_or_raise(self) -> str:
-        aid = os.getenv(self._assistant_id_env) or os.getenv(self._fallback_assistant_id_env)
+        aid = os.getenv(self._assistant_id_env) or os.getenv(
+            self._fallback_assistant_id_env
+        )
         if not aid:
             raise OpsPlannerError(
                 f"Missing assistant id: set {self._assistant_id_env} (or fallback {self._fallback_assistant_id_env})."
@@ -240,7 +242,9 @@ class OpsPlanner:
             if status == "requires_action":
                 # No tools allowed: hard fail
                 await self._cancel_run_best_effort(thread_id=thread_id, run_id=run_id)
-                raise OpsPlannerToolCallAttempt("OpsPlanner attempted tool calls (requires_action)")
+                raise OpsPlannerToolCallAttempt(
+                    "OpsPlanner attempted tool calls (requires_action)"
+                )
 
             if status == "completed":
                 return
@@ -256,7 +260,9 @@ class OpsPlanner:
             await asyncio.sleep(self._poll_interval_s)
 
     async def _get_final_text(self, *, thread_id: str) -> str:
-        messages = await self._to_thread(self.client.beta.threads.messages.list, thread_id=thread_id)
+        messages = await self._to_thread(
+            self.client.beta.threads.messages.list, thread_id=thread_id
+        )
         data = getattr(messages, "data", None) or []
         assistant_msgs = [m for m in data if getattr(m, "role", None) == "assistant"]
         if not assistant_msgs:
@@ -343,7 +349,9 @@ class OpsPlanner:
         parsed = _validate_plan_or_raise(parsed)
 
         elapsed_ms = int((time.monotonic() - t0) * 1000)
-        logger.info("OpsPlanner completed in %sms (assistant_id=%s)", elapsed_ms, assistant_id)
+        logger.info(
+            "OpsPlanner completed in %sms (assistant_id=%s)", elapsed_ms, assistant_id
+        )
 
         return parsed
 
