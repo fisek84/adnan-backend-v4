@@ -117,9 +117,55 @@ function safeJsonStringify(x: any, maxLen = 6000): string {
   }
 }
 
+function truncateText(s: string, maxLen = 20000): string {
+  if (!s) return "";
+  if (s.length <= maxLen) return s;
+  return s.slice(0, maxLen) + "\n\n…(truncated)…";
+}
+
 function isAbortError(e: unknown): boolean {
   const msg = e instanceof Error ? e.message : String(e ?? "");
   return msg.toLowerCase().includes("aborted") || msg.toLowerCase().includes("abort");
+}
+
+/**
+ * Render helper:
+ * - Keeps plain-text rendering (no HTML injection)
+ * - Makes "Open in Notion: https://..." clickable
+ */
+function renderTextWithNotionLink(text: string): React.ReactNode {
+  const re = /(Open in Notion:\s*)(https?:\/\/\S+)/;
+  const m = text.match(re);
+  if (!m) return text;
+
+  const prefix = m[1];
+  const url = m[2];
+
+  let safeUrl: string | null = null;
+  try {
+    safeUrl = new URL(url).toString();
+  } catch {
+    safeUrl = null;
+  }
+
+  const idx = text.indexOf(m[0]);
+  const before = idx >= 0 ? text.slice(0, idx) : "";
+  const after = idx >= 0 ? text.slice(idx + m[0].length) : "";
+
+  return (
+    <>
+      {before}
+      {prefix}
+      {safeUrl ? (
+        <a href={safeUrl} target="_blank" rel="noreferrer">
+          {url}
+        </a>
+      ) : (
+        url
+      )}
+      {after}
+    </>
+  );
 }
 
 export const CeoChatbox: React.FC<CeoChatboxProps> = ({
@@ -372,7 +418,9 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       try {
         const approveJson = await postJson(appUrl, { approval_id: approvalId }, controller.signal);
 
-        const msg = _pickText(approveJson) || (approveJson?.execution_state ? `Execution: ${approveJson.execution_state}` : "Approved.");
+        const msg =
+          _pickText(approveJson) ||
+          (approveJson?.execution_state ? `Execution: ${approveJson.execution_state}` : "Approved.");
 
         updateItem(placeholder.id, { content: msg, status: "final" });
         abortRef.current = null;
@@ -390,104 +438,72 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
   );
 
   // ------------------------------
-  // NOTION SEARCH (generic DB)
+  // NOTION READ (page_by_title)
   // ------------------------------
-  const [notionDbs, setNotionDbs] = useState<Record<string, string>>({});
-  const [notionDbKey, setNotionDbKey] = useState<string>("__ALL__");
-  const [notionContains, setNotionContains] = useState<string>("");
+  const [notionQuery, setNotionQuery] = useState<string>("");
   const [notionLoading, setNotionLoading] = useState<boolean>(false);
   const [notionLastError, setNotionLastError] = useState<string | null>(null);
 
-  const reloadNotionDatabases = useCallback(
-    async (signal?: AbortSignal) => {
-      setNotionLastError(null);
-      setNotionLoading(true);
-      try {
-        const res = await (api as any).listNotionDatabases?.(signal);
-        const dbs = res?.databases && typeof res.databases === "object" ? res.databases : {};
-        setNotionDbs(dbs);
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        if (!isAbortError(e)) setNotionLastError(msg);
-      } finally {
-        setNotionLoading(false);
-      }
-    },
-    [api]
-  );
-
-  useEffect(() => {
-    const controller = new AbortController();
-    void reloadNotionDatabases(controller.signal);
-    return () => controller.abort();
-  }, [reloadNotionDatabases]);
-
   const runNotionSearch = useCallback(async () => {
-    const q = notionContains.trim();
+    const q = notionQuery.trim();
     if (!q) {
-      setNotionLastError("Unesi tekst za pretragu (contains).");
+      setNotionLastError("Unesi naziv dokumenta (title) za pretragu.");
       return;
     }
     if (busy === "submitting" || busy === "streaming") return;
 
-    const dbKeys = Object.keys(notionDbs || {});
-    const keysToSearch = notionDbKey === "__ALL__" ? dbKeys : notionDbKey ? [notionDbKey] : [];
-
-    if (!keysToSearch.length) {
-      setNotionLastError("Nema dostupnih Notion baza (db_key list je prazna).");
-      return;
-    }
-
     setNotionLastError(null);
     setNotionLoading(true);
 
-    const placeholder = makeSystemProcessingItem("notion_search");
+    const placeholder = makeSystemProcessingItem("notion_read");
     appendItem(placeholder);
 
     const controller = new AbortController();
     abortRef.current = controller;
 
     try {
-      const results: Record<string, any> = {};
+      // Expected API method (added in api.ts):
+      // notionReadPageByTitle(query) => { ok, title, notion_url, content_markdown, error }
+      const res = await (api as any).notionReadPageByTitle?.(q, controller.signal);
 
-      for (const k of keysToSearch) {
-        try {
-          const spec = {
-            db_key: k,
-            filter: { property: "Name", title: { contains: q } },
-            page_size: 10,
-          };
-
-          const r = await (api as any).notionBulkQuery?.({ queries: [spec] }, controller.signal);
-          results[k] = r;
-        } catch (e) {
-          const msg = e instanceof Error ? e.message : String(e);
-          results[k] = { ok: false, error: msg };
-          if (isAbortError(e)) break;
-        }
+      if (!res || res.ok !== true) {
+        const err = typeof res?.error === "string" && res.error.trim() ? res.error.trim() : "Document not found.";
+        updateItem(placeholder.id, {
+          content: `Document not found for query: "${q}"\n\n${err}`,
+          status: "final",
+        });
+        abortRef.current = null;
+        setNotionLoading(false);
+        return;
       }
 
-      const text =
-        `Notion Search (contains="${q}")\n` +
-        `Baze: ${keysToSearch.join(", ")}\n\n` +
-        safeJsonStringify(results);
+      const title = typeof res.title === "string" && res.title.trim() ? res.title.trim() : q;
+      const notionUrl =
+        typeof res.notion_url === "string" && res.notion_url.trim() ? res.notion_url.trim() : "";
 
-      updateItem(placeholder.id, { content: text, status: "final" });
+      const contentMd =
+        typeof res.content_markdown === "string" && res.content_markdown ? res.content_markdown : "";
+
+      const docText =
+        `${title}\n` +
+        `${"=".repeat(Math.min(80, Math.max(10, title.length)))}\n\n` +
+        (notionUrl ? `Open in Notion: ${notionUrl}\n\n` : "") +
+        truncateText(contentMd, 20000);
+
+      updateItem(placeholder.id, { content: docText, status: "final" });
 
       abortRef.current = null;
       setNotionLoading(false);
-      setBusy("idle");
       setLastError(null);
     } catch (e) {
       abortRef.current = null;
       const msg = e instanceof Error ? e.message : String(e);
       updateItem(placeholder.id, { status: "error", content: "" });
       setNotionLoading(false);
-      setBusy(isAbortError(e) ? "idle" : "error");
       setNotionLastError(isAbortError(e) ? null : msg);
       setLastError(isAbortError(e) ? null : msg);
     }
-  }, [api, appendItem, busy, notionContains, notionDbKey, notionDbs, updateItem]);
+  }, [api, appendItem, busy, notionQuery, updateItem]);
 
   const submit = useCallback(async () => {
     const trimmed = draft.trim();
@@ -612,7 +628,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
                         </span>
                       </span>
                     ) : (
-                      it.content
+                      typeof it.content === "string" ? renderTextWithNotionLink(it.content) : it.content
                     )}
                     <div className="ceoMeta">
                       <span className={dotCls} />
@@ -722,7 +738,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
                   <div className="govBadge blocked">{ui.blockedLabel}</div>
                 </div>
                 <div className="govBody">
-                  <div className="govSummary">{notionLastError ? `Notion search: ${notionLastError}` : lastError}</div>
+                  <div className="govSummary">{notionLastError ? `Notion read: ${notionLastError}` : lastError}</div>
                   <div className="govActions">
                     <button className="govButton" onClick={retryLast}>
                       {ui.retryLabel}
@@ -736,7 +752,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       </div>
 
       <footer className="ceoComposer">
-        {/* NOTION SEARCH PANEL */}
+        {/* NOTION READ PANEL */}
         <div
           style={{
             display: "flex",
@@ -750,34 +766,10 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         >
           <div style={{ fontWeight: 600, opacity: 0.9 }}>{(ui as any).searchNotionLabel ?? "Search Notion"}</div>
 
-          <select
-            value={notionDbKey}
-            onChange={(e) => setNotionDbKey(e.target.value)}
-            disabled={notionLoading || busy === "submitting" || busy === "streaming"}
-            style={{
-              padding: "8px 10px",
-              borderRadius: 10,
-              border: "1px solid rgba(255,255,255,0.12)",
-              background: "transparent",
-              color: "inherit",
-              minWidth: 180,
-            }}
-            title={(ui as any).chooseDatabaseLabel ?? "Database"}
-          >
-            <option value="__ALL__">ALL databases</option>
-            {Object.keys(notionDbs || {})
-              .sort()
-              .map((k) => (
-                <option key={k} value={k}>
-                  {k}
-                </option>
-              ))}
-          </select>
-
           <input
-            value={notionContains}
-            onChange={(e) => setNotionContains(e.target.value)}
-            placeholder={(ui as any).searchQueryPlaceholder ?? "Search text…"}
+            value={notionQuery}
+            onChange={(e) => setNotionQuery(e.target.value)}
+            placeholder={(ui as any).searchQueryPlaceholder ?? 'Document title (e.g. "Outreach SOP")…'}
             disabled={notionLoading || busy === "submitting" || busy === "streaming"}
             style={{
               padding: "8px 10px",
@@ -785,34 +777,19 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
               border: "1px solid rgba(255,255,255,0.12)",
               background: "transparent",
               color: "inherit",
-              flex: "1 1 280px",
-              minWidth: 220,
+              flex: "1 1 320px",
+              minWidth: 240,
             }}
           />
 
           <button
             className="ceoHeaderButton"
             onClick={() => void runNotionSearch()}
-            disabled={notionLoading || busy === "submitting" || busy === "streaming" || !notionContains.trim()}
-            title="POST /notion-ops/bulk/query"
+            disabled={notionLoading || busy === "submitting" || busy === "streaming" || !notionQuery.trim()}
+            title="POST /api/notion/read"
           >
             {notionLoading ? ((ui as any).searchingLabel ?? "Searching…") : ((ui as any).runSearchLabel ?? "Search")}
           </button>
-
-          <button
-            className="ceoHeaderButton"
-            onClick={() => {
-              const controller = new AbortController();
-              abortRef.current = controller;
-              void reloadNotionDatabases(controller.signal);
-            }}
-            disabled={notionLoading || busy === "submitting" || busy === "streaming"}
-            title="Reload list of databases"
-          >
-            {(ui as any).loadDatabasesLabel ?? "Load databases"}
-          </button>
-
-          <div style={{ opacity: 0.7, fontSize: 12 }}>DBs: {Object.keys(notionDbs || {}).length}</div>
         </div>
 
         {/* CHAT COMPOSER */}

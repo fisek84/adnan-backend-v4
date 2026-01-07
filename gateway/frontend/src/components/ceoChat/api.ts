@@ -9,6 +9,7 @@
 // - normalizuje response (normalize.ts)
 // - podržava streaming (ne konzumira stream ovdje; UI ga čita)
 // - daje helper metode za Notion Ops read/search (GET /api/notion-ops/databases, POST /api/notion-ops/bulk/query)
+// - NEW: daje helper metodu za Notion page read (POST /api/notion/read) — SAFE READ
 
 import { normalizeConsoleResponse, streamTextFromResponse } from "./normalize";
 
@@ -93,6 +94,23 @@ export type NotionBulkQueryPayload = {
   queries: NotionQuerySpec[];
 };
 
+// ------------------------------
+// Notion Read (page by title) — SAFE READ
+// ------------------------------
+export type NotionReadResponse =
+  | {
+      ok: true;
+      title: string;
+      notion_url: string;
+      content_markdown: string;
+      [k: string]: any;
+    }
+  | {
+      ok: false;
+      error: string;
+      [k: string]: any;
+    };
+
 export type CeoConsoleApi = {
   sendCommand: (
     req: CeoCommandRequest,
@@ -105,6 +123,9 @@ export type CeoConsoleApi = {
   // Notion bulk ops (read/search)
   listNotionDatabases: (signal?: AbortSignal) => Promise<NotionDatabasesResponse>;
   notionBulkQuery: (payload: NotionBulkQueryPayload, signal?: AbortSignal) => Promise<any>;
+
+  // Notion page read (SAFE)
+  notionReadPageByTitle: (query: string, signal?: AbortSignal) => Promise<NotionReadResponse>;
 };
 
 function isNonEmptyString(v: any): v is string {
@@ -131,6 +152,21 @@ function deriveNotionOpsUrl(fromBaseUrl: string, path: string): string {
   // Notion Ops endpointi moraju ići kroz /api prefiks, bez obzira da li je base relative ili absolute.
   // - relative base: "/api/chat" -> "/api/notion-ops/..."
   // - absolute base: "https://host/api/chat" -> "https://host/api/notion-ops/..."
+  if (!/^https?:\/\//i.test(fromBaseUrl)) return `/api${p}`;
+
+  try {
+    const base = new URL(fromBaseUrl);
+    const apiPath = `/api${p}`;
+    return new URL(apiPath, base.origin).toString();
+  } catch {
+    return `/api${p}`;
+  }
+}
+
+// General helper: derive any /api/* URL based on ceoCommandUrl (relative or absolute)
+function deriveApiUrl(fromBaseUrl: string, apiPathWithoutPrefix: string): string {
+  const p = apiPathWithoutPrefix.startsWith("/") ? apiPathWithoutPrefix : `/${apiPathWithoutPrefix}`;
+
   if (!/^https?:\/\//i.test(fromBaseUrl)) return `/api${p}`;
 
   try {
@@ -314,9 +350,39 @@ async function fetchAndNormalize(opts: {
   return normalizeRawToUi(raw, url, res.headers);
 }
 
+function coerceNotionReadResponse(raw: any): NotionReadResponse {
+  // Expected:
+  // { ok: true, title, notion_url, content_markdown }
+  // or { ok: false, error }
+  if (!raw || typeof raw !== "object") {
+    return { ok: false, error: "Invalid response shape." };
+  }
+
+  if (raw.ok === true) {
+    const title = typeof raw.title === "string" ? raw.title : "";
+    const notionUrl = typeof raw.notion_url === "string" ? raw.notion_url : "";
+    const md = typeof raw.content_markdown === "string" ? raw.content_markdown : "";
+
+    return {
+      ok: true,
+      title,
+      notion_url: notionUrl,
+      content_markdown: md,
+    };
+  }
+
+  const err =
+    typeof raw.error === "string"
+      ? raw.error
+      : typeof raw.message === "string"
+        ? raw.message
+        : "Document not found.";
+  return { ok: false, error: err };
+}
+
 export function createCeoConsoleApi(opts: {
   ceoCommandUrl: string; // SHOULD be "/api/chat" per CANON
-  approveUrl?: string;   // default "/api/ai-ops/approval/approve"
+  approveUrl?: string; // default "/api/ai-ops/approval/approve"
   headers?: Record<string, string>;
 }): CeoConsoleApi {
   const ceoCommandUrl = opts.ceoCommandUrl;
@@ -430,6 +496,46 @@ export function createCeoConsoleApi(opts: {
 
       const txt = await res.text().catch(() => "");
       throw new Error(`HTTP ${res.status} from ${url}: ${txt || res.statusText}`);
+    },
+
+    // NEW: Notion page read by title (SAFE READ)
+    notionReadPageByTitle: async (query: string, signal?: AbortSignal): Promise<NotionReadResponse> => {
+      const q = String(query ?? "").trim();
+      if (!q) return { ok: false, error: "Query is empty." };
+
+      const url = deriveApiUrl(ceoCommandUrl, "/notion/read");
+
+      let res: Response;
+      try {
+        res = await fetch(url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(headers || {}),
+          },
+          body: JSON.stringify({ mode: "page_by_title", query: q }),
+          signal,
+        });
+      } catch (e: any) {
+        const msg = typeof e?.message === "string" ? e.message : String(e);
+        return { ok: false, error: `Network error: ${msg}` };
+      }
+
+      const raw = await fetchJsonOrText(res);
+
+      // For this READ endpoint we return {ok:false,error} instead of throwing,
+      // so UI can show a user-friendly message.
+      if (!res.ok) {
+        const err =
+          typeof raw?.error === "string"
+            ? raw.error
+            : typeof raw?.text === "string"
+              ? raw.text
+              : `HTTP ${res.status} from ${url}`;
+        return { ok: false, error: err };
+      }
+
+      return coerceNotionReadResponse(raw);
     },
   };
 }
