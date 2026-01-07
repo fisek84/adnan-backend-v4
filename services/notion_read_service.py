@@ -85,7 +85,9 @@ class NotionReadService:
     # internals
     # -------------------------
 
-    async def _list_all_child_blocks(self, block_id: str, max_blocks: int) -> List[BlockObj]:
+    async def _list_all_child_blocks(
+        self, block_id: str, max_blocks: int
+    ) -> List[BlockObj]:
         out: List[BlockObj] = []
         next_cursor: Optional[str] = None
 
@@ -228,4 +230,8 @@ async def read_page_as_markdown(query: str) -> Dict[str, str]:
     url = page.get("url", "") if isinstance(page, dict) else ""
     content_md = await svc.render_page_to_markdown(page)
 
-    return {"title": title or "", "url": url or "", "content_markdown": content_md or ""}
+    return {
+        "title": title or "",
+        "url": url or "",
+        "content_markdown": content_md or "",
+    }
