@@ -12,16 +12,30 @@ __pycache__/
 *.pyo
 *.pyd
 
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+coverage/
+htmlcov/
+
 # -------------------------
 # Virtual environments
 # -------------------------
 venv/
+.venv/
 .env
+.env.*
 
 # -------------------------
 # Local artifacts
 # -------------------------
 *.log
+_TMP_*.txt
+*_dump*.txt
+*.bak
+*.bak*
+*.zip
 
 # -------------------------
 # OS files
@@ -30,9 +44,14 @@ venv/
 Thumbs.db
 
 # -------------------------
-# Node (ako se pojavi frontend folder)
+# Node / frontend artifacts
 # -------------------------
 node_modules/
+dist/
+build/
+.vite/
+tsconfig.tsbuildinfo
+*.tsbuildinfo
 
 # -------------------------
 # Docker build artifacts
