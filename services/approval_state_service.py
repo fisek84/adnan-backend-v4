@@ -298,7 +298,11 @@ class ApprovalStateService:
             if not isinstance(data, dict):
                 return
             for k, v in data.items():
-                if isinstance(k, str) and isinstance(v, dict) and k not in self._approvals:
+                if (
+                    isinstance(k, str)
+                    and isinstance(v, dict)
+                    and k not in self._approvals
+                ):
                     v.setdefault("approval_id", k)
                     v.setdefault("status", "pending")
                     v.setdefault("created_at", _utc_now_iso())

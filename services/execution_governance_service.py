@@ -112,9 +112,7 @@ class ExecutionGovernanceService:
                 approval_id=approval_id_norm,
             )
 
-        if not self.policy.is_action_allowed_for_role(
-            initiator_norm, directive_norm
-        ):
+        if not self.policy.is_action_allowed_for_role(initiator_norm, directive_norm):
             return self._block(
                 reason="action_not_allowed",
                 ts=ts,

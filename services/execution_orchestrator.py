@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, Union
 
 from models.ai_command import AICommand
 from models.canon import PROPOSAL_WRAPPER_INTENT
@@ -12,7 +12,6 @@ from services.execution_governance_service import ExecutionGovernanceService
 from services.execution_registry import get_execution_registry
 from services.notion_ops_agent import NotionOpsAgent
 from services.notion_service import get_notion_service
-from services.knowledge_snapshot_service import KnowledgeSnapshotService
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -40,7 +39,10 @@ class ExecutionOrchestrator:
     # --------------------------------------------------
     @staticmethod
     def _is_proposal_wrapper(cmd: AICommand) -> bool:
-        return cmd.command == PROPOSAL_WRAPPER_INTENT or cmd.intent == PROPOSAL_WRAPPER_INTENT
+        return (
+            cmd.command == PROPOSAL_WRAPPER_INTENT
+            or cmd.intent == PROPOSAL_WRAPPER_INTENT
+        )
 
     @staticmethod
     def _is_goal_task_workflow(cmd: AICommand) -> bool:
@@ -70,7 +72,9 @@ class ExecutionOrchestrator:
     # --------------------------------------------------
     # PUBLIC API
     # --------------------------------------------------
-    async def execute(self, command: Union[AICommand, Dict[str, Any]]) -> Dict[str, Any]:
+    async def execute(
+        self, command: Union[AICommand, Dict[str, Any]]
+    ) -> Dict[str, Any]:
         cmd = self._normalize_command(command)
 
         if self._is_proposal_wrapper(cmd):

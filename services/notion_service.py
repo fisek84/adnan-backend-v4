@@ -1,14 +1,12 @@
 # services/notion_service.py
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
 import os
 import time
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
 
 import httpx
 
@@ -155,7 +153,9 @@ class NotionService:
         try:
             resp = await client.request(method, url, json=payload)
         except Exception as exc:
-            raise RuntimeError(f"Notion request failed: {type(exc).__name__}: {exc}") from exc
+            raise RuntimeError(
+                f"Notion request failed: {type(exc).__name__}: {exc}"
+            ) from exc
 
         text = resp.text or ""
         if resp.status_code >= 400:
@@ -188,7 +188,9 @@ class NotionService:
         schema = await self._safe_request("GET", url, payload=None)
 
         # cache even if empty (avoid hammering)
-        self._db_schema_cache[db_id] = _DbSchemaCacheEntry(fetched_at=now, schema=schema)
+        self._db_schema_cache[db_id] = _DbSchemaCacheEntry(
+            fetched_at=now, schema=schema
+        )
         return schema
 
     async def _resolve_property_type(self, *, db_id: str, prop_name: str) -> str:
@@ -345,7 +347,9 @@ class NotionService:
             logger.warning("sync_knowledge_snapshot failed (non-fatal)", exc_info=True)
             return {"ok": False}
 
-    async def query_database(self, *, db_key: str, query: Dict[str, Any]) -> Dict[str, Any]:
+    async def query_database(
+        self, *, db_key: str, query: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """
         Used by gateway bulk query fallback.
         """

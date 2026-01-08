@@ -36,10 +36,9 @@ class MetricsPersistenceService:
     MAX_SUMMARY_LINES = 20
 
     def __init__(self) -> None:
-        self.db_key: Optional[str] = (
-            os.getenv("NOTION_AGENT_EXCHANGE_DB_KEY")
-            or os.getenv("NOTION_AGENT_EXCHANGE_DB_ID")
-        )
+        self.db_key: Optional[str] = os.getenv(
+            "NOTION_AGENT_EXCHANGE_DB_KEY"
+        ) or os.getenv("NOTION_AGENT_EXCHANGE_DB_ID")
 
         if not self.db_key:
             logger.warning(
@@ -53,7 +52,9 @@ class MetricsPersistenceService:
         try:
             notion = get_notion_service()
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Metrics persistence skipped: NotionService unavailable: %s", exc)
+            logger.warning(
+                "Metrics persistence skipped: NotionService unavailable: %s", exc
+            )
             return {"ok": False, "error": "notion_service_unavailable"}
 
         if not self.db_key:
@@ -64,7 +65,9 @@ class MetricsPersistenceService:
             return {"ok": False, "error": "invalid_metrics_snapshot"}
 
         counters_raw = snapshot.get("counters")
-        counters: Dict[str, Any] = counters_raw if isinstance(counters_raw, dict) else {}
+        counters: Dict[str, Any] = (
+            counters_raw if isinstance(counters_raw, dict) else {}
+        )
 
         events_by_type_raw = snapshot.get("events_by_type")
         if isinstance(events_by_type_raw, dict):
@@ -73,9 +76,9 @@ class MetricsPersistenceService:
             legacy_events = snapshot.get("events")
             events_by_type = legacy_events if isinstance(legacy_events, dict) else {}
 
-        summary_lines: List[str] = [
-            f"{k}: {v}" for k, v in counters.items()
-        ][: self.MAX_SUMMARY_LINES]
+        summary_lines: List[str] = [f"{k}: {v}" for k, v in counters.items()][
+            : self.MAX_SUMMARY_LINES
+        ]
 
         params: Dict[str, Any] = {
             "db_key": self.db_key,
@@ -89,9 +92,7 @@ class MetricsPersistenceService:
                         }
                     ]
                 },
-                "Command": {
-                    "rich_text": [{"text": {"content": "metrics_snapshot"}}]
-                },
+                "Command": {"rich_text": [{"text": {"content": "metrics_snapshot"}}]},
                 "Status": {"select": {"name": "SUCCESS"}},
                 "Summary": {
                     "rich_text": [

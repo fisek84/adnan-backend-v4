@@ -252,6 +252,7 @@ _HARD_READ_ONLY_INTENTS = {
     "ceo_console.next_step",
 }
 
+
 # ================================================================
 # META-COMMANDS MUST NOT ENTER EXECUTION/APPROVAL
 # ================================================================
@@ -959,9 +960,8 @@ async def execute_raw_command(payload: Dict[str, Any] = Body(...)):
     # - no approval
     # - no execute
     # ------------------------------------------------------------
-    if (
-        (normalized.intent in _HARD_READ_ONLY_INTENTS)
-        or (normalized.command in _HARD_READ_ONLY_INTENTS)
+    if (normalized.intent in _HARD_READ_ONLY_INTENTS) or (
+        normalized.command in _HARD_READ_ONLY_INTENTS
     ):
         prompt0 = ""
         if isinstance(normalized.params, dict):
