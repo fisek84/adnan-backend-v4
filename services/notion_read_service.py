@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence
+from urllib.parse import urlencode
 
 from services.notion_service import NotionService, get_notion_service
 
@@ -121,9 +122,7 @@ class NotionReadService:
     # internals
     # -------------------------
 
-    async def _list_all_child_blocks(
-        self, block_id: str, max_blocks: int
-    ) -> List[BlockObj]:
+    async def _list_all_child_blocks(self, block_id: str, max_blocks: int) -> List[BlockObj]:
         out: List[BlockObj] = []
         next_cursor: Optional[str] = None
 
@@ -132,14 +131,19 @@ class NotionReadService:
             return []
 
         while len(out) < max_blocks_i:
-            params: Dict[str, Any] = {"page_size": min(100, max_blocks_i - len(out))}
+            qp: Dict[str, Any] = {"page_size": min(100, max_blocks_i - len(out))}
             if next_cursor:
-                params["start_cursor"] = next_cursor
+                qp["start_cursor"] = next_cursor
 
+            base_url = f"https://api.notion.com/v1/blocks/{block_id}/children"
+            url = base_url + "?" + urlencode(qp, doseq=True)
+
+            # NOTE: NotionService._safe_request currently supports only payload= (json),
+            # so for GET query params we encode them into the URL.
             resp = await self._notion._safe_request(
                 "GET",
-                f"https://api.notion.com/v1/blocks/{block_id}/children",
-                params=params,
+                url,
+                payload=None,
             )
 
             batch = resp.get("results", []) or []
@@ -155,9 +159,7 @@ class NotionReadService:
 
         return out[:max_blocks_i]
 
-    async def _render_block_recursive(
-        self, block: BlockObj, *, depth: int
-    ) -> List[str]:
+    async def _render_block_recursive(self, block: BlockObj, *, depth: int) -> List[str]:
         """
         Render block and optionally its children (for has_children).
         Depth-limited to avoid runaway recursion.
@@ -170,9 +172,7 @@ class NotionReadService:
         has_children = bool(block.get("has_children"))
         block_id = block.get("id")
         if has_children and isinstance(block_id, str) and block_id and depth < 5:
-            children = await self._list_all_child_blocks(
-                block_id=block_id, max_blocks=500
-            )
+            children = await self._list_all_child_blocks(block_id=block_id, max_blocks=500)
             for ch in children:
                 child_lines = await self._render_block_recursive(ch, depth=depth + 1)
                 if child_lines:

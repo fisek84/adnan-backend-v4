@@ -164,48 +164,77 @@ function renderTextWithNotionLink(text: string): React.ReactNode {
 }
 
 /**
- * IMPORTANT UX RULE:
+ * IMPORTANT UX RULE (CANON):
  * Do NOT show "fallback proposals" (the ones that just echo a prompt / ceo.command.propose, dry_run).
- * Only show proposals when there's a real action to approve.
+ * Only hide proposals when the backend explicitly marks them as fallback.
+ *
+ * Production rule:
+ * - NEVER infer fallback purely from command name (e.g. ceo.command.propose) + flags.
+ * - Treat requires_approval as actionable; backend is the source of truth for validity.
  */
 function isActionableProposal(p: ProposedCmd): boolean {
   if (!p || typeof p !== "object") return false;
 
   const cmd = typeof p.command === "string" ? p.command : "";
-  const intent = typeof p.intent === "string" ? p.intent : "";
+  const topIntent = typeof p.intent === "string" ? p.intent : "";
   const reason = typeof p.reason === "string" ? p.reason : "";
 
+  // CANON: real intent can be nested at params.ai_command.intent for notion_write wrapper
+  const nestedIntent =
+    typeof (p as any)?.params?.ai_command?.intent === "string" ? (p as any).params.ai_command.intent : "";
+
+  const intent = nestedIntent || topIntent;
+
   const dryRun = p.dry_run === true || p.dryRun === true;
-  const requiresApproval = p.requires_approval === true || p.required_approval === true;
 
-  // Common fallback pattern from your backend:
-  // command: "ceo.command.propose", dry_run: true, intent: null, reason: "Fallback proposal..."
-  const looksLikeFallback =
-    /fallback proposal/i.test(reason) ||
-    (dryRun && requiresApproval && !intent && (cmd === "ceo.command.propose" || cmd.endsWith(".propose")));
+  // Normalize "requires approval" flags (backend variations)
+  const requiresApproval =
+    p.requires_approval === true ||
+    p.requiresApproval === true ||
+    p.required_approval === true ||
+    (p as any).requiredApproval === true;
 
+  /**
+   * CRITICAL FIX:
+   * Fallback MUST be recognized only via explicit backend marker in reason.
+   * Do NOT use cmd/dryRun/requiresApproval heuristics to suppress proposals,
+   * because ceo.command.propose may be the canonical wrapper.
+   */
+  const looksLikeFallback = /fallback proposal/i.test(reason);
   if (looksLikeFallback) return false;
 
-  // If there is no intent AND no args/payload that indicates an action, treat as non-actionable.
+  // If backend says it requires approval, it is actionable for UI purposes.
+  // (Backend remains source-of-truth; execute/raw will validate.)
+  if (requiresApproval) return true;
+
   const hasSomePayload =
     (p.args && typeof p.args === "object" && Object.keys(p.args).length > 0) ||
     (p.params && typeof p.params === "object" && Object.keys(p.params).length > 0) ||
     (p.payload && typeof p.payload === "object" && Object.keys(p.payload).length > 0);
 
-  // You can tighten this if your backend always sets intent for real actions.
+  // If not approval-gated, avoid showing empty/no-op proposals.
   if (!intent && !hasSomePayload) return false;
 
-  // If it's dry_run but still indicates a real action intent, you might still want to allow it.
-  // For now: allow (unless it matched fallback above).
+  // Optional: keep dryRun proposals visible only if they have explicit intent/payload.
+  // If you want to hide dry-run without payload/intent, this is already covered above.
+  // cmd is kept for labeling only; not used for fallback suppression.
+  void cmd;
+  void dryRun;
+
   return true;
 }
 
 function proposalLabel(p: ProposedCmd, idx: number): string {
   const cmd = typeof (p as any)?.command === "string" ? (p as any).command : "";
-  const intent = typeof (p as any)?.intent === "string" ? (p as any).intent : "";
+  const topIntent = typeof (p as any)?.intent === "string" ? (p as any).intent : "";
   const commandType = typeof (p as any)?.command_type === "string" ? (p as any).command_type : "";
 
-  if (intent) return intent;
+  // CANON: show ai_command.intent for notion_write wrapper
+  const nestedIntent =
+    typeof (p as any)?.params?.ai_command?.intent === "string" ? (p as any).params.ai_command.intent : "";
+
+  if (nestedIntent) return nestedIntent;
+  if (topIntent) return topIntent;
   if (cmd) return cmd;
   if (commandType) return commandType;
   return `proposal_${idx + 1}`;
@@ -217,7 +246,6 @@ function shouldShowBackendGovernanceCard(gov: GovernanceEventItem, actionableCou
   const title = (gov.title ?? "").toLowerCase();
   const state = (gov as any)?.state ?? "";
 
-  // If backend/normalize emits a "proposals ready" card but there are no actionable proposals, hide it.
   const isProposalReadyCard =
     title.includes("proposals ready") || title.includes("proposed commands") || title.includes("proposal");
 
@@ -350,7 +378,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
     if (!ok) return;
 
     const rec = new Rec();
-    rec.lang = "bs-BA"; // adjust if needed; browser will fallback if unsupported
+    rec.lang = "bs-BA";
     rec.interimResults = true;
     rec.continuous = false;
 
@@ -368,8 +396,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       if (combined) setDraft(combined);
 
       if (autoSendOnVoiceFinal && finalText.trim()) {
-        // submit will be called by user action normally; this is optional behavior
-        // we do NOT auto-send unless explicitly enabled via prop.
+        // intentionally no auto-submit unless you wire it explicitly
       }
     };
 
@@ -533,7 +560,6 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
 
   /**
    * OPTIONAL: Reject/Disapprove approval_id (if backend supports).
-   * If not supported, keep it as a "Dismiss" UX (no backend side-effect).
    */
   const handleReject = useCallback(
     async (approvalId: string) => {
@@ -569,7 +595,6 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
   );
 
   /**
-   * PRO UX:
    * Single click "Approve" on a proposal:
    * - create execution (BLOCKED)
    * - then approve via approval_id
@@ -604,13 +629,14 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
           return;
         }
 
-        // Now approve
         const appUrl = resolveUrl(effectiveApproveUrl, "/api/ai-ops/approval/approve");
         const approveJson = await postJson(appUrl, { approval_id: approvalId }, controller.signal);
 
         const msg =
           _pickText(approveJson) ||
-          (approveJson?.execution_state ? `Execution: ${approveJson.execution_state}` : `Approved. approval_id: ${approvalId}`);
+          (approveJson?.execution_state
+            ? `Execution: ${approveJson.execution_state}`
+            : `Approved. approval_id: ${approvalId}`);
 
         updateItem(placeholder.id, { content: msg, status: "final" });
 
@@ -633,7 +659,6 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
   // ------------------------------
   const flushResponseToUi = useCallback(
     async (placeholderId: string, resp: NormalizedConsoleResponse) => {
-      // STREAMING
       if ((resp as any).stream) {
         setBusy("streaming");
         updateItem(placeholderId, { content: "", status: "streaming" });
@@ -658,20 +683,16 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         return;
       }
 
-      // TEXT
       const sysText = (resp as any).systemText ?? (resp as any).summary ?? (resp as any).text ?? "";
       updateItem(placeholderId, { content: sysText, status: "final" });
 
-      // PROPOSALS (FILTER OUT FALLBACK)
       const proposalsRaw = _extractProposedCommands(resp as any);
       const proposals = proposalsRaw.filter(isActionableProposal);
       const actionableCount = proposals.length;
 
-      // GOVERNANCE CARD FROM BACKEND/NORMALIZER (ONLY IF IT'S MEANINGFUL)
       const gov = toGovernanceCard(resp);
       if (gov && shouldShowBackendGovernanceCard(gov, actionableCount)) appendItem(gov);
 
-      // ONLY show proposal UI if actionable proposals exist
       if (actionableCount > 0) {
         appendItem({
           id: uid(),
@@ -718,8 +739,6 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
     abortRef.current = controller;
 
     try {
-      // Expected API method (added in api.ts):
-      // notionReadPageByTitle(query) => { ok, title, notion_url, content_markdown, error }
       const res = await (api as any).notionReadPageByTitle?.(q, controller.signal);
 
       if (!res || res.ok !== true) {
@@ -792,8 +811,12 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
     abortRef.current = controller;
 
     try {
+      // FIX: backend (per your working example) accepts { message: "..." }.
+      // Keep text as well for backwards compatibility if backend also supports it.
       const req: any = {
+        message: trimmed,
         text: trimmed,
+
         initiator: "ceo_chat",
         preferred_agent_id: "ceo_advisor",
         context_hint: {
@@ -906,7 +929,6 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
               );
             }
 
-            // Governance card rendering (PRO, minimal, no raw JSON)
             const badgeClass =
               it.state === "BLOCKED" ? "blocked" : it.state === "APPROVED" ? "approved" : "executed";
 
@@ -927,7 +949,6 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
                   <div className="govBody">
                     {it.summary ? <div className="govSummary">{it.summary}</div> : null}
 
-                    {/* Actionable proposals (clean UI) */}
                     {proposedCommands.length > 0 ? (
                       <div style={{ marginTop: 10 }}>
                         <ul className="govReasons" style={{ marginTop: 0 }}>
@@ -958,7 +979,6 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
                                       Dismiss
                                     </button>
 
-                                    {/* Optional: still allow create-only for debugging */}
                                     <button
                                       className="govButton"
                                       onClick={() => void handleCreateExecutionFromProposal(p)}
@@ -976,7 +996,6 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
                       </div>
                     ) : null}
 
-                    {/* Approval actions: ONLY if we actually have approvalRequestId */}
                     {hasApprovalId ? (
                       <div className="govActions">
                         <button className="govButton" onClick={() => handleOpenApprovals((it as any).approvalRequestId)}>

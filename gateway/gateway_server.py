@@ -245,10 +245,10 @@ _execution_registry = get_execution_registry()
 _execution_orchestrator = ExecutionOrchestrator()
 
 # ================================================================
-# HARD-BLOCK: WRAPPER/NEXT_STEP MUST NEVER CREATE APPROVAL OR EXECUTE
+# HARD-BLOCK: ONLY NEXT_STEP MUST NEVER CREATE APPROVAL OR EXECUTE
 # ================================================================
+# KANON: ceo.command.propose MUST NOT be hard-blocked on /api/execute/raw.
 _HARD_READ_ONLY_INTENTS = {
-    PROPOSAL_WRAPPER_INTENT,  # "ceo.command.propose"
     "ceo_console.next_step",
 }
 
@@ -797,16 +797,13 @@ def _normalize_gateway_proposed_commands(pcs: Any) -> List[Dict[str, Any]]:
 
 def _inject_fallback_proposed_commands(result: Dict[str, Any], *, prompt: str) -> None:
     """
-    Ensure proposed_commands exists and conforms to the stable proposal contract.
-
-    IMPORTANT:
-    - proposed_commands must be a list of *proposal contract* objects
-      (command/args/dry_run/requires_approval/risk/reason/intent?/scope?/payload_summary?)
-    - Do NOT embed execution payload fields (initiator/read_only/metadata) inside proposed_commands.
+    Only inject fallback proposal when the user text likely represents a WRITE intent.
+    Otherwise, keep proposed_commands empty so chat feels natural (no approval UX).
     """
     pcs = result.get("proposed_commands")
     pcs_list = _normalize_gateway_proposed_commands(pcs)
 
+    # If agent already produced proposals, keep them.
     if len(pcs_list) > 0:
         result["proposed_commands"] = pcs_list
         tr0 = _ensure_dict(result.get("trace"))
@@ -815,14 +812,53 @@ def _inject_fallback_proposed_commands(result: Dict[str, Any], *, prompt: str) -
         result["trace"] = tr0
         return
 
-    # Inject a canonical wrapper proposal
-    result["proposed_commands"] = [
-        _proposal_wrapper_dict(prompt=(prompt or "").strip(), source="ceo_console")
-    ]
+    # --- WRITE-intent detection (minimal, deterministic) ---
+    text = (prompt or "").strip().lower()
+
+    # Heuristic: only trigger approval pipeline when user clearly requests a write.
+    write_like = any(
+        k in text
+        for k in [
+            "create",
+            "kreiraj",
+            "napravi",
+            "dodaj",
+            "update",
+            "azuriraj",
+            "izmijeni",
+            "promijeni",
+            "delete",
+            "obrisi",
+            "ukloni",
+            "task",
+            "zadatak",
+            "goal",
+            "cilj",
+            "notion",
+        ]
+    )
+
+    if not write_like:
+        # Natural chat: no proposals.
+        result["proposed_commands"] = []
+        tr = _ensure_dict(result.get("trace"))
+        tr["fallback_proposed_commands"] = False
+        tr["router_version"] = "gateway-fallback-proposals-disabled-for-nonwrite-v1"
+        result["trace"] = tr
+        return
+
+    # Inject wrapper proposal ONLY for write-like prompts, and make it "actionable" for frontend:
+    # - reason must NOT contain "Fallback proposal" (frontend hides those)
+    # - set intent to something non-empty so it passes isActionableProposal()
+    pc = _proposal_wrapper_dict(prompt=(prompt or "").strip(), source="ceo_console")
+    pc["reason"] = "Approval required (write intent detected)."
+    pc["intent"] = "notion_write"  # makes it actionable in frontend filter
+
+    result["proposed_commands"] = [pc]
 
     tr = _ensure_dict(result.get("trace"))
     tr["fallback_proposed_commands"] = True
-    tr["router_version"] = "gateway-fallback-proposed-commands-v3-stable-contract"
+    tr["router_version"] = "gateway-fallback-proposed-commands-writeonly-v1"
     result["trace"] = tr
 
 
@@ -956,9 +992,10 @@ async def execute_raw_command(payload: Dict[str, Any] = Body(...)):
     normalized = _normalize_execute_raw_payload_dict(payload)
 
     # ------------------------------------------------------------
-    # HARD-BLOCK (CANON): wrapper + next_step are READ-ONLY terminal
+    # HARD-BLOCK (CANON): next_step is READ-ONLY terminal
     # - no approval
     # - no execute
+    # NOTE: ceo.command.propose is NOT hard-blocked here (must unwrap -> approval pipeline).
     # ------------------------------------------------------------
     if (normalized.intent in _HARD_READ_ONLY_INTENTS) or (
         normalized.command in _HARD_READ_ONLY_INTENTS
@@ -969,7 +1006,6 @@ async def execute_raw_command(payload: Dict[str, Any] = Body(...)):
             if isinstance(v, str):
                 prompt0 = v.strip()
 
-        # Always return a stable, explicit terminal shape.
         execution_id = str(uuid.uuid4())
         return {
             "status": "COMPLETED",
@@ -980,19 +1016,20 @@ async def execute_raw_command(payload: Dict[str, Any] = Body(...)):
             "command": normalized.command,
             "intent": normalized.intent,
             "params": normalized.params if isinstance(normalized.params, dict) else {},
-            "proposed_commands": (
-                [_proposal_wrapper_dict(prompt=prompt0 or "noop", source="execute_raw")]
-                if normalized.intent == PROPOSAL_WRAPPER_INTENT
-                else []
-            ),
+            "proposed_commands": [],
             "trace": {
                 "canon": "execute_raw_hard_block_read_only",
                 "endpoint": "/api/execute/raw",
                 "hard_block_intent": normalized.intent,
                 "hard_block_command": normalized.command,
+                "note": "next_step hard-block only; wrapper intents proceed to unwrap+approval",
             },
         }
 
+    # ------------------------------------------------------------
+    # CANON: wrapper (ceo.command.propose) enters standard pipeline:
+    # unwrap wrapper -> create approval -> return BLOCKED + approval_id
+    # ------------------------------------------------------------
     ai_command = _unwrap_proposal_wrapper_or_raise(
         command=normalized.command,
         intent=normalized.intent,
@@ -1767,7 +1804,9 @@ async def _ceo_command_core(payload_dict: Dict[str, Any]) -> JSONResponse:
             tr["agent_router_empty_text"] = False
             tr["agent_output_text_len"] = len(str(result.get("text") or ""))
 
-    _inject_fallback_proposed_commands(result, prompt=cleaned_text.strip())
+    # PATCH 1 (backend): /api/chat mora vratiti proposed_commands=[] kad nema write
+    if not isinstance(result.get("proposed_commands"), list):
+        result["proposed_commands"] = []
 
     return JSONResponse(content=result, media_type="application/json; charset=utf-8")
 
@@ -1981,6 +2020,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 if not FRONTEND_DIST_DIR.is_dir():
     logger.warning("React dist directory not found: %s", FRONTEND_DIST_DIR)
 else:
+    ...
 
     @app.head("/", include_in_schema=False)
     async def head_root():

@@ -288,9 +288,11 @@ async def ceo_command(req: CEOCommandRequest = Body(...)) -> CEOCommandResponse:
         "ts": _now_iso(),
     }
 
-    # CANON: force read_only/propose-only regardless of user-provided flags
+    # CANON: force read_only regardless of user-provided flags
     read_only = True
-    require_approval = True
+
+    # PATCH 2: do NOT force require_approval=True (preserve natural chat by default)
+    require_approval = bool(req.require_approval)  # default False when coming from /api/chat
 
     knowledge_payload = bundle.get("knowledge_payload")
     if not isinstance(knowledge_payload, dict):
@@ -304,7 +306,7 @@ async def ceo_command(req: CEOCommandRequest = Body(...)) -> CEOCommandResponse:
         identity_pack={
             "mode": "ADVISOR",
             "read_only": True,
-            "require_approval": True,
+            "require_approval": require_approval,
         },
         metadata={
             "initiator": initiator,
@@ -313,7 +315,7 @@ async def ceo_command(req: CEOCommandRequest = Body(...)) -> CEOCommandResponse:
             "endpoint": "/api/internal/ceo-console/command/internal",
             "snapshot_meta": snapshot_meta,
             "read_only": True,
-            "require_approval": True,
+            "require_approval": require_approval,
             # UI/dashboard snapshot stays here (not in agent snapshot)
             "ceo_dashboard_snapshot": bundle.get("ceo_dashboard_snapshot") or {},
             "knowledge_snapshot_meta": bundle.get("knowledge_snapshot_meta") or {},

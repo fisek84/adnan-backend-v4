@@ -1,5 +1,10 @@
-# canon/test_happy_path.ps1
-# PATCH: handle hard-block read-only terminal for proposal wrapper.
+# test_notion_happy_path_write.ps1
+# CANON (2026-01): /api/chat is READ/PROPOSE ONLY, and proposed_commands MUST be sent 1:1 (opaque) to /api/execute/raw.
+# This test:
+#  1) calls /api/chat with metadata.require_approval=true and a write prompt
+#  2) takes proposed_commands[0] EXACTLY as returned and POSTs it to /api/execute/raw
+#  3) if BLOCKED -> approves via /api/ai-ops/approval/approve
+#  4) asserts Notion write evidence exists (page_id + url) in final result
 
 param(
   [Parameter(Mandatory=$false)]
@@ -9,7 +14,8 @@ param(
   [string]$CeoToken = "",
 
   [Parameter(Mandatory=$false)]
-  [switch]$UseChatEndpoint
+  [ValidateSet("goals","tasks")]
+  [string]$DbKey = "goals"
 )
 
 Set-StrictMode -Version Latest
@@ -40,7 +46,7 @@ function Invoke-Json {
 
   $uri = ($BaseUrl.TrimEnd("/") + $Path)
 
-  $h = @{ }
+  $h = @{}
   $h["Content-Type"] = "application/json"
   if ($Headers) {
     foreach ($k in $Headers.Keys) { $h[$k] = $Headers[$k] }
@@ -48,7 +54,7 @@ function Invoke-Json {
 
   $jsonBody = $null
   if ($null -ne $Body) {
-    $jsonBody = ($Body | ConvertTo-Json -Depth 30)
+    $jsonBody = ($Body | ConvertTo-Json -Depth 50)
   }
 
   try {
@@ -76,235 +82,170 @@ function Invoke-Json {
   }
 }
 
-# eliminate nested-array bug (array-in-array) for proposed_commands.
-function Get-ProposedCommandsFromResponse($data) {
-  if ($null -eq $data) { return @() }
+function Dump-Json([string]$label, $obj) {
+  Write-Host ("--- {0} ---" -f $label)
+  try { Write-Host ($obj | ConvertTo-Json -Depth 80) } catch { Write-Host ($obj | Out-String) }
+  Write-Host ("--- END {0} ---" -f $label)
+}
 
-  function As-FlatList($x) {
-    if ($null -eq $x) { return @() }
-    if ($x -is [System.Collections.IEnumerable] -and -not ($x -is [string])) {
-      return @($x)
+function Approve-IfBlocked($resp) {
+  if ($null -eq $resp) { Fail("Approve-IfBlocked received null response") }
+
+  if (($resp.PSObject.Properties.Name -contains "execution_state") -and ([string]$resp.execution_state -eq "BLOCKED")) {
+    if (-not ($resp.PSObject.Properties.Name -contains "approval_id")) {
+      Dump-Json "BLOCKED RESPONSE (missing approval_id)" $resp
+      Fail("execution_state=BLOCKED but approval_id missing")
     }
-    return @($x)
+
+    $approvalId = [string]$resp.approval_id
+    if ($approvalId.Trim().Length -eq 0) {
+      Dump-Json "BLOCKED RESPONSE (empty approval_id)" $resp
+      Fail("execution_state=BLOCKED but approval_id empty")
+    }
+
+    Write-Host "Approving approval_id=$approvalId ..."
+    $approved = Invoke-Json -Method "POST" -Path "/api/ai-ops/approval/approve" -Body @{ approval_id = $approvalId } -Headers $headers
+    if ($approved.status -ne 200) {
+      Fail("approve returned HTTP $($approved.status). Body: $($approved.raw)")
+    }
+    return $approved.data
   }
 
-  if ($data.PSObject.Properties.Name -contains "proposed_commands") {
-    return (As-FlatList $data.proposed_commands)
-  }
+  return $resp
+}
 
-  if ($data.PSObject.Properties.Name -contains "trace") {
-    $t = $data.trace
-    if ($t -and ($t.PSObject.Properties.Name -contains "proposed_commands")) {
-      return (As-FlatList $t.proposed_commands)
+function Get-ProposedCommandsFromChat($chatData) {
+  if ($null -eq $chatData) { return @() }
+
+  if ($chatData.PSObject.Properties.Name -contains "proposed_commands") {
+    if ($chatData.proposed_commands -is [System.Collections.IEnumerable] -and -not ($chatData.proposed_commands -is [string])) {
+      return @($chatData.proposed_commands)
     }
+    return @($chatData.proposed_commands)
   }
 
   return @()
 }
 
-function Convert-ProposalToExecuteRawPayload($proposal) {
-  if ($null -eq $proposal) { return $null }
+function Execute-Raw-Opaque($proposalObj) {
+  if ($null -eq $proposalObj) { Fail("Execute-Raw-Opaque received null proposal") }
 
-  function Has-Prop($o, [string]$name) {
-    return ($null -ne $o) -and ($o.PSObject.Properties.Name -contains $name)
-  }
+  # CANON: send EXACT object as returned (opaque). Do NOT re-map/rebuild.
+  $exec = Invoke-Json -Method "POST" -Path "/api/execute/raw" -Body $proposalObj -Headers $headers
+  if ($exec.status -ne 200) { Fail("execute/raw returned HTTP $($exec.status). Body: $($exec.raw)") }
 
-  function New-ExecPayload([string]$command, [string]$intent, $paramsObj) {
-    $p = $paramsObj
-    if ($null -eq $p) { $p = @{} }
+  $out = $exec.data
+  $out = Approve-IfBlocked $out
+  return $out
+}
 
-    return @{
-      command   = $command
-      intent    = $intent
-      params    = $p
-      initiator = "ceo"
-      read_only = $false
-      metadata  = @{
-        canon  = "happy_path"
-        source = "test_happy_path.ps1"
-      }
-    }
-  }
+function Find-NotionEvidence($resp) {
+  # Expected shape (based on your real working response):
+  # resp.result.result.page_id / resp.result.result.url
+  if ($null -eq $resp) { return $null }
 
-  if (Has-Prop $proposal "command") {
-    $cmd0 = ([string]$proposal.command).Trim()
-    $intent0 = $cmd0
-    if (Has-Prop $proposal "intent") {
-      $intent0 = ([string]$proposal.intent).Trim()
-      if ($intent0.Length -eq 0) { $intent0 = $cmd0 }
-    }
+  $r0 = $null
+  if ($resp.PSObject.Properties.Name -contains "result") { $r0 = $resp.result }
 
-    $isWrapper = ($cmd0 -eq "ceo.command.propose") -or ($intent0 -eq "ceo.command.propose")
-    if ($isWrapper) {
-      $p0 = $null
-      if (Has-Prop $proposal "params") { $p0 = $proposal.params }
-      elseif (Has-Prop $proposal "payload") { $p0 = $proposal.payload }
+  $r1 = $null
+  if ($r0 -and ($r0.PSObject.Properties.Name -contains "result")) { $r1 = $r0.result }
 
-      $prompt = $null
-      if ($p0 -and (Has-Prop $p0 "prompt")) { $prompt = $p0.prompt }
+  # fallback: sometimes services may put it at resp.result directly
+  if (-not $r1) { $r1 = $r0 }
 
-      if (($null -eq $prompt -or ([string]$prompt).Trim().Length -eq 0) -and (Has-Prop $proposal "args")) {
-        $a0 = $proposal.args
-        if ($a0 -and (Has-Prop $a0 "prompt")) { $prompt = $a0.prompt }
-      }
+  if (-not $r1) { return $null }
 
-      if ($null -eq $prompt -or ([string]$prompt).Trim().Length -eq 0) {
-        return $null
-      }
+  $pageId = $null
+  $url = $null
 
-      return (New-ExecPayload -command $cmd0 -intent $intent0 -paramsObj @{ prompt = ([string]$prompt).Trim() })
-    }
-  }
+  if ($r1.PSObject.Properties.Name -contains "page_id") { $pageId = $r1.page_id }
+  if ($r1.PSObject.Properties.Name -contains "url") { $url = $r1.url }
 
-  if (Has-Prop $proposal "command") {
-    $cmd = [string]$proposal.command
-    if ($cmd.Trim().Length -gt 0) {
-      $intent = $cmd
-      if (Has-Prop $proposal "intent") {
-        $intent = [string]$proposal.intent
-        if ($intent.Trim().Length -eq 0) { $intent = $cmd }
-      }
-
-      $p = @{ }
-      if (Has-Prop $proposal "params") { $p = $proposal.params }
-
-      return (New-ExecPayload -command $cmd -intent $intent -paramsObj $(if ($p) { $p } else { @{} }))
-    }
+  if (($null -ne $pageId) -and ([string]$pageId).Trim().Length -gt 0 -and
+      ($null -ne $url) -and ([string]$url).Trim().Length -gt 0) {
+    return [PSCustomObject]@{ page_id = [string]$pageId; url = [string]$url; intent = ($r1.intent) }
   }
 
   return $null
 }
 
-# --- NEW: detect hard-block terminal response from /api/execute/raw ---
-function Is-HardBlockTerminal($data) {
-  if ($null -eq $data) { return $false }
-  if (-not ($data.PSObject.Properties.Name -contains "read_only")) { return $false }
-  if (-not ($data.PSObject.Properties.Name -contains "execution_state")) { return $false }
-  if ([bool]$data.read_only -ne $true) { return $false }
-  $st = [string]$data.execution_state
-  return ($st -eq "COMPLETED")
-}
-
-$headers = @{ }
+# -----------------------------
+# HEADERS
+# -----------------------------
+$headers = @{}
 if ($CeoToken.Trim().Length -gt 0) {
   $headers["X-CEO-Token"] = $CeoToken.Trim()
 }
 
+Write-Host "=== NOTION HAPPY PATH WRITE TEST (CANON: OPAQUE proposals) START ==="
+
 Write-Section "0) Health check"
 $health = Invoke-Json -Method "GET" -Path "/health" -Headers $headers
-if ($health.status -ne 200) { Fail("health status code $($health.status)") }
+if ($health.status -ne 200) { Fail("health returned HTTP $($health.status)") }
+Ok("health ok")
 
-if ($health.data -and ($health.data.PSObject.Properties.Name -contains "ops_safe_mode")) {
-  if ($health.data.ops_safe_mode -eq $true) {
-    Fail("OPS_SAFE_MODE=true. WRITE path will be blocked. Set OPS_SAFE_MODE=false for Happy Path.")
-  }
-}
-Ok("health ok; ops_safe_mode is not blocking")
+# Unique title
+$ts = (Get-Date).ToString("yyyyMMdd_HHmmss")
+$title = "HP Test $DbKey $ts"
 
-Write-Section "1) Get proposals (READ path)"
-$prompt = "CANON HAPPY PATH (CEO Advisor): Propose a command to create a Notion task titled 'HP Test' with priority High and due tomorrow. DO NOT execute. Return proposed_commands."
-
-function Invoke-ReadRequest {
-  param([switch]$ViaChat)
-
-  if ($ViaChat) {
-    return Invoke-Json -Method "POST" -Path "/api/chat" -Body @{
-      message = $prompt
-      preferred_agent_id = "ceo_advisor"
-      agent_id = "ceo_advisor"
-      context = @{ preferred_agent_id = "ceo_advisor" }
-    } -Headers $headers
+Write-Section "1) /api/chat -> proposed_commands (READ/PROPOSE ONLY)"
+# CANON: require_approval is read from payload.metadata.require_approval in chat_router
+$prompt =
+  if ($DbKey -eq "goals") {
+    "Kreiraj cilj `"$title`" status Aktivan priority Visok. Vrati proposed_commands."
+  } else {
+    "Kreiraj task `"$title`" priority High due tomorrow. Vrati proposed_commands."
   }
 
-  return Invoke-Json -Method "POST" -Path "/api/ceo/command" -Body @{
-    text = $prompt
-    initiator = "canon_test"
-    session_id = $null
-    preferred_agent_id = "ceo_advisor"
-    agent_id = "ceo_advisor"
-    context_hint = @{
-      source = "canon_test"
-      preferred_agent_id = "ceo_advisor"
-      agent_id = "ceo_advisor"
-      read_only = $true
-      require_approval = $true
-    }
-    smart_context = @{
-      source = "canon_test"
-      preferred_agent_id = "ceo_advisor"
-      agent_id = "ceo_advisor"
-      read_only = $true
-      require_approval = $true
-    }
-  } -Headers $headers
-}
-
-if ($UseChatEndpoint) { $readResp = Invoke-ReadRequest -ViaChat }
-else { $readResp = Invoke-ReadRequest }
-
-if ($readResp.status -ne 200) { Fail("READ endpoint returned $($readResp.status)") }
-
-$proposals = @(Get-ProposedCommandsFromResponse $readResp.data)
-if ($proposals.Count -lt 1) { Fail("No proposed_commands returned.") }
-
-Ok("proposed_commands present: $($proposals.Count)")
-$proposal0 = $proposals[0]
-
-Write-Section "2) Execute/raw (WRITE path creates approval OR terminal read-only)"
-$execPayload = Convert-ProposalToExecuteRawPayload $proposal0
-if ($null -eq $execPayload) {
-  Fail("Cannot map proposal to execute/raw payload. Proposal[0]: $($proposal0 | ConvertTo-Json -Depth 30)")
-}
-
-Write-Host "EXEC PAYLOAD (about to POST /api/execute/raw):"
-$execJson = ($execPayload | ConvertTo-Json -Depth 30)
-Write-Host $execJson
-
-$exec = Invoke-Json -Method "POST" -Path "/api/execute/raw" -Body $execPayload -Headers $headers
-if ($exec.status -ne 200) { Fail("execute/raw returned $($exec.status). Body: $($exec.raw)") }
-
-# --- NEW: if hard-block terminal, end test successfully ---
-if (Is-HardBlockTerminal $exec.data) {
-  Ok("execute/raw hard-blocked as read-only terminal (COMPLETED); no approval_id expected.")
-  Ok("Happy Path completed (READ-ONLY terminal).")
-  exit 0
-}
-
-# --- Otherwise: legacy approval flow ---
-if (-not ($exec.data.PSObject.Properties.Name -contains "approval_id")) {
-  Fail("execute/raw missing approval_id. Body: $($exec.raw)")
-}
-$approvalId = [string]$exec.data.approval_id
-if ($approvalId.Trim().Length -eq 0) { Fail("approval_id empty. Body: $($exec.raw)") }
-Ok("approval_id created: $approvalId")
-
-Write-Section "3) Approve (governance gate resumes execution)"
-$approve = Invoke-Json -Method "POST" -Path "/api/ai-ops/approval/approve" -Body @{ approval_id = $approvalId } -Headers $headers
-if ($approve.status -ne 200) { Fail("approve returned $($approve.status). Body: $($approve.raw)") }
-
-$terminalOk = $false
-if ($approve.data -is [string]) { $terminalOk = $true }
-elseif ($approve.data -and ($approve.data.PSObject.Properties.Name -contains "execution_state")) {
-  $st = [string]$approve.data.execution_state
-  if ($st -match "COMPLETED|EXECUTED|DONE") { $terminalOk = $true }
-}
-
-if (-not $terminalOk) {
-  Write-Host "Approve response:"
-  Write-Host $approve.raw
-  Fail("Approve did not return a terminal completion status.")
-}
-
-Ok("Happy Path completed (BLOCKED -> APPROVED -> EXECUTED/COMPLETED).")
-
-Write-Section "4) Optional snapshot verification"
-try {
-  $snap = Invoke-Json -Method "GET" -Path "/api/ceo/console/snapshot" -Headers $headers
-  if ($snap.status -eq 200) {
-    Write-Host "Snapshot ok." -ForegroundColor Gray
+$chatBody = @{
+  message = $prompt
+  preferred_agent_id = "ceo_advisor"
+  metadata = @{
+    require_approval = $true
+    source = "test_notion_happy_path_write.ps1"
   }
-} catch {
-  Write-Host "Snapshot check skipped (non-fatal)." -ForegroundColor Gray
 }
 
+$chat = Invoke-Json -Method "POST" -Path "/api/chat" -Body $chatBody -Headers $headers
+if ($chat.status -ne 200) { Fail("/api/chat returned HTTP $($chat.status). Body: $($chat.raw)") }
+
+$pcs = @(Get-ProposedCommandsFromChat $chat.data)
+if ($pcs.Count -lt 1) {
+  Dump-Json "CHAT RESPONSE (no proposed_commands)" $chat.data
+  Fail("No proposed_commands returned from /api/chat (expected at least 1).")
+}
+Ok("proposed_commands present: $($pcs.Count)")
+
+$proposal0 = $pcs[0]
+if (-not ($proposal0.PSObject.Properties.Name -contains "command")) {
+  Dump-Json "PROPOSAL[0] (missing command)" $proposal0
+  Fail("Proposal[0] missing 'command'")
+}
+
+Write-Section "2) /api/execute/raw (OPAQUE) -> approve if BLOCKED"
+$execOut = Execute-Raw-Opaque $proposal0
+
+if (-not ($execOut.PSObject.Properties.Name -contains "execution_state")) {
+  Dump-Json "EXECUTE/RAW RESPONSE (missing execution_state)" $execOut
+  Fail("execute/raw response missing execution_state")
+}
+
+$st = [string]$execOut.execution_state
+if ($st -ne "COMPLETED") {
+  Dump-Json "EXECUTE/RAW RESPONSE (NOT COMPLETED)" $execOut
+  Fail("Expected execution_state=COMPLETED, got: $st")
+}
+Ok("execute/raw completed")
+
+Write-Section "3) Assert Notion write evidence exists"
+$evidence = Find-NotionEvidence $execOut
+if (-not $evidence) {
+  Dump-Json "EXECUTE/RAW RESPONSE (missing Notion evidence)" $execOut
+  Fail("Missing Notion evidence (page_id/url) in response.result.result (or equivalent).")
+}
+
+Write-Host ("Notion create evidence: page_id={0}, url={1}" -f $evidence.page_id, $evidence.url)
+Ok("Notion evidence present")
+
+Write-Host "=== NOTION HAPPY PATH WRITE TEST (CANON) PASSED ===" -ForegroundColor Green
 exit 0

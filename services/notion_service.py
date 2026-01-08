@@ -146,12 +146,22 @@ class NotionService:
     # http wrapper
     # ----------------------------
     async def _safe_request(
-        self, method: str, url: str, *, payload: Optional[Dict[str, Any]] = None
+        self,
+        method: str,
+        url: str,
+        *,
+        payload: Optional[Dict[str, Any]] = None,
+        params: Optional[Dict[str, Any]] = None,  # <-- FIX: support query params (pagination)
     ) -> Dict[str, Any]:
         client = await self._get_client()
 
         try:
-            resp = await client.request(method, url, json=payload)
+            resp = await client.request(
+                method,
+                url,
+                params=params,  # <-- FIX
+                json=payload,
+            )
         except Exception as exc:
             raise RuntimeError(
                 f"Notion request failed: {type(exc).__name__}: {exc}"
@@ -188,9 +198,7 @@ class NotionService:
         schema = await self._safe_request("GET", url, payload=None)
 
         # cache even if empty (avoid hammering)
-        self._db_schema_cache[db_id] = _DbSchemaCacheEntry(
-            fetched_at=now, schema=schema
-        )
+        self._db_schema_cache[db_id] = _DbSchemaCacheEntry(fetched_at=now, schema=schema)
         return schema
 
     async def _resolve_property_type(self, *, db_id: str, prop_name: str) -> str:
@@ -246,7 +254,7 @@ class NotionService:
 
         Robust rule:
           - If spec.type == "status" but DB schema says property is "select",
-            map to select (this is your current failing case).
+            map to select.
         """
         out: Dict[str, Any] = {}
         if not isinstance(property_specs, dict) or not property_specs:
@@ -279,19 +287,17 @@ class NotionService:
                 out[pn] = self._select_prop(name)
                 continue
 
-            # Status (needs schema-aware mapping)
+            # Status (schema-aware mapping)
             if stype == "status":
                 name = _ensure_str(spec.get("name") or spec.get("value") or "")
                 actual = await self._resolve_property_type(db_id=db_id, prop_name=pn)
                 if actual == "select":
                     out[pn] = self._select_prop(name)
                 else:
-                    # default to status if schema says status OR schema unknown
                     out[pn] = self._status_prop(name)
                 continue
 
-            # Fallback: ignore unknown spec types (do not send invalid shapes)
-            # This keeps prod safe and avoids Notion 400 for unsupported payload.
+            # Unknown types are ignored for safety
             continue
 
         return out
@@ -305,7 +311,6 @@ class NotionService:
             raise RuntimeError("db_key is required")
 
         # Allow passing raw database UUID
-        # (Notion accepts with hyphens; we do not validate strictly here)
         if k.count("-") >= 4:
             return k
 
@@ -327,32 +332,23 @@ class NotionService:
     async def sync_knowledge_snapshot(self) -> Dict[str, Any]:
         """
         Best-effort: do not break boot if Notion is unreachable.
-        Your gateway lifespan calls this.
         """
         try:
             from services.knowledge_snapshot_service import KnowledgeSnapshotService
 
-            # Keep this lightweight: just mark snapshot "ready" if env looks ok.
-            # If you have a richer sync elsewhere, keep it there.
             snap = KnowledgeSnapshotService.get_snapshot()
             if isinstance(snap, dict):
                 snap.setdefault("trace", {})
                 snap["trace"]["notion_sync"] = {"ok": True, "ts": _utc_iso()}
                 snap["ready"] = True
                 snap["last_sync"] = _utc_iso()
-                KnowledgeSnapshotService.set_snapshot(snap)  # type: ignore[attr-defined]
+                KnowledgeSnapshotService.update_snapshot(snap)
             return {"ok": True}
         except Exception:
-            # never crash boot
             logger.warning("sync_knowledge_snapshot failed (non-fatal)", exc_info=True)
             return {"ok": False}
 
-    async def query_database(
-        self, *, db_key: str, query: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """
-        Used by gateway bulk query fallback.
-        """
+    async def query_database(self, *, db_key: str, query: Dict[str, Any]) -> Dict[str, Any]:
         db_id = self._resolve_db_id(db_key)
         url = f"{self.NOTION_BASE_URL}/databases/{db_id}/query"
         payload = query if isinstance(query, dict) else {}
@@ -363,17 +359,9 @@ class NotionService:
     async def execute(self, ai_command: Any) -> Dict[str, Any]:
         """
         Canonical executor entrypoint called by NotionOpsAgent / Orchestrator.
-
-        Expected (from your approval payload_summary):
-          ai_command.command == "notion_write"
-          ai_command.intent  == "create_page"
-          ai_command.params  == {"db_key":"goals","property_specs":{...}} OR {"db_key":"goals","properties":{...}}
         """
-        cmd = _ensure_dict(
-            ai_command.model_dump() if hasattr(ai_command, "model_dump") else {}
-        )
+        cmd = _ensure_dict(ai_command.model_dump() if hasattr(ai_command, "model_dump") else {})
         if not cmd:
-            # best-effort: try attribute access
             cmd = {
                 "command": getattr(ai_command, "command", None),
                 "intent": getattr(ai_command, "intent", None),
@@ -433,12 +421,10 @@ class NotionService:
 
         db_id = self._resolve_db_id(db_key)
 
-        # Accept already-built Notion properties payload
         properties = params.get("properties")
         if isinstance(properties, dict) and properties:
             notion_properties = properties
         else:
-            # Build from property_specs (your internal compact form)
             property_specs = params.get("property_specs")
             if not isinstance(property_specs, dict) or not property_specs:
                 raise RuntimeError("create_page requires db_key and properties")
@@ -452,7 +438,6 @@ class NotionService:
         url = f"{self.NOTION_BASE_URL}/pages"
         res = await self._safe_request("POST", url, payload=payload)
 
-        # Normalize minimal success shape
         page_id = _ensure_str(res.get("id"))
         page_url = _ensure_str(res.get("url"))
 
