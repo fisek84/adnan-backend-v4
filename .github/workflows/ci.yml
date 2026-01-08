@@ -43,5 +43,6 @@ jobs:
         shell: bash
         env:
           PYTHONUNBUFFERED: "1"
+          NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
         run: |
           python -m pytest -q
