@@ -1,3 +1,4 @@
+import json
 import os
 
 import httpx
@@ -105,4 +106,5 @@ async def test_happy_path_execute_approve(client):
     assert approve_response.status_code == 200
 
     approved = approve_response.json()
+    print("APPROVE_JSON=", json.dumps(approved, ensure_ascii=False, indent=2))
     assert approved.get("execution_state") == "COMPLETED"

@@ -13,6 +13,11 @@ logger.setLevel(logging.INFO)
 class AICommand(BaseModel):
     """
     CANONICAL AI COMMAND MODEL
+
+    HARD CANON:
+    - execution_id is immutable SSOT for execution lifecycle
+    - approval_id is REQUIRED for any write execution (enforced downstream)
+    - model is STRICT (extra=forbid)
     """
 
     # ========================================================
@@ -24,27 +29,24 @@ class AICommand(BaseModel):
     validated: bool = False
 
     # ========================================================
-    # ROLES (KANON)
+    # ROLES (CANON)
     # ========================================================
     initiator: str = "ceo"
     owner: str = "system"
     executor: Optional[str] = None
 
     # ========================================================
-    # CONTEXT (OPTIONAL, BUT IMPORTANT FOR ORCHESTRATOR COMPAT)
+    # CONTEXT
     # ========================================================
-    # ExecutionOrchestrator tries cmd.context_type first, then metadata["context_type"].
-    # With extra="forbid", missing field can cause ValidationError if some caller sends
-    # context_type as a top-level field.
     context_type: Optional[str] = None
 
     # ========================================================
-    # PAYLOAD (SINGLE SOURCE OF TRUTH)
+    # PAYLOAD
     # ========================================================
     params: Dict[str, Any] = Field(default_factory=dict)
 
     # ========================================================
-    # EXECUTION IDS (KLJUĆNO)
+    # EXECUTION IDS (SSOT)
     # ========================================================
     request_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     execution_id: Optional[str] = None
@@ -56,8 +58,7 @@ class AICommand(BaseModel):
     execution_state: Optional[str] = None
 
     # ========================================================
-    # GOVERNANCE / EXECUTION ARTIFACTS
-    # (EKSPPLICITNO, NE SKRIVENO)
+    # GOVERNANCE ARTIFACTS
     # ========================================================
     decision: Optional[Dict[str, Any]] = None
     result: Optional[Dict[str, Any]] = None
@@ -67,31 +68,41 @@ class AICommand(BaseModel):
     # ========================================================
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
-    # Pydantic v2 configuration
-    model_config = ConfigDict(extra="forbid", validate_assignment=True)
+    # ========================================================
+    # CONFIG
+    # ========================================================
+    model_config = ConfigDict(
+        extra="forbid",
+        validate_assignment=True,
+        frozen=False,
+    )
 
     # ========================================================
-    # NORMALIZATION (POST)
+    # NORMALIZATION (POST INIT)
     # ========================================================
     @model_validator(mode="after")
     def normalize_ids(self) -> "AICommand":
-        # Ako execution_id nije postavljen, normalizujemo ga na request_id
-        if not self.execution_id:
+        # execution_id is SSOT; default to request_id if missing
+        if not isinstance(self.execution_id, str) or not self.execution_id.strip():
             object.__setattr__(self, "execution_id", self.request_id)
 
-        # owner je uvijek "system" (bez trigera validate_assignment)
+        # owner is always system
         if self.owner != "system":
             object.__setattr__(self, "owner", "system")
 
         return self
 
+    # ========================================================
+    # LOGGING
+    # ========================================================
     @classmethod
     def log(cls, command: "AICommand") -> None:
         logger.info(
-            "[AICommand] command=%s intent=%s execution_id=%s approval_id=%s read_only=%s",
+            "[AICommand] command=%s intent=%s execution_id=%s approval_id=%s read_only=%s state=%s",
             command.command,
             command.intent,
             command.execution_id,
             command.approval_id,
             command.read_only,
+            command.execution_state,
         )

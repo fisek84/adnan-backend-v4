@@ -11,18 +11,24 @@ from services.policy_service import PolicyService
 
 class ExecutionGovernanceService:
     """
-    EXECUTION GOVERNANCE SERVICE — CANONICAL
+    EXECUTION GOVERNANCE SERVICE — CANONICAL (STRICT)
 
-    Pravilo:
-    - Policy gleda KO TRAŽI (initiator), ne ko POSJEDUJE sistem
-    - Governance NE ponavlja safety
-    - Governance NE SMIJE praviti dupli approval ako je approval lifecycle već kreiran upstream (npr. /api/execute).
-      Njegova uloga je: validate + policy gate + approval verification.
+    HARD CANON:
+    - Governance NEVER creates approvals
+    - Governance NEVER executes
+    - Governance ONLY decides: allowed | blocked
+    - approval_id MUST exist and be approved for any non-read-only directive
     """
 
-    # Minimalni read-only direktivi koji NE TRAŽE approval.
-    # (Usklađeno sa COOTranslationService._KNOWN_COMMANDS i sistemskim pitanjima.)
-    _READ_ONLY_DIRECTIVES = {"system_query", "list_goals"}
+    # Read-only directives that NEVER require approval
+    _READ_ONLY_DIRECTIVES = {
+        "system_query",
+        "list_goals",
+        "refresh_snapshot",
+        "query_database",
+        "read_page_as_markdown",
+        "ceo_console.next_step",  # FIX: terminal console step must be allowed
+    }
 
     def __init__(self) -> None:
         self.policy = PolicyService()
@@ -39,7 +45,7 @@ class ExecutionGovernanceService:
         initiator: str,
         context_type: str,
         directive: str,
-        params: Dict[str, Any],  # primamo parametre, ali governance ih ne mijenja
+        params: Dict[str, Any],
         execution_id: str,
         approval_id: Optional[str] = None,
     ) -> Dict[str, Any]:
@@ -50,16 +56,12 @@ class ExecutionGovernanceService:
         directive_norm = str(directive or "").strip()
         execution_id_norm = str(execution_id or "").strip()
 
-        approval_id_norm: Optional[str]
-        if approval_id is None:
-            approval_id_norm = None
-        else:
-            a = str(approval_id).strip()
-            approval_id_norm = a if a else None
+        approval_id_norm = (
+            str(approval_id).strip()
+            if isinstance(approval_id, str) and approval_id.strip()
+            else None
+        )
 
-        # --------------------------------------------------------
-        # BASIC VALIDATION
-        # --------------------------------------------------------
         if not execution_id_norm:
             return self._block(
                 reason="missing_execution_id",
@@ -100,9 +102,6 @@ class ExecutionGovernanceService:
                 approval_id=approval_id_norm,
             )
 
-        # --------------------------------------------------------
-        # POLICY (INITIATOR-AWARE)
-        # --------------------------------------------------------
         if not self.policy.can_request(initiator_norm):
             return self._block(
                 reason="initiator_not_allowed",
@@ -113,7 +112,9 @@ class ExecutionGovernanceService:
                 approval_id=approval_id_norm,
             )
 
-        if not self.policy.is_action_allowed_for_role(initiator_norm, directive_norm):
+        if not self.policy.is_action_allowed_for_role(
+            initiator_norm, directive_norm
+        ):
             return self._block(
                 reason="action_not_allowed",
                 ts=ts,
@@ -123,9 +124,6 @@ class ExecutionGovernanceService:
                 approval_id=approval_id_norm,
             )
 
-        # --------------------------------------------------------
-        # READ-ONLY FAST PATH (NO APPROVAL)
-        # --------------------------------------------------------
         if directive_norm in self._READ_ONLY_DIRECTIVES:
             return {
                 "allowed": True,
@@ -139,12 +137,7 @@ class ExecutionGovernanceService:
                 "policy": {"initiator": initiator_norm},
             }
 
-        # --------------------------------------------------------
-        # APPROVAL VERIFICATION (NO DUPLICATE CREATE)
-        # --------------------------------------------------------
         if not approval_id_norm:
-            # Kanonski: approval se kreira upstream (/api/execute ili drugi entrypoint).
-            # Governance ovdje samo kaže da je approval potreban.
             return self._block(
                 reason="approval_required",
                 ts=ts,
@@ -164,9 +157,6 @@ class ExecutionGovernanceService:
                 approval_id=approval_id_norm,
             )
 
-        # --------------------------------------------------------
-        # ALLOWED
-        # --------------------------------------------------------
         return {
             "allowed": True,
             "execution_id": execution_id_norm,
@@ -176,9 +166,7 @@ class ExecutionGovernanceService:
             "read_only": False,
             "governance": self._governance_limits,
             "timestamp": ts,
-            "policy": {
-                "initiator": initiator_norm,
-            },
+            "policy": {"initiator": initiator_norm},
         }
 
     def _block(
@@ -189,14 +177,13 @@ class ExecutionGovernanceService:
         execution_id: str,
         context_type: str,
         directive: str,
-        approval_id: Optional[str] = None,
+        approval_id: Optional[str],
     ) -> Dict[str, Any]:
-        # Determinističan response shape (uvijek isti ključevi)
         return {
             "allowed": False,
             "reason": reason,
             "execution_id": execution_id,
-            "approval_id": approval_id,  # može biti None; namjerno
+            "approval_id": approval_id,
             "context_type": context_type,
             "directive": directive,
             "timestamp": ts,

@@ -1,6 +1,20 @@
+# services/identity_loader.py
+
+from __future__ import annotations
+
 import json
+import logging
 import os
-from typing import Any, Dict
+from typing import Any, Dict, Optional
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+# ============================================================
+# GLOBAL CACHE (READ-ONLY, PROCESS LOCAL)
+# ============================================================
+
+_CACHE: Dict[str, Dict[str, Any]] = {}
 
 # ============================================================
 # CORE JSON LOADER (UTF-8 BOM SAFE)
@@ -10,160 +24,190 @@ from typing import Any, Dict
 def load_json_file(path: str) -> Dict[str, Any]:
     """
     Loads JSON file safely.
-    - Strips UTF-8 BOM if present
-    - Fails fast on invalid JSON
+    - UTF-8 BOM safe
+    - Deterministic errors
     """
     if not os.path.exists(path):
         raise FileNotFoundError(f"[IDENTITY] File not found: {path}")
+
     try:
         with open(path, "r", encoding="utf-8-sig") as f:
             data = json.load(f)
         if not isinstance(data, dict):
-            raise ValueError(f"[IDENTITY] JSON root must be an object: {path}")
+            raise ValueError(f"[IDENTITY] JSON root must be object: {path}")
         return data
     except json.JSONDecodeError as e:
         raise ValueError(f"[IDENTITY] Invalid JSON in {path}: {e}") from e
 
 
 # ============================================================
-# PATH RESOLUTION (ENV-AGNOSTIC)
+# PATH RESOLUTION (ENV OVERRIDE + RUNTIME SAFE)
 # ============================================================
 
 
 def resolve_path(filename: str) -> str:
     """
-    Resolves identity directory path regardless of runtime:
-    - local
-    - docker
-    - render
+    Resolve identity file path.
+
+    Priority:
+    1) IDENTITY_PATH env
+    2) <repo_root>/identity
     """
+    env_base = (os.getenv("IDENTITY_PATH") or "").strip()
+    if env_base:
+        return os.path.join(os.path.abspath(env_base), filename)
+
     current_dir = os.path.dirname(os.path.abspath(__file__))  # /app/services
-    project_root = os.path.abspath(os.path.join(current_dir, ".."))  # /app
-    identity_dir = os.path.join(project_root, "identity")  # /app/identity
+    project_root = os.path.abspath(os.path.join(current_dir, ".."))
+    identity_dir = os.path.join(project_root, "identity")
     return os.path.join(identity_dir, filename)
 
 
 # ============================================================
-# VALIDATION (STRICT — FAIL FAST)
+# VALIDATION (STRICT, FAIL FAST)
 # ============================================================
 
 
 def validate_identity_payload(
-    payload: Dict[str, Any], required_keys: list, name: str
+    payload: Dict[str, Any], *, required_keys: list, name: str
 ) -> None:
     if not isinstance(payload, dict):
-        raise ValueError(f"[IDENTITY] {name} must be a JSON object")
+        raise ValueError(f"[IDENTITY] {name} must be JSON object")
     missing = [k for k in required_keys if k not in payload]
     if missing:
-        raise ValueError(f"[IDENTITY] {name} missing required keys: {missing}")
+        raise ValueError(f"[IDENTITY] {name} missing keys: {missing}")
 
 
 def validate_agent_definition(agent_id: str, agent: Dict[str, Any]) -> None:
-    required_keys = ["type", "capabilities", "enabled"]
-    missing = [k for k in required_keys if k not in agent]
+    required = ["type", "capabilities", "enabled"]
+    missing = [k for k in required if k not in agent]
     if missing:
-        raise ValueError(
-            f"[AGENTS] Agent '{agent_id}' missing required keys: {missing}"
-        )
+        raise ValueError(f"[AGENTS] Agent '{agent_id}' missing keys: {missing}")
+
     if not isinstance(agent["capabilities"], list):
-        raise ValueError(f"[AGENTS] Agent '{agent_id}' capabilities must be a list")
+        raise ValueError(f"[AGENTS] Agent '{agent_id}' capabilities must be list")
     if not isinstance(agent["enabled"], bool):
         raise ValueError(f"[AGENTS] Agent '{agent_id}' enabled must be boolean")
 
 
 # ============================================================
-# LOADERS (CANONICAL — SOURCE OF TRUTH)
+# INTERNAL: LOAD + CACHE
+# ============================================================
+
+
+def _load_cached(key: str, loader) -> Dict[str, Any]:
+    if key in _CACHE:
+        return _CACHE[key]
+    data = loader()
+    _CACHE[key] = data
+    return data
+
+
+# ============================================================
+# LOADERS (SSOT)
 # ============================================================
 
 
 def load_adnan_identity() -> Dict[str, Any]:
-    data = load_json_file(resolve_path("identity.json"))
-    validate_identity_payload(
-        data, required_keys=["name", "role", "version"], name="identity.json"
+    return _load_cached(
+        "identity",
+        lambda: _validated(
+            load_json_file(resolve_path("identity.json")),
+            required_keys=["name", "role", "version"],
+            name="identity.json",
+        ),
     )
-    return data
 
 
 def load_adnan_memory() -> Dict[str, Any]:
-    data = load_json_file(resolve_path("memory.json"))
-    validate_identity_payload(
-        data, required_keys=["short_term", "long_term"], name="memory.json"
+    return _load_cached(
+        "memory",
+        lambda: _validated(
+            load_json_file(resolve_path("memory.json")),
+            required_keys=["short_term", "long_term"],
+            name="memory.json",
+        ),
     )
-    return data
 
 
 def load_adnan_kernel() -> Dict[str, Any]:
-    data = load_json_file(resolve_path("kernel.json"))
-    validate_identity_payload(
-        data, required_keys=["principles", "constraints"], name="kernel.json"
+    return _load_cached(
+        "kernel",
+        lambda: _validated(
+            load_json_file(resolve_path("kernel.json")),
+            required_keys=["principles", "constraints"],
+            name="kernel.json",
+        ),
     )
-    return data
 
 
 def load_adnan_static_memory() -> Dict[str, Any]:
-    data = load_json_file(resolve_path("static_memory.json"))
-    validate_identity_payload(data, required_keys=["facts"], name="static_memory.json")
-    return data
+    return _load_cached(
+        "static_memory",
+        lambda: _validated(
+            load_json_file(resolve_path("static_memory.json")),
+            required_keys=["facts"],
+            name="static_memory.json",
+        ),
+    )
 
 
 def load_adnan_mode() -> Dict[str, Any]:
-    data = load_json_file(resolve_path("mode.json"))
-    validate_identity_payload(data, required_keys=["current_mode"], name="mode.json")
-    return data
+    return _load_cached(
+        "mode",
+        lambda: _validated(
+            load_json_file(resolve_path("mode.json")),
+            required_keys=["current_mode"],
+            name="mode.json",
+        ),
+    )
 
 
 def load_adnan_state() -> Dict[str, Any]:
-    data = load_json_file(resolve_path("state.json"))
-    validate_identity_payload(data, required_keys=["status"], name="state.json")
-    return data
+    return _load_cached(
+        "state",
+        lambda: _validated(
+            load_json_file(resolve_path("state.json")),
+            required_keys=["status"],
+            name="state.json",
+        ),
+    )
 
 
 def load_decision_engine_config() -> Dict[str, Any]:
-    data = load_json_file(resolve_path("decision_engine.json"))
-    validate_identity_payload(
-        data, required_keys=["strategy"], name="decision_engine.json"
+    return _load_cached(
+        "decision_engine",
+        lambda: _validated(
+            load_json_file(resolve_path("decision_engine.json")),
+            required_keys=["strategy"],
+            name="decision_engine.json",
+        ),
     )
-    return data
 
 
 # ============================================================
-# AGENT IDENTITY & CAPABILITIES (FAZA 7 — KORAK 1)
+# AGENTS
 # ============================================================
 
 
 def load_agents_identity() -> Dict[str, Dict[str, Any]]:
-    """
-    Loads agent identity & capability definitions from identity/agents.json.
-    Passive, read-only, no execution.
-    """
-    data = load_json_file(resolve_path("agents.json"))
-    for agent_id, agent in data.items():
-        if not isinstance(agent, dict):
-            raise ValueError(f"[AGENTS] Agent '{agent_id}' entry must be a JSON object")
-        validate_agent_definition(agent_id, agent)
-    return data
+    def _load() -> Dict[str, Dict[str, Any]]:
+        data = load_json_file(resolve_path("agents.json"))
+        for agent_id, agent in data.items():
+            if not isinstance(agent, dict):
+                raise ValueError(f"[AGENTS] '{agent_id}' must be object")
+            validate_agent_definition(agent_id, agent)
+        return data
+
+    return _load_cached("agents", _load)
 
 
 # ============================================================
-# CEO IDENTITY PACK (READ-ONLY, ADVISORY-READY)
+# CEO IDENTITY PACK (READ-ONLY, FAIL-SOFT)
 # ============================================================
 
 
 def load_ceo_identity_pack() -> Dict[str, Any]:
-    """
-    Builds a compact, advisory-ready 'identity pack' for CEO Advisory.
-    Why:
-    - CEO advisory needs 'CEO logic / philosophy / principles' in a stable shape.
-    - Keep it READ-only and deterministic.
-    - Fail-soft: if some optional files are missing, return what exists.
-    Sources (all optional except identity.json + kernel.json in most setups):
-    - identity.json (name/role/version)
-    - kernel.json (principles/constraints)
-    - decision_engine.json (strategy)
-    - static_memory.json (facts)
-    - memory.json (short_term/long_term)
-    - agents.json (capabilities map)
-    """
     pack: Dict[str, Any] = {
         "available": True,
         "source": "identity_loader",
@@ -189,15 +233,14 @@ def load_ceo_identity_pack() -> Dict[str, Any]:
     _try("memory", load_adnan_memory)
     _try("agents", load_agents_identity)
 
-    # If even core identity/kernel are missing, mark as not available
-    if pack.get("identity") is None and pack.get("kernel") is None:
+    if pack["identity"] is None and pack["kernel"] is None:
         pack["available"] = False
 
     return pack
 
 
 # ============================================================
-# BACKWARD COMPATIBILITY (DO NOT REMOVE)
+# BACKWARD COMPAT (DO NOT REMOVE)
 # ============================================================
 
 
@@ -211,3 +254,15 @@ def load_mode() -> Dict[str, Any]:
 
 def load_state() -> Dict[str, Any]:
     return load_adnan_state()
+
+
+# ============================================================
+# HELPERS
+# ============================================================
+
+
+def _validated(
+    data: Dict[str, Any], *, required_keys: list, name: str
+) -> Dict[str, Any]:
+    validate_identity_payload(data, required_keys=required_keys, name=name)
+    return data

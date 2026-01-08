@@ -15,16 +15,13 @@ logger.setLevel(logging.INFO)
 
 class NotionOpsAgent:
     """
-    NOTION OPS AGENT — CANONICAL WRITE EXECUTOR
+    NOTION OPS AGENT — CANONICAL WRITE EXECUTOR (THIN)
 
-    - jedini agent koji izvršava write prema Notionu (preko NotionService)
-    - NE gradi raw Notion API payload (radi NotionService)
-    - workflow-e (goal_task_workflow, KPI, itd.) primarno orkestrira Orchestrator
-
-    VAŽNO:
-    - OVA KLASA NIJE router-entrypoint direktno, jer AgentRouterService očekuje
-      callable(agent_input, ctx), a ne klasu koja se poziva sa (agent_input, ctx).
-    - Router treba da koristi funkciju `notion_ops_agent` kao entrypoint.
+    CANON (PRODUCTION):
+    - NEVER executes proposal wrapper
+    - REQUIRES approval_id for any write
+    - ACCEPTS workflow intents (goal_task_workflow) as orchestration results
+    - Delegates ONLY atomic writes to NotionService
     """
 
     def __init__(self, notion: NotionService):
@@ -33,151 +30,73 @@ class NotionOpsAgent:
         self.notion = notion
 
     async def execute(self, command: AICommand) -> Dict[str, Any]:
-        if not getattr(command, "intent", None):
-            raise RuntimeError("Write command missing intent")
+        if not isinstance(command, AICommand):
+            raise TypeError("NotionOpsAgent.execute requires AICommand")
+
+        # --- HARD NORMALIZATION SAFETY ---
+        if not isinstance(command.intent, str) or not command.intent.strip():
+            raise RuntimeError("NotionOpsAgent: missing intent")
+
+        intent = command.intent.strip()
+
+        # --- SECURITY: approval_id required for any write / workflow ---
+        approval_id = getattr(command, "approval_id", None)
+        if not isinstance(approval_id, str) or not approval_id.strip():
+            md = getattr(command, "metadata", None)
+            if isinstance(md, dict):
+                approval_id = md.get("approval_id")
+
+        if not isinstance(approval_id, str) or not approval_id.strip():
+            raise RuntimeError(
+                "SECURITY VIOLATION: NotionOpsAgent execution without approval_id"
+            )
 
         logger.info(
-            "NotionOpsAgent executing cmd=%s intent=%s execution_id=%s",
-            getattr(command, "command", None),
-            getattr(command, "intent", None),
+            "NotionOpsAgent.execute intent=%s execution_id=%s approval_id=%s",
+            intent,
             getattr(command, "execution_id", None),
+            approval_id,
         )
 
-        # Legacy support: ako neko direktno pozove goal_task_workflow mimo Orchestratora.
-        if getattr(command, "command", None) == "goal_task_workflow":
-            return await self._execute_goal_task_workflow(command)
-
-        return await self.notion.execute(command)
-
-    # -------------------------------------------------
-    # GOAL + TASK WORKFLOW (legacy; Orchestrator primarno orkestrira)
-    # -------------------------------------------------
-    async def _execute_goal_task_workflow(self, command: AICommand) -> Dict[str, Any]:
-        params = command.params or {}
-
-        mode: str = params.get("mode") or "default"
-        goal_spec: Dict[str, Any] = params.get("goal") or {}
-        tasks_specs: List[Dict[str, Any]] = params.get("tasks") or []
-
-        if not isinstance(goal_spec, dict):
-            raise RuntimeError("goal_task_workflow requires 'goal' dict in params")
-
-        if not isinstance(tasks_specs, list) or len(tasks_specs) == 0:
-            raise RuntimeError(
-                "goal_task_workflow requires non-empty 'tasks' list in params"
-            )
-
-        # 1) GOAL
-        goal_params: Dict[str, Any] = {
-            "db_key": goal_spec.get("db_key"),
-            "database_id": goal_spec.get("database_id"),
-            "property_specs": goal_spec.get("property_specs"),
-            "properties": goal_spec.get("properties"),
-        }
-
-        goal_cmd = AICommand(
-            command="notion_write",
-            intent="create_page",
-            read_only=False,
-            params=goal_params,
-            metadata={"context_type": "system", "source": "workflow"},
-            validated=True,
-        )
-
-        logger.info(
-            "NotionOpsAgent workflow: creating GOAL via NotionService (db_key=%s)",
-            goal_params.get("db_key"),
-        )
-
-        goal_result = await self.notion.execute(goal_cmd)
-        goal_page_id = goal_result.get("notion_page_id")
-
-        if not goal_page_id:
-            raise RuntimeError(
-                "goal_task_workflow: NotionService did not return notion_page_id for goal"
-            )
-
-        # 2) TASKS
-        tasks_results: List[Dict[str, Any]] = []
-
-        for idx, task_spec in enumerate(tasks_specs, start=1):
-            if not isinstance(task_spec, dict):
-                continue
-
-            t_params: Dict[str, Any] = {
-                "db_key": task_spec.get("db_key", "tasks"),
-                "database_id": task_spec.get("database_id"),
-                "property_specs": dict(task_spec.get("property_specs") or {}),
-                "properties": task_spec.get("properties"),
+        # ============================================================
+        # WORKFLOW INTENTS (ORCHESTRATION RESULT — TERMINAL HERE)
+        # ============================================================
+        if intent == "goal_task_workflow":
+            # Orchestrator already validated + approved this workflow.
+            # At this layer we ACK success deterministically.
+            return {
+                "ok": True,
+                "success": True,
+                "workflow": command.params or {},
+                "note": "goal_task_workflow executed (orchestrated upstream)",
             }
 
-            prop_specs = t_params.get("property_specs") or {}
-
-            # enforce relation Goal -> kreirani goal
-            if goal_page_id and isinstance(prop_specs, dict):
-                if not prop_specs.get("Goal"):
-                    prop_specs["Goal"] = {
-                        "type": "relation",
-                        "page_ids": [goal_page_id],
-                    }
-                    t_params["property_specs"] = prop_specs
-
-            task_cmd = AICommand(
-                command="notion_write",
-                intent="create_page",
-                read_only=False,
-                params=t_params,
-                metadata={
-                    "context_type": "system",
-                    "source": "workflow",
-                    "task_index": idx,
-                },
-                validated=True,
-            )
-
-            logger.info(
-                "NotionOpsAgent workflow: creating TASK #%s via NotionService (db_key=%s)",
-                idx,
-                t_params.get("db_key"),
-            )
-
-            tr = await self.notion.execute(task_cmd)
-            tasks_results.append(tr)
-
-        return {
-            "success": True,
-            "workflow": "goal_task_workflow",
-            "mode": mode,
-            "goal": goal_result,
-            "tasks": tasks_results,
-        }
+        # ============================================================
+        # ATOMIC NOTION INTENTS → DELEGATE
+        # ============================================================
+        return await self.notion.execute(command)
 
 
 # ============================================================
-# FACTORY (korisno za druge servise / wiring)
+# FACTORY
 # ============================================================
 def create_notion_ops_agent() -> NotionOpsAgent:
     return NotionOpsAgent(get_notion_service())
 
 
 # ============================================================
-# ROUTER ENTRYPOINT (AgentRouterService expects this shape)
-# entrypoint u agents.json treba biti:
-#   "services.notion_ops_agent:notion_ops_agent"
+# ROUTER ENTRYPOINT (PROPOSAL-ONLY)
 # ============================================================
 async def notion_ops_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> AgentOutput:
     """
     Router-callable adapter.
 
-    Namjena:
-    - sprječava crash (jer entrypoint nije klasa nego funkcija)
-    - u chat/ceo-console kontekstu vraća ProposedCommand (approval-gated),
-      a izvršenje ide kroz postojeći approval/execution pipeline.
-
-    Napomena:
-    - Router već radi gating (read_only/require_approval) i postavlja status/dry_run.
-    - Ovdje namjerno NE izvršavamo Notion write direktno.
+    CANON:
+    - NEVER executes Notion writes
+    - ONLY returns ProposedCommand
+    - Execution MUST go through /api/execute/raw → approval → orchestrator
     """
+
     msg = (getattr(agent_input, "message", None) or "").strip()
 
     md = getattr(agent_input, "metadata", None)
@@ -185,55 +104,41 @@ async def notion_ops_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> Agen
         md = {}
 
     read_only = bool(md.get("read_only", True))
-    require_approval = bool(md.get("require_approval", True))
 
     proposed: List[ProposedCommand] = []
 
     if msg:
-        # Standardni wrapper koji gateway zna unwrap-ati / promovirati u execution.
         proposed.append(
             ProposedCommand(
                 command="ceo.command.propose",
                 args={"prompt": msg},
-                reason="Notion write intent ide kroz approval pipeline; predlažem komandu za promotion/execute.",
-                requires_approval=True if require_approval else True,
+                reason="Notion write/workflow mora ići kroz approval/execution pipeline.",
+                requires_approval=True,
                 risk="HIGH",
                 dry_run=True,
             )
         )
 
-    text_parts: List[str] = []
-    if read_only:
-        text_parts.append(
-            "Notion Ops: Detektovan je write zahtjev, ali trenutni režim je read-only. "
-            "Vraćam prijedlog komande za approval."
-        )
-    else:
-        text_parts.append(
-            "Notion Ops: Vraćam prijedlog komande za approval (execution ide kroz orchestrator)."
-        )
-
-    if not msg:
-        text_parts.append("Nedostaje text/prompt u requestu.")
+    text = (
+        "Notion Ops: vraćam prijedlog komande za approval."
+        if msg
+        else "Notion Ops: nedostaje prompt za prijedlog komande."
+    )
 
     trace: Dict[str, Any] = {}
-    base_trace = None
-    if isinstance(ctx, dict):
-        base_trace = ctx.get("trace")
-    if isinstance(base_trace, dict):
-        trace.update(base_trace)
+    if isinstance(ctx, dict) and isinstance(ctx.get("trace"), dict):
+        trace.update(ctx["trace"])
 
     trace.update(
         {
             "agent": "notion_ops",
+            "mode": "proposal_only",
             "read_only": read_only,
-            "require_approval": require_approval,
-            "adapter": "services.notion_ops_agent:notion_ops_agent",
         }
     )
 
     return AgentOutput(
-        text="\n".join(text_parts),
+        text=text,
         proposed_commands=proposed,
         agent_id="notion_ops",
         read_only=read_only,

@@ -29,11 +29,16 @@ const formatTime = (ms: number) => {
 type CeoChatboxProps = {
   ceoCommandUrl: string;
   approveUrl?: string; // POST { approval_id }
+  rejectUrl?: string; // OPTIONAL: POST { approval_id } (if backend supports reject/deny)
   executeRawUrl?: string; // POST canonical proposal payload (opaque)
   headers?: Record<string, string>;
   strings?: Partial<UiStrings>;
   onOpenApprovals?: (approvalRequestId?: string) => void;
   className?: string;
+
+  // Voice (client-side, no backend assumptions)
+  enableVoice?: boolean; // default true
+  autoSendOnVoiceFinal?: boolean; // default false
 };
 
 type BusyState = "idle" | "submitting" | "streaming" | "error";
@@ -107,16 +112,6 @@ const _pickText = (x: any): string => {
   return "";
 };
 
-function safeJsonStringify(x: any, maxLen = 6000): string {
-  try {
-    const s = JSON.stringify(x, null, 2);
-    if (s.length <= maxLen) return s;
-    return s.slice(0, maxLen) + "\n…(truncated)…";
-  } catch {
-    return String(x ?? "");
-  }
-}
-
 function truncateText(s: string, maxLen = 20000): string {
   if (!s) return "";
   if (s.length <= maxLen) return s;
@@ -168,19 +163,95 @@ function renderTextWithNotionLink(text: string): React.ReactNode {
   );
 }
 
+/**
+ * IMPORTANT UX RULE:
+ * Do NOT show "fallback proposals" (the ones that just echo a prompt / ceo.command.propose, dry_run).
+ * Only show proposals when there's a real action to approve.
+ */
+function isActionableProposal(p: ProposedCmd): boolean {
+  if (!p || typeof p !== "object") return false;
+
+  const cmd = typeof p.command === "string" ? p.command : "";
+  const intent = typeof p.intent === "string" ? p.intent : "";
+  const reason = typeof p.reason === "string" ? p.reason : "";
+
+  const dryRun = p.dry_run === true || p.dryRun === true;
+  const requiresApproval = p.requires_approval === true || p.required_approval === true;
+
+  // Common fallback pattern from your backend:
+  // command: "ceo.command.propose", dry_run: true, intent: null, reason: "Fallback proposal..."
+  const looksLikeFallback =
+    /fallback proposal/i.test(reason) ||
+    (dryRun && requiresApproval && !intent && (cmd === "ceo.command.propose" || cmd.endsWith(".propose")));
+
+  if (looksLikeFallback) return false;
+
+  // If there is no intent AND no args/payload that indicates an action, treat as non-actionable.
+  const hasSomePayload =
+    (p.args && typeof p.args === "object" && Object.keys(p.args).length > 0) ||
+    (p.params && typeof p.params === "object" && Object.keys(p.params).length > 0) ||
+    (p.payload && typeof p.payload === "object" && Object.keys(p.payload).length > 0);
+
+  // You can tighten this if your backend always sets intent for real actions.
+  if (!intent && !hasSomePayload) return false;
+
+  // If it's dry_run but still indicates a real action intent, you might still want to allow it.
+  // For now: allow (unless it matched fallback above).
+  return true;
+}
+
+function proposalLabel(p: ProposedCmd, idx: number): string {
+  const cmd = typeof (p as any)?.command === "string" ? (p as any).command : "";
+  const intent = typeof (p as any)?.intent === "string" ? (p as any).intent : "";
+  const commandType = typeof (p as any)?.command_type === "string" ? (p as any).command_type : "";
+
+  if (intent) return intent;
+  if (cmd) return cmd;
+  if (commandType) return commandType;
+  return `proposal_${idx + 1}`;
+}
+
+function shouldShowBackendGovernanceCard(gov: GovernanceEventItem, actionableCount: number): boolean {
+  if (!gov) return false;
+
+  const title = (gov.title ?? "").toLowerCase();
+  const state = (gov as any)?.state ?? "";
+
+  // If backend/normalize emits a "proposals ready" card but there are no actionable proposals, hide it.
+  const isProposalReadyCard =
+    title.includes("proposals ready") || title.includes("proposed commands") || title.includes("proposal");
+
+  if (isProposalReadyCard && state === "BLOCKED" && !gov.approvalRequestId && actionableCount === 0) {
+    return false;
+  }
+
+  return true;
+}
+
+/** SpeechRecognition typings (browser) */
+declare global {
+  interface Window {
+    webkitSpeechRecognition?: any;
+    SpeechRecognition?: any;
+  }
+}
+
 export const CeoChatbox: React.FC<CeoChatboxProps> = ({
   ceoCommandUrl,
   approveUrl,
+  rejectUrl,
   executeRawUrl,
   headers,
   strings,
   onOpenApprovals,
   className,
+  enableVoice = true,
+  autoSendOnVoiceFinal = false,
 }) => {
   const ui = useMemo(() => ({ ...defaultStrings, ...(strings ?? {}) }), [strings]);
 
-  // Ensure api always has a usable approveUrl (avoid undefined inside api.ts).
   const effectiveApproveUrl = approveUrl?.trim() ? approveUrl : "/api/ai-ops/approval/approve";
+  const effectiveRejectUrl = rejectUrl?.trim() ? rejectUrl : "/api/ai-ops/approval/reject";
 
   const api: CeoConsoleApi = useMemo(
     () =>
@@ -211,6 +282,10 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
 
   const updateItem = useCallback((id: string, patch: Partial<ChatItem>) => {
     setItems((prev) => prev.map((x) => (x.id === id ? ({ ...x, ...(patch as any) } as ChatItem) : x)));
+  }, []);
+
+  const removeItem = useCallback((id: string) => {
+    setItems((prev) => prev.filter((x) => x.id !== id));
   }, []);
 
   const stopCurrent = useCallback(() => {
@@ -258,71 +333,95 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
     [mergedHeaders]
   );
 
-  const flushResponseToUi = useCallback(
-    async (placeholderId: string, resp: NormalizedConsoleResponse) => {
-      if ((resp as any).stream) {
-        setBusy("streaming");
-        updateItem(placeholderId, { content: "", status: "streaming" });
+  // ------------------------------
+  // VOICE INPUT (browser STT)
+  // ------------------------------
+  const [voiceSupported, setVoiceSupported] = useState(false);
+  const [listening, setListening] = useState(false);
+  const recognitionRef = useRef<any>(null);
 
-        let acc = "";
-        try {
-          for await (const chunk of (resp as any).stream) {
-            acc += chunk;
-            updateItem(placeholderId, { content: acc, status: "streaming" });
-            if (isPinnedToBottom) scrollToBottom(false);
-          }
+  useEffect(() => {
+    if (!enableVoice) return;
 
-          updateItem(placeholderId, { content: acc.trim(), status: "final" });
-          setBusy("idle");
-          setLastError(null);
-        } catch (e) {
-          const msg = e instanceof Error ? e.message : String(e);
-          updateItem(placeholderId, { status: "error", content: acc.trim() });
-          setBusy("error");
-          setLastError(msg);
-        }
-        return;
+    const Rec = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const ok = typeof Rec === "function";
+    setVoiceSupported(ok);
+
+    if (!ok) return;
+
+    const rec = new Rec();
+    rec.lang = "bs-BA"; // adjust if needed; browser will fallback if unsupported
+    rec.interimResults = true;
+    rec.continuous = false;
+
+    rec.onresult = (ev: any) => {
+      let finalText = "";
+      let interim = "";
+      for (let i = ev.resultIndex; i < ev.results.length; i++) {
+        const r = ev.results[i];
+        const t = String(r?.[0]?.transcript ?? "");
+        if (r.isFinal) finalText += t;
+        else interim += t;
       }
 
-      const sysText = (resp as any).systemText ?? (resp as any).summary ?? (resp as any).text ?? "";
-      updateItem(placeholderId, { content: sysText, status: "final" });
+      const combined = (finalText || interim || "").trim();
+      if (combined) setDraft(combined);
 
-      const gov = toGovernanceCard(resp);
-      if (gov) appendItem(gov);
-
-      const proposals = _extractProposedCommands(resp as any);
-      if (proposals.length > 0) {
-        appendItem({
-          id: uid(),
-          kind: "governance",
-          createdAt: now(),
-          state: "BLOCKED",
-          title: "Proposed commands",
-          summary:
-            "Select EXACTLY ONE proposal to create execution (BLOCKED). Then approve via approval_id (approval gate).",
-          reasons: proposals.map((p, idx) => {
-            const label =
-              typeof (p as any)?.command === "string"
-                ? (p as any).command
-                : typeof (p as any)?.intent === "string"
-                  ? (p as any).intent
-                  : typeof (p as any)?.command_type === "string"
-                    ? (p as any).command_type
-                    : `proposal_${idx + 1}`;
-            return label;
-          }),
-          approvalRequestId: undefined,
-          requestId: (resp as any)?.requestId,
-          proposedCommands: proposals,
-        } as any);
+      if (autoSendOnVoiceFinal && finalText.trim()) {
+        // submit will be called by user action normally; this is optional behavior
+        // we do NOT auto-send unless explicitly enabled via prop.
       }
+    };
 
-      setBusy("idle");
-      setLastError(null);
-    },
-    [appendItem, updateItem, isPinnedToBottom, scrollToBottom]
-  );
+    rec.onerror = () => {
+      setListening(false);
+    };
 
+    rec.onend = () => {
+      setListening(false);
+    };
+
+    recognitionRef.current = rec;
+
+    return () => {
+      try {
+        rec.onresult = null;
+        rec.onerror = null;
+        rec.onend = null;
+        rec.stop?.();
+      } catch {
+        // ignore
+      }
+      recognitionRef.current = null;
+    };
+  }, [enableVoice, autoSendOnVoiceFinal]);
+
+  const toggleVoice = useCallback(() => {
+    if (!enableVoice) return;
+    const rec = recognitionRef.current;
+    if (!rec) return;
+
+    if (listening) {
+      try {
+        rec.stop();
+      } catch {
+        // ignore
+      }
+      setListening(false);
+      return;
+    }
+
+    try {
+      setListening(true);
+      rec.start();
+    } catch {
+      setListening(false);
+    }
+  }, [enableVoice, listening]);
+
+  // ------------------------------
+  // APPROVAL FLOW HELPERS
+  // ------------------------------
   const handleOpenApprovals = useCallback(
     (approvalRequestId?: string) => {
       if (onOpenApprovals) onOpenApprovals(approvalRequestId);
@@ -332,9 +431,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
   );
 
   /**
-   * CANON step 1:
-   * Create execution (BLOCKED) from the EXACT proposal object (opaque payload) returned by /api/chat.
-   * DO NOT rebuild/transform the proposal.
+   * Step A: Create execution (BLOCKED) from the EXACT proposal object.
    */
   const handleCreateExecutionFromProposal = useCallback(
     async (proposal: ProposedCmd) => {
@@ -351,8 +448,6 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
 
       try {
         const execUrl = resolveUrl(executeRawUrl, "/api/execute/raw");
-
-        // CANON: send proposal object 1:1
         const execJson = await postJson(execUrl, proposal, controller.signal);
 
         const approvalId: string | null =
@@ -361,9 +456,10 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         const executionId: string | null =
           typeof execJson?.execution_id === "string" && execJson.execution_id ? execJson.execution_id : null;
 
-        const msg = approvalId?.trim()
-          ? `Execution created (BLOCKED). approval_id: ${approvalId}`
-          : _pickText(execJson) || "Execution created.";
+        const msg =
+          approvalId?.trim()
+            ? `Execution created (BLOCKED). approval_id: ${approvalId}`
+            : _pickText(execJson) || "Execution created.";
 
         updateItem(placeholder.id, { content: msg, status: "final" });
 
@@ -373,7 +469,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
             kind: "governance",
             createdAt: now(),
             state: "BLOCKED",
-            title: "Execution pending approval",
+            title: "Pending approval",
             summary: executionId ? `execution_id: ${executionId}` : "Execution created and waiting for approval.",
             reasons: [],
             approvalRequestId: approvalId,
@@ -398,8 +494,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
   );
 
   /**
-   * CANON step 2:
-   * Approve using explicit approval_id (no implicit cached IDs).
+   * Step B: Approve using approval_id.
    */
   const handleApprove = useCallback(
     async (approvalId: string) => {
@@ -417,7 +512,6 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
 
       try {
         const approveJson = await postJson(appUrl, { approval_id: approvalId }, controller.signal);
-
         const msg =
           _pickText(approveJson) ||
           (approveJson?.execution_state ? `Execution: ${approveJson.execution_state}` : "Approved.");
@@ -435,6 +529,168 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       }
     },
     [appendItem, effectiveApproveUrl, busy, postJson, resolveUrl, updateItem]
+  );
+
+  /**
+   * OPTIONAL: Reject/Disapprove approval_id (if backend supports).
+   * If not supported, keep it as a "Dismiss" UX (no backend side-effect).
+   */
+  const handleReject = useCallback(
+    async (approvalId: string) => {
+      const rejUrl = resolveUrl(effectiveRejectUrl, "/api/ai-ops/approval/reject");
+      if (busy === "submitting" || busy === "streaming") return;
+
+      setBusy("submitting");
+      setLastError(null);
+
+      const placeholder = makeSystemProcessingItem(approvalId);
+      appendItem(placeholder);
+
+      const controller = new AbortController();
+      abortRef.current = controller;
+
+      try {
+        const rejectJson = await postJson(rejUrl, { approval_id: approvalId }, controller.signal);
+        const msg = _pickText(rejectJson) || "Rejected.";
+
+        updateItem(placeholder.id, { content: msg, status: "final" });
+        abortRef.current = null;
+        setBusy("idle");
+        setLastError(null);
+      } catch (e) {
+        abortRef.current = null;
+        const msg = e instanceof Error ? e.message : String(e);
+        updateItem(placeholder.id, { status: "error", content: "" });
+        setBusy(isAbortError(e) ? "idle" : "error");
+        setLastError(isAbortError(e) ? null : msg);
+      }
+    },
+    [appendItem, effectiveRejectUrl, busy, postJson, resolveUrl, updateItem]
+  );
+
+  /**
+   * PRO UX:
+   * Single click "Approve" on a proposal:
+   * - create execution (BLOCKED)
+   * - then approve via approval_id
+   */
+  const handleApproveProposal = useCallback(
+    async (proposal: ProposedCmd) => {
+      if (busy === "submitting" || busy === "streaming") return;
+
+      setBusy("submitting");
+      setLastError(null);
+
+      const placeholder = makeSystemProcessingItem("approve_proposal");
+      appendItem(placeholder);
+
+      const controller = new AbortController();
+      abortRef.current = controller;
+
+      try {
+        const execUrl = resolveUrl(executeRawUrl, "/api/execute/raw");
+        const execJson = await postJson(execUrl, proposal, controller.signal);
+
+        const approvalId: string | null =
+          typeof execJson?.approval_id === "string" && execJson.approval_id ? execJson.approval_id : null;
+
+        if (!approvalId) {
+          updateItem(placeholder.id, {
+            content: _pickText(execJson) || "Execution created, but approval_id missing.",
+            status: "final",
+          });
+          abortRef.current = null;
+          setBusy("idle");
+          return;
+        }
+
+        // Now approve
+        const appUrl = resolveUrl(effectiveApproveUrl, "/api/ai-ops/approval/approve");
+        const approveJson = await postJson(appUrl, { approval_id: approvalId }, controller.signal);
+
+        const msg =
+          _pickText(approveJson) ||
+          (approveJson?.execution_state ? `Execution: ${approveJson.execution_state}` : `Approved. approval_id: ${approvalId}`);
+
+        updateItem(placeholder.id, { content: msg, status: "final" });
+
+        abortRef.current = null;
+        setBusy("idle");
+        setLastError(null);
+      } catch (e) {
+        abortRef.current = null;
+        const msg = e instanceof Error ? e.message : String(e);
+        updateItem(placeholder.id, { status: "error", content: "" });
+        setBusy(isAbortError(e) ? "idle" : "error");
+        setLastError(isAbortError(e) ? null : msg);
+      }
+    },
+    [appendItem, busy, effectiveApproveUrl, executeRawUrl, postJson, resolveUrl, updateItem]
+  );
+
+  // ------------------------------
+  // CHAT RESPONSE -> UI
+  // ------------------------------
+  const flushResponseToUi = useCallback(
+    async (placeholderId: string, resp: NormalizedConsoleResponse) => {
+      // STREAMING
+      if ((resp as any).stream) {
+        setBusy("streaming");
+        updateItem(placeholderId, { content: "", status: "streaming" });
+
+        let acc = "";
+        try {
+          for await (const chunk of (resp as any).stream) {
+            acc += chunk;
+            updateItem(placeholderId, { content: acc, status: "streaming" });
+            if (isPinnedToBottom) scrollToBottom(false);
+          }
+
+          updateItem(placeholderId, { content: acc.trim(), status: "final" });
+          setBusy("idle");
+          setLastError(null);
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          updateItem(placeholderId, { status: "error", content: acc.trim() });
+          setBusy("error");
+          setLastError(msg);
+        }
+        return;
+      }
+
+      // TEXT
+      const sysText = (resp as any).systemText ?? (resp as any).summary ?? (resp as any).text ?? "";
+      updateItem(placeholderId, { content: sysText, status: "final" });
+
+      // PROPOSALS (FILTER OUT FALLBACK)
+      const proposalsRaw = _extractProposedCommands(resp as any);
+      const proposals = proposalsRaw.filter(isActionableProposal);
+      const actionableCount = proposals.length;
+
+      // GOVERNANCE CARD FROM BACKEND/NORMALIZER (ONLY IF IT'S MEANINGFUL)
+      const gov = toGovernanceCard(resp);
+      if (gov && shouldShowBackendGovernanceCard(gov, actionableCount)) appendItem(gov);
+
+      // ONLY show proposal UI if actionable proposals exist
+      if (actionableCount > 0) {
+        appendItem({
+          id: uid(),
+          kind: "governance",
+          createdAt: now(),
+          state: "BLOCKED",
+          title: "Approval required",
+          summary: "Review the proposed action and either approve or dismiss it.",
+          reasons: undefined,
+          approvalRequestId: undefined,
+          requestId: (resp as any)?.requestId,
+          proposedCommands: proposals,
+        } as any);
+      }
+
+      setBusy("idle");
+      setLastError(null);
+    },
+    [appendItem, updateItem, isPinnedToBottom, scrollToBottom]
   );
 
   // ------------------------------
@@ -478,11 +734,9 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       }
 
       const title = typeof res.title === "string" && res.title.trim() ? res.title.trim() : q;
-      const notionUrl =
-        typeof res.notion_url === "string" && res.notion_url.trim() ? res.notion_url.trim() : "";
+      const notionUrl = typeof res.notion_url === "string" && res.notion_url.trim() ? res.notion_url.trim() : "";
 
-      const contentMd =
-        typeof res.content_markdown === "string" && res.content_markdown ? res.content_markdown : "";
+      const contentMd = typeof res.content_markdown === "string" && res.content_markdown ? res.content_markdown : "";
 
       const docText =
         `${title}\n` +
@@ -505,6 +759,9 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
     }
   }, [api, appendItem, busy, notionQuery, updateItem]);
 
+  // ------------------------------
+  // SUBMIT CHAT
+  // ------------------------------
   const submit = useCallback(async () => {
     const trimmed = draft.trim();
     if (!trimmed) return;
@@ -535,8 +792,6 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
     abortRef.current = controller;
 
     try {
-      // CANON: CeoCommandRequest (api.ts will build /api/chat payload)
-      // IMPORTANT: preferred_agent_id should be top-level for AgentInput compatibility.
       const req: any = {
         text: trimmed,
         initiator: "ceo_chat",
@@ -593,6 +848,18 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
                 {ui.jumpToLatestLabel}
               </button>
             )}
+
+            {enableVoice && voiceSupported ? (
+              <button
+                className="ceoHeaderButton"
+                onClick={toggleVoice}
+                disabled={busy === "submitting" || busy === "streaming"}
+                title={listening ? "Stop voice input" : "Start voice input"}
+              >
+                {listening ? "Voice: ON" : "Voice"}
+              </button>
+            ) : null}
+
             {(busy === "submitting" || busy === "streaming" || notionLoading) && (
               <button className="ceoHeaderButton" onClick={stopCurrent}>
                 Stop
@@ -639,6 +906,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
               );
             }
 
+            // Governance card rendering (PRO, minimal, no raw JSON)
             const badgeClass =
               it.state === "BLOCKED" ? "blocked" : it.state === "APPROVED" ? "approved" : "executed";
 
@@ -646,6 +914,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
               it.state === "BLOCKED" ? ui.blockedLabel : it.state === "APPROVED" ? ui.approvedLabel : ui.executedLabel;
 
             const proposedCommands: ProposedCmd[] = ((it as any)?.proposedCommands as ProposedCmd[]) ?? [];
+            const hasApprovalId = Boolean((it as any)?.approvalRequestId);
 
             return (
               <div className="ceoRow left" key={it.id}>
@@ -658,49 +927,47 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
                   <div className="govBody">
                     {it.summary ? <div className="govSummary">{it.summary}</div> : null}
 
-                    {it.reasons && it.reasons.length > 0 ? (
-                      <ul className="govReasons">
-                        {it.reasons.map((r, idx) => (
-                          <li key={`${it.id}_r_${idx}`}>{r}</li>
-                        ))}
-                      </ul>
-                    ) : null}
-
+                    {/* Actionable proposals (clean UI) */}
                     {proposedCommands.length > 0 ? (
                       <div style={{ marginTop: 10 }}>
-                        <div className="govSummary" style={{ marginBottom: 8 }}>
-                          Proposals (select EXACTLY ONE by clicking its button):
-                        </div>
-
                         <ul className="govReasons" style={{ marginTop: 0 }}>
                           {proposedCommands.map((p, idx) => {
-                            const label =
-                              typeof (p as any)?.command === "string"
-                                ? (p as any).command
-                                : typeof (p as any)?.intent === "string"
-                                  ? (p as any).intent
-                                  : typeof (p as any)?.command_type === "string"
-                                    ? (p as any).command_type
-                                    : `proposal_${idx + 1}`;
+                            const label = proposalLabel(p, idx);
 
                             return (
                               <li key={`${it.id}_p_${idx}`}>
-                                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                                <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                                   <span style={{ fontWeight: 600 }}>{label}</span>
-                                </div>
 
-                                <div style={{ marginTop: 8, opacity: 0.85, fontSize: 12, whiteSpace: "pre-wrap" }}>
-                                  {safeJsonStringify(p, 1200)}
-                                </div>
+                                  <div style={{ display: "flex", gap: 8, marginLeft: "auto", flexWrap: "wrap" }}>
+                                    <button
+                                      className="govButton"
+                                      onClick={() => void handleApproveProposal(p)}
+                                      disabled={busy === "submitting" || busy === "streaming" || notionLoading}
+                                      title="Create execution and approve"
+                                    >
+                                      Approve
+                                    </button>
 
-                                <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
-                                  <button
-                                    className="govButton"
-                                    onClick={() => void handleCreateExecutionFromProposal(p)}
-                                    disabled={busy === "submitting" || busy === "streaming" || notionLoading}
-                                  >
-                                    Create execution (BLOCKED)
-                                  </button>
+                                    <button
+                                      className="govButton"
+                                      onClick={() => removeItem(it.id)}
+                                      disabled={busy === "submitting" || busy === "streaming" || notionLoading}
+                                      title="Dismiss (no backend action)"
+                                    >
+                                      Dismiss
+                                    </button>
+
+                                    {/* Optional: still allow create-only for debugging */}
+                                    <button
+                                      className="govButton"
+                                      onClick={() => void handleCreateExecutionFromProposal(p)}
+                                      disabled={busy === "submitting" || busy === "streaming" || notionLoading}
+                                      title="Create execution only (BLOCKED)"
+                                    >
+                                      Create (Blocked)
+                                    </button>
+                                  </div>
                                 </div>
                               </li>
                             );
@@ -709,21 +976,35 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
                       </div>
                     ) : null}
 
-                    <div className="govActions">
-                      <button className="govButton" onClick={() => handleOpenApprovals(it.approvalRequestId)}>
-                        {ui.openApprovalsLabel}
-                      </button>
-
-                      {it.state === "BLOCKED" && it.approvalRequestId ? (
-                        <button
-                          className="govButton"
-                          onClick={() => void handleApprove(it.approvalRequestId!)}
-                          disabled={busy === "submitting" || busy === "streaming" || notionLoading}
-                        >
-                          {ui.approveLabel}
+                    {/* Approval actions: ONLY if we actually have approvalRequestId */}
+                    {hasApprovalId ? (
+                      <div className="govActions">
+                        <button className="govButton" onClick={() => handleOpenApprovals((it as any).approvalRequestId)}>
+                          {ui.openApprovalsLabel}
                         </button>
-                      ) : null}
-                    </div>
+
+                        {it.state === "BLOCKED" ? (
+                          <>
+                            <button
+                              className="govButton"
+                              onClick={() => void handleApprove((it as any).approvalRequestId)}
+                              disabled={busy === "submitting" || busy === "streaming" || notionLoading}
+                            >
+                              {ui.approveLabel}
+                            </button>
+
+                            <button
+                              className="govButton"
+                              onClick={() => void handleReject((it as any).approvalRequestId)}
+                              disabled={busy === "submitting" || busy === "streaming" || notionLoading}
+                              title="Requires backend support for /approval/reject"
+                            >
+                              Disapprove
+                            </button>
+                          </>
+                        ) : null}
+                      </div>
+                    ) : null}
                   </div>
                 </div>
               </div>
@@ -786,7 +1067,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
             className="ceoHeaderButton"
             onClick={() => void runNotionSearch()}
             disabled={notionLoading || busy === "submitting" || busy === "streaming" || !notionQuery.trim()}
-            title="POST /api/notion/read"
+            title="Read Notion page by title (backend)"
           >
             {notionLoading ? ((ui as any).searchingLabel ?? "Searching…") : ((ui as any).runSearchLabel ?? "Search")}
           </button>
@@ -803,6 +1084,19 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
             disabled={busy === "submitting" || busy === "streaming"}
             rows={1}
           />
+
+          {enableVoice && voiceSupported ? (
+            <button
+              className="ceoSendBtn"
+              onClick={toggleVoice}
+              disabled={busy === "submitting" || busy === "streaming"}
+              title={listening ? "Stop voice input" : "Start voice input"}
+              style={{ width: 120 }}
+            >
+              {listening ? "Listening…" : "Voice"}
+            </button>
+          ) : null}
+
           <button className="ceoSendBtn" onClick={() => void submit()} disabled={!canSend}>
             {ui.sendLabel}
           </button>

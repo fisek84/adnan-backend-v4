@@ -244,6 +244,13 @@ coo_conversation_service = COOConversationService()
 _execution_registry = get_execution_registry()
 _execution_orchestrator = ExecutionOrchestrator()
 
+# ================================================================
+# HARD-BLOCK: WRAPPER/NEXT_STEP MUST NEVER CREATE APPROVAL OR EXECUTE
+# ================================================================
+_HARD_READ_ONLY_INTENTS = {
+    PROPOSAL_WRAPPER_INTENT,  # "ceo.command.propose"
+    "ceo_console.next_step",
+}
 
 # ================================================================
 # META-COMMANDS MUST NOT ENTER EXECUTION/APPROVAL
@@ -946,6 +953,45 @@ async def execute_raw_command(payload: Dict[str, Any] = Body(...)):
         raise HTTPException(status_code=400, detail="Body must be an object")
 
     normalized = _normalize_execute_raw_payload_dict(payload)
+
+    # ------------------------------------------------------------
+    # HARD-BLOCK (CANON): wrapper + next_step are READ-ONLY terminal
+    # - no approval
+    # - no execute
+    # ------------------------------------------------------------
+    if (
+        (normalized.intent in _HARD_READ_ONLY_INTENTS)
+        or (normalized.command in _HARD_READ_ONLY_INTENTS)
+    ):
+        prompt0 = ""
+        if isinstance(normalized.params, dict):
+            v = normalized.params.get("prompt")
+            if isinstance(v, str):
+                prompt0 = v.strip()
+
+        # Always return a stable, explicit terminal shape.
+        execution_id = str(uuid.uuid4())
+        return {
+            "status": "COMPLETED",
+            "execution_state": "COMPLETED",
+            "read_only": True,
+            "execution_id": execution_id,
+            "approval_id": None,
+            "command": normalized.command,
+            "intent": normalized.intent,
+            "params": normalized.params if isinstance(normalized.params, dict) else {},
+            "proposed_commands": (
+                [_proposal_wrapper_dict(prompt=prompt0 or "noop", source="execute_raw")]
+                if normalized.intent == PROPOSAL_WRAPPER_INTENT
+                else []
+            ),
+            "trace": {
+                "canon": "execute_raw_hard_block_read_only",
+                "endpoint": "/api/execute/raw",
+                "hard_block_intent": normalized.intent,
+                "hard_block_command": normalized.command,
+            },
+        }
 
     ai_command = _unwrap_proposal_wrapper_or_raise(
         command=normalized.command,
