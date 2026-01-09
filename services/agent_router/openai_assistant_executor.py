@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import json
@@ -13,7 +13,16 @@ from uuid import UUID
 
 from openai import OpenAI
 
+from services.ceo_alignment_engine import CEOAlignmentEngine  # <-- already present
+from services.identity_loader import load_ceo_identity_pack
 from services.knowledge_service import KnowledgeService
+from services.world_state_engine import WorldStateEngine  # <-- already present
+
+# OPTION C (Behaviour router) - best-effort import (FAIL-SOFT, enterprise)
+try:
+    from services.ceo_behavior_router import CEOBehaviorRouter  # type: ignore
+except Exception:  # noqa: BLE001
+    CEOBehaviorRouter = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +86,205 @@ Text formatting rules (DASHBOARD MODE):
 If there are fewer than 3 goals or 5 tasks in the snapshot, list what exists and add a line:
 NEMA DOVOLJNO PODATAKA U SNAPSHOT-U
 """
+
+
+# -------------------------------------------------------------------
+# OPTION C (BEHAVIOUR OVERLAY) â€” ENTERPRISE, DETERMINISTIC, FAIL-SOFT
+# -------------------------------------------------------------------
+_BEHAVIOUR_MODE_SUFFIX: Dict[str, str] = {
+    # Minimal output when everything is aligned and no action is required.
+    # IMPORTANT: runtime enforcement exists for SILENT (see _apply_silent_runtime_enforcement).
+    "silent": """Behaviour mode: SILENT.
+Rules:
+- If there is NO immediate critical risk explicitly stated in alignment_snapshot.law_compliance
+  (system_integrity == False OR risk_level in {"high","critical"}):
+  - summary MUST be "".
+  - text MUST be "".
+  - questions MUST be [].
+  - plan MUST be [].
+  - options MUST be [].
+  - proposed_commands MUST be [].
+- If there IS immediate critical risk (as above), output ONLY:
+  - summary: 1 line risk label
+  - text: max 2 lines immediate actions
+  - questions/plan/options empty, proposed_commands []
+""",
+    # Monitoring posture: short, no speculation.
+    "monitor": """Behaviour mode: MONITOR.
+Rules:
+- Provide at most 2 observations derived from the snapshot/context.
+- Provide at most 1 monitoring suggestion derived from the snapshot/context.
+- No speculative plans. No invented facts.
+- proposed_commands MUST be [] unless alignment_snapshot explicitly requires action.
+""",
+    # Normal advisory: structured tradeoffs; still read-only.
+    "advisory": """Behaviour mode: ADVISORY.
+Rules:
+- Provide up to 3 options with tradeoffs grounded in the provided context.
+- Ask clarifying questions only if required to resolve an explicit missing field.
+""",
+    # Executive: decisive, one primary recommendation.
+    "executive": """Behaviour mode: EXECUTIVE.
+Rules:
+- Recommend ONE primary course of action grounded in snapshot/context.
+- Provide at most 2 backup options.
+- Keep it concise; avoid long essays.
+""",
+    # Red alert: system integrity takes precedence.
+    "red_alert": """Behaviour mode: RED_ALERT.
+Rules:
+- Lead with the integrity/risk issue and the required CEO action.
+- Ignore non-critical user request parts if they conflict with system integrity.
+- Keep it short, non-negotiable, and grounded in the provided context.
+""",
+}
+
+
+def _compose_run_instructions(base: str, behaviour_mode: Optional[str]) -> str:
+    """
+    Deterministic instruction overlay.
+    - Never changes JSON schema contract.
+    - Only adds behaviour constraints.
+    """
+    mode = (behaviour_mode or "").strip().lower()
+    suffix = _BEHAVIOUR_MODE_SUFFIX.get(mode, "")
+    if not suffix.strip():
+        return base
+    return base.rstrip() + "\n\n" + suffix.strip() + "\n"
+
+
+def _extract_behaviour_mode_from_context(context: Dict[str, Any]) -> tuple[str, str]:
+    """
+    Deterministic (per requirement):
+    1) context.identity_pack.behaviour_mode
+    2) context.metadata.behaviour_mode
+    3) default: advisory
+
+    Returns: (mode, source) where source in {"identity_pack","metadata","default"}.
+    """
+    behaviour_mode = "advisory"
+    source = "default"
+
+    ip = context.get("identity_pack")
+    if isinstance(ip, dict):
+        v = ip.get("behaviour_mode")
+        if isinstance(v, str) and v.strip():
+            behaviour_mode = v.strip()
+            source = "identity_pack"
+
+    if source == "default":
+        md = context.get("metadata")
+        if isinstance(md, dict):
+            v = md.get("behaviour_mode")
+            if isinstance(v, str) and v.strip():
+                behaviour_mode = v.strip()
+                source = "metadata"
+
+    mode = behaviour_mode.strip().lower() or "advisory"
+    if mode not in _BEHAVIOUR_MODE_SUFFIX:
+        mode = "advisory"
+        source = "default"
+    return mode, source
+
+
+def _is_critical_risk_from_alignment(alignment_snapshot: Any) -> bool:
+    """
+    Deterministic: critical risk only if explicitly stated in known keys:
+      alignment_snapshot.law_compliance.system_integrity == False OR
+      alignment_snapshot.law_compliance.risk_level in {"high","critical"} (case-insensitive)
+    """
+    if not isinstance(alignment_snapshot, dict):
+        return False
+    lc = (
+        alignment_snapshot.get("law_compliance")
+        if isinstance(alignment_snapshot.get("law_compliance"), dict)
+        else {}
+    )
+
+    system_integrity = lc.get("system_integrity")
+    if system_integrity is False:
+        return True
+
+    risk_level = lc.get("risk_level")
+    if isinstance(risk_level, str) and risk_level.strip().lower() in {"high", "critical"}:
+        return True
+
+    return False
+
+
+def _apply_silent_runtime_enforcement(parsed: Dict[str, Any], *, critical_risk: bool) -> Dict[str, Any]:
+    """
+    Hard deterministic enforcement for SILENT mode:
+    - If NOT critical risk => blank output + empty arrays (regardless of LLM compliance).
+    - If critical risk => do not modify (LLM output allowed within constraints).
+    """
+    if critical_risk:
+        return parsed
+
+    parsed["summary"] = ""
+    parsed["text"] = ""
+    parsed["questions"] = []
+    parsed["plan"] = []
+    parsed["options"] = []
+    parsed["proposed_commands"] = []
+    return parsed
+
+
+def _derive_behaviour_mode_fallback(alignment_snapshot: Any) -> Optional[str]:
+    """
+    Enterprise fallback if CEOBehaviorRouter module is not available.
+    Uses only keys that are ALREADY referenced in this file (no new schema assumptions).
+    """
+    if not isinstance(alignment_snapshot, dict):
+        return None
+
+    sa = (
+        alignment_snapshot.get("strategic_alignment")
+        if isinstance(alignment_snapshot.get("strategic_alignment"), dict)
+        else {}
+    )
+    lc = (
+        alignment_snapshot.get("law_compliance")
+        if isinstance(alignment_snapshot.get("law_compliance"), dict)
+        else {}
+    )
+    ca = (
+        alignment_snapshot.get("ceo_action_required")
+        if isinstance(alignment_snapshot.get("ceo_action_required"), dict)
+        else {}
+    )
+
+    requires_action = ca.get("requires_action")
+    system_integrity = lc.get("system_integrity")
+    risk_level = lc.get("risk_level")
+    overall_status = sa.get("overall_status")
+
+    # If integrity is explicitly compromised â†’ red_alert
+    if system_integrity is False:
+        return "red_alert"
+
+    # High risk can also justify red_alert if explicitly stated as string.
+    if isinstance(risk_level, str) and risk_level.strip().lower() in {"high", "critical"}:
+        return "red_alert"
+
+    # If action is explicitly required â†’ executive
+    if requires_action is True:
+        return "executive"
+
+    # If alignment explicitly says misaligned/weak â†’ advisory
+    if isinstance(overall_status, str) and overall_status.strip().lower() in {
+        "misaligned",
+        "weak",
+        "warning",
+        "at_risk",
+    }:
+        return "advisory"
+
+    # Default aligned no-action posture: monitor (safe default)
+    if requires_action is False:
+        return "monitor"
+
+    return None
 
 
 def _json_default(obj: Any) -> Any:
@@ -187,6 +395,31 @@ def _compact_snapshot(snapshot: Any) -> Any:
     return out
 
 
+def _compact_identity_pack(identity_pack: Any) -> Any:
+    """
+    DeterministiÄŤka kompakcija identity pack-a da se sigurno poĹˇalje u LLM context.
+
+    Reuse postojeÄ‡e snapshot kompaktovanje (lista cap + trim), uz dodatno izbacivanje
+    heavy/raw kljuÄŤeva ako se pojave.
+    """
+    if identity_pack is None:
+        return None
+
+    if isinstance(identity_pack, dict):
+        DROP_KEYS = {
+            "raw",
+            "raw_pages",
+            "raw_page",
+            "page_raw",
+            "content_raw",
+            "blocks_raw",
+        }
+        slim = {k: v for k, v in identity_pack.items() if k not in DROP_KEYS}
+        return _compact_snapshot(slim)
+
+    return _compact_snapshot(identity_pack)
+
+
 def _safe_dumps_for_openai(payload: Dict[str, Any]) -> tuple[str, Dict[str, Any]]:
     """
     Always returns content <= _MAX_OPENAI_CONTENT_CHARS.
@@ -202,9 +435,26 @@ def _safe_dumps_for_openai(payload: Dict[str, Any]) -> tuple[str, Dict[str, Any]
     ctx = compact_payload.get("context")
     if isinstance(ctx, dict):
         ctx2 = dict(ctx)
+
         snap = ctx2.get("snapshot")
         if snap is not None:
             ctx2["snapshot"] = _compact_snapshot(snap)
+
+        # compact identity_pack if present
+        ip = ctx2.get("identity_pack")
+        if ip is not None:
+            ctx2["identity_pack"] = _compact_identity_pack(ip)
+
+        # compact world_state_snapshot if present
+        ws = ctx2.get("world_state_snapshot")
+        if ws is not None:
+            ctx2["world_state_snapshot"] = _compact_snapshot(ws)
+
+        # compact alignment_snapshot if present
+        al = ctx2.get("alignment_snapshot")
+        if al is not None:
+            ctx2["alignment_snapshot"] = _compact_snapshot(al)
+
         compact_payload["context"] = ctx2
 
     compact = json.dumps(compact_payload, ensure_ascii=False, default=_json_default)
@@ -316,9 +566,7 @@ def _pick_text(parsed: Dict[str, Any]) -> str:
     return ""
 
 
-def _ensure_contract(
-    parsed: Dict[str, Any], *, enforce_dashboard_text: bool
-) -> Dict[str, Any]:
+def _ensure_contract(parsed: Dict[str, Any], *, enforce_dashboard_text: bool) -> Dict[str, Any]:
     """
     Ensure canonical CEO advisory result:
       summary, text, questions, plan, options, proposed_commands, trace
@@ -369,9 +617,7 @@ def _ensure_contract(
 
     # Ensure keys exist
     if "summary" not in parsed or not isinstance(parsed.get("summary"), str):
-        parsed["summary"] = (
-            str(raw) if raw is not None else "LLM odgovor nema 'summary'."
-        )
+        parsed["summary"] = str(raw) if raw is not None else "LLM odgovor nema 'summary'."
 
     if (
         "text" not in parsed
@@ -424,7 +670,6 @@ def _is_dashboard_query(user_text: str) -> bool:
         return False
 
     # IMPORTANT: "create/update" commands must NOT be treated as dashboard/listing queries.
-    # This prevents "Kreiraj cilj ..." from forcing dashboard-mode formatting.
     action_prefixes = (
         "kreiraj",
         "create",
@@ -449,7 +694,7 @@ def _is_dashboard_query(user_text: str) -> bool:
         "top3",
         "top 5",
         "top5",
-        "najvažn",
+        "najvaĹľn",
         "najhitnij",
         "snapshot",
         "status",
@@ -471,25 +716,20 @@ def _run_last_error_details(run_status: Any) -> Dict[str, Any]:
     if status is not None:
         out["status"] = status
 
-    # Newer SDKs: run.last_error = {code, message}
     last_error = getattr(run_status, "last_error", None)
     if last_error is not None:
         code = getattr(last_error, "code", None)
         msg = getattr(last_error, "message", None)
         out["last_error"] = {
             "code": code if code is not None else None,
-            "message": msg
-            if isinstance(msg, str)
-            else (str(msg) if msg is not None else None),
+            "message": msg if isinstance(msg, str) else (str(msg) if msg is not None else None),
         }
 
-    # Sometimes present:
     incomplete = getattr(run_status, "incomplete_details", None)
     if incomplete is not None:
         reason = getattr(incomplete, "reason", None)
         out["incomplete_details"] = {"reason": reason if reason is not None else None}
 
-    # IDs are useful for correlating
     for k in ("id", "assistant_id", "thread_id", "model"):
         v = getattr(run_status, k, None)
         if v is not None:
@@ -501,8 +741,8 @@ def _run_last_error_details(run_status: Any) -> Dict[str, Any]:
 class OpenAIAssistantExecutor:
     """
     CANON (nakon ustava):
-    - Ova klasa služi kao CEO Advisor (READ-ONLY, bez tool poziva).
-    - Legacy execution put (LLM Notion Ops) je onemogućen i hard-blokiran.
+    - Ova klasa sluĹľi kao CEO Advisor (READ-ONLY, bez tool poziva).
+    - Legacy execution put (LLM Notion Ops) je onemoguÄ‡en i hard-blokiran.
     """
 
     def __init__(
@@ -576,7 +816,6 @@ class OpenAIAssistantExecutor:
             status = getattr(run_status, "status", None)
 
             if status == "requires_action":
-                # Hard block any tool calling in this executor (constitution).
                 required_action = getattr(run_status, "required_action", None)
                 submit = (
                     getattr(required_action, "submit_tool_outputs", None)
@@ -615,9 +854,7 @@ class OpenAIAssistantExecutor:
             self.client.beta.threads.messages.list, thread_id=thread_id
         )
         data = getattr(messages, "data", None) or []
-        assistant_messages = [
-            m for m in data if getattr(m, "role", None) == "assistant"
-        ]
+        assistant_messages = [m for m in data if getattr(m, "role", None) == "assistant"]
 
         if not assistant_messages:
             raise RuntimeError("Assistant produced no response")
@@ -649,9 +886,7 @@ class OpenAIAssistantExecutor:
         t = (text or "").strip()
         if not t:
             return t
-        m = re.match(
-            r"^```(?:json)?\s*(.*?)\s*```$", t, flags=re.DOTALL | re.IGNORECASE
-        )
+        m = re.match(r"^```(?:json)?\s*(.*?)\s*```$", t, flags=re.DOTALL | re.IGNORECASE)
         if m:
             return (m.group(1) or "").strip()
         return t
@@ -676,28 +911,26 @@ class OpenAIAssistantExecutor:
     ):
         """
         Compatibility layer for SDK / API shape changes.
-        Tries progressively simpler run.create signatures.
 
-        Note: tool_choice in Assistants API has had multiple accepted shapes:
-          - "none"
-          - {"type": "none"}
-          - omitted
+        NOTE:
+        - Some Assistants API deployments do NOT support tool_choice="none".
+          In that case, we OMIT tool_choice entirely and rely on the
+          read-only guard (_wait_for_run_completion) to cancel if tools are attempted.
         """
         attempts: list[Dict[str, Any]] = []
 
-        # Most strict: instructions + tool_choice
+        # Normalize tool_choice: omit unsupported "none"
+        tc = tool_choice
+        if isinstance(tc, str) and tc.strip().lower() == "none":
+            tc = None
+
+        # Most strict: instructions + tool_choice (if present)
         kw0: Dict[str, Any] = {"thread_id": thread_id, "assistant_id": assistant_id}
         if instructions is not None:
             kw0["instructions"] = instructions
-        if tool_choice is not None:
-            kw0["tool_choice"] = tool_choice
+        if tc is not None:
+            kw0["tool_choice"] = tc
         attempts.append(kw0)
-
-        # If tool_choice is a string, also try dict variant first for robustness
-        if isinstance(tool_choice, str) and tool_choice.strip().lower() == "none":
-            kw0b = dict(kw0)
-            kw0b["tool_choice"] = {"type": "none"}
-            attempts.insert(0, kw0b)
 
         # Drop tool_choice
         kw1 = dict(kw0)
@@ -712,14 +945,10 @@ class OpenAIAssistantExecutor:
         last_exc: Optional[Exception] = None
         for i, kwargs in enumerate(attempts, start=1):
             try:
-                return await self._to_thread(
-                    self.client.beta.threads.runs.create, **kwargs
-                )
+                return await self._to_thread(self.client.beta.threads.runs.create, **kwargs)
             except TypeError as e:
                 last_exc = e
-                logger.warning(
-                    "runs.create TypeError on attempt %s/%s: %s", i, len(attempts), e
-                )
+                logger.warning("runs.create TypeError on attempt %s/%s: %s", i, len(attempts), e)
                 continue
             except Exception as e:  # noqa: BLE001
                 msg = str(e).lower()
@@ -745,29 +974,24 @@ class OpenAIAssistantExecutor:
 
     async def execute(self, task: Dict[str, Any]) -> Dict[str, Any]:
         """
-        LEGACY (ONEMOGUĆENO):
-
-        - Ova metoda je ranije koristila LLM (NOTION_OPS_ASSISTANT_ID) da izvršava
-          Notion Ops preko perform_notion_action tool-a.
-        - U skladu sa ustavom ("LLM nikada ne piše direktno u Notion"),
-          ovaj execution put je ugašen.
-
-        Svaki poziv na execute() sada eksplicitno pada sa jasnom porukom.
+        LEGACY (ONEMOGUÄ†ENO).
         """
         raise RuntimeError(
-            "OpenAIAssistantExecutor.execute je onemogućen: "
+            "OpenAIAssistantExecutor.execute je onemoguÄ‡en: "
             "LLM-based Notion Ops execution path je uklonjen. "
             "Koristi backend Notion Ops Executor / NotionService preko approval flow-a."
         )
 
-    async def ceo_command(
-        self, *, text: str, context: Dict[str, Any]
-    ) -> Dict[str, Any]:
+    async def ceo_command(self, *, text: str, context: Dict[str, Any]) -> Dict[str, Any]:
         t = (text or "").strip()
         if not t:
             raise ValueError("text is required")
         if not isinstance(context, dict):
             context = {}
+
+        # OPTION C (PRACTICAL COMPLETION):
+        # Prefer behaviour_mode explicitly provided by AgentInput-like context.
+        input_behaviour_mode, input_behaviour_source = _extract_behaviour_mode_from_context(context)
 
         assistant_id = self._get_advisory_assistant_id()
         if not assistant_id:
@@ -777,7 +1001,7 @@ class OpenAIAssistantExecutor:
                 "questions": [
                     "Postavi Assistant ID (CEO_ADVISOR_ASSISTANT_ID ili NOTION_OPS_ASSISTANT_ID)."
                 ],
-                "plan": ["Konfiguriši LLM executor i ponovi CEO Command."],
+                "plan": ["KonfiguriĹˇi LLM executor i ponovi CEO Command."],
                 "options": [],
                 "proposed_commands": [],
                 "trace": {"llm": "not_configured"},
@@ -797,11 +1021,119 @@ class OpenAIAssistantExecutor:
         if knowledge_block:
             safe_context["identity_knowledge"] = knowledge_block
 
-        run_instructions = (
+        # FULL IDENTITY PACK injection (OPTION 2: inject only when available == True)
+        identity_pack: Any = None
+        identity_pack_available = False
+        identity_pack_errors_count = 0
+
+        try:
+            identity_pack = load_ceo_identity_pack()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("load_ceo_identity_pack() failed: %s", e)
+            identity_pack = None
+
+        if isinstance(identity_pack, dict):
+            identity_pack_available = bool(identity_pack.get("available") is True)
+            errors = identity_pack.get("errors") or []
+            identity_pack_errors_count = len(errors) if isinstance(errors, list) else 0
+
+            if identity_pack_available is True:
+                safe_context["identity_pack"] = _compact_identity_pack(identity_pack)
+
+        # SotW snapshot injection (CANON: backend reads Notion, LLM gets snapshot only)
+        world_state_snapshot = None
+        world_state_trace = None
+
+        try:
+            full_snapshot = await WorldStateEngine().abuild_snapshot()
+
+            if isinstance(full_snapshot, dict):
+                world_state_trace = full_snapshot.get("trace")
+
+                world_state_snapshot = dict(full_snapshot)
+                world_state_snapshot.pop("trace", None)
+
+        except Exception as e:  # noqa: BLE001
+            logger.warning("WorldStateEngine.abuild_snapshot() failed: %s", e)
+            world_state_snapshot = None
+            world_state_trace = None
+
+        if isinstance(world_state_snapshot, dict):
+            safe_context["world_state_snapshot"] = world_state_snapshot
+        if isinstance(world_state_trace, dict):
+            safe_context["world_state_trace"] = world_state_trace
+
+        # ------------------------------------------------------------
+        # Alignment snapshot injection (Option A SSOT; deterministic, no LLM, no Notion)
+        # ------------------------------------------------------------
+        alignment_snapshot = None
+        try:
+            ip_for_alignment = identity_pack if isinstance(identity_pack, dict) else {}
+            ws_for_alignment = world_state_snapshot if isinstance(world_state_snapshot, dict) else {}
+            alignment_snapshot = CEOAlignmentEngine().evaluate(ip_for_alignment, ws_for_alignment)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("CEOAlignmentEngine.evaluate() failed: %s", e)
+            alignment_snapshot = None
+
+        if isinstance(alignment_snapshot, dict):
+            safe_context["alignment_snapshot"] = alignment_snapshot
+
+        # ------------------------------------------------------------
+        # OPTION C (Behaviour mode selection + Instruction Overlay)
+        # ------------------------------------------------------------
+        behaviour_router_available = bool(CEOBehaviorRouter is not None)
+        behaviour_mode: Optional[str] = None
+        behaviour_mode_source: str = "none"
+        behaviour_mode_applied: bool = False
+
+        # 0) If mode was provided in input (identity_pack/metadata), it has priority.
+        if input_behaviour_source != "default":
+            behaviour_mode = input_behaviour_mode
+            behaviour_mode_source = input_behaviour_source
+
+        # 1) Otherwise, compute from alignment snapshot (existing behaviour).
+        if behaviour_mode is None and isinstance(alignment_snapshot, dict):
+            if CEOBehaviorRouter is not None:
+                try:
+                    # Router API shape is NIJE POZNATO, so we handle both common shapes.
+                    router = CEOBehaviorRouter()  # type: ignore[call-arg]
+                    if hasattr(router, "select_mode"):
+                        behaviour_mode = router.select_mode(alignment_snapshot)  # type: ignore[attr-defined]
+                        behaviour_mode_source = "router.select_mode"
+                    elif hasattr(CEOBehaviorRouter, "select_mode"):
+                        behaviour_mode = CEOBehaviorRouter.select_mode(alignment_snapshot)  # type: ignore[attr-defined]
+                        behaviour_mode_source = "CEOBehaviorRouter.select_mode"
+                    else:
+                        behaviour_mode = None
+                        behaviour_mode_source = "router_missing_method"
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("CEOBehaviorRouter failed: %s", e)
+                    behaviour_mode = None
+                    behaviour_mode_source = "router_error"
+
+            # Deterministic fallback derived only from known keys
+            if not isinstance(behaviour_mode, str) or not behaviour_mode.strip():
+                behaviour_mode = _derive_behaviour_mode_fallback(alignment_snapshot)
+                if behaviour_mode:
+                    behaviour_mode_source = "fallback_derived"
+
+        # 2) Final normalize + validate
+        if not isinstance(behaviour_mode, str) or not behaviour_mode.strip():
+            behaviour_mode = "advisory"
+            behaviour_mode_source = "default"
+
+        behaviour_mode = behaviour_mode.strip().lower()
+        if behaviour_mode not in _BEHAVIOUR_MODE_SUFFIX:
+            behaviour_mode = "advisory"
+            behaviour_mode_source = "default"
+
+        base_instructions = (
             _CEO_ADVISORY_DASHBOARD_JSON_INSTRUCTIONS
             if enforce_dashboard_text
             else _CEO_ADVISORY_JSON_ONLY_INSTRUCTIONS
         )
+        run_instructions = _compose_run_instructions(base_instructions, behaviour_mode)
+        behaviour_mode_applied = True
 
         advisory_contract = {
             "type": "ceo_advice",
@@ -837,25 +1169,23 @@ class OpenAIAssistantExecutor:
         t0 = time.monotonic()
         run = None
         try:
-            # BEST-EFFORT: explicitly disable tool calls for read-only advisory
             run = await self._create_run_best_effort(
                 thread_id=thread.id,
                 assistant_id=assistant_id,
                 instructions=run_instructions,
-                tool_choice="none",
+                tool_choice=None,
             )
 
-            await self._wait_for_run_completion(
-                thread_id=thread.id, run_id=run.id, allow_tools=False
-            )
+            await self._wait_for_run_completion(thread_id=thread.id, run_id=run.id, allow_tools=False)
 
-            final_text = await self._get_final_assistant_message_text(
-                thread_id=thread.id
-            )
+            final_text = await self._get_final_assistant_message_text(thread_id=thread.id)
             parsed = self._safe_json_parse(final_text)
-            parsed = _ensure_contract(
-                parsed, enforce_dashboard_text=enforce_dashboard_text
-            )
+            parsed = _ensure_contract(parsed, enforce_dashboard_text=enforce_dashboard_text)
+
+            # HARD runtime enforcement for SILENT mode (deterministic).
+            if behaviour_mode == "silent":
+                critical = _is_critical_risk_from_alignment(alignment_snapshot)
+                parsed = _apply_silent_runtime_enforcement(parsed, critical_risk=critical)
 
         except Exception as exc:  # noqa: BLE001
             elapsed_ms = int((time.monotonic() - t0) * 1000)
@@ -866,23 +1196,45 @@ class OpenAIAssistantExecutor:
             err_repr = repr(exc)[:2000]
 
             if isinstance(exc, ReadOnlyToolCallAttempt):
-                summary = (
-                    "CEO advisory je pokušao tool poziv u read-only modu (blokirano)."
-                )
+                summary = "CEO advisory je pokuĹˇao tool poziv u read-only modu (blokirano)."
                 text_out = (
-                    "CEO advisory je pokušao tool poziv u read-only modu, što je zabranjeno.\n"
+                    "CEO advisory je pokuĹˇao tool poziv u read-only modu, Ĺˇto je zabranjeno.\n"
                     "Provjeri Assistant instrukcije i konfiguraciju; read-only path mora biti bez tool poziva."
                 )
             else:
-                summary = (
-                    f"CEO advisory nije mogao završiti (internal error: {err_type})."
-                )
-                text_out = (
-                    f"CEO advisory nije mogao završiti (internal error: {err_type})."
-                )
+                summary = f"CEO advisory nije mogao zavrĹˇiti (internal error: {err_type})."
+                text_out = f"CEO advisory nije mogao zavrĹˇiti (internal error: {err_type})."
 
             if os.getenv("DEBUG_CEO_ADVISOR_ERRORS") == "1":
                 text_out = f"{text_out}\n\nDEBUG_ERROR:\n{err_repr}"
+
+            # alignment trace fields (best-effort)
+            a_meta: Dict[str, Any] = {}
+            if isinstance(alignment_snapshot, dict):
+                sa = (
+                    alignment_snapshot.get("strategic_alignment")
+                    if isinstance(alignment_snapshot.get("strategic_alignment"), dict)
+                    else {}
+                )
+                lc = (
+                    alignment_snapshot.get("law_compliance")
+                    if isinstance(alignment_snapshot.get("law_compliance"), dict)
+                    else {}
+                )
+                ca = (
+                    alignment_snapshot.get("ceo_action_required")
+                    if isinstance(alignment_snapshot.get("ceo_action_required"), dict)
+                    else {}
+                )
+                a_meta = {
+                    "alignment_version": alignment_snapshot.get("snapshot_version"),
+                    "alignment_confidence": alignment_snapshot.get("confidence_level"),
+                    "alignment_overall_status": sa.get("overall_status"),
+                    "alignment_score": sa.get("alignment_score"),
+                    "law_system_integrity": lc.get("system_integrity"),
+                    "law_risk_level": lc.get("risk_level"),
+                    "alignment_requires_action": ca.get("requires_action"),
+                }
 
             return {
                 "summary": summary,
@@ -903,6 +1255,18 @@ class OpenAIAssistantExecutor:
                     "elapsed_ms": elapsed_ms,
                     "shrink_trace": shrink_trace,
                     "dashboard_contract_enforced": bool(enforce_dashboard_text),
+                    "identity_pack_available": bool(identity_pack_available),
+                    "identity_pack_errors_count": int(identity_pack_errors_count),
+                    "identity_pack_injected": bool("identity_pack" in safe_context),
+                    "alignment_injected": bool("alignment_snapshot" in safe_context),
+                    **a_meta,
+                    "behaviour_router_available": bool(behaviour_router_available),
+                    "behaviour_mode": behaviour_mode,
+                    "behaviour_mode_source": behaviour_mode_source,
+                    "behaviour_mode_applied": bool(behaviour_mode_applied),
+                    "behaviour_mode_instructions_len": len(run_instructions)
+                    if isinstance(run_instructions, str)
+                    else None,
                 },
             }
 
@@ -917,22 +1281,57 @@ class OpenAIAssistantExecutor:
         trace["elapsed_ms"] = elapsed_ms
         trace["shrink_trace"] = shrink_trace
         trace["dashboard_contract_enforced"] = bool(enforce_dashboard_text)
+
         if knowledge_block:
             trace["identity_knowledge_injected"] = True
+
+        trace["identity_pack_available"] = bool(identity_pack_available)
+        trace["identity_pack_errors_count"] = int(identity_pack_errors_count)
+        if "identity_pack" in safe_context:
+            trace["identity_pack_injected"] = True
+
+        if isinstance(alignment_snapshot, dict):
+            sa = (
+                alignment_snapshot.get("strategic_alignment")
+                if isinstance(alignment_snapshot.get("strategic_alignment"), dict)
+                else {}
+            )
+            lc = (
+                alignment_snapshot.get("law_compliance")
+                if isinstance(alignment_snapshot.get("law_compliance"), dict)
+                else {}
+            )
+            ca = (
+                alignment_snapshot.get("ceo_action_required")
+                if isinstance(alignment_snapshot.get("ceo_action_required"), dict)
+                else {}
+            )
+
+            trace["alignment_injected"] = bool("alignment_snapshot" in safe_context)
+            trace["alignment_version"] = alignment_snapshot.get("snapshot_version")
+            trace["alignment_confidence"] = alignment_snapshot.get("confidence_level")
+            trace["alignment_overall_status"] = sa.get("overall_status")
+            trace["alignment_score"] = sa.get("alignment_score")
+            trace["law_system_integrity"] = lc.get("system_integrity")
+            trace["law_risk_level"] = lc.get("risk_level")
+            trace["alignment_requires_action"] = ca.get("requires_action")
+
+        trace["behaviour_router_available"] = bool(behaviour_router_available)
+        trace["behaviour_mode"] = behaviour_mode
+        trace["behaviour_mode_source"] = behaviour_mode_source
+        trace["behaviour_mode_applied"] = bool(behaviour_mode_applied)
+        trace["behaviour_mode_instructions_len"] = len(run_instructions) if isinstance(run_instructions, str) else None
+        trace["behaviour_mode_silent_runtime_enforced"] = bool(behaviour_mode == "silent")
+        trace["behaviour_mode_silent_critical_risk"] = bool(
+            _is_critical_risk_from_alignment(alignment_snapshot) if behaviour_mode == "silent" else False
+        )
+
         parsed["trace"] = trace
 
         picked = _pick_text(parsed)
-        if (
-            picked
-            and isinstance(parsed.get("text"), str)
-            and not parsed["text"].strip()
-        ):
+        if picked and isinstance(parsed.get("text"), str) and not parsed["text"].strip():
             parsed["text"] = picked
-        if (
-            picked
-            and isinstance(parsed.get("summary"), str)
-            and not parsed["summary"].strip()
-        ):
+        if picked and isinstance(parsed.get("summary"), str) and not parsed["summary"].strip():
             parsed["summary"] = picked
 
         return parsed

@@ -1,4 +1,4 @@
-# routers/ceo_console_router.py
+﻿# routers/ceo_console_router.py
 from __future__ import annotations
 
 import inspect
@@ -55,7 +55,7 @@ class CEOCommandRequest(BaseModel):
     session_id: Optional[str] = None
     context_hint: Optional[Dict[str, Any]] = None
 
-    # frontend može poslati, ali router ima pravo override-a
+    # frontend moĹľe poslati, ali router ima pravo override-a
     read_only: Optional[bool] = None
     require_approval: Optional[bool] = None
     preferred_agent_id: Optional[str] = None
@@ -266,6 +266,158 @@ def _merge_agent_trace_into_response(resp: CEOCommandResponse, agent_out: Any) -
         resp.trace.update(agent_trace)
 
 
+def _extract_alignment_snapshot(context_hint: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    SSOT: gateway Ĺˇalje smart_context kao context_hint.
+    OÄŤekujemo: context_hint.alignment_snapshot (dict).
+    """
+    if not isinstance(context_hint, dict):
+        return {}
+    a = context_hint.get("alignment_snapshot")
+    return a if isinstance(a, dict) else {}
+
+
+def _fallback_behaviour_mode(alignment_snapshot: Dict[str, Any]) -> str:
+    """
+    Deterministic fallback (samo ako ceo_behavior_router nije dostupan).
+    """
+    if not isinstance(alignment_snapshot, dict) or not alignment_snapshot:
+        return "advisory"
+
+    risk = alignment_snapshot.get("risk")
+    ops = alignment_snapshot.get("ops")
+    execution = alignment_snapshot.get("execution")
+
+    risk_score = 0.0
+    blocked_writes = False
+    flags: List[str] = []
+
+    if isinstance(risk, dict):
+        try:
+            risk_score = float(risk.get("score") or 0.0)
+        except Exception:
+            risk_score = 0.0
+        blocked_writes = bool(risk.get("blocked_writes") or False)
+        fl = risk.get("flags")
+        if isinstance(fl, list):
+            flags = [str(x) for x in fl if isinstance(x, (str, int, float, bool))]
+
+    incidents_24h = 0
+    errors_1h = 0
+    if isinstance(ops, dict):
+        try:
+            incidents_24h = int(ops.get("incidents_24h") or 0)
+        except Exception:
+            incidents_24h = 0
+        try:
+            errors_1h = int(ops.get("errors_1h") or 0)
+        except Exception:
+            errors_1h = 0
+
+    pending_approvals = 0
+    failed_24h = 0
+    if isinstance(execution, dict):
+        try:
+            pending_approvals = int(execution.get("pending_approvals") or 0)
+        except Exception:
+            pending_approvals = 0
+        try:
+            failed_24h = int(execution.get("failed_24h") or 0)
+        except Exception:
+            failed_24h = 0
+
+    # Red alert if high risk OR blocked writes OR clear incident pressure
+    if blocked_writes or risk_score >= 0.9 or incidents_24h >= 1 or errors_1h >= 10 or ("data_loss_risk" in flags):
+        return "red_alert"
+
+    # Executive if elevated risk or approvals/failures exist
+    if risk_score >= 0.7 or pending_approvals >= 1 or failed_24h >= 1:
+        return "executive"
+
+    # Advisory for moderate risk
+    if risk_score >= 0.3:
+        return "advisory"
+
+    # Silent for very low risk
+    return "silent"
+
+
+def _select_behaviour_mode(alignment_snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    PokuĹˇa koristiti services/ceo_behavior_router.py bez pretpostavke API-ja.
+    VraÄ‡a: {"mode": str, "source": str, "applied": bool}
+    """
+    # Try to import user-provided behaviour router
+    try:
+        from services import ceo_behavior_router as br  # type: ignore
+    except Exception:
+        br = None  # type: ignore
+
+    if br is not None:
+        # Try a small set of common hook names (no guessing beyond defensive lookup)
+        for fn_name in (
+            "select_mode",
+            "route_mode",
+            "compute_mode",
+            "compute_behaviour_mode",
+            "get_behaviour_mode",
+            "decide_mode",
+        ):
+            fn = getattr(br, fn_name, None)
+            if callable(fn):
+                try:
+                    out = fn(alignment_snapshot)  # type: ignore[misc]
+                    if isinstance(out, str) and out.strip():
+                        return {"mode": out.strip(), "source": f"ceo_behavior_router.{fn_name}", "applied": True}
+                    if isinstance(out, dict):
+                        m = out.get("behaviour_mode") or out.get("mode")
+                        if isinstance(m, str) and m.strip():
+                            return {"mode": m.strip(), "source": f"ceo_behavior_router.{fn_name}", "applied": True}
+                except Exception:
+                    # Fall through to deterministic fallback
+                    pass
+
+    # Fallback
+    return {"mode": _fallback_behaviour_mode(alignment_snapshot), "source": "router.fallback", "applied": False}
+
+
+def _enforce_silent_output(summary: str) -> str:
+    """
+    Router-level guardrail for DoD:
+      - CEO Advisor NE govori uvijek
+      - CEO Advisor nikad ne â€śfilozofiraâ€ť u silent/monitor
+    """
+    s = (summary or "").strip()
+    if not s:
+        return ""
+    # Deterministic shorting: empty output (frontend can render as no-op)
+    return ""
+
+
+def _promote_behaviour_trace(resp: CEOCommandResponse) -> None:
+    """
+    Test expects resp.trace.behaviour_mode (top-level).
+    Agent trace often puts it under trace.executor.behaviour_mode -> promote.
+    """
+    tr = resp.trace if isinstance(resp.trace, dict) else {}
+    if "behaviour_mode" in tr and isinstance(tr.get("behaviour_mode"), str):
+        return
+
+    ex = tr.get("executor")
+    if isinstance(ex, dict):
+        bm = ex.get("behaviour_mode")
+        if isinstance(bm, str) and bm.strip():
+            tr["behaviour_mode"] = bm.strip()
+        bms = ex.get("behaviour_mode_source")
+        if isinstance(bms, str) and bms.strip():
+            tr.setdefault("behaviour_mode_source", bms.strip())
+        bma = ex.get("behaviour_mode_applied")
+        if isinstance(bma, bool):
+            tr.setdefault("behaviour_mode_applied", bma)
+
+    resp.trace = tr
+
+
 # ======================
 # ROUTES
 # ======================
@@ -298,6 +450,17 @@ async def ceo_command(req: CEOCommandRequest = Body(...)) -> CEOCommandResponse:
     if not isinstance(knowledge_payload, dict):
         knowledge_payload = {}
 
+    # -------------------------
+    # Option C: Behaviour mode
+    # -------------------------
+    context_hint = req.context_hint or {}
+    alignment_snapshot = _extract_alignment_snapshot(context_hint)
+    behaviour = _select_behaviour_mode(alignment_snapshot)
+    behaviour_mode = behaviour.get("mode") if isinstance(behaviour, dict) else None
+    if not isinstance(behaviour_mode, str) or not behaviour_mode.strip():
+        behaviour_mode = "advisory"
+    behaviour_mode = behaviour_mode.strip()
+
     agent_input = AgentInput(
         message=req.text,
         snapshot=knowledge_payload,  # SSOT payload to agent
@@ -307,6 +470,8 @@ async def ceo_command(req: CEOCommandRequest = Body(...)) -> CEOCommandResponse:
             "mode": "ADVISOR",
             "read_only": True,
             "require_approval": require_approval,
+            # Option C signal for executor / LLM instruction rewrite
+            "behaviour_mode": behaviour_mode,
         },
         metadata={
             "initiator": initiator,
@@ -316,10 +481,15 @@ async def ceo_command(req: CEOCommandRequest = Body(...)) -> CEOCommandResponse:
             "snapshot_meta": snapshot_meta,
             "read_only": True,
             "require_approval": require_approval,
+            # Option C
+            "alignment_snapshot": alignment_snapshot,
+            "behaviour_mode": behaviour_mode,
+            "behaviour_mode_source": behaviour.get("source") if isinstance(behaviour, dict) else "router.unknown",
+            "behaviour_mode_router_applied": bool(behaviour.get("applied")) if isinstance(behaviour, dict) else False,
             # UI/dashboard snapshot stays here (not in agent snapshot)
             "ceo_dashboard_snapshot": bundle.get("ceo_dashboard_snapshot") or {},
             "knowledge_snapshot_meta": bundle.get("knowledge_snapshot_meta") or {},
-            "context_hint": req.context_hint or {},
+            "context_hint": context_hint,
         },
     )
 
@@ -333,11 +503,19 @@ async def ceo_command(req: CEOCommandRequest = Body(...)) -> CEOCommandResponse:
             "agent_id": "error",
         }
 
+    proposed = _extract_proposed_commands_opaque(agent_out)
+    summary = _extract_agent_text(agent_out)
+
+    # Router-level DoD enforcement:
+    # - in silent/monitor, do not output long philosophy when there is no actionable proposal
+    if behaviour_mode in {"silent", "monitor"} and len(proposed) == 0:
+        summary = _enforce_silent_output(summary)
+
     resp = CEOCommandResponse(
         ok=True,
         read_only=read_only,
-        summary=_extract_agent_text(agent_out),
-        proposed_commands=_extract_proposed_commands_opaque(agent_out),
+        summary=summary,
+        proposed_commands=proposed,
         context={
             "canon": "read_propose_only",
             "initiator": initiator,
@@ -345,15 +523,22 @@ async def ceo_command(req: CEOCommandRequest = Body(...)) -> CEOCommandResponse:
             "snapshot_meta": snapshot_meta,
             "read_only": read_only,
             "require_approval": require_approval,
+            # Option C (test surface)
+            "behaviour_mode": behaviour_mode,
         },
         trace={
             "router_version": ROUTER_VERSION,
             "initiator": initiator,
             "knowledge_snapshot_meta": bundle.get("knowledge_snapshot_meta") or {},
+            # Option C (test surface)
+            "behaviour_mode": behaviour_mode,
+            "behaviour_mode_source": behaviour.get("source") if isinstance(behaviour, dict) else "router.unknown",
+            "behaviour_mode_router_applied": bool(behaviour.get("applied")) if isinstance(behaviour, dict) else False,
         },
     )
 
     _merge_agent_trace_into_response(resp, agent_out)
+    _promote_behaviour_trace(resp)
     return resp
 
 

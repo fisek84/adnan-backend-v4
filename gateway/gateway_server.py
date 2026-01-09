@@ -1,6 +1,6 @@
-# gateway/gateway_server.py
+﻿# gateway/gateway_server.py
 # ruff: noqa: E402
-# FULL FILE — replace the whole gateway_server.py with this.
+# FULL FILE â€” replace the whole gateway_server.py with this.
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import re
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import Body, FastAPI, HTTPException, Request, Response
 from fastapi.encoders import jsonable_encoder
@@ -137,10 +137,6 @@ REQUIRED_ENV_VARS = [
     "NOTION_PROJECTS_DB_ID",
 ]
 
-# NOTE:
-# - NOTION_OPS_ASSISTANT_ID (LLM ops agent) je sada opcioni / legacy.
-# - Canonical CEO Console + Notion Ops Executor (NotionService) NE zavise od njega za boot.
-
 
 def validate_runtime_env_or_raise() -> None:
     missing = [k for k in REQUIRED_ENV_VARS if not (os.getenv(k) or "").strip()]
@@ -163,7 +159,7 @@ from services.execution_orchestrator import ExecutionOrchestrator
 from services.execution_registry import get_execution_registry
 
 # ================================================================
-# IDENTITY / MODE / STATE
+# IDENTITY / MODE / STATE (READ-ONLY LOADS OK AT IMPORT)
 # ================================================================
 from services.adnan_mode_service import load_mode
 from services.adnan_state_service import load_state
@@ -172,22 +168,13 @@ from services.identity_loader import load_identity
 from services.ceo_console_snapshot_service import CEOConsoleSnapshotService
 
 # ================================================================
-# NOTION SERVICE (KANONSKI INIT)
+# NOTION SERVICE (KANONSKI INIT) â€” NO SIDE EFFECTS AT IMPORT
 # ================================================================
 from services.knowledge_snapshot_service import KnowledgeSnapshotService
-from services.notion_service import NotionService, set_notion_service
-
-set_notion_service(
-    NotionService(
-        api_key=(
-            (os.getenv("NOTION_API_KEY") or os.getenv("NOTION_TOKEN") or "").strip()
-        ),
-        goals_db_id=(os.getenv("NOTION_GOALS_DB_ID") or "").strip(),
-        tasks_db_id=(os.getenv("NOTION_TASKS_DB_ID") or "").strip(),
-        projects_db_id=(os.getenv("NOTION_PROJECTS_DB_ID") or "").strip(),
-    )
+from services.notion_service import (
+    init_notion_service_from_env_or_raise,
+    try_get_notion_service,
 )
-logger.info("NotionService singleton initialized")
 
 # ================================================================
 # WEEKLY MEMORY SERVICE (CEO DASHBOARD)
@@ -235,19 +222,44 @@ mode = load_mode()
 state = load_state()
 
 # ================================================================
-# EXECUTION ENTRYPOINT (INIT ONLY)
+# CANON: NO SERVICE CONSTRUCTION AT IMPORT TIME
+# - these depend (directly/indirectly) on NotionService singleton
 # ================================================================
-ai_command_service = AICommandService()
-coo_translation_service = COOTranslationService()
-coo_conversation_service = COOConversationService()
+ai_command_service: Optional[AICommandService] = None
+coo_translation_service: Optional[COOTranslationService] = None
+coo_conversation_service: Optional[COOConversationService] = None
 
-_execution_registry = get_execution_registry()
-_execution_orchestrator = ExecutionOrchestrator()
+_execution_registry = None  # type: ignore[assignment]
+_execution_orchestrator: Optional[ExecutionOrchestrator] = None
+
+
+def _require_boot_services() -> Tuple[
+    AICommandService, COOTranslationService, COOConversationService, Any, ExecutionOrchestrator
+]:
+    if not _BOOT_READY:
+        raise HTTPException(status_code=503, detail=_BOOT_ERROR or "System not ready")
+
+    if (
+        ai_command_service is None
+        or coo_translation_service is None
+        or coo_conversation_service is None
+        or _execution_orchestrator is None
+        or _execution_registry is None
+    ):
+        raise HTTPException(status_code=503, detail="Boot services not initialized")
+
+    return (
+        ai_command_service,
+        coo_translation_service,
+        coo_conversation_service,
+        _execution_registry,
+        _execution_orchestrator,
+    )
+
 
 # ================================================================
 # HARD-BLOCK: ONLY NEXT_STEP MUST NEVER CREATE APPROVAL OR EXECUTE
 # ================================================================
-# KANON: ceo.command.propose MUST NOT be hard-blocked on /api/execute/raw.
 _HARD_READ_ONLY_INTENTS = {
     "ceo_console.next_step",
 }
@@ -256,10 +268,6 @@ _HARD_READ_ONLY_INTENTS = {
 # ================================================================
 # META-COMMANDS MUST NOT ENTER EXECUTION/APPROVAL
 # ================================================================
-# NOTE:
-# - In execution endpoints (/api/execute/raw, /api/proposals/execute) we accept params (and back-compat args),
-#   but the stable "proposal contract" shape is:
-#     command, args, dry_run, requires_approval, risk, reason, intent?, scope?, payload_summary?
 def _ai_command_field_names() -> set[str]:
     model_fields = getattr(AICommand, "model_fields", None)
     if isinstance(model_fields, dict):
@@ -390,11 +398,8 @@ def _unwrap_proposal_wrapper_or_raise(
     read_only: bool,
     metadata: Dict[str, Any],
 ) -> AICommand:
-    is_wrapper = (intent == PROPOSAL_WRAPPER_INTENT) or (
-        command == PROPOSAL_WRAPPER_INTENT
-    )
+    is_wrapper = (intent == PROPOSAL_WRAPPER_INTENT) or (command == PROPOSAL_WRAPPER_INTENT)
     if not is_wrapper:
-        # Execute/raw is a write-path: it must not execute now, but it must create an approval for a real AICommand.
         return AICommand(
             command=command,
             intent=intent,
@@ -414,9 +419,12 @@ def _unwrap_proposal_wrapper_or_raise(
             detail="ceo.command.propose cannot enter execution. Missing params.prompt for unwrap/translation.",
         )
 
+    # require translation service to exist (booted)
+    _, trans, _, _, _ = _require_boot_services()
+
     ai_command = None
     try:
-        ai_command = coo_translation_service.translate(
+        ai_command = trans.translate(
             raw_input=prompt.strip(),
             source="system",
             context={"mode": "execute", "via": "execute_raw_unwrap"},
@@ -459,91 +467,198 @@ def _unwrap_proposal_wrapper_or_raise(
 
 
 # ================================================================
+# BOOT/SHUTDOWN ROUTINES (SINGLE SSOT)
+# IMPORTANT: pytest/httpx ASGITransport in your environment does NOT
+# reliably run FastAPI lifespan. Your tests call app.router.startup().
+# Therefore we wire BOTH:
+#   - lifespan (production)
+#   - on_event startup/shutdown (in-process tests)
+#
+# CANONICAL FIX FOR YOUR CURRENT FAIL:
+# - Some in-process transports do not trigger startup/lifespan.
+# - Therefore we also lazy-boot on first non-health request.
+# ================================================================
+_boot_lock = asyncio.Lock()
+
+
+async def _boot_once() -> None:
+    global _BOOT_READY, _BOOT_ERROR
+    global ai_command_service, coo_translation_service, coo_conversation_service
+    global _execution_registry, _execution_orchestrator
+
+    async with _boot_lock:
+        if _BOOT_READY:
+            return
+
+        _BOOT_READY = False
+        _BOOT_ERROR = None
+
+        # ensure globals start clean (reload-safe)
+        ai_command_service = None
+        coo_translation_service = None
+        coo_conversation_service = None
+        _execution_registry = None
+        _execution_orchestrator = None
+
+        try:
+            try:
+                validate_runtime_env_or_raise()
+            except Exception as exc:  # noqa: BLE001
+                _append_boot_error(f"env_invalid:{exc}")
+                logger.critical("Boot aborted due to invalid env: %s", exc)
+                raise
+
+            # SSOT: init NotionService singleton here
+            try:
+                init_notion_service_from_env_or_raise()
+                logger.info("NotionService singleton initialized (SSOT via env)")
+            except Exception as exc:  # noqa: BLE001
+                _append_boot_error(f"notion_init_failed:{exc}")
+                logger.critical("NotionService init failed: %s", exc)
+                raise
+
+            # BOOTSTRAP app wiring (safe after Notion init)
+            bootstrap_application()
+
+            # construct all dependent services AFTER Notion init
+            try:
+                ai_command_service = AICommandService()
+                coo_translation_service = COOTranslationService()
+                coo_conversation_service = COOConversationService()
+
+                _execution_registry = get_execution_registry()
+                _execution_orchestrator = ExecutionOrchestrator()
+
+                logger.info("Boot services initialized (orchestrator/translation/command)")
+            except Exception as exc:  # noqa: BLE001
+                _append_boot_error(f"boot_services_init_failed:{exc}")
+                logger.critical("Boot services init failed: %s", exc)
+                raise
+
+            # agent registry load (best-effort)
+            try:
+                p = _agents_registry_path()
+                load_result = _agent_registry.load_from_agents_json(str(p), clear=True)
+                logger.info(
+                    "Agent registry loaded (SSOT): path=%s loaded=%s version=%s",
+                    load_result.get("path"),
+                    load_result.get("loaded"),
+                    load_result.get("version"),
+                )
+            except Exception as exc:  # noqa: BLE001
+                _append_boot_error(f"agents_registry_load_failed:{exc}")
+                logger.warning("Agent registry load failed: %s", exc)
+
+            # inject AI router services (now guaranteed initialized)
+            try:
+                if not hasattr(ai_router_module, "set_ai_services"):
+                    raise RuntimeError("ai_router_init_hook_not_found")
+
+                ai_router_module.set_ai_services(
+                    command_service=ai_command_service,
+                    conversation_service=coo_conversation_service,
+                    translation_service=coo_translation_service,
+                )
+                logger.info("AI router services initialized")
+            except Exception as exc:  # noqa: BLE001
+                _append_boot_error(f"ai_router_init_failed:{exc}")
+                logger.warning("AI router init failed: %s", exc)
+
+            # inject AI ops services (best-effort)
+            try:
+                hook = getattr(ai_ops_router_module, "set_ai_ops_services", None)
+                if callable(hook):
+                    hook(
+                        orchestrator=_execution_orchestrator,
+                        approvals=get_approval_state(),
+                    )
+                    logger.info("AI Ops router services injected (shared orchestrator/approvals)")
+            except Exception as exc:  # noqa: BLE001
+                _append_boot_error(f"ai_ops_injection_failed:{exc}")
+                logger.warning("AI Ops services injection failed: %s", exc)
+
+            # best-effort knowledge sync
+            try:
+                notion_service = try_get_notion_service()
+                if notion_service is not None:
+                    await notion_service.sync_knowledge_snapshot()
+            except Exception as exc:  # noqa: BLE001
+                _append_boot_error(f"notion_sync_failed:{exc}")
+                logger.warning("Notion knowledge snapshot sync failed: %s", exc)
+
+            _BOOT_READY = True
+            logger.info("System boot completed. READY.")
+        except Exception:
+            # keep _BOOT_READY False; _BOOT_ERROR already appended
+            _BOOT_READY = False
+            raise
+
+
+async def _shutdown_best_effort() -> None:
+    global _BOOT_READY
+    global ai_command_service, coo_translation_service, coo_conversation_service
+    global _execution_registry, _execution_orchestrator
+
+    try:
+        ns = try_get_notion_service()
+        if ns is not None:
+            close_fn = getattr(ns, "aclose", None)
+            if callable(close_fn):
+                await close_fn()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("NotionService shutdown close failed: %s", exc)
+
+    # reset (reload-safe)
+    ai_command_service = None
+    coo_translation_service = None
+    coo_conversation_service = None
+    _execution_registry = None
+    _execution_orchestrator = None
+
+    _BOOT_READY = False
+    logger.info("System shutdown â€” boot_ready=False.")
+
+
+def _is_boot_exempt_path(path: str) -> bool:
+    p = (path or "").strip()
+    if not p:
+        return True
+    # health/readiness and static assets must not force boot
+    if p in {"/health", "/ready", "/", "/favicon.ico"}:
+        return True
+    if p.startswith("/docs") or p.startswith("/openapi") or p.startswith("/redoc"):
+        return True
+    if p.startswith("/assets") or p.startswith("/static"):
+        return True
+    # status endpoints should not force Notion boot (observability)
+    if p in {"/api/ceo-console/status", "/ceo-console/status"}:
+        return True
+    return False
+
+
+async def _ensure_boot_if_needed(request: Request) -> None:
+    # If startup/lifespan didn't fire (in-process transports), boot on first real request.
+    if _BOOT_READY:
+        return
+    if _is_boot_exempt_path(request.url.path):
+        return
+    try:
+        await _boot_once()
+    except Exception:
+        # _BOOT_ERROR is already populated by _boot_once via _append_boot_error()
+        raise HTTPException(status_code=503, detail=_BOOT_ERROR or "System not ready") from None
+
+
+# ================================================================
 # LIFESPAN
 # ================================================================
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    global _BOOT_READY, _BOOT_ERROR
-
-    _BOOT_READY = False
-    _BOOT_ERROR = None
-
+    await _boot_once()
     try:
-        try:
-            validate_runtime_env_or_raise()
-        except Exception as exc:  # noqa: BLE001
-            _append_boot_error(f"env_invalid:{exc}")
-            logger.critical("Boot aborted due to invalid env: %s", exc)
-            raise
-
-        bootstrap_application()
-
-        try:
-            p = _agents_registry_path()
-            load_result = _agent_registry.load_from_agents_json(str(p), clear=True)
-            logger.info(
-                "Agent registry loaded (SSOT): path=%s loaded=%s version=%s",
-                load_result.get("path"),
-                load_result.get("loaded"),
-                load_result.get("version"),
-            )
-        except Exception as exc:  # noqa: BLE001
-            _append_boot_error(f"agents_registry_load_failed:{exc}")
-            logger.warning("Agent registry load failed: %s", exc)
-
-        try:
-            if not hasattr(ai_router_module, "set_ai_services"):
-                raise RuntimeError("ai_router_init_hook_not_found")
-
-            ai_router_module.set_ai_services(
-                command_service=ai_command_service,
-                conversation_service=coo_conversation_service,
-                translation_service=coo_translation_service,
-            )
-            logger.info("AI router services initialized")
-        except Exception as exc:  # noqa: BLE001
-            _append_boot_error(f"ai_router_init_failed:{exc}")
-            logger.warning("AI router init failed: %s", exc)
-
-        try:
-            hook = getattr(ai_ops_router_module, "set_ai_ops_services", None)
-            if callable(hook):
-                hook(
-                    orchestrator=_execution_orchestrator,
-                    approvals=get_approval_state(),
-                )
-                logger.info(
-                    "AI Ops router services injected (shared orchestrator/approvals)"
-                )
-        except Exception as exc:  # noqa: BLE001
-            _append_boot_error(f"ai_ops_injection_failed:{exc}")
-            logger.warning("AI Ops services injection failed: %s", exc)
-
-        try:
-            from services.notion_service import get_notion_service
-
-            notion_service = get_notion_service()
-            await notion_service.sync_knowledge_snapshot()
-        except Exception as exc:  # noqa: BLE001
-            _append_boot_error(f"notion_sync_failed:{exc}")
-            logger.warning("Notion knowledge snapshot sync failed: %s", exc)
-
-        _BOOT_READY = True
-        logger.info("System boot completed. READY.")
         yield
     finally:
-        try:
-            from services.notion_service import get_notion_service
-
-            ns = get_notion_service()
-            close_fn = getattr(ns, "aclose", None)
-            if callable(close_fn):
-                await close_fn()
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("NotionService shutdown close failed: %s", exc)
-
-        _BOOT_READY = False
-        logger.info("System shutdown â€” boot_ready=False.")
+        await _shutdown_best_effort()
 
 
 # ================================================================
@@ -555,6 +670,18 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# IMPORTANT: support in-process tests that call app.router.startup()
+# (FastAPI lifespan is not guaranteed to run via your httpx ASGITransport)
+@app.on_event("startup")
+async def _startup_event() -> None:
+    # idempotent
+    await _boot_once()
+
+
+@app.on_event("shutdown")
+async def _shutdown_event() -> None:
+    await _shutdown_best_effort()
+
 
 # ================================================================
 # REQUEST TRACE
@@ -563,6 +690,10 @@ app = FastAPI(
 async def request_trace_middleware(request: Request, call_next):
     req_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
     request.state.req_id = req_id
+
+    # CANONICAL: ensure boot for real requests even if lifespan/startup didn't run.
+    await _ensure_boot_if_needed(request)
+
     try:
         resp = await call_next(request)
         resp.headers["X-Request-ID"] = req_id
@@ -628,7 +759,6 @@ class ExecuteRawInput2(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
-# --- NEW: /api/notion/read stable contract models ---
 class NotionReadResponse(BaseModel):
     ok: bool
     title: Optional[str] = None
@@ -741,10 +871,6 @@ def _ensure_dict(x: Any) -> Dict[str, Any]:
 
 
 def _proposal_wrapper_dict(*, prompt: str, source: str) -> Dict[str, Any]:
-    """
-    Stable proposal contract shape (no initiator/read_only/metadata inside proposed_commands).
-    Keep 'args' as SSOT field for read/propose surfaces.
-    """
     safe_prompt = (prompt or "").strip() or "noop"
     return {
         "command": PROPOSAL_WRAPPER_INTENT,
@@ -764,12 +890,6 @@ def _proposal_wrapper_dict(*, prompt: str, source: str) -> Dict[str, Any]:
 
 
 def _normalize_gateway_proposed_commands(pcs: Any) -> List[Dict[str, Any]]:
-    """
-    Normalize proposed_commands to list[dict] using SSOT field-names (args).
-    - Accept dict items
-    - Accept pydantic BaseModel items via model_dump(by_alias=False)
-    - Drop invalid items
-    """
     items = _ensure_list(pcs)
     out: List[Dict[str, Any]] = []
     for it in items:
@@ -796,14 +916,9 @@ def _normalize_gateway_proposed_commands(pcs: Any) -> List[Dict[str, Any]]:
 
 
 def _inject_fallback_proposed_commands(result: Dict[str, Any], *, prompt: str) -> None:
-    """
-    Only inject fallback proposal when the user text likely represents a WRITE intent.
-    Otherwise, keep proposed_commands empty so chat feels natural (no approval UX).
-    """
     pcs = result.get("proposed_commands")
     pcs_list = _normalize_gateway_proposed_commands(pcs)
 
-    # If agent already produced proposals, keep them.
     if len(pcs_list) > 0:
         result["proposed_commands"] = pcs_list
         tr0 = _ensure_dict(result.get("trace"))
@@ -812,10 +927,7 @@ def _inject_fallback_proposed_commands(result: Dict[str, Any], *, prompt: str) -
         result["trace"] = tr0
         return
 
-    # --- WRITE-intent detection (minimal, deterministic) ---
     text = (prompt or "").strip().lower()
-
-    # Heuristic: only trigger approval pipeline when user clearly requests a write.
     write_like = any(
         k in text
         for k in [
@@ -839,7 +951,6 @@ def _inject_fallback_proposed_commands(result: Dict[str, Any], *, prompt: str) -
     )
 
     if not write_like:
-        # Natural chat: no proposals.
         result["proposed_commands"] = []
         tr = _ensure_dict(result.get("trace"))
         tr["fallback_proposed_commands"] = False
@@ -847,13 +958,9 @@ def _inject_fallback_proposed_commands(result: Dict[str, Any], *, prompt: str) -
         result["trace"] = tr
         return
 
-    # Inject wrapper proposal ONLY for write-like prompts, and make it "actionable" for frontend:
-    # - reason must NOT contain "Fallback proposal" (frontend hides those)
-    # - set intent to something non-empty so it passes isActionableProposal()
     pc = _proposal_wrapper_dict(prompt=(prompt or "").strip(), source="ceo_console")
     pc["reason"] = "Approval required (write intent detected)."
-    pc["intent"] = "notion_write"  # makes it actionable in frontend filter
-
+    pc["intent"] = "notion_write"
     result["proposed_commands"] = [pc]
 
     tr = _ensure_dict(result.get("trace"))
@@ -881,7 +988,6 @@ def _normalize_execute_raw_payload_dict(body: Dict[str, Any]) -> ExecuteRawInput
     if not isinstance(params, dict):
         params = {}
 
-    # Back-compat: accept args for wrapper prompt
     if intent == PROPOSAL_WRAPPER_INTENT and "prompt" not in params:
         args = body.get("args")
         if isinstance(args, dict):
@@ -927,7 +1033,9 @@ def _normalize_execute_raw_payload_dict(body: Dict[str, Any]) -> ExecuteRawInput
 async def execute_command(payload: ExecuteInput):
     cleaned_text = _preprocess_ceo_nl_input(payload.text, smart_context=None)
 
-    ai_command = coo_translation_service.translate(
+    _, trans, _, registry, orchestrator = _require_boot_services()
+
+    ai_command = trans.translate(
         raw_input=cleaned_text,
         source="system",
         context={"mode": "execute"},
@@ -972,10 +1080,10 @@ async def execute_command(payload: ExecuteInput):
 
     _ensure_trace_on_command(ai_command, approval_id=approval_id)
 
-    _execution_orchestrator.registry.register(ai_command)
-    _execution_registry.register(ai_command)
+    orchestrator.registry.register(ai_command)
+    registry.register(ai_command)
 
-    result = await _execution_orchestrator.execute(ai_command)
+    result = await orchestrator.execute(ai_command)
 
     if isinstance(result, dict):
         result.setdefault("approval_id", approval_id)
@@ -991,21 +1099,8 @@ async def execute_raw_command(payload: Dict[str, Any] = Body(...)):
 
     normalized = _normalize_execute_raw_payload_dict(payload)
 
-    # ------------------------------------------------------------
-    # HARD-BLOCK (CANON): next_step is READ-ONLY terminal
-    # - no approval
-    # - no execute
-    # NOTE: ceo.command.propose is NOT hard-blocked here (must unwrap -> approval pipeline).
-    # ------------------------------------------------------------
-    if (normalized.intent in _HARD_READ_ONLY_INTENTS) or (
-        normalized.command in _HARD_READ_ONLY_INTENTS
-    ):
-        prompt0 = ""
-        if isinstance(normalized.params, dict):
-            v = normalized.params.get("prompt")
-            if isinstance(v, str):
-                prompt0 = v.strip()
-
+    # HARD-BLOCK: next_step never enters approval/execute
+    if (normalized.intent in _HARD_READ_ONLY_INTENTS) or (normalized.command in _HARD_READ_ONLY_INTENTS):
         execution_id = str(uuid.uuid4())
         return {
             "status": "COMPLETED",
@@ -1026,10 +1121,9 @@ async def execute_raw_command(payload: Dict[str, Any] = Body(...)):
             },
         }
 
-    # ------------------------------------------------------------
-    # CANON: wrapper (ceo.command.propose) enters standard pipeline:
-    # unwrap wrapper -> create approval -> return BLOCKED + approval_id
-    # ------------------------------------------------------------
+    # need orchestrator/registry now
+    _, _, _, registry, orchestrator = _require_boot_services()
+
     ai_command = _unwrap_proposal_wrapper_or_raise(
         command=normalized.command,
         intent=normalized.intent,
@@ -1057,8 +1151,8 @@ async def execute_raw_command(payload: Dict[str, Any] = Body(...)):
 
     _ensure_trace_on_command(ai_command, approval_id=approval_id)
 
-    _execution_orchestrator.registry.register(ai_command)
-    _execution_registry.register(ai_command)
+    orchestrator.registry.register(ai_command)
+    registry.register(ai_command)
 
     return {
         "status": "BLOCKED",
@@ -1082,17 +1176,16 @@ async def execute_proposal(payload: ProposalExecuteInput):
     initiator = (payload.initiator or "ceo").strip() or "ceo"
     meta_in = payload.metadata if isinstance(payload.metadata, dict) else {}
 
+    # need orchestrator/registry now
+    _, _, _, registry, orchestrator = _require_boot_services()
+
     proposal_cmd: Optional[str] = None
     proposal_intent: Optional[str] = None
     proposal_params: Dict[str, Any] = {}
     proposal_meta: Dict[str, Any] = {}
 
     if isinstance(proposal, dict):
-        proposal_cmd = (
-            proposal.get("command")
-            or proposal.get("command_type")
-            or proposal.get("type")
-        )
+        proposal_cmd = proposal.get("command") or proposal.get("command_type") or proposal.get("type")
         proposal_intent = proposal.get("intent") or proposal_cmd
 
         p_params = proposal.get("params")
@@ -1139,22 +1232,15 @@ async def execute_proposal(payload: ProposalExecuteInput):
             proposal_meta = dict(m2)
 
         proposal_scope = getattr(proposal, "scope", None)
-        proposal_risk = getattr(proposal, "risk", None) or getattr(
-            proposal, "risk_hint", None
-        )
+        proposal_risk = getattr(proposal, "risk", None) or getattr(proposal, "risk_hint", None)
 
     proposal_cmd = (proposal_cmd or "").strip() or None
     proposal_intent = (proposal_intent or "").strip() or None
 
     if not proposal_cmd or not proposal_intent:
-        raise HTTPException(
-            status_code=400, detail="Invalid proposal: missing command/intent"
-        )
+        raise HTTPException(status_code=400, detail="Invalid proposal: missing command/intent")
 
-    if (
-        proposal_cmd != PROPOSAL_WRAPPER_INTENT
-        and proposal_intent != PROPOSAL_WRAPPER_INTENT
-    ):
+    if proposal_cmd != PROPOSAL_WRAPPER_INTENT and proposal_intent != PROPOSAL_WRAPPER_INTENT:
         raise HTTPException(
             status_code=400,
             detail="Unsupported proposal payload (only ceo.command.propose)",
@@ -1206,10 +1292,10 @@ async def execute_proposal(payload: ProposalExecuteInput):
         )
 
     _ensure_trace_on_command(ai_command, approval_id=approval_id)
-    _execution_orchestrator.registry.register(ai_command)
-    _execution_registry.register(ai_command)
+    orchestrator.registry.register(ai_command)
+    registry.register(ai_command)
 
-    result = await _execution_orchestrator.execute(ai_command)
+    result = await orchestrator.execute(ai_command)
     if isinstance(result, dict):
         result.setdefault("approval_id", approval_id)
         result.setdefault("execution_id", execution_id)
@@ -1218,20 +1304,10 @@ async def execute_proposal(payload: ProposalExecuteInput):
 
 
 # ================================================================
-# NOTION READ — READ ONLY (NO APPROVAL / NO EXECUTION)
+# NOTION READ â€” READ ONLY (NO APPROVAL / NO EXECUTION)
 # ================================================================
 @app.post("/api/notion/read", response_model=NotionReadResponse)
 async def notion_read(payload: Any = Body(None)) -> Any:
-    """
-    KANON:
-      - READ ONLY
-      - ne ide kroz approval
-      - ne kreira execute zapise
-      - stabilan response format (ne oslanja se na FastAPI 422)
-    Body:
-      { "mode": "page_by_title", "query": "Outreach sop" }
-    """
-
     def _model_to_dict(m: NotionReadResponse) -> Dict[str, Any]:
         if hasattr(m, "model_dump"):
             try:
@@ -1246,7 +1322,6 @@ async def notion_read(payload: Any = Body(None)) -> Any:
             return {}
 
     def _json(resp: NotionReadResponse) -> JSONResponse:
-        # Force UTF-8 charset for clients like PowerShell that mis-decode without it.
         return JSONResponse(
             content=_model_to_dict(resp),
             media_type="application/json; charset=utf-8",
@@ -1265,16 +1340,15 @@ async def notion_read(payload: Any = Body(None)) -> Any:
 
     if payload is None:
         return _resp_err("Body must be an object")
-
     if not isinstance(payload, dict):
         return _resp_err("Body must be an object")
 
-    mode = payload.get("mode")
-    if not isinstance(mode, str) or not mode.strip():
+    mode0 = payload.get("mode")
+    if not isinstance(mode0, str) or not mode0.strip():
         return _resp_err("Field 'mode' is required")
-    mode = mode.strip()
+    mode0 = mode0.strip()
 
-    if mode != "page_by_title":
+    if mode0 != "page_by_title":
         return _resp_err("Unsupported mode. Allowed: 'page_by_title'")
 
     query = payload.get("query")
@@ -1291,17 +1365,12 @@ async def notion_read(payload: Any = Body(None)) -> Any:
 
         title = res.get("title") if isinstance(res.get("title"), str) else ""
         url = res.get("url") if isinstance(res.get("url"), str) else ""
-        md = (
-            res.get("content_markdown")
-            if isinstance(res.get("content_markdown"), str)
-            else ""
-        )
+        md = res.get("content_markdown") if isinstance(res.get("content_markdown"), str) else ""
 
         title = (title or "").strip()
         url = (url or "").strip()
         md = (md or "").strip()
 
-        # Not found -> explicit error
         if not title and not url and not md:
             return _json(
                 NotionReadResponse(
@@ -1322,7 +1391,6 @@ async def notion_read(payload: Any = Body(None)) -> Any:
                 error=None,
             )
         )
-
     except Exception as exc:  # noqa: BLE001
         return _resp_err(f"Notion read failed: {exc}")
 
@@ -1395,9 +1463,7 @@ def _validate_bulk_items(items: Any) -> List[Dict[str, Any]]:
             raise HTTPException(status_code=400, detail="each item must be an object")
         t = it.get("type")
         if not isinstance(t, str) or not t.strip():
-            raise HTTPException(
-                status_code=400, detail="each item must have non-empty 'type'"
-            )
+            raise HTTPException(status_code=400, detail="each item must have non-empty 'type'")
         tt = t.strip().lower()
         if tt not in _ALLOWED_BULK_TYPES:
             raise HTTPException(status_code=400, detail=f"invalid type: {t}")
@@ -1450,12 +1516,6 @@ async def notion_bulk_update(request: Request, payload: Dict[str, Any] = Body(..
 
 
 def _normalize_notion_query_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Normalizuje query dio. Namjerno ignoriĹˇe db_key/database_id.
-    PodrĹľava:
-      - {"query": {...}}
-      - ili flat: {"filter":..., "sorts":..., "start_cursor":..., "page_size":...}
-    """
     q = payload.get("query")
     if isinstance(q, dict):
         return dict(q)
@@ -1499,21 +1559,15 @@ def _resolve_db_id_from_service(notion_service: Any, db_key: str) -> str:
 
     for candidate in (lk, lk.rstrip("s"), lk + "s"):
         if candidate == "goals":
-            v = getattr(notion_service, "goals_db_id", None) or getattr(
-                notion_service, "_goals_db_id", None
-            )
+            v = getattr(notion_service, "goals_db_id", None) or getattr(notion_service, "_goals_db_id", None)
             if isinstance(v, str) and v.strip():
                 return v.strip()
         if candidate == "tasks":
-            v = getattr(notion_service, "tasks_db_id", None) or getattr(
-                notion_service, "_tasks_db_id", None
-            )
+            v = getattr(notion_service, "tasks_db_id", None) or getattr(notion_service, "_tasks_db_id", None)
             if isinstance(v, str) and v.strip():
                 return v.strip()
         if candidate == "projects":
-            v = getattr(notion_service, "projects_db_id", None) or getattr(
-                notion_service, "_projects_db_id", None
-            )
+            v = getattr(notion_service, "projects_db_id", None) or getattr(notion_service, "_projects_db_id", None)
             if isinstance(v, str) and v.strip():
                 return v.strip()
 
@@ -1521,9 +1575,6 @@ def _resolve_db_id_from_service(notion_service: Any, db_key: str) -> str:
 
 
 def _extract_db_key_or_database_id(d: Dict[str, Any]) -> Optional[str]:
-    """
-    Back-compat: prihvati i db_key i database_id.
-    """
     v = d.get("db_key")
     if isinstance(v, str) and v.strip():
         return v.strip()
@@ -1586,21 +1637,15 @@ async def _query_notion_database(db_key: str, query: Dict[str, Any]) -> Dict[str
         or (os.getenv("NOTION_API_KEY") or os.getenv("NOTION_TOKEN") or "").strip()
     )
     if not isinstance(api_key, str) or not api_key.strip():
-        raise HTTPException(
-            status_code=500, detail="NOTION_API_KEY/NOTION_TOKEN not set"
-        )
+        raise HTTPException(status_code=500, detail="NOTION_API_KEY/NOTION_TOKEN not set")
 
     db_id = _resolve_db_id_from_service(notion_service, db_key)
     client = Client(auth=api_key.strip())
 
     try:
-        res = await asyncio.to_thread(
-            lambda: client.databases.query(database_id=db_id, **(query or {}))
-        )
+        res = await asyncio.to_thread(lambda: client.databases.query(database_id=db_id, **(query or {})))
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(
-            status_code=500, detail=f"Notion databases.query failed: {exc}"
-        ) from exc
+        raise HTTPException(status_code=500, detail=f"Notion databases.query failed: {exc}") from exc
 
     if not isinstance(res, dict):
         return {
@@ -1617,21 +1662,12 @@ async def _query_notion_database(db_key: str, query: Dict[str, Any]) -> Dict[str
 @app.post("/api/notion-ops/bulk/query")
 @app.post("/notion-ops/bulk/query")
 async def notion_bulk_query(payload: Any = Body(None)):
-    """
-    Back/forward compatible bulk query endpoint.
-
-    Accepts:
-      1) Empty / null body -> 200 {"results":[]}
-      2) Single query via {db_key|database_id, filter/sorts/page_size...} -> 200 {"results":[...]}
-      3) Multi query via {queries:[{db_key|database_id,...}, ...]} -> 200 {"results":[...]}
-    """
     if payload is None:
         return {"results": []}
 
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="payload must be an object")
 
-    # --- SINGLE: db_key or database_id on top-level ---
     top_db_key = _extract_db_key_or_database_id(payload)
     if isinstance(top_db_key, str) and top_db_key.strip():
         q = _normalize_notion_query_payload(payload)
@@ -1644,12 +1680,11 @@ async def notion_bulk_query(payload: Any = Body(None)):
                     "db_key": top_db_key.strip(),
                     "items": items,
                     "notion": res,
-                    "response": res,  # legacy alias
+                    "response": res,
                 }
             ]
         }
 
-    # --- MULTI: queries list (can be empty) ---
     queries = payload.get("queries")
     if queries is None:
         queries = []
@@ -1657,7 +1692,6 @@ async def notion_bulk_query(payload: Any = Body(None)):
         raise HTTPException(status_code=400, detail="queries must be a list")
 
     if len(queries) == 0:
-        # This is exactly what tests expect: 200, not 422
         return {"results": []}
 
     out: List[Dict[str, Any]] = []
@@ -1687,7 +1721,7 @@ async def notion_bulk_query(payload: Any = Body(None)):
                 "db_key": db_key.strip(),
                 "items": items,
                 "notion": res,
-                "response": res,  # legacy alias
+                "response": res,
             }
         )
 
@@ -1721,12 +1755,7 @@ def _extract_smart_context(payload: Any) -> Optional[Dict[str, Any]]:
         return None
 
     def _pick(d: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        sc = (
-            d.get("smart_context")
-            or d.get("context")
-            or d.get("context_hint")
-            or d.get("ui_context_hint")
-        )
+        sc = d.get("smart_context") or d.get("context") or d.get("context_hint") or d.get("ui_context_hint")
         return sc if isinstance(sc, dict) else None
 
     sc = _pick(payload)
@@ -1777,7 +1806,6 @@ async def _ceo_command_core(payload_dict: Dict[str, Any]) -> JSONResponse:
 
     result_obj = await ceo_console_module.ceo_command(req)
 
-    # CRITICAL: keep SSOT field-names (args) for proposed_commands on read-only surfaces.
     try:
         if hasattr(result_obj, "model_dump"):
             result = result_obj.model_dump(by_alias=False)  # type: ignore[attr-defined]
@@ -1804,7 +1832,6 @@ async def _ceo_command_core(payload_dict: Dict[str, Any]) -> JSONResponse:
             tr["agent_router_empty_text"] = False
             tr["agent_output_text_len"] = len(str(result.get("text") or ""))
 
-    # PATCH 1 (backend): /api/chat mora vratiti proposed_commands=[] kad nema write
     if not isinstance(result.get("proposed_commands"), list):
         result["proposed_commands"] = []
 
@@ -1916,6 +1943,7 @@ async def ceo_console_snapshot():
             "approved_count": len(approved),
             "rejected_count": len(rejected),
             "failed_count": len(failed),
+            "completed_count": len(completed),
             "pending": pending,
         },
         "knowledge_snapshot": knowledge_snapshot,
@@ -2020,8 +2048,6 @@ async def global_exception_handler(request: Request, exc: Exception):
 if not FRONTEND_DIST_DIR.is_dir():
     logger.warning("React dist directory not found: %s", FRONTEND_DIST_DIR)
 else:
-    ...
-
     @app.head("/", include_in_schema=False)
     async def head_root():
         return Response(status_code=200)

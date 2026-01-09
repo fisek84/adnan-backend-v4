@@ -1,4 +1,4 @@
-import json
+﻿import json
 import os
 
 import httpx
@@ -73,16 +73,26 @@ async def test_happy_path_execute_approve(client):
     """
     Canonical HAPPY PATH (isti scenarij kao u test_happy_path.ps1):
 
-    1) POST /api/execute  -> očekujemo BLOCKED + approval_id
+    1) POST /api/execute  -> oÄŤekujemo BLOCKED + approval_id
     2) GET /api/ai-ops/approval/pending -> approval_id se mora pojaviti u pending listi
-    3) POST /api/ai-ops/approval/approve -> očekujemo COMPLETED
+    3) POST /api/ai-ops/approval/approve -> oÄŤekujemo COMPLETED
     """
-    # 1) CEO input -> očekujemo BLOCKED + approval_id
+    # 1) CEO input -> oÄŤekujemo BLOCKED + approval_id
     execute_payload = {"text": "create goal Test Happy Path"}
     response = await client.post("/api/execute", json=execute_payload)
+
+    # DEBUG: uvijek status + content-type; full body samo kad nije 200
+    print("EXECUTE_STATUS=", response.status_code)
+    print("EXECUTE_CONTENT_TYPE=", response.headers.get("content-type"))
+    if response.status_code != 200:
+        print("EXECUTE_HEADERS=", json.dumps(dict(response.headers), ensure_ascii=False, indent=2))
+        print("EXECUTE_BODY=", response.text)
+
     assert response.status_code == 200
 
     data = response.json()
+    print("EXECUTE_JSON=", json.dumps(data, ensure_ascii=False, indent=2))
+
     assert data.get("execution_state") == "BLOCKED"
     assert data.get("approval_id"), "approval_id should be present on BLOCKED"
     approval_id = data["approval_id"]
@@ -98,7 +108,7 @@ async def test_happy_path_execute_approve(client):
         approval_id in approval_ids
     ), "approval_id from execute must be in pending approvals"
 
-    # 3) Approve -> očekujemo COMPLETED
+    # 3) Approve -> oÄŤekujemo COMPLETED
     approve_response = await client.post(
         "/api/ai-ops/approval/approve",
         json={"approval_id": approval_id},

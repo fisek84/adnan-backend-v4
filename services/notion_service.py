@@ -1,4 +1,4 @@
-# services/notion_service.py
+﻿# services/notion_service.py
 from __future__ import annotations
 
 import logging
@@ -18,6 +18,15 @@ logger = logging.getLogger(__name__)
 # ============================================================
 _NOTION_SERVICE: Optional["NotionService"] = None
 
+_SINGLETON_NOT_INITIALIZED_MSG = "NotionService singleton is not initialized"
+
+# Canonical ENV keys (SSOT per gateway/gateway_server.py)
+_ENV_NOTION_API_KEY = "NOTION_API_KEY"
+_ENV_NOTION_TOKEN_FALLBACK = "NOTION_TOKEN"
+_ENV_GOALS_DB_ID = "NOTION_GOALS_DB_ID"
+_ENV_TASKS_DB_ID = "NOTION_TASKS_DB_ID"
+_ENV_PROJECTS_DB_ID = "NOTION_PROJECTS_DB_ID"
+
 
 def set_notion_service(service: "NotionService") -> None:
     global _NOTION_SERVICE
@@ -25,9 +34,101 @@ def set_notion_service(service: "NotionService") -> None:
 
 
 def get_notion_service() -> "NotionService":
+    """
+    SSOT throwing accessor. Do not change this contract.
+    """
     if _NOTION_SERVICE is None:
-        raise RuntimeError("NotionService singleton is not initialized")
+        raise RuntimeError(_SINGLETON_NOT_INITIALIZED_MSG)
     return _NOTION_SERVICE
+
+
+def get_or_init_notion_service() -> Optional["NotionService"]:
+    """
+    Enterprise helper:
+    - If singleton already set -> return it
+    - Else try init from env (if all required env vars exist) -> set + return
+    - Else return None (fail-soft)
+    """
+    global _NOTION_SERVICE
+    if _NOTION_SERVICE is not None:
+        return _NOTION_SERVICE
+
+    api_key = (os.getenv("NOTION_API_KEY") or "").strip()
+    goals = (os.getenv("NOTION_GOALS_DB_ID") or "").strip()
+    tasks = (os.getenv("NOTION_TASKS_DB_ID") or "").strip()
+    projects = (os.getenv("NOTION_PROJECTS_DB_ID") or "").strip()
+
+    if not (api_key and goals and tasks and projects):
+        return None
+
+    svc = NotionService(
+        api_key=api_key,
+        goals_db_id=goals,
+        tasks_db_id=tasks,
+        projects_db_id=projects,
+    )
+    _NOTION_SERVICE = svc
+    return svc
+
+
+def try_get_notion_service() -> Optional["NotionService"]:
+    """
+    SSOT non-throwing accessor (fail-soft).
+    """
+    return _NOTION_SERVICE
+
+
+def init_notion_service_from_env_or_raise() -> "NotionService":
+    """
+    SSOT initializer used by gateway bootstrap.
+
+    Mirrors gateway_server.py:
+      - REQUIRED_ENV_VARS expects NOTION_API_KEY + NOTION_*_DB_ID (goals/tasks/projects)
+      - NOTION_TOKEN is allowed as fallback in actual init
+
+    Raises on missing/invalid env. No logging here; caller decides.
+    """
+    api_key = (os.getenv(_ENV_NOTION_API_KEY) or os.getenv(_ENV_NOTION_TOKEN_FALLBACK) or "").strip()
+    goals_db_id = (os.getenv(_ENV_GOALS_DB_ID) or "").strip()
+    tasks_db_id = (os.getenv(_ENV_TASKS_DB_ID) or "").strip()
+    projects_db_id = (os.getenv(_ENV_PROJECTS_DB_ID) or "").strip()
+
+    if not api_key:
+        raise RuntimeError(f"Missing ENV var: {_ENV_NOTION_API_KEY}")
+    if not goals_db_id:
+        raise RuntimeError(f"Missing ENV var: {_ENV_GOALS_DB_ID}")
+    if not tasks_db_id:
+        raise RuntimeError(f"Missing ENV var: {_ENV_TASKS_DB_ID}")
+    if not projects_db_id:
+        raise RuntimeError(f"Missing ENV var: {_ENV_PROJECTS_DB_ID}")
+
+    svc = NotionService(
+        api_key=api_key,
+        goals_db_id=goals_db_id,
+        tasks_db_id=tasks_db_id,
+        projects_db_id=projects_db_id,
+    )
+    set_notion_service(svc)
+    return svc
+
+
+def bootstrap_notion_service_from_env(*, force: bool = False) -> Optional["NotionService"]:
+    """
+    Best-effort initializer for CLI / tests that bypass gateway bootstrap.
+
+    - No logging (prevents spam; caller should write trace signals)
+    - No raise (returns None on failure)
+    - Does nothing if already initialized unless force=True
+    """
+    global _NOTION_SERVICE
+
+    if _NOTION_SERVICE is not None and not force:
+        return _NOTION_SERVICE
+
+    try:
+        return init_notion_service_from_env_or_raise()
+    except Exception:
+        return None
 
 
 # ============================================================
@@ -60,25 +161,18 @@ class _DbSchemaCacheEntry:
 # ============================================================
 class NotionService:
     """
-    NotionService — production-safe minimal SSOT wrapper.
+    NotionService â€” production-safe minimal SSOT wrapper.
 
-    Key contracts used by your repo (observed from your logs + gateway expectations):
+    Key contracts used by your repo:
       - constructed via NotionService(api_key, goals_db_id, tasks_db_id, projects_db_id)
       - exposes .db_ids mapping (keys: goals/tasks/projects)
       - async execute(ai_command) -> dict
       - async sync_knowledge_snapshot() (best-effort; must not crash boot)
-      - optional query_database(db_key, query) used by gateway bulk query fallback
+      - async query_database(db_key, query) used by bulk query + snapshot readers
       - async aclose() for lifespan shutdown
 
-    IMPORTANT:
-      - execute() must accept exactly one positional arg after self (ai_command),
-        otherwise you hit: "NotionService.execute() takes 1 positional argument but 2 were given".
-      - create_page must accept either:
-          params["properties"] (already Notion API shape),
-          or params["property_specs"] (your internal compact schema).
-      - property_specs must adapt to the *actual* database schema:
-          your current failure: Notion says "Status is expected to be select."
-          so we resolve database schema and map accordingly.
+    NOTE:
+      - execute() must accept exactly one positional arg after self (ai_command).
     """
 
     NOTION_BASE_URL = "https://api.notion.com/v1"
@@ -151,7 +245,7 @@ class NotionService:
         url: str,
         *,
         payload: Optional[Dict[str, Any]] = None,
-        params: Optional[Dict[str, Any]] = None,  # <-- FIX: support query params (pagination)
+        params: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         client = await self._get_client()
 
@@ -159,17 +253,14 @@ class NotionService:
             resp = await client.request(
                 method,
                 url,
-                params=params,  # <-- FIX
+                params=params,
                 json=payload,
             )
         except Exception as exc:
-            raise RuntimeError(
-                f"Notion request failed: {type(exc).__name__}: {exc}"
-            ) from exc
+            raise RuntimeError(f"Notion request failed: {type(exc).__name__}: {exc}") from exc
 
         text = resp.text or ""
         if resp.status_code >= 400:
-            # keep exact body for debugging; tests rely on error reason strings
             raise RuntimeError(f"Notion HTTP {resp.status_code}: {text}")
 
         if not text.strip():
@@ -197,7 +288,6 @@ class NotionService:
         url = f"{self.NOTION_BASE_URL}/databases/{db_id}"
         schema = await self._safe_request("GET", url, payload=None)
 
-        # cache even if empty (avoid hammering)
         self._db_schema_cache[db_id] = _DbSchemaCacheEntry(fetched_at=now, schema=schema)
         return schema
 
@@ -215,7 +305,6 @@ class NotionService:
         if not isinstance(p, dict):
             return ""
 
-        # Notion schema uses keys like: {"type":"select", "select":{...}}
         t = p.get("type")
         return (t or "").strip() if isinstance(t, str) else ""
 
@@ -235,7 +324,6 @@ class NotionService:
         return {"select": {"name": name}} if name else {"select": None}
 
     def _status_prop(self, name: str) -> Dict[str, Any]:
-        # Notion "status" property expects {"status":{"name":"..."}}.
         name = (name or "").strip()
         return {"status": {"name": name}} if name else {"status": None}
 
@@ -246,12 +334,6 @@ class NotionService:
         property_specs: Dict[str, Any],
     ) -> Dict[str, Any]:
         """
-        property_specs format (observed from your approval payload_summary):
-          {
-            "Name": {"type":"title","text":"..."},
-            "Status": {"type":"status","name":"Not started"}
-          }
-
         Robust rule:
           - If spec.type == "status" but DB schema says property is "select",
             map to select.
@@ -269,25 +351,21 @@ class NotionService:
             pn = prop_name.strip()
             stype = _ensure_str(spec.get("type")).lower()
 
-            # Title
             if stype == "title":
                 txt = _ensure_str(spec.get("text") or spec.get("value") or "")
                 out[pn] = self._title_prop(txt)
                 continue
 
-            # Rich text (optional support)
             if stype in ("rich_text", "text"):
                 txt = _ensure_str(spec.get("text") or spec.get("value") or "")
                 out[pn] = self._rich_text_prop(txt)
                 continue
 
-            # Explicit select
             if stype == "select":
                 name = _ensure_str(spec.get("name") or spec.get("value") or "")
                 out[pn] = self._select_prop(name)
                 continue
 
-            # Status (schema-aware mapping)
             if stype == "status":
                 name = _ensure_str(spec.get("name") or spec.get("value") or "")
                 actual = await self._resolve_property_type(db_id=db_id, prop_name=pn)
@@ -297,7 +375,7 @@ class NotionService:
                     out[pn] = self._status_prop(name)
                 continue
 
-            # Unknown types are ignored for safety
+            # Unknown types ignored by design (safety)
             continue
 
         return out
@@ -310,7 +388,7 @@ class NotionService:
         if not k:
             raise RuntimeError("db_key is required")
 
-        # Allow passing raw database UUID
+        # Allow passing raw database UUID-ish (already normalized elsewhere)
         if k.count("-") >= 4:
             return k
 
@@ -318,7 +396,6 @@ class NotionService:
         if lk in self.db_ids and self.db_ids[lk].strip():
             return self.db_ids[lk].strip()
 
-        # tolerant singular/plural
         for candidate in (lk, lk.rstrip("s"), lk + "s"):
             v = self.db_ids.get(candidate)
             if isinstance(v, str) and v.strip():

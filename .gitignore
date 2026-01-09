@@ -1,4 +1,4 @@
-# =========================
+﻿# =========================
 # Environment files
 # =========================
 .env
@@ -94,4 +94,9 @@ goals.db
 
 # Backup fajlovi
 *.bak
-*.bak*
+*.bak*# local scratch / smoke / tmp
+_ceo_abc_e2e.py
+_executor_e2e_test.py
+_openai_run_smoke.py
+tmp_*.py
+tree.txt
