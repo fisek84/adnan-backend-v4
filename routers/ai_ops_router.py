@@ -14,6 +14,7 @@ from services.agent_health_service import AgentHealthService
 from services.alert_forwarding_service import AlertForwardingService
 from services.approval_state_service import get_approval_state
 from services.cron_service import CronService
+from services.decision_outcome_registry import get_decision_outcome_registry
 from services.execution_orchestrator import ExecutionOrchestrator
 from services.metrics_persistence_service import MetricsPersistenceService
 
@@ -410,6 +411,35 @@ async def approve(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[st
             approved_by=approved_by if isinstance(approved_by, str) else "unknown",
             note=note if isinstance(note, str) else None,
         )
+
+        # DecisionOutcomeRegistry: create decision record at approval-time (best-effort)
+        try:
+            dor = get_decision_outcome_registry()
+
+            cmd_snapshot = {}
+            if isinstance(approval, dict) and isinstance(
+                approval.get("payload_summary"), dict
+            ):
+                cmd_snapshot = approval.get("payload_summary") or {}
+            elif isinstance(approval, dict) and isinstance(approval.get("payload_key"), str):
+                try:
+                    cmd_snapshot = json.loads(approval.get("payload_key") or "{}")
+                except Exception:
+                    cmd_snapshot = {}
+
+            md = cmd_snapshot.get("metadata") if isinstance(cmd_snapshot, dict) else {}
+            md = md if isinstance(md, dict) else {}
+
+            dor.create_or_get_for_approval(
+                approval=approval if isinstance(approval, dict) else {},
+                cmd_snapshot=cmd_snapshot if isinstance(cmd_snapshot, dict) else {},
+                behaviour_mode=md.get("behaviour_mode"),
+                alignment_snapshot_hash=md.get("alignment_snapshot_hash"),
+                owner=approved_by if isinstance(approved_by, str) else "unknown",
+                accepted=True,
+            )
+        except Exception:
+            pass
     except KeyError:
         raise HTTPException(status_code=404, detail="Approval not found")
     except ValueError as e:
@@ -436,6 +466,14 @@ async def approve(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[st
     # 5) Execute ONCE.
     try:
         execution_result = await orch.resume(execution_id)
+
+        # DecisionOutcomeRegistry: persist execution outcome (best-effort)
+        try:
+            dor = get_decision_outcome_registry()
+            if isinstance(execution_result, dict):
+                dor.set_execution_outcome(execution_id=execution_id, outcome=execution_result)
+        except Exception:
+            pass
     except KeyError as exc:
         # Common case: execution_id not present in orchestrator registry/store.
         raise HTTPException(
@@ -497,6 +535,36 @@ def reject(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[str, Any]
             rejected_by=rejected_by if isinstance(rejected_by, str) else "unknown",
             note=note if isinstance(note, str) else None,
         )
+
+        # DecisionOutcomeRegistry: create decision record at reject-time (best-effort)
+        try:
+            from services.decision_outcome_registry import get_decision_outcome_registry
+            import json
+
+            dor = get_decision_outcome_registry()
+
+            cmd_snapshot = {}
+            if isinstance(approval, dict) and isinstance(approval.get("payload_summary"), dict):
+                cmd_snapshot = approval.get("payload_summary") or {}
+            elif isinstance(approval, dict) and isinstance(approval.get("payload_key"), str):
+                try:
+                    cmd_snapshot = json.loads(approval.get("payload_key") or "{}")
+                except Exception:
+                    cmd_snapshot = {}
+
+            md = cmd_snapshot.get("metadata") if isinstance(cmd_snapshot, dict) else {}
+            md = md if isinstance(md, dict) else {}
+
+            dor.create_or_get_for_approval(
+                approval=approval if isinstance(approval, dict) else {},
+                cmd_snapshot=cmd_snapshot if isinstance(cmd_snapshot, dict) else {},
+                behaviour_mode=md.get("behaviour_mode"),
+                alignment_snapshot_hash=md.get("alignment_snapshot_hash"),
+                owner=rejected_by if isinstance(rejected_by, str) else "unknown",
+                accepted=False,
+            )
+        except Exception:
+            pass
     except KeyError:
         raise HTTPException(status_code=404, detail="Approval not found")
 
