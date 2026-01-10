@@ -1,4 +1,4 @@
-﻿# services/identity_loader.py
+# services/identity_loader.py
 
 from __future__ import annotations
 
@@ -220,7 +220,9 @@ def load_agents_identity() -> Dict[str, Any]:
 
     def _load() -> Dict[str, Any]:
         data = load_json_file(resolve_path("agents.json"))
-        validate_identity_payload(data, required_keys=["version", "agents"], name="agents.json")
+        validate_identity_payload(
+            data, required_keys=["version", "agents"], name="agents.json"
+        )
 
         agents = data.get("agents")
         if not isinstance(agents, dict):

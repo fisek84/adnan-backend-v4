@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 import json
@@ -206,13 +206,18 @@ def _is_critical_risk_from_alignment(alignment_snapshot: Any) -> bool:
         return True
 
     risk_level = lc.get("risk_level")
-    if isinstance(risk_level, str) and risk_level.strip().lower() in {"high", "critical"}:
+    if isinstance(risk_level, str) and risk_level.strip().lower() in {
+        "high",
+        "critical",
+    }:
         return True
 
     return False
 
 
-def _apply_silent_runtime_enforcement(parsed: Dict[str, Any], *, critical_risk: bool) -> Dict[str, Any]:
+def _apply_silent_runtime_enforcement(
+    parsed: Dict[str, Any], *, critical_risk: bool
+) -> Dict[str, Any]:
     """
     Hard deterministic enforcement for SILENT mode:
     - If NOT critical risk => blank output + empty arrays (regardless of LLM compliance).
@@ -264,7 +269,10 @@ def _derive_behaviour_mode_fallback(alignment_snapshot: Any) -> Optional[str]:
         return "red_alert"
 
     # High risk can also justify red_alert if explicitly stated as string.
-    if isinstance(risk_level, str) and risk_level.strip().lower() in {"high", "critical"}:
+    if isinstance(risk_level, str) and risk_level.strip().lower() in {
+        "high",
+        "critical",
+    }:
         return "red_alert"
 
     # If action is explicitly required â†’ executive
@@ -566,7 +574,9 @@ def _pick_text(parsed: Dict[str, Any]) -> str:
     return ""
 
 
-def _ensure_contract(parsed: Dict[str, Any], *, enforce_dashboard_text: bool) -> Dict[str, Any]:
+def _ensure_contract(
+    parsed: Dict[str, Any], *, enforce_dashboard_text: bool
+) -> Dict[str, Any]:
     """
     Ensure canonical CEO advisory result:
       summary, text, questions, plan, options, proposed_commands, trace
@@ -617,7 +627,9 @@ def _ensure_contract(parsed: Dict[str, Any], *, enforce_dashboard_text: bool) ->
 
     # Ensure keys exist
     if "summary" not in parsed or not isinstance(parsed.get("summary"), str):
-        parsed["summary"] = str(raw) if raw is not None else "LLM odgovor nema 'summary'."
+        parsed["summary"] = (
+            str(raw) if raw is not None else "LLM odgovor nema 'summary'."
+        )
 
     if (
         "text" not in parsed
@@ -722,7 +734,9 @@ def _run_last_error_details(run_status: Any) -> Dict[str, Any]:
         msg = getattr(last_error, "message", None)
         out["last_error"] = {
             "code": code if code is not None else None,
-            "message": msg if isinstance(msg, str) else (str(msg) if msg is not None else None),
+            "message": msg
+            if isinstance(msg, str)
+            else (str(msg) if msg is not None else None),
         }
 
     incomplete = getattr(run_status, "incomplete_details", None)
@@ -854,7 +868,9 @@ class OpenAIAssistantExecutor:
             self.client.beta.threads.messages.list, thread_id=thread_id
         )
         data = getattr(messages, "data", None) or []
-        assistant_messages = [m for m in data if getattr(m, "role", None) == "assistant"]
+        assistant_messages = [
+            m for m in data if getattr(m, "role", None) == "assistant"
+        ]
 
         if not assistant_messages:
             raise RuntimeError("Assistant produced no response")
@@ -886,7 +902,9 @@ class OpenAIAssistantExecutor:
         t = (text or "").strip()
         if not t:
             return t
-        m = re.match(r"^```(?:json)?\s*(.*?)\s*```$", t, flags=re.DOTALL | re.IGNORECASE)
+        m = re.match(
+            r"^```(?:json)?\s*(.*?)\s*```$", t, flags=re.DOTALL | re.IGNORECASE
+        )
         if m:
             return (m.group(1) or "").strip()
         return t
@@ -945,10 +963,14 @@ class OpenAIAssistantExecutor:
         last_exc: Optional[Exception] = None
         for i, kwargs in enumerate(attempts, start=1):
             try:
-                return await self._to_thread(self.client.beta.threads.runs.create, **kwargs)
+                return await self._to_thread(
+                    self.client.beta.threads.runs.create, **kwargs
+                )
             except TypeError as e:
                 last_exc = e
-                logger.warning("runs.create TypeError on attempt %s/%s: %s", i, len(attempts), e)
+                logger.warning(
+                    "runs.create TypeError on attempt %s/%s: %s", i, len(attempts), e
+                )
                 continue
             except Exception as e:  # noqa: BLE001
                 msg = str(e).lower()
@@ -982,7 +1004,9 @@ class OpenAIAssistantExecutor:
             "Koristi backend Notion Ops Executor / NotionService preko approval flow-a."
         )
 
-    async def ceo_command(self, *, text: str, context: Dict[str, Any]) -> Dict[str, Any]:
+    async def ceo_command(
+        self, *, text: str, context: Dict[str, Any]
+    ) -> Dict[str, Any]:
         t = (text or "").strip()
         if not t:
             raise ValueError("text is required")
@@ -991,7 +1015,9 @@ class OpenAIAssistantExecutor:
 
         # OPTION C (PRACTICAL COMPLETION):
         # Prefer behaviour_mode explicitly provided by AgentInput-like context.
-        input_behaviour_mode, input_behaviour_source = _extract_behaviour_mode_from_context(context)
+        input_behaviour_mode, input_behaviour_source = (
+            _extract_behaviour_mode_from_context(context)
+        )
 
         assistant_id = self._get_advisory_assistant_id()
         if not assistant_id:
@@ -1069,8 +1095,12 @@ class OpenAIAssistantExecutor:
         alignment_snapshot = None
         try:
             ip_for_alignment = identity_pack if isinstance(identity_pack, dict) else {}
-            ws_for_alignment = world_state_snapshot if isinstance(world_state_snapshot, dict) else {}
-            alignment_snapshot = CEOAlignmentEngine().evaluate(ip_for_alignment, ws_for_alignment)
+            ws_for_alignment = (
+                world_state_snapshot if isinstance(world_state_snapshot, dict) else {}
+            )
+            alignment_snapshot = CEOAlignmentEngine().evaluate(
+                ip_for_alignment, ws_for_alignment
+            )
         except Exception as e:  # noqa: BLE001
             logger.warning("CEOAlignmentEngine.evaluate() failed: %s", e)
             alignment_snapshot = None
@@ -1101,7 +1131,9 @@ class OpenAIAssistantExecutor:
                         behaviour_mode = router.select_mode(alignment_snapshot)  # type: ignore[attr-defined]
                         behaviour_mode_source = "router.select_mode"
                     elif hasattr(CEOBehaviorRouter, "select_mode"):
-                        behaviour_mode = CEOBehaviorRouter.select_mode(alignment_snapshot)  # type: ignore[attr-defined]
+                        behaviour_mode = CEOBehaviorRouter.select_mode(
+                            alignment_snapshot
+                        )  # type: ignore[attr-defined]
                         behaviour_mode_source = "CEOBehaviorRouter.select_mode"
                     else:
                         behaviour_mode = None
@@ -1176,16 +1208,24 @@ class OpenAIAssistantExecutor:
                 tool_choice=None,
             )
 
-            await self._wait_for_run_completion(thread_id=thread.id, run_id=run.id, allow_tools=False)
+            await self._wait_for_run_completion(
+                thread_id=thread.id, run_id=run.id, allow_tools=False
+            )
 
-            final_text = await self._get_final_assistant_message_text(thread_id=thread.id)
+            final_text = await self._get_final_assistant_message_text(
+                thread_id=thread.id
+            )
             parsed = self._safe_json_parse(final_text)
-            parsed = _ensure_contract(parsed, enforce_dashboard_text=enforce_dashboard_text)
+            parsed = _ensure_contract(
+                parsed, enforce_dashboard_text=enforce_dashboard_text
+            )
 
             # HARD runtime enforcement for SILENT mode (deterministic).
             if behaviour_mode == "silent":
                 critical = _is_critical_risk_from_alignment(alignment_snapshot)
-                parsed = _apply_silent_runtime_enforcement(parsed, critical_risk=critical)
+                parsed = _apply_silent_runtime_enforcement(
+                    parsed, critical_risk=critical
+                )
 
         except Exception as exc:  # noqa: BLE001
             elapsed_ms = int((time.monotonic() - t0) * 1000)
@@ -1196,14 +1236,20 @@ class OpenAIAssistantExecutor:
             err_repr = repr(exc)[:2000]
 
             if isinstance(exc, ReadOnlyToolCallAttempt):
-                summary = "CEO advisory je pokuĹˇao tool poziv u read-only modu (blokirano)."
+                summary = (
+                    "CEO advisory je pokuĹˇao tool poziv u read-only modu (blokirano)."
+                )
                 text_out = (
                     "CEO advisory je pokuĹˇao tool poziv u read-only modu, Ĺˇto je zabranjeno.\n"
                     "Provjeri Assistant instrukcije i konfiguraciju; read-only path mora biti bez tool poziva."
                 )
             else:
-                summary = f"CEO advisory nije mogao zavrĹˇiti (internal error: {err_type})."
-                text_out = f"CEO advisory nije mogao zavrĹˇiti (internal error: {err_type})."
+                summary = (
+                    f"CEO advisory nije mogao zavrĹˇiti (internal error: {err_type})."
+                )
+                text_out = (
+                    f"CEO advisory nije mogao zavrĹˇiti (internal error: {err_type})."
+                )
 
             if os.getenv("DEBUG_CEO_ADVISOR_ERRORS") == "1":
                 text_out = f"{text_out}\n\nDEBUG_ERROR:\n{err_repr}"
@@ -1320,18 +1366,32 @@ class OpenAIAssistantExecutor:
         trace["behaviour_mode"] = behaviour_mode
         trace["behaviour_mode_source"] = behaviour_mode_source
         trace["behaviour_mode_applied"] = bool(behaviour_mode_applied)
-        trace["behaviour_mode_instructions_len"] = len(run_instructions) if isinstance(run_instructions, str) else None
-        trace["behaviour_mode_silent_runtime_enforced"] = bool(behaviour_mode == "silent")
+        trace["behaviour_mode_instructions_len"] = (
+            len(run_instructions) if isinstance(run_instructions, str) else None
+        )
+        trace["behaviour_mode_silent_runtime_enforced"] = bool(
+            behaviour_mode == "silent"
+        )
         trace["behaviour_mode_silent_critical_risk"] = bool(
-            _is_critical_risk_from_alignment(alignment_snapshot) if behaviour_mode == "silent" else False
+            _is_critical_risk_from_alignment(alignment_snapshot)
+            if behaviour_mode == "silent"
+            else False
         )
 
         parsed["trace"] = trace
 
         picked = _pick_text(parsed)
-        if picked and isinstance(parsed.get("text"), str) and not parsed["text"].strip():
+        if (
+            picked
+            and isinstance(parsed.get("text"), str)
+            and not parsed["text"].strip()
+        ):
             parsed["text"] = picked
-        if picked and isinstance(parsed.get("summary"), str) and not parsed["summary"].strip():
+        if (
+            picked
+            and isinstance(parsed.get("summary"), str)
+            and not parsed["summary"].strip()
+        ):
             parsed["summary"] = picked
 
         return parsed

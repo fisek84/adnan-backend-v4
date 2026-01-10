@@ -1,4 +1,4 @@
-﻿# services/notion_service.py
+# services/notion_service.py
 from __future__ import annotations
 
 import logging
@@ -88,7 +88,9 @@ def init_notion_service_from_env_or_raise() -> "NotionService":
 
     Raises on missing/invalid env. No logging here; caller decides.
     """
-    api_key = (os.getenv(_ENV_NOTION_API_KEY) or os.getenv(_ENV_NOTION_TOKEN_FALLBACK) or "").strip()
+    api_key = (
+        os.getenv(_ENV_NOTION_API_KEY) or os.getenv(_ENV_NOTION_TOKEN_FALLBACK) or ""
+    ).strip()
     goals_db_id = (os.getenv(_ENV_GOALS_DB_ID) or "").strip()
     tasks_db_id = (os.getenv(_ENV_TASKS_DB_ID) or "").strip()
     projects_db_id = (os.getenv(_ENV_PROJECTS_DB_ID) or "").strip()
@@ -112,7 +114,9 @@ def init_notion_service_from_env_or_raise() -> "NotionService":
     return svc
 
 
-def bootstrap_notion_service_from_env(*, force: bool = False) -> Optional["NotionService"]:
+def bootstrap_notion_service_from_env(
+    *, force: bool = False
+) -> Optional["NotionService"]:
     """
     Best-effort initializer for CLI / tests that bypass gateway bootstrap.
 
@@ -257,7 +261,9 @@ class NotionService:
                 json=payload,
             )
         except Exception as exc:
-            raise RuntimeError(f"Notion request failed: {type(exc).__name__}: {exc}") from exc
+            raise RuntimeError(
+                f"Notion request failed: {type(exc).__name__}: {exc}"
+            ) from exc
 
         text = resp.text or ""
         if resp.status_code >= 400:
@@ -288,7 +294,9 @@ class NotionService:
         url = f"{self.NOTION_BASE_URL}/databases/{db_id}"
         schema = await self._safe_request("GET", url, payload=None)
 
-        self._db_schema_cache[db_id] = _DbSchemaCacheEntry(fetched_at=now, schema=schema)
+        self._db_schema_cache[db_id] = _DbSchemaCacheEntry(
+            fetched_at=now, schema=schema
+        )
         return schema
 
     async def _resolve_property_type(self, *, db_id: str, prop_name: str) -> str:
@@ -425,7 +433,9 @@ class NotionService:
             logger.warning("sync_knowledge_snapshot failed (non-fatal)", exc_info=True)
             return {"ok": False}
 
-    async def query_database(self, *, db_key: str, query: Dict[str, Any]) -> Dict[str, Any]:
+    async def query_database(
+        self, *, db_key: str, query: Dict[str, Any]
+    ) -> Dict[str, Any]:
         db_id = self._resolve_db_id(db_key)
         url = f"{self.NOTION_BASE_URL}/databases/{db_id}/query"
         payload = query if isinstance(query, dict) else {}
@@ -437,7 +447,9 @@ class NotionService:
         """
         Canonical executor entrypoint called by NotionOpsAgent / Orchestrator.
         """
-        cmd = _ensure_dict(ai_command.model_dump() if hasattr(ai_command, "model_dump") else {})
+        cmd = _ensure_dict(
+            ai_command.model_dump() if hasattr(ai_command, "model_dump") else {}
+        )
         if not cmd:
             cmd = {
                 "command": getattr(ai_command, "command", None),

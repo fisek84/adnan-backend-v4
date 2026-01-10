@@ -1,4 +1,4 @@
-﻿# services/ceo_behavior_router.py
+# services/ceo_behavior_router.py
 from __future__ import annotations
 
 from enum import Enum
@@ -88,11 +88,7 @@ class CEOBehaviorRouter:
         # - aligned system
         # - no CEO action required
         # - risks or alerts exist
-        if (
-            overall_status == "aligned"
-            and not requires_action
-            and len(top_risks) > 0
-        ):
+        if overall_status == "aligned" and not requires_action and len(top_risks) > 0:
             return BehaviorMode.MONITOR
 
         # =====================================================
@@ -160,6 +156,7 @@ class CEOBehaviorRouter:
 # =============================================================
 # Internal helpers â€” deterministic, no heuristics
 # =============================================================
+
 
 def _str(x: Any) -> str:
     return x if isinstance(x, str) else "NIJE POZNATO"

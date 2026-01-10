@@ -1,4 +1,4 @@
-﻿# services/ceo_alignment_engine.py
+# services/ceo_alignment_engine.py
 from __future__ import annotations
 
 import hashlib
@@ -127,8 +127,20 @@ class CEOAlignmentEngine:
         world = world_state_snapshot if isinstance(world_state_snapshot, dict) else {}
 
         # META inputs
-        tw = world.get("time_window") if isinstance(world.get("time_window"), dict) else None
-        time_window = tw if tw else {"label": "NIJE POZNATO", "start": "NIJE POZNATO", "end": "NIJE POZNATO"}
+        tw = (
+            world.get("time_window")
+            if isinstance(world.get("time_window"), dict)
+            else None
+        )
+        time_window = (
+            tw
+            if tw
+            else {
+                "label": "NIJE POZNATO",
+                "start": "NIJE POZNATO",
+                "end": "NIJE POZNATO",
+            }
+        )
 
         alerts_present = bool(_as_list(world.get("alerts")))
 
@@ -141,15 +153,27 @@ class CEOAlignmentEngine:
         # Immutable laws (kernel.json-like). We do not assume exact location.
         immutable_laws = self._extract_immutable_laws(identity)
         if immutable_laws is None:
-            required_missing.append("identity_pack.immutable_laws/kernel (NIJE POZNATO)")
+            required_missing.append(
+                "identity_pack.immutable_laws/kernel (NIJE POZNATO)"
+            )
 
         # Compute sections
-        strategic_alignment = self._eval_strategic_alignment(world, traj_targets, required_missing)
-        law_compliance = self._eval_law_compliance(identity, world, immutable_laws, required_missing)
-        decision_engine_eval = self._eval_decision_engine(identity, world, strategic_alignment, law_compliance, required_missing)
-        executive_priorities = self._eval_executive_priorities(world, strategic_alignment, law_compliance)
+        strategic_alignment = self._eval_strategic_alignment(
+            world, traj_targets, required_missing
+        )
+        law_compliance = self._eval_law_compliance(
+            identity, world, immutable_laws, required_missing
+        )
+        decision_engine_eval = self._eval_decision_engine(
+            identity, world, strategic_alignment, law_compliance, required_missing
+        )
+        executive_priorities = self._eval_executive_priorities(
+            world, strategic_alignment, law_compliance
+        )
         risk_register = self._eval_risk_register(world, law_compliance)
-        ceo_action_required = self._eval_ceo_action_required(world, strategic_alignment, law_compliance, decision_engine_eval)
+        ceo_action_required = self._eval_ceo_action_required(
+            world, strategic_alignment, law_compliance, decision_engine_eval
+        )
 
         # Confidence level (deterministic)
         confidence_level = self._confidence(required_missing, world)
@@ -160,14 +184,12 @@ class CEOAlignmentEngine:
             "time_window": time_window,
             "confidence_level": confidence_level,
             "alerts_present": bool(alerts_present),
-
             "strategic_alignment": strategic_alignment,
             "law_compliance": law_compliance,
             "decision_engine_eval": decision_engine_eval,
             "executive_priorities": executive_priorities,
             "risk_register": risk_register,
             "ceo_action_required": ceo_action_required,
-
             # Determinism trace (for A1 testing)
             "trace": {
                 "required_inputs_missing": required_missing,
@@ -231,7 +253,9 @@ class CEOAlignmentEngine:
         actual_dist = self._derive_trajectory_distribution(world)
 
         if actual_dist is None:
-            required_missing.append("world_state_snapshot.trajectory_distribution (NIJE POZNATO)")
+            required_missing.append(
+                "world_state_snapshot.trajectory_distribution (NIJE POZNATO)"
+            )
             actual_dist = {"NIJE POZNATO": 1.0}
 
         # Score: if we have targets, compute closeness; else unknown score.
@@ -240,19 +264,26 @@ class CEOAlignmentEngine:
         identity_conflicts: List[str] = []
 
         # If distribution is unknown, do NOT penalize to 0; treat as "at_risk" due to missing signal.
-        dist_unknown = (
-            isinstance(actual_dist, dict)
-            and set(actual_dist.keys()) == {"NIJE POZNATO"}
-        )
+        dist_unknown = isinstance(actual_dist, dict) and set(actual_dist.keys()) == {
+            "NIJE POZNATO"
+        }
 
         if dist_unknown:
             # keep score=50, and ensure it evaluates as at_risk (given default thresholds)
             identity_conflicts.append("trajectory_distribution_missing")
-        elif traj_targets is None or not isinstance(traj_targets, dict) or not traj_targets:
-            required_missing.append("strategic_alignment.alignment_score_inputs_missing")
+        elif (
+            traj_targets is None
+            or not isinstance(traj_targets, dict)
+            or not traj_targets
+        ):
+            required_missing.append(
+                "strategic_alignment.alignment_score_inputs_missing"
+            )
             score = 50
         else:
-            score, misaligned_focus, identity_conflicts = self._score_distribution_vs_targets(actual_dist, traj_targets)
+            score, misaligned_focus, identity_conflicts = (
+                self._score_distribution_vs_targets(actual_dist, traj_targets)
+            )
 
         overall_status = self._status_from_score(int(score))
 
@@ -260,8 +291,12 @@ class CEOAlignmentEngine:
             "overall_status": overall_status,
             "alignment_score": int(score),
             "trajectory_distribution": actual_dist,
-            "misaligned_focus_areas": _cap_list(misaligned_focus, self._thr.max_misaligned_focus_areas),
-            "identity_conflicts": _cap_list(identity_conflicts, self._thr.max_identity_conflicts),
+            "misaligned_focus_areas": _cap_list(
+                misaligned_focus, self._thr.max_misaligned_focus_areas
+            ),
+            "identity_conflicts": _cap_list(
+                identity_conflicts, self._thr.max_identity_conflicts
+            ),
         }
 
     def _derive_trajectory_distribution(self, world: JsonDict) -> Optional[JsonDict]:
@@ -289,7 +324,11 @@ class CEOAlignmentEngine:
             if not isinstance(k, str) or not k.strip():
                 continue
             t = _safe_float(tv, default=0.0)
-            a = _safe_float(actual.get(k, 0.0), default=0.0) if isinstance(actual, dict) else 0.0
+            a = (
+                _safe_float(actual.get(k, 0.0), default=0.0)
+                if isinstance(actual, dict)
+                else 0.0
+            )
             diffs.append((k.strip(), abs(a - t)))
 
         if not diffs:
@@ -354,12 +393,18 @@ class CEOAlignmentEngine:
                     {
                         "law_id": atype,  # deterministic id from alert type
                         "severity": asev,
-                        "example": details if details != "NIJE POZNATO" else f"Alert type={atype}",
+                        "example": details
+                        if details != "NIJE POZNATO"
+                        else f"Alert type={atype}",
                     }
                 )
 
         # Deterministic checks we CAN do purely from known canon:
-        canon = world.get("trace", {}).get("determinism") if isinstance(world.get("trace"), dict) else None
+        canon = (
+            world.get("trace", {}).get("determinism")
+            if isinstance(world.get("trace"), dict)
+            else None
+        )
         _ = canon  # placeholder
 
         # If immutable_laws exist, apply simple rule matching:
@@ -378,7 +423,9 @@ class CEOAlignmentEngine:
                         violations.append(
                             {
                                 "law_id": law_id,
-                                "severity": sev if sev in ("low", "medium", "high") else "medium",
+                                "severity": sev
+                                if sev in ("low", "medium", "high")
+                                else "medium",
                                 "example": f"Matched keyword in world_state: {keyword.strip()}",
                             }
                         )
@@ -387,9 +434,21 @@ class CEOAlignmentEngine:
         wcanon = world.get("canon") if isinstance(world.get("canon"), dict) else None
         if isinstance(wcanon, dict):
             if wcanon.get("no_tools") is False:
-                violations.append({"law_id": "canon.no_tools", "severity": "high", "example": "no_tools=False"})
+                violations.append(
+                    {
+                        "law_id": "canon.no_tools",
+                        "severity": "high",
+                        "example": "no_tools=False",
+                    }
+                )
             if wcanon.get("read_only") is False:
-                violations.append({"law_id": "canon.read_only", "severity": "high", "example": "read_only=False"})
+                violations.append(
+                    {
+                        "law_id": "canon.read_only",
+                        "severity": "high",
+                        "example": "read_only=False",
+                    }
+                )
 
         # Compute risk_level and integrity
         if violations:
@@ -400,7 +459,9 @@ class CEOAlignmentEngine:
         return {
             "violations": violations,  # 0..N objects
             "risk_level": risk_level,  # none/low/medium/high
-            "examples": _cap_list([v.get("example") for v in violations if isinstance(v, dict)], 5),
+            "examples": _cap_list(
+                [v.get("example") for v in violations if isinstance(v, dict)], 5
+            ),
             "system_integrity": system_integrity,  # intact/threatened
         }
 
@@ -496,7 +557,9 @@ class CEOAlignmentEngine:
         overdue = _as_list(tasks.get("overdue"))
         _ = critical  # currently not used, kept for deterministic expansion
 
-        projects = world.get("projects") if isinstance(world.get("projects"), dict) else {}
+        projects = (
+            world.get("projects") if isinstance(world.get("projects"), dict) else {}
+        )
         at_risk = _as_list(projects.get("at_risk"))
 
         overall = _safe_str(strategic_alignment.get("overall_status")).lower()
@@ -507,12 +570,16 @@ class CEOAlignmentEngine:
             deprioritize.append("All non-critical expansion")
         else:
             if overall == "misaligned":
-                top_priorities.append("Realign execution to identity trajectory targets")
+                top_priorities.append(
+                    "Realign execution to identity trajectory targets"
+                )
                 deprioritize.append("Work not contributing to trajectory distribution")
             elif overall == "at_risk":
                 top_priorities.append("Reduce drift risk (tighten focus + deadlines)")
             else:
-                top_priorities.append("Maintain aligned execution; focus on critical path")
+                top_priorities.append(
+                    "Maintain aligned execution; focus on critical path"
+                )
 
         if overdue:
             top_priorities.append("Clear overdue tasks blocking delivery")
@@ -524,16 +591,24 @@ class CEOAlignmentEngine:
             if isinstance(b, dict):
                 title = _safe_str(b.get("title"))
                 if title != "NIJE POZNATO":
-                    kill_candidates.append(f"Project candidate: {title} (blocked: {_safe_str(b.get('reason'))})")
+                    kill_candidates.append(
+                        f"Project candidate: {title} (blocked: {_safe_str(b.get('reason'))})"
+                    )
 
         return {
             "top_priorities": _cap_list(top_priorities, self._thr.max_top_priorities),
             "deprioritize": _cap_list(deprioritize, self._thr.max_deprioritize),
-            "kill_candidates": _cap_list(kill_candidates, self._thr.max_kill_candidates),
-            "rationale_summary": self._priority_rationale(world, strategic_alignment, law_compliance),
+            "kill_candidates": _cap_list(
+                kill_candidates, self._thr.max_kill_candidates
+            ),
+            "rationale_summary": self._priority_rationale(
+                world, strategic_alignment, law_compliance
+            ),
         }
 
-    def _priority_rationale(self, world: JsonDict, strategic_alignment: JsonDict, law_compliance: JsonDict) -> str:
+    def _priority_rationale(
+        self, world: JsonDict, strategic_alignment: JsonDict, law_compliance: JsonDict
+    ) -> str:
         overall = _safe_str(strategic_alignment.get("overall_status"))
         score = _safe_int(strategic_alignment.get("alignment_score"), 0)
         integrity = _safe_str(law_compliance.get("system_integrity"))
@@ -545,7 +620,9 @@ class CEOAlignmentEngine:
     # ------------------------------------------------------------
     # 3.6 RISK_REGISTER
     # ------------------------------------------------------------
-    def _eval_risk_register(self, world: JsonDict, law_compliance: JsonDict) -> JsonDict:
+    def _eval_risk_register(
+        self, world: JsonDict, law_compliance: JsonDict
+    ) -> JsonDict:
         top_risks: List[JsonDict] = []
 
         for r in _as_list(world.get("risks")):
@@ -557,7 +634,9 @@ class CEOAlignmentEngine:
                         {
                             "title": title,
                             "risk_type": self._classify_risk_type(r),
-                            "time_sensitivity": self._time_sensitivity_from_severity(sev),
+                            "time_sensitivity": self._time_sensitivity_from_severity(
+                                sev
+                            ),
                             "mitigation_hint": "NIJE POZNATO",
                         }
                     )
@@ -576,7 +655,12 @@ class CEOAlignmentEngine:
         def key(x: JsonDict) -> Tuple[int, int, str]:
             rt = _safe_str(x.get("risk_type")).lower()
             ts = _safe_str(x.get("time_sensitivity")).lower()
-            rt_rank = {"system": 0, "strategic": 1, "operational": 2, "cognitive": 3}.get(rt, 9)
+            rt_rank = {
+                "system": 0,
+                "strategic": 1,
+                "operational": 2,
+                "cognitive": 3,
+            }.get(rt, 9)
             ts_rank = {"now": 0, "soon": 1, "can_wait": 2}.get(ts, 9)
             return (rt_rank, ts_rank, _safe_str(x.get("title")))
 
@@ -618,7 +702,9 @@ class CEOAlignmentEngine:
 
         overall = _safe_str(strategic_alignment.get("overall_status")).lower()
         integrity = _safe_str(law_compliance.get("system_integrity")).lower()
-        decision_type = _safe_str(decision_engine_eval.get("recommended_decision_type")).lower()
+        decision_type = _safe_str(
+            decision_engine_eval.get("recommended_decision_type")
+        ).lower()
         _ = decision_type  # deterministic placeholder
 
         if integrity == "threatened":
@@ -655,7 +741,9 @@ class CEOAlignmentEngine:
     # Confidence
     # ------------------------------------------------------------
     def _confidence(self, required_missing: List[str], world: JsonDict) -> str:
-        core_ok = all(isinstance(world.get(k), dict) for k in ("goals", "projects", "tasks"))
+        core_ok = all(
+            isinstance(world.get(k), dict) for k in ("goals", "projects", "tasks")
+        )
         if core_ok and not required_missing:
             return "high"
         if core_ok:

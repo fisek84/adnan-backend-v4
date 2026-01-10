@@ -1,4 +1,4 @@
-﻿# services/world_state_engine.py
+# services/world_state_engine.py
 from __future__ import annotations
 
 import asyncio
@@ -177,7 +177,12 @@ class WorldStateEngine:
             snapshot_fallback: JsonDict = {
                 "generated_at": iso(utc_now()),
                 "time_window": time_window,
-                "goals": {"top": [], "blocked": [], "stale": [], "counts": {"active": 0, "blocked": 0, "stale": 0}},
+                "goals": {
+                    "top": [],
+                    "blocked": [],
+                    "stale": [],
+                    "counts": {"active": 0, "blocked": 0, "stale": 0},
+                },
                 "projects": {
                     "top": [],
                     "at_risk": [],
@@ -192,7 +197,12 @@ class WorldStateEngine:
                 },
                 "kpis": {"summary": [], "alerts": [], "as_of": iso(tw_end)},
                 "pipeline": {"enabled": False, "stages": []},
-                "agents": {"health": [], "last_outputs": [], "errors": [], "as_of": iso(tw_end)},
+                "agents": {
+                    "health": [],
+                    "last_outputs": [],
+                    "errors": [],
+                    "as_of": iso(tw_end),
+                },
                 "summaries": {"recent": [], "by_goal": []},
                 "risks": [],
                 "alerts": [],
@@ -262,7 +272,9 @@ class WorldStateEngine:
             err = f"{type(exc).__name__}: {exc}"
 
         last_edit = "UNKNOWN"
-        dts = [parse_iso(p.get("last_edited_time")) for p in pages if isinstance(p, dict)]
+        dts = [
+            parse_iso(p.get("last_edited_time")) for p in pages if isinstance(p, dict)
+        ]
         dts = [d for d in dts if d is not None]
         if dts:
             last_edit = iso(max(dts))
@@ -282,7 +294,9 @@ class WorldStateEngine:
     # ============================================================
     # Builders
     # ============================================================
-    def _build_goals(self, goals_pages: List[JsonDict], tasks_pages: List[JsonDict]) -> JsonDict:
+    def _build_goals(
+        self, goals_pages: List[JsonDict], tasks_pages: List[JsonDict]
+    ) -> JsonDict:
         goals = []
         blocked = []
         stale = []
@@ -335,7 +349,9 @@ class WorldStateEngine:
             },
         }
 
-    def _build_projects(self, project_pages: List[JsonDict], task_pages: List[JsonDict]) -> JsonDict:
+    def _build_projects(
+        self, project_pages: List[JsonDict], task_pages: List[JsonDict]
+    ) -> JsonDict:
         projects = []
         at_risk = []
         blocked = []
@@ -352,7 +368,10 @@ class WorldStateEngine:
                 "deadline": safe_str(self._prop_date(p, "Target Deadline")),
                 "owner": safe_str(self._prop_select(p, "Handled By")),
                 "progress": {"pct": 0},
-                "next_step": {"text": safe_str(self._prop_rich(p, "Next Step")), "due": "UNKNOWN"},
+                "next_step": {
+                    "text": safe_str(self._prop_rich(p, "Next Step")),
+                    "due": "UNKNOWN",
+                },
                 "risk": {"level": "low", "reasons": []},
             }
 
@@ -411,7 +430,10 @@ class WorldStateEngine:
             if hours_to_due is not None and 0 <= hours_to_due <= 72:
                 due_soon.append(task)
 
-            if task["links"]["project_id"] == "UNKNOWN" and task["links"]["goal_id"] == "UNKNOWN":
+            if (
+                task["links"]["project_id"] == "UNKNOWN"
+                and task["links"]["goal_id"] == "UNKNOWN"
+            ):
                 unlinked.append(task)
 
             tasks.append(task)
@@ -426,7 +448,9 @@ class WorldStateEngine:
             },
         }
 
-    def _build_risks(self, goals: JsonDict, projects: JsonDict, tasks: JsonDict) -> List[JsonDict]:
+    def _build_risks(
+        self, goals: JsonDict, projects: JsonDict, tasks: JsonDict
+    ) -> List[JsonDict]:
         risks = []
 
         if tasks["data_quality"]["unlinked_count"] > 0:
@@ -492,7 +516,9 @@ class WorldStateEngine:
                 for a in arr:
                     if not isinstance(a, dict):
                         continue
-                    nm = a.get("name") or a.get("person", {}).get("email") or a.get("id")
+                    nm = (
+                        a.get("name") or a.get("person", {}).get("email") or a.get("id")
+                    )
                     if isinstance(nm, str) and nm.strip():
                         names.append(nm.strip())
                 return ", ".join(names) if names else "UNKNOWN"
@@ -503,7 +529,9 @@ class WorldStateEngine:
         try:
             arr2 = p["properties"][name].get("multi_select") or []
             if isinstance(arr2, list) and arr2:
-                names2 = [a["name"] for a in arr2 if isinstance(a, dict) and a.get("name")]
+                names2 = [
+                    a["name"] for a in arr2 if isinstance(a, dict) and a.get("name")
+                ]
                 return ", ".join(names2) if names2 else "UNKNOWN"
         except Exception:
             pass

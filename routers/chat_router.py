@@ -64,7 +64,9 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
 
         # Preserve/derive require_approval (default False)
         req_appr = md.get("require_approval")
-        require_approval = bool(req_appr) if isinstance(req_appr, (bool, int)) else False
+        require_approval = (
+            bool(req_appr) if isinstance(req_appr, (bool, int)) else False
+        )
 
         md["read_only"] = True
         md["require_approval"] = require_approval
@@ -368,7 +370,9 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         first = normalized[0]
         cmd = first.get("command")
         intent = first.get("intent")
-        is_wrapper = (cmd == PROPOSAL_WRAPPER_INTENT) or (intent == PROPOSAL_WRAPPER_INTENT)
+        is_wrapper = (cmd == PROPOSAL_WRAPPER_INTENT) or (
+            intent == PROPOSAL_WRAPPER_INTENT
+        )
 
         if is_wrapper:
             a2 = first.get("args")

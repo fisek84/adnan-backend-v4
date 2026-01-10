@@ -1,4 +1,4 @@
-﻿# routers/ceo_console_router.py
+# routers/ceo_console_router.py
 from __future__ import annotations
 
 import inspect
@@ -266,7 +266,9 @@ def _merge_agent_trace_into_response(resp: CEOCommandResponse, agent_out: Any) -
         resp.trace.update(agent_trace)
 
 
-def _extract_alignment_snapshot(context_hint: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+def _extract_alignment_snapshot(
+    context_hint: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
     """
     SSOT: gateway Ĺˇalje smart_context kao context_hint.
     OÄŤekujemo: context_hint.alignment_snapshot (dict).
@@ -327,7 +329,13 @@ def _fallback_behaviour_mode(alignment_snapshot: Dict[str, Any]) -> str:
             failed_24h = 0
 
     # Red alert if high risk OR blocked writes OR clear incident pressure
-    if blocked_writes or risk_score >= 0.9 or incidents_24h >= 1 or errors_1h >= 10 or ("data_loss_risk" in flags):
+    if (
+        blocked_writes
+        or risk_score >= 0.9
+        or incidents_24h >= 1
+        or errors_1h >= 10
+        or ("data_loss_risk" in flags)
+    ):
         return "red_alert"
 
     # Executive if elevated risk or approvals/failures exist
@@ -368,17 +376,29 @@ def _select_behaviour_mode(alignment_snapshot: Dict[str, Any]) -> Dict[str, Any]
                 try:
                     out = fn(alignment_snapshot)  # type: ignore[misc]
                     if isinstance(out, str) and out.strip():
-                        return {"mode": out.strip(), "source": f"ceo_behavior_router.{fn_name}", "applied": True}
+                        return {
+                            "mode": out.strip(),
+                            "source": f"ceo_behavior_router.{fn_name}",
+                            "applied": True,
+                        }
                     if isinstance(out, dict):
                         m = out.get("behaviour_mode") or out.get("mode")
                         if isinstance(m, str) and m.strip():
-                            return {"mode": m.strip(), "source": f"ceo_behavior_router.{fn_name}", "applied": True}
+                            return {
+                                "mode": m.strip(),
+                                "source": f"ceo_behavior_router.{fn_name}",
+                                "applied": True,
+                            }
                 except Exception:
                     # Fall through to deterministic fallback
                     pass
 
     # Fallback
-    return {"mode": _fallback_behaviour_mode(alignment_snapshot), "source": "router.fallback", "applied": False}
+    return {
+        "mode": _fallback_behaviour_mode(alignment_snapshot),
+        "source": "router.fallback",
+        "applied": False,
+    }
 
 
 def _enforce_silent_output(summary: str) -> str:
@@ -444,7 +464,9 @@ async def ceo_command(req: CEOCommandRequest = Body(...)) -> CEOCommandResponse:
     read_only = True
 
     # PATCH 2: do NOT force require_approval=True (preserve natural chat by default)
-    require_approval = bool(req.require_approval)  # default False when coming from /api/chat
+    require_approval = bool(
+        req.require_approval
+    )  # default False when coming from /api/chat
 
     knowledge_payload = bundle.get("knowledge_payload")
     if not isinstance(knowledge_payload, dict):
@@ -484,8 +506,12 @@ async def ceo_command(req: CEOCommandRequest = Body(...)) -> CEOCommandResponse:
             # Option C
             "alignment_snapshot": alignment_snapshot,
             "behaviour_mode": behaviour_mode,
-            "behaviour_mode_source": behaviour.get("source") if isinstance(behaviour, dict) else "router.unknown",
-            "behaviour_mode_router_applied": bool(behaviour.get("applied")) if isinstance(behaviour, dict) else False,
+            "behaviour_mode_source": behaviour.get("source")
+            if isinstance(behaviour, dict)
+            else "router.unknown",
+            "behaviour_mode_router_applied": bool(behaviour.get("applied"))
+            if isinstance(behaviour, dict)
+            else False,
             # UI/dashboard snapshot stays here (not in agent snapshot)
             "ceo_dashboard_snapshot": bundle.get("ceo_dashboard_snapshot") or {},
             "knowledge_snapshot_meta": bundle.get("knowledge_snapshot_meta") or {},
@@ -532,8 +558,12 @@ async def ceo_command(req: CEOCommandRequest = Body(...)) -> CEOCommandResponse:
             "knowledge_snapshot_meta": bundle.get("knowledge_snapshot_meta") or {},
             # Option C (test surface)
             "behaviour_mode": behaviour_mode,
-            "behaviour_mode_source": behaviour.get("source") if isinstance(behaviour, dict) else "router.unknown",
-            "behaviour_mode_router_applied": bool(behaviour.get("applied")) if isinstance(behaviour, dict) else False,
+            "behaviour_mode_source": behaviour.get("source")
+            if isinstance(behaviour, dict)
+            else "router.unknown",
+            "behaviour_mode_router_applied": bool(behaviour.get("applied"))
+            if isinstance(behaviour, dict)
+            else False,
         },
     )
 

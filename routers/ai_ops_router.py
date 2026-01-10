@@ -421,7 +421,9 @@ async def approve(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[st
                 approval.get("payload_summary"), dict
             ):
                 cmd_snapshot = approval.get("payload_summary") or {}
-            elif isinstance(approval, dict) and isinstance(approval.get("payload_key"), str):
+            elif isinstance(approval, dict) and isinstance(
+                approval.get("payload_key"), str
+            ):
                 try:
                     cmd_snapshot = json.loads(approval.get("payload_key") or "{}")
                 except Exception:
@@ -471,7 +473,9 @@ async def approve(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[st
         try:
             dor = get_decision_outcome_registry()
             if isinstance(execution_result, dict):
-                dor.set_execution_outcome(execution_id=execution_id, outcome=execution_result)
+                dor.set_execution_outcome(
+                    execution_id=execution_id, outcome=execution_result
+                )
         except Exception:
             pass
     except KeyError as exc:
@@ -544,9 +548,13 @@ def reject(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[str, Any]
             dor = get_decision_outcome_registry()
 
             cmd_snapshot = {}
-            if isinstance(approval, dict) and isinstance(approval.get("payload_summary"), dict):
+            if isinstance(approval, dict) and isinstance(
+                approval.get("payload_summary"), dict
+            ):
                 cmd_snapshot = approval.get("payload_summary") or {}
-            elif isinstance(approval, dict) and isinstance(approval.get("payload_key"), str):
+            elif isinstance(approval, dict) and isinstance(
+                approval.get("payload_key"), str
+            ):
                 try:
                     cmd_snapshot = json.loads(approval.get("payload_key") or "{}")
                 except Exception:

@@ -1,4 +1,4 @@
-﻿# gateway/gateway_server.py
+# gateway/gateway_server.py
 # ruff: noqa: E402
 # FULL FILE â€” replace the whole gateway_server.py with this.
 
@@ -233,9 +233,15 @@ _execution_registry = None  # type: ignore[assignment]
 _execution_orchestrator: Optional[ExecutionOrchestrator] = None
 
 
-def _require_boot_services() -> Tuple[
-    AICommandService, COOTranslationService, COOConversationService, Any, ExecutionOrchestrator
-]:
+def _require_boot_services() -> (
+    Tuple[
+        AICommandService,
+        COOTranslationService,
+        COOConversationService,
+        Any,
+        ExecutionOrchestrator,
+    ]
+):
     if not _BOOT_READY:
         raise HTTPException(status_code=503, detail=_BOOT_ERROR or "System not ready")
 
@@ -398,7 +404,9 @@ def _unwrap_proposal_wrapper_or_raise(
     read_only: bool,
     metadata: Dict[str, Any],
 ) -> AICommand:
-    is_wrapper = (intent == PROPOSAL_WRAPPER_INTENT) or (command == PROPOSAL_WRAPPER_INTENT)
+    is_wrapper = (intent == PROPOSAL_WRAPPER_INTENT) or (
+        command == PROPOSAL_WRAPPER_INTENT
+    )
     if not is_wrapper:
         return AICommand(
             command=command,
@@ -529,7 +537,9 @@ async def _boot_once() -> None:
                 _execution_registry = get_execution_registry()
                 _execution_orchestrator = ExecutionOrchestrator()
 
-                logger.info("Boot services initialized (orchestrator/translation/command)")
+                logger.info(
+                    "Boot services initialized (orchestrator/translation/command)"
+                )
             except Exception as exc:  # noqa: BLE001
                 _append_boot_error(f"boot_services_init_failed:{exc}")
                 logger.critical("Boot services init failed: %s", exc)
@@ -572,7 +582,9 @@ async def _boot_once() -> None:
                         orchestrator=_execution_orchestrator,
                         approvals=get_approval_state(),
                     )
-                    logger.info("AI Ops router services injected (shared orchestrator/approvals)")
+                    logger.info(
+                        "AI Ops router services injected (shared orchestrator/approvals)"
+                    )
             except Exception as exc:  # noqa: BLE001
                 _append_boot_error(f"ai_ops_injection_failed:{exc}")
                 logger.warning("AI Ops services injection failed: %s", exc)
@@ -646,7 +658,9 @@ async def _ensure_boot_if_needed(request: Request) -> None:
         await _boot_once()
     except Exception:
         # _BOOT_ERROR is already populated by _boot_once via _append_boot_error()
-        raise HTTPException(status_code=503, detail=_BOOT_ERROR or "System not ready") from None
+        raise HTTPException(
+            status_code=503, detail=_BOOT_ERROR or "System not ready"
+        ) from None
 
 
 # ================================================================
@@ -669,6 +683,7 @@ app = FastAPI(
     version=VERSION,
     lifespan=lifespan,
 )
+
 
 # IMPORTANT: support in-process tests that call app.router.startup()
 # (FastAPI lifespan is not guaranteed to run via your httpx ASGITransport)
@@ -1100,7 +1115,9 @@ async def execute_raw_command(payload: Dict[str, Any] = Body(...)):
     normalized = _normalize_execute_raw_payload_dict(payload)
 
     # HARD-BLOCK: next_step never enters approval/execute
-    if (normalized.intent in _HARD_READ_ONLY_INTENTS) or (normalized.command in _HARD_READ_ONLY_INTENTS):
+    if (normalized.intent in _HARD_READ_ONLY_INTENTS) or (
+        normalized.command in _HARD_READ_ONLY_INTENTS
+    ):
         execution_id = str(uuid.uuid4())
         return {
             "status": "COMPLETED",
@@ -1185,7 +1202,11 @@ async def execute_proposal(payload: ProposalExecuteInput):
     proposal_meta: Dict[str, Any] = {}
 
     if isinstance(proposal, dict):
-        proposal_cmd = proposal.get("command") or proposal.get("command_type") or proposal.get("type")
+        proposal_cmd = (
+            proposal.get("command")
+            or proposal.get("command_type")
+            or proposal.get("type")
+        )
         proposal_intent = proposal.get("intent") or proposal_cmd
 
         p_params = proposal.get("params")
@@ -1232,15 +1253,22 @@ async def execute_proposal(payload: ProposalExecuteInput):
             proposal_meta = dict(m2)
 
         proposal_scope = getattr(proposal, "scope", None)
-        proposal_risk = getattr(proposal, "risk", None) or getattr(proposal, "risk_hint", None)
+        proposal_risk = getattr(proposal, "risk", None) or getattr(
+            proposal, "risk_hint", None
+        )
 
     proposal_cmd = (proposal_cmd or "").strip() or None
     proposal_intent = (proposal_intent or "").strip() or None
 
     if not proposal_cmd or not proposal_intent:
-        raise HTTPException(status_code=400, detail="Invalid proposal: missing command/intent")
+        raise HTTPException(
+            status_code=400, detail="Invalid proposal: missing command/intent"
+        )
 
-    if proposal_cmd != PROPOSAL_WRAPPER_INTENT and proposal_intent != PROPOSAL_WRAPPER_INTENT:
+    if (
+        proposal_cmd != PROPOSAL_WRAPPER_INTENT
+        and proposal_intent != PROPOSAL_WRAPPER_INTENT
+    ):
         raise HTTPException(
             status_code=400,
             detail="Unsupported proposal payload (only ceo.command.propose)",
@@ -1365,7 +1393,11 @@ async def notion_read(payload: Any = Body(None)) -> Any:
 
         title = res.get("title") if isinstance(res.get("title"), str) else ""
         url = res.get("url") if isinstance(res.get("url"), str) else ""
-        md = res.get("content_markdown") if isinstance(res.get("content_markdown"), str) else ""
+        md = (
+            res.get("content_markdown")
+            if isinstance(res.get("content_markdown"), str)
+            else ""
+        )
 
         title = (title or "").strip()
         url = (url or "").strip()
@@ -1463,7 +1495,9 @@ def _validate_bulk_items(items: Any) -> List[Dict[str, Any]]:
             raise HTTPException(status_code=400, detail="each item must be an object")
         t = it.get("type")
         if not isinstance(t, str) or not t.strip():
-            raise HTTPException(status_code=400, detail="each item must have non-empty 'type'")
+            raise HTTPException(
+                status_code=400, detail="each item must have non-empty 'type'"
+            )
         tt = t.strip().lower()
         if tt not in _ALLOWED_BULK_TYPES:
             raise HTTPException(status_code=400, detail=f"invalid type: {t}")
@@ -1559,15 +1593,21 @@ def _resolve_db_id_from_service(notion_service: Any, db_key: str) -> str:
 
     for candidate in (lk, lk.rstrip("s"), lk + "s"):
         if candidate == "goals":
-            v = getattr(notion_service, "goals_db_id", None) or getattr(notion_service, "_goals_db_id", None)
+            v = getattr(notion_service, "goals_db_id", None) or getattr(
+                notion_service, "_goals_db_id", None
+            )
             if isinstance(v, str) and v.strip():
                 return v.strip()
         if candidate == "tasks":
-            v = getattr(notion_service, "tasks_db_id", None) or getattr(notion_service, "_tasks_db_id", None)
+            v = getattr(notion_service, "tasks_db_id", None) or getattr(
+                notion_service, "_tasks_db_id", None
+            )
             if isinstance(v, str) and v.strip():
                 return v.strip()
         if candidate == "projects":
-            v = getattr(notion_service, "projects_db_id", None) or getattr(notion_service, "_projects_db_id", None)
+            v = getattr(notion_service, "projects_db_id", None) or getattr(
+                notion_service, "_projects_db_id", None
+            )
             if isinstance(v, str) and v.strip():
                 return v.strip()
 
@@ -1637,15 +1677,21 @@ async def _query_notion_database(db_key: str, query: Dict[str, Any]) -> Dict[str
         or (os.getenv("NOTION_API_KEY") or os.getenv("NOTION_TOKEN") or "").strip()
     )
     if not isinstance(api_key, str) or not api_key.strip():
-        raise HTTPException(status_code=500, detail="NOTION_API_KEY/NOTION_TOKEN not set")
+        raise HTTPException(
+            status_code=500, detail="NOTION_API_KEY/NOTION_TOKEN not set"
+        )
 
     db_id = _resolve_db_id_from_service(notion_service, db_key)
     client = Client(auth=api_key.strip())
 
     try:
-        res = await asyncio.to_thread(lambda: client.databases.query(database_id=db_id, **(query or {})))
+        res = await asyncio.to_thread(
+            lambda: client.databases.query(database_id=db_id, **(query or {}))
+        )
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=f"Notion databases.query failed: {exc}") from exc
+        raise HTTPException(
+            status_code=500, detail=f"Notion databases.query failed: {exc}"
+        ) from exc
 
     if not isinstance(res, dict):
         return {
@@ -1755,7 +1801,12 @@ def _extract_smart_context(payload: Any) -> Optional[Dict[str, Any]]:
         return None
 
     def _pick(d: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        sc = d.get("smart_context") or d.get("context") or d.get("context_hint") or d.get("ui_context_hint")
+        sc = (
+            d.get("smart_context")
+            or d.get("context")
+            or d.get("context_hint")
+            or d.get("ui_context_hint")
+        )
         return sc if isinstance(sc, dict) else None
 
     sc = _pick(payload)
@@ -1939,7 +1990,6 @@ async def ceo_console_snapshot():
         "approvals": {
             "total": len(approvals_list),
             "pending_count": len(pending),
-            "completed_count": len(completed),
             "approved_count": len(approved),
             "rejected_count": len(rejected),
             "failed_count": len(failed),
@@ -2048,6 +2098,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 if not FRONTEND_DIST_DIR.is_dir():
     logger.warning("React dist directory not found: %s", FRONTEND_DIST_DIR)
 else:
+
     @app.head("/", include_in_schema=False)
     async def head_root():
         return Response(status_code=200)

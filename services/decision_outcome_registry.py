@@ -82,8 +82,8 @@ class DecisionOutcomeRegistry:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._store: Dict[str, Dict[str, Any]] = {}  # decision_id -> record dict
-        self._by_approval_id: Dict[str, str] = {}    # approval_id -> decision_id
-        self._by_execution_id: Dict[str, str] = {}   # execution_id -> decision_id
+        self._by_approval_id: Dict[str, str] = {}  # approval_id -> decision_id
+        self._by_execution_id: Dict[str, str] = {}  # execution_id -> decision_id
         self._load_from_disk_locked()
 
     # ----------------------------
@@ -114,7 +114,11 @@ class DecisionOutcomeRegistry:
             raise ValueError("DecisionOutcomeRegistry requires approval.execution_id")
 
         # Decide timestamp deterministically.
-        ts = _ensure_str(a.get("decided_at")) or _ensure_str(a.get("created_at")) or _utc_now_iso()
+        ts = (
+            _ensure_str(a.get("decided_at"))
+            or _ensure_str(a.get("created_at"))
+            or _utc_now_iso()
+        )
 
         # Recommendation typing (deterministic):
         # prefer cmd_snapshot intent, then command, then approval.command
@@ -143,7 +147,9 @@ class DecisionOutcomeRegistry:
 
             decision_id = str(uuid4())
 
-            executed = bool(accepted)  # approve means it will execute; reject means it will not
+            executed = bool(
+                accepted
+            )  # approve means it will execute; reject means it will not
             execution_result = "unknown" if accepted else "not_executed"
 
             rec = DecisionOutcomeRecord(
@@ -241,7 +247,9 @@ class DecisionOutcomeRegistry:
         with self._lock:
             items = list(self._store.values())
             # Sort by timestamp descending (string ISO; safe enough for utc isoformat)
-            items.sort(key=lambda x: str(_ensure_dict(x).get("timestamp")), reverse=True)
+            items.sort(
+                key=lambda x: str(_ensure_dict(x).get("timestamp")), reverse=True
+            )
             return [dict(_ensure_dict(x)) for x in items[:nn]]
 
     # ----------------------------
@@ -262,11 +270,17 @@ class DecisionOutcomeRegistry:
                 by_exec = data.get("by_execution_id")
 
                 if isinstance(store, dict):
-                    self._store.update({str(k): _ensure_dict(v) for k, v in store.items()})
+                    self._store.update(
+                        {str(k): _ensure_dict(v) for k, v in store.items()}
+                    )
                 if isinstance(by_approval, dict):
-                    self._by_approval_id.update({str(k): str(v) for k, v in by_approval.items()})
+                    self._by_approval_id.update(
+                        {str(k): str(v) for k, v in by_approval.items()}
+                    )
                 if isinstance(by_exec, dict):
-                    self._by_execution_id.update({str(k): str(v) for k, v in by_exec.items()})
+                    self._by_execution_id.update(
+                        {str(k): str(v) for k, v in by_exec.items()}
+                    )
 
             except Exception as e:
                 logger.warning("DecisionOutcomeRegistry load failed: %s", str(e))
@@ -293,7 +307,10 @@ def get_decision_outcome_registry() -> DecisionOutcomeRegistry:
 
     with _DECISION_OUTCOME_REGISTRY_LOCK:
         # If file was deleted between runs, reset process-memory registry to match disk reality.
-        if _DECISION_OUTCOME_REGISTRY_SINGLETON is not None and not _REGISTRY_FILE.exists():
+        if (
+            _DECISION_OUTCOME_REGISTRY_SINGLETON is not None
+            and not _REGISTRY_FILE.exists()
+        ):
             _DECISION_OUTCOME_REGISTRY_SINGLETON = None
 
         if _DECISION_OUTCOME_REGISTRY_SINGLETON is None:
