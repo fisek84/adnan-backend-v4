@@ -147,9 +147,8 @@ class DecisionOutcomeRegistry:
 
             decision_id = str(uuid4())
 
-            executed = bool(
-                accepted
-            )  # approve means it will execute; reject means it will not
+            # Enterprise canon: approved ≠ executed
+            executed = False
             execution_result = "unknown" if accepted else "not_executed"
 
             rec = DecisionOutcomeRecord(

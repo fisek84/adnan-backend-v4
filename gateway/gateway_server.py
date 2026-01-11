@@ -1,6 +1,6 @@
 # gateway/gateway_server.py
 # ruff: noqa: E402
-# FULL FILE â€” replace the whole gateway_server.py with this.
+# FULL FILE — replace the whole gateway_server.py with this.
 
 from __future__ import annotations
 
@@ -168,7 +168,7 @@ from services.identity_loader import load_identity
 from services.ceo_console_snapshot_service import CEOConsoleSnapshotService
 
 # ================================================================
-# NOTION SERVICE (KANONSKI INIT) â€” NO SIDE EFFECTS AT IMPORT
+# NOTION SERVICE (KANONSKI INIT) — NO SIDE EFFECTS AT IMPORT
 # ================================================================
 from services.knowledge_snapshot_service import KnowledgeSnapshotService
 from services.notion_service import (
@@ -214,7 +214,7 @@ from services.app_bootstrap import bootstrap_application
 # INITIAL LOAD
 # ================================================================
 if not OS_ENABLED:
-    logger.critical("OS_ENABLED=false â€” system will not start.")
+    logger.critical("OS_ENABLED=false — system will not start.")
     raise RuntimeError("OS is disabled by configuration.")
 
 identity = load_identity()
@@ -628,7 +628,7 @@ async def _shutdown_best_effort() -> None:
     _execution_orchestrator = None
 
     _BOOT_READY = False
-    logger.info("System shutdown â€” boot_ready=False.")
+    logger.info("System shutdown — boot_ready=False.")
 
 
 def _is_boot_exempt_path(path: str) -> bool:
@@ -891,7 +891,7 @@ def _proposal_wrapper_dict(*, prompt: str, source: str) -> Dict[str, Any]:
         "command": PROPOSAL_WRAPPER_INTENT,
         "args": {"prompt": safe_prompt},
         "intent": None,
-        "reason": "Notion write intent ide kroz approval pipeline; predlaĹľem komandu za promotion/execute.",
+        "reason": "Notion write intent ide kroz approval pipeline; predlažem komandu za promotion/execute.",
         "dry_run": True,
         "requires_approval": True,
         "risk": "LOW",
@@ -984,6 +984,77 @@ def _inject_fallback_proposed_commands(result: Dict[str, Any], *, prompt: str) -
     result["trace"] = tr
 
 
+def _compute_confidence_risk_block(
+    *,
+    prompt: str,
+    trace: Dict[str, Any],
+    proposed_commands: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """
+    CANON (Truthful UX meta):
+      - deterministic, schema-stable block
+      - no hidden assumptions about upstream agent internals
+      - values are conservative heuristics (not "decisions")
+    Required keys:
+      - confidence_score: float 0..1
+      - risk_level: "low"|"medium"|"high"
+      - assumption_count: int >= 0
+    """
+    tr = trace if isinstance(trace, dict) else {}
+    pcs = proposed_commands if isinstance(proposed_commands, list) else []
+
+    fallback = bool(tr.get("fallback_proposed_commands") is True)
+
+    # Assumption count: we do not introspect LLM chain-of-thought.
+    # Deterministic baseline: 0; if fallback proposals were injected, treat as 1 heuristic.
+    assumption_count = 1 if fallback else 0
+
+    # Risk: if proposals exist -> at least medium (because action intent exists).
+    # If any proposal signals high risk -> high.
+    risk_level = "low"
+    if len(pcs) > 0:
+        risk_level = "medium"
+
+    for p in pcs:
+        if not isinstance(p, dict):
+            continue
+        r = (p.get("risk") or p.get("risk_hint") or "").strip().lower()
+        if r in {"high", "critical"}:
+            risk_level = "high"
+            break
+
+    # Confidence: conservative heuristic; lower if we had to fallback.
+    confidence_score = 0.90
+    if fallback:
+        confidence_score = 0.60
+
+    # If input is empty-ish (should not happen due to 422 guard), reduce slightly.
+    if not (prompt or "").strip():
+        confidence_score = min(confidence_score, 0.50)
+
+    # Clamp
+    try:
+        confidence_score_f = float(confidence_score)
+    except Exception:
+        confidence_score_f = 0.50
+    if confidence_score_f < 0.0:
+        confidence_score_f = 0.0
+    if confidence_score_f > 1.0:
+        confidence_score_f = 1.0
+
+    if risk_level not in {"low", "medium", "high"}:
+        risk_level = "low"
+
+    if not isinstance(assumption_count, int) or assumption_count < 0:
+        assumption_count = 0
+
+    return {
+        "confidence_score": confidence_score_f,
+        "risk_level": risk_level,
+        "assumption_count": assumption_count,
+    }
+
+
 def _normalize_execute_raw_payload_dict(body: Dict[str, Any]) -> ExecuteRawInput2:
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="Body must be an object")
@@ -1042,7 +1113,7 @@ def _normalize_execute_raw_payload_dict(body: Dict[str, Any]) -> ExecuteRawInput
 
 
 # ================================================================
-# /api/execute â€” EXECUTION PATH (NL INPUT)
+# /api/execute — EXECUTION PATH (NL INPUT)
 # ================================================================
 @app.post("/api/execute")
 async def execute_command(payload: ExecuteInput):
@@ -1332,7 +1403,7 @@ async def execute_proposal(payload: ProposalExecuteInput):
 
 
 # ================================================================
-# NOTION READ â€” READ ONLY (NO APPROVAL / NO EXECUTION)
+# NOTION READ — READ ONLY (NO APPROVAL / NO EXECUTION)
 # ================================================================
 @app.post("/api/notion/read", response_model=NotionReadResponse)
 async def notion_read(payload: Any = Body(None)) -> Any:
@@ -1428,7 +1499,7 @@ async def notion_read(payload: Any = Body(None)) -> Any:
 
 
 # ================================================================
-# NOTION OPS â€” LIST DATABASES (READ ONLY)
+# NOTION OPS — LIST DATABASES (READ ONLY)
 # ================================================================
 @app.get("/api/notion-ops/databases")
 @app.get("/notion-ops/databases")
@@ -1886,6 +1957,19 @@ async def _ceo_command_core(payload_dict: Dict[str, Any]) -> JSONResponse:
     if not isinstance(result.get("proposed_commands"), list):
         result["proposed_commands"] = []
 
+    # Normalize/inject fallback proposals (existing behaviour)
+    _inject_fallback_proposed_commands(result, prompt=cleaned_text.strip())
+
+    # Ensure trace exists and inject confidence_risk block (NEW)
+    tr2 = _ensure_dict(result.get("trace"))
+    if not isinstance(tr2.get("confidence_risk"), dict):
+        tr2["confidence_risk"] = _compute_confidence_risk_block(
+            prompt=cleaned_text.strip(),
+            trace=tr2,
+            proposed_commands=_ensure_list(result.get("proposed_commands")),
+        )
+    result["trace"] = tr2
+
     return JSONResponse(content=result, media_type="application/json; charset=utf-8")
 
 
@@ -2093,7 +2177,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 
 # ================================================================
-# REACT FRONTEND (PROD BUILD) â€” SERVE dist/
+# REACT FRONTEND (PROD BUILD) — SERVE dist/
 # ================================================================
 if not FRONTEND_DIST_DIR.is_dir():
     logger.warning("React dist directory not found: %s", FRONTEND_DIST_DIR)

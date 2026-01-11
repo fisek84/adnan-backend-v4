@@ -1,9 +1,8 @@
-# routers/ceo_console_router.py
 from __future__ import annotations
 
 import inspect
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple, Literal
 
 from fastapi import APIRouter, Body
 from pydantic import BaseModel, Field
@@ -55,7 +54,7 @@ class CEOCommandRequest(BaseModel):
     session_id: Optional[str] = None
     context_hint: Optional[Dict[str, Any]] = None
 
-    # frontend moĹľe poslati, ali router ima pravo override-a
+    # frontend može poslati, ali router ima pravo override-a
     read_only: Optional[bool] = None
     require_approval: Optional[bool] = None
     preferred_agent_id: Optional[str] = None
@@ -121,6 +120,9 @@ class CEOCommandRequest(BaseModel):
             return values
 
 
+RiskLevel = Literal["low", "medium", "high"]
+
+
 class CEOCommandResponse(BaseModel):
     ok: bool = True
     read_only: bool = True
@@ -136,6 +138,10 @@ class CEOCommandResponse(BaseModel):
 
     # Debug/trace
     trace: Dict[str, Any] = Field(default_factory=dict)
+
+    # Confidence & Risk Scoring (VISOK PRIORITET)
+    # - Top-level blok za CEO UX (frontend može ignorisati bez regresije)
+    confidence_risk: Dict[str, Any] = Field(default_factory=dict)
 
 
 # ======================
@@ -270,8 +276,8 @@ def _extract_alignment_snapshot(
     context_hint: Optional[Dict[str, Any]],
 ) -> Dict[str, Any]:
     """
-    SSOT: gateway Ĺˇalje smart_context kao context_hint.
-    OÄŤekujemo: context_hint.alignment_snapshot (dict).
+    SSOT: gateway šalje smart_context kao context_hint.
+    Očekujemo: context_hint.alignment_snapshot (dict).
     """
     if not isinstance(context_hint, dict):
         return {}
@@ -352,8 +358,8 @@ def _fallback_behaviour_mode(alignment_snapshot: Dict[str, Any]) -> str:
 
 def _select_behaviour_mode(alignment_snapshot: Dict[str, Any]) -> Dict[str, Any]:
     """
-    PokuĹˇa koristiti services/ceo_behavior_router.py bez pretpostavke API-ja.
-    VraÄ‡a: {"mode": str, "source": str, "applied": bool}
+    Pokušaj koristiti services/ceo_behavior_router.py bez pretpostavke API-ja.
+    Vraća: {"mode": str, "source": str, "applied": bool}
     """
     # Try to import user-provided behaviour router
     try:
@@ -405,7 +411,7 @@ def _enforce_silent_output(summary: str) -> str:
     """
     Router-level guardrail for DoD:
       - CEO Advisor NE govori uvijek
-      - CEO Advisor nikad ne â€śfilozofiraâ€ť u silent/monitor
+      - CEO Advisor nikad ne "filozofira" u silent/monitor
     """
     s = (summary or "").strip()
     if not s:
@@ -438,6 +444,152 @@ def _promote_behaviour_trace(resp: CEOCommandResponse) -> None:
     resp.trace = tr
 
 
+# -----------------------------
+# Confidence & Risk Scoring
+# -----------------------------
+def _clamp01(x: float) -> float:
+    if x < 0.0:
+        return 0.0
+    if x > 1.0:
+        return 1.0
+    return x
+
+
+def _extract_intent_and_risk_from_proposal(pc: Dict[str, Any]) -> Tuple[Optional[str], Optional[str], Optional[bool]]:
+    """
+    Returns: (intent, risk_hint, requires_approval)
+    - intent: prefers args.ai_command.intent
+    - risk_hint: pc["risk"] or pc["risk_hint"]
+    - requires_approval: pc["requires_approval"] (if present)
+    """
+    if not isinstance(pc, dict):
+        return None, None, None
+
+    requires_approval = pc.get("requires_approval")
+    if not isinstance(requires_approval, bool):
+        requires_approval = None
+
+    risk_hint = pc.get("risk") or pc.get("risk_hint")
+    if isinstance(risk_hint, str):
+        risk_hint = risk_hint.strip().upper()
+    else:
+        risk_hint = None
+
+    intent = None
+    args = pc.get("args")
+    if isinstance(args, dict):
+        ai_cmd = args.get("ai_command")
+        if isinstance(ai_cmd, dict):
+            v = ai_cmd.get("intent")
+            if isinstance(v, str) and v.strip():
+                intent = v.strip()
+
+    if intent is None:
+        v2 = pc.get("intent")
+        if isinstance(v2, str) and v2.strip():
+            intent = v2.strip()
+
+    return intent, risk_hint, requires_approval
+
+
+def _compute_risk_level(proposed: List[Dict[str, Any]]) -> RiskLevel:
+    """
+    Deterministic:
+    - high: any proposal requires approval OR is notion_write OR risk_hint=HIGH
+    - medium: any proposal exists with risk_hint=MEDIUM
+    - low: otherwise
+    """
+    has_any = False
+    saw_medium = False
+
+    for pc in proposed:
+        if not isinstance(pc, dict) or not pc:
+            continue
+        has_any = True
+
+        cmd = pc.get("command")
+        if isinstance(cmd, str) and cmd.strip().lower() == "notion_write":
+            return "high"
+
+        intent, risk_hint, requires_approval = _extract_intent_and_risk_from_proposal(pc)
+
+        if requires_approval is True:
+            return "high"
+
+        if isinstance(risk_hint, str) and risk_hint == "HIGH":
+            return "high"
+        if isinstance(risk_hint, str) and risk_hint == "MEDIUM":
+            saw_medium = True
+
+        # If we have ai_command intent at all, it's an actionable ops proposal -> treat as high.
+        if isinstance(intent, str) and intent.strip():
+            return "high"
+
+    if not has_any:
+        return "low"
+    if saw_medium:
+        return "medium"
+    return "low"
+
+
+def _extract_alignment_confidence(trace: Dict[str, Any]) -> Optional[float]:
+    """
+    Best-effort: OpenAI executor populates trace["alignment_confidence"] sometimes.
+    Return float in [0,1] if valid, else None.
+    """
+    if not isinstance(trace, dict):
+        return None
+    v = trace.get("alignment_confidence")
+    try:
+        f = float(v)
+    except Exception:
+        return None
+    if 0.0 <= f <= 1.0:
+        return f
+    return None
+
+
+def _compute_confidence_score(*, risk_level: RiskLevel, trace: Dict[str, Any]) -> float:
+    base = _extract_alignment_confidence(trace)
+    if base is None:
+        base = 0.9
+
+    penalty = 0.0
+    if risk_level == "medium":
+        penalty = 0.2
+    elif risk_level == "high":
+        penalty = 0.4
+
+    return _clamp01(base - penalty)
+
+
+def _inject_confidence_risk(resp: CEOCommandResponse) -> None:
+    """
+    Adds:
+      - resp.confidence_risk (top-level)
+      - resp.trace["confidence_risk"] mirror (+ assumption_count_source)
+    """
+    proposed = resp.proposed_commands if isinstance(resp.proposed_commands, list) else []
+    risk_level = _compute_risk_level(proposed)
+    confidence_score = _compute_confidence_score(risk_level=risk_level, trace=resp.trace)
+
+    # NIJE POZNATO: sistem ne emitira assumptions -> istinito 0 + source marker
+    assumption_count = 0
+    payload = {
+        "confidence_score": float(confidence_score),
+        "risk_level": risk_level,
+        "assumption_count": int(assumption_count),
+    }
+    resp.confidence_risk = dict(payload)
+
+    tr = resp.trace if isinstance(resp.trace, dict) else {}
+    tr["confidence_risk"] = {
+        **payload,
+        "assumption_count_source": "not_provided",
+    }
+    resp.trace = tr
+
+
 # ======================
 # ROUTES
 # ======================
@@ -460,62 +612,35 @@ async def ceo_command(req: CEOCommandRequest = Body(...)) -> CEOCommandResponse:
         "ts": _now_iso(),
     }
 
-    # CANON: force read_only regardless of user-provided flags
     read_only = True
+    require_approval = bool(req.require_approval)
 
-    # PATCH 2: do NOT force require_approval=True (preserve natural chat by default)
-    require_approval = bool(
-        req.require_approval
-    )  # default False when coming from /api/chat
-
-    knowledge_payload = bundle.get("knowledge_payload")
-    if not isinstance(knowledge_payload, dict):
-        knowledge_payload = {}
-
-    # -------------------------
-    # Option C: Behaviour mode
-    # -------------------------
+    # Behaviour mode logic
     context_hint = req.context_hint or {}
     alignment_snapshot = _extract_alignment_snapshot(context_hint)
     behaviour = _select_behaviour_mode(alignment_snapshot)
-    behaviour_mode = behaviour.get("mode") if isinstance(behaviour, dict) else None
-    if not isinstance(behaviour_mode, str) or not behaviour_mode.strip():
-        behaviour_mode = "advisory"
-    behaviour_mode = behaviour_mode.strip()
+    behaviour_mode = behaviour.get("mode", "advisory").strip()
 
     agent_input = AgentInput(
         message=req.text,
-        snapshot=knowledge_payload,  # SSOT payload to agent
+        snapshot=bundle.get("knowledge_payload", {}),
         conversation_id=req.session_id,
         preferred_agent_id=req.preferred_agent_id,
         identity_pack={
             "mode": "ADVISOR",
             "read_only": True,
             "require_approval": require_approval,
-            # Option C signal for executor / LLM instruction rewrite
             "behaviour_mode": behaviour_mode,
         },
         metadata={
             "initiator": initiator,
             "canon": "read_propose_only",
             "router_version": ROUTER_VERSION,
-            "endpoint": "/api/internal/ceo-console/command/internal",
             "snapshot_meta": snapshot_meta,
             "read_only": True,
             "require_approval": require_approval,
-            # Option C
             "alignment_snapshot": alignment_snapshot,
             "behaviour_mode": behaviour_mode,
-            "behaviour_mode_source": behaviour.get("source")
-            if isinstance(behaviour, dict)
-            else "router.unknown",
-            "behaviour_mode_router_applied": bool(behaviour.get("applied"))
-            if isinstance(behaviour, dict)
-            else False,
-            # UI/dashboard snapshot stays here (not in agent snapshot)
-            "ceo_dashboard_snapshot": bundle.get("ceo_dashboard_snapshot") or {},
-            "knowledge_snapshot_meta": bundle.get("knowledge_snapshot_meta") or {},
-            "context_hint": context_hint,
         },
     )
 
@@ -532,8 +657,6 @@ async def ceo_command(req: CEOCommandRequest = Body(...)) -> CEOCommandResponse:
     proposed = _extract_proposed_commands_opaque(agent_out)
     summary = _extract_agent_text(agent_out)
 
-    # Router-level DoD enforcement:
-    # - in silent/monitor, do not output long philosophy when there is no actionable proposal
     if behaviour_mode in {"silent", "monitor"} and len(proposed) == 0:
         summary = _enforce_silent_output(summary)
 
@@ -549,26 +672,20 @@ async def ceo_command(req: CEOCommandRequest = Body(...)) -> CEOCommandResponse:
             "snapshot_meta": snapshot_meta,
             "read_only": read_only,
             "require_approval": require_approval,
-            # Option C (test surface)
             "behaviour_mode": behaviour_mode,
         },
         trace={
             "router_version": ROUTER_VERSION,
             "initiator": initiator,
             "knowledge_snapshot_meta": bundle.get("knowledge_snapshot_meta") or {},
-            # Option C (test surface)
             "behaviour_mode": behaviour_mode,
-            "behaviour_mode_source": behaviour.get("source")
-            if isinstance(behaviour, dict)
-            else "router.unknown",
-            "behaviour_mode_router_applied": bool(behaviour.get("applied"))
-            if isinstance(behaviour, dict)
-            else False,
+            "behaviour_mode_source": behaviour.get("source"),
         },
     )
 
     _merge_agent_trace_into_response(resp, agent_out)
     _promote_behaviour_trace(resp)
+    _inject_confidence_risk(resp)
     return resp
 
 

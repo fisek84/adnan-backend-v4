@@ -1,4 +1,4 @@
-# services/observability_service.py
+from __future__ import annotations
 
 """
 OBSERVABILITY & AUDIT SURFACE — FAZA 12 (READ-ONLY)
@@ -15,10 +15,9 @@ Uloga:
 - nema mutacije stanja
 """
 
-from __future__ import annotations
-
 from typing import Any, Dict, List, Optional
 
+from services.decision_outcome_registry import get_decision_outcome_registry
 from services.memory_service import MemoryService
 
 
@@ -85,7 +84,7 @@ class ObservabilityService:
         return stats
 
     # ============================================================
-    # DECISION OUTCOMES (AUDIT TRAIL)
+    # DECISION OUTCOMES (LEGACY MEMORY TRAIL)
     # ============================================================
     def get_decision_outcomes(
         self,
@@ -101,6 +100,13 @@ class ObservabilityService:
             return []
 
         return outcomes[-limit:]
+
+    # ============================================================
+    # DOR DECISION OUTCOMES (CANONICAL, READ-ONLY)
+    # ============================================================
+    def get_dor_decision_outcomes(self, limit: int = 50) -> List[Dict[str, Any]]:
+        dor = get_decision_outcome_registry()
+        return dor.list_recent(limit)
 
     # ============================================================
     # SOP PERFORMANCE
@@ -129,6 +135,7 @@ class ObservabilityService:
         return {
             "active_decision": self.get_active_decision(),
             "recent_decisions": self.get_decision_outcomes(limit=10),
+            "recent_decisions_dor": self.get_dor_decision_outcomes(limit=10),
             "execution_stats": self.get_execution_stats(),
             "read_only": True,
         }

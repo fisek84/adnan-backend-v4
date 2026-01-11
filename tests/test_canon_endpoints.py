@@ -124,3 +124,34 @@ def test_ceo_console_snapshot_contains_ssot_payload():
     assert "tasks_summary" in body
     assert isinstance(body["goals_summary"], list)
     assert isinstance(body["tasks_summary"], list)
+
+
+def test_ceo_command_includes_confidence_risk_block():
+    app = _get_app()
+    client = TestClient(app)
+
+    r = client.post("/api/ceo/command", json={"input_text": "prikazi stanje"})
+    assert r.status_code == 200
+
+    body = r.json()
+    assert body["ok"] is True
+    assert body["read_only"] is True
+    assert "trace" in body
+    assert isinstance(body["trace"], dict)
+
+    cr = body["trace"].get("confidence_risk")
+    assert isinstance(cr, dict), "trace.confidence_risk missing"
+
+    # required keys
+    assert "confidence_score" in cr
+    assert "risk_level" in cr
+    assert "assumption_count" in cr
+
+    # types + ranges
+    assert isinstance(cr["confidence_score"], (int, float))
+    assert 0.0 <= float(cr["confidence_score"]) <= 1.0
+
+    assert cr["risk_level"] in ("low", "medium", "high")
+
+    assert isinstance(cr["assumption_count"], int)
+    assert cr["assumption_count"] >= 0

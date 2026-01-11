@@ -147,6 +147,136 @@ def _proposal_v2_from_ai_command(ai_cmd_serialized: Any) -> Dict[str, Any]:
     }
 
 
+def _map_confidence_to_score(confidence: Optional[str]) -> float:
+    """
+    Canon mapping: categorical confidence -> float score (0.0–1.0)
+
+    NOTE:
+    - Additive only; existing clients still read `confidence`.
+    - This is a deterministic mapping (no ML/LLM inference).
+    """
+    key = (confidence or "").strip().upper()
+    mapping = {
+        "LOW": 0.35,
+        "MED": 0.60,
+        "MEDIUM": 0.60,
+        "HIGH": 0.85,
+    }
+    return float(mapping.get(key, 0.60))
+
+
+def _normalize_risk_level(risk: Optional[str]) -> str:
+    """
+    Canon normalization: risk -> risk_level in {low, medium, high}
+    """
+    key = (risk or "").strip().upper()
+    mapping = {
+        "LOW": "low",
+        "MED": "medium",
+        "MEDIUM": "medium",
+        "HIGH": "high",
+    }
+    return mapping.get(key, "medium")
+
+
+def _ensure_int_ge_0(value: Any) -> int:
+    try:
+        n = int(value)
+    except Exception:  # noqa: BLE001
+        return 0
+    return n if n >= 0 else 0
+
+
+def _compute_confidence_risk(
+    *,
+    text: str,
+    convo_type: Optional[str],
+    proposed_commands: Any,
+    gating_override: bool,
+) -> Dict[str, Any]:
+    """
+    Deterministic, low-assumption contract:
+      - always returns dict with backward compatible fields:
+          {"confidence": <str>, "risk": <str>, "signals": {...}}
+      - plus canon enterprise fields:
+          confidence_score: float (0.0–1.0)
+          risk_level: "low"|"medium"|"high"
+          assumption_count: int (>=0)
+      - does NOT execute; only metadata for UX/debug.
+
+    Rules (legacy behavior preserved):
+      - confidence: HIGH if we produced proposals, otherwise MEDIUM/LOW depending on gate
+      - risk: LOW unless proposals exist (then MED); if proposal indicates approval/write, keep MED
+    """
+    pcs = proposed_commands if isinstance(proposed_commands, list) else []
+    has_proposals = len(pcs) > 0
+
+    # Assumptions used by this deterministic scoring layer (not LLM assumptions).
+    assumptions: list[str] = []
+    if convo_type is None:
+        assumptions.append("convo_type_missing_defaulted")
+    if not isinstance(proposed_commands, list):
+        assumptions.append("proposed_commands_non_list_defaulted_to_empty")
+    if (text or "").strip() == "":
+        assumptions.append("empty_text_in_scoring_layer")
+
+    # Confidence (legacy)
+    confidence = "MEDIUM"
+    if has_proposals:
+        confidence = "HIGH"
+    else:
+        # If gate not ready and no proposals, we're basically advisory
+        if convo_type and convo_type != "ready_for_translation":
+            confidence = "LOW"
+        else:
+            confidence = "MEDIUM"
+
+    # Risk (legacy)
+    risk = "LOW"
+    if has_proposals:
+        risk = "MED"
+
+    # If proposals explicitly flag approval/write, keep at least MED
+    for p in pcs:
+        if not isinstance(p, dict):
+            assumptions.append("proposal_non_dict_ignored")
+            continue
+        if p.get("required_approval") is True or p.get("requires_approval") is True:
+            risk = "MED"
+            break
+        intent = p.get("intent")
+        if isinstance(intent, str) and intent.strip().lower() in {
+            "notion_write",
+            "write",
+            "execute",
+        }:
+            risk = "MED"
+            break
+
+    # Canon enterprise fields
+    confidence_score = _map_confidence_to_score(confidence)
+    risk_level = _normalize_risk_level(risk)
+    assumption_count = _ensure_int_ge_0(len(assumptions))
+
+    return {
+        # Backwards-compatible fields (do not remove)
+        "confidence": confidence,
+        "risk": risk,
+        # Canon enterprise fields (additive)
+        "confidence_score": float(confidence_score),
+        "risk_level": risk_level,  # low|medium|high
+        "assumption_count": assumption_count,
+        "signals": {
+            "convo_type": convo_type,
+            "gating_override": bool(gating_override),
+            "has_proposals": bool(has_proposals),
+            "looks_like_action": _looks_like_action_command(text),
+            # auditability: what this scoring layer assumed
+            "assumptions": assumptions,
+        },
+    }
+
+
 # ============================================================
 # RUN AI — UX ENTRYPOINT (CANON: READ-ONLY)
 # ============================================================
@@ -173,6 +303,17 @@ async def run_ai(req: AIRequest) -> Dict[str, Any]:
         or coo_conversation_service is None
         or coo_translation_service is None
     ):
+        meta = {
+            "reason": "ai_services_not_initialized",
+            "endpoint": "/ai/run",
+            "canon": "read_propose_only",
+        }
+        meta["confidence_risk"] = _compute_confidence_risk(
+            text=(req.text or "").strip(),
+            convo_type="unavailable",
+            proposed_commands=[],
+            gating_override=False,
+        )
         return {
             "ok": True,
             "read_only": True,
@@ -181,11 +322,7 @@ async def run_ai(req: AIRequest) -> Dict[str, Any]:
             "next_actions": [],
             "proposed_commands": [],
             "proposed_commands_v2": [],
-            "meta": {
-                "reason": "ai_services_not_initialized",
-                "endpoint": "/ai/run",
-                "canon": "read_propose_only",
-            },
+            "meta": meta,
         }
 
     text = (req.text or "").strip()
@@ -229,6 +366,19 @@ async def run_ai(req: AIRequest) -> Dict[str, Any]:
                 # v2 proposal (compatible with ProposedCommand)
                 proposed_v2 = _proposal_v2_from_ai_command(serialized)
 
+                meta = {
+                    "gating_override": True,
+                    "convo_type": convo_type,
+                    "endpoint": "/ai/run",
+                    "canon": "read_propose_only",
+                }
+                meta["confidence_risk"] = _compute_confidence_risk(
+                    text=text,
+                    convo_type=convo_type,
+                    proposed_commands=[proposed_legacy],
+                    gating_override=True,
+                )
+
                 return {
                     "ok": True,
                     "read_only": True,
@@ -239,13 +389,19 @@ async def run_ai(req: AIRequest) -> Dict[str, Any]:
                     ],
                     "proposed_commands": [proposed_legacy],
                     "proposed_commands_v2": [proposed_v2],
-                    "meta": {
-                        "gating_override": True,
-                        "convo_type": convo_type,
-                        "endpoint": "/ai/run",
-                        "canon": "read_propose_only",
-                    },
+                    "meta": meta,
                 }
+
+        meta = {
+            "endpoint": "/ai/run",
+            "canon": "read_propose_only",
+        }
+        meta["confidence_risk"] = _compute_confidence_risk(
+            text=text,
+            convo_type=convo_type,
+            proposed_commands=[],
+            gating_override=False,
+        )
 
         return {
             "ok": True,
@@ -255,10 +411,7 @@ async def run_ai(req: AIRequest) -> Dict[str, Any]:
             "next_actions": getattr(convo, "next_actions", []) or [],
             "proposed_commands": [],
             "proposed_commands_v2": [],
-            "meta": {
-                "endpoint": "/ai/run",
-                "canon": "read_propose_only",
-            },
+            "meta": meta,
         }
 
     # 2) TRANSLATION (PROPOSE AICommand)
@@ -269,6 +422,17 @@ async def run_ai(req: AIRequest) -> Dict[str, Any]:
     )
 
     if not command:
+        meta = {
+            "endpoint": "/ai/run",
+            "canon": "read_propose_only",
+        }
+        meta["confidence_risk"] = _compute_confidence_risk(
+            text=text,
+            convo_type=convo_type,
+            proposed_commands=[],
+            gating_override=False,
+        )
+
         return {
             "ok": True,
             "read_only": True,
@@ -279,10 +443,7 @@ async def run_ai(req: AIRequest) -> Dict[str, Any]:
             ],
             "proposed_commands": [],
             "proposed_commands_v2": [],
-            "meta": {
-                "endpoint": "/ai/run",
-                "canon": "read_propose_only",
-            },
+            "meta": meta,
         }
 
     serialized = _serialize_command(command)
@@ -294,6 +455,17 @@ async def run_ai(req: AIRequest) -> Dict[str, Any]:
         "required_approval": True,
     }
     proposed_v2 = _proposal_v2_from_ai_command(serialized)
+
+    meta = {
+        "endpoint": "/ai/run",
+        "canon": "read_propose_only",
+    }
+    meta["confidence_risk"] = _compute_confidence_risk(
+        text=text,
+        convo_type=convo_type,
+        proposed_commands=[proposed_legacy],
+        gating_override=False,
+    )
 
     return {
         "ok": True,
@@ -309,10 +481,7 @@ async def run_ai(req: AIRequest) -> Dict[str, Any]:
         ),
         "proposed_commands": [proposed_legacy],
         "proposed_commands_v2": [proposed_v2],
-        "meta": {
-            "endpoint": "/ai/run",
-            "canon": "read_propose_only",
-        },
+        "meta": meta,
     }
 
 

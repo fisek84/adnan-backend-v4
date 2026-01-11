@@ -152,6 +152,48 @@ def _cache_execution_result(
 
 
 # ------------------------------------------------------------
+# OUTCOME FEEDBACK LOOP (best-effort hooks)
+# ------------------------------------------------------------
+
+_OFL_CRON_JOB_NAME = "outcome_feedback_loop.evaluate_due"
+_OFL_DEFAULT_LIMIT = 50
+
+
+def _schedule_outcome_feedback_reviews(decision_record: Any) -> None:
+    """
+    Best-effort: schedule 7/14/30d review rows in outcome_feedback_loop.
+    Must never raise from router.
+    """
+    try:
+        if not isinstance(decision_record, dict) or not decision_record:
+            return
+
+        from services.outcome_feedback_loop_service import OutcomeFeedbackLoopService
+
+        OutcomeFeedbackLoopService().schedule_reviews_for_decision(
+            decision_record=decision_record
+        )
+    except Exception:
+        # fail-soft by design
+        return
+
+
+def _cron_job_outcome_feedback_loop_evaluate_due() -> Dict[str, Any]:
+    """
+    Sync cron job (CronService v2.1 is sync-only).
+    """
+    try:
+        from services.outcome_feedback_loop_service import OutcomeFeedbackLoopService
+
+        raw = (os.getenv("OUTCOME_FEEDBACK_LOOP_CRON_LIMIT") or "").strip()
+        limit = int(raw) if raw.isdigit() else _OFL_DEFAULT_LIMIT
+
+        return OutcomeFeedbackLoopService().evaluate_due_reviews(limit=limit)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": str(e)}
+
+
+# ------------------------------------------------------------
 # AGENT REGISTRY (READ-ONLY INTROSPECTION)
 # ------------------------------------------------------------
 
@@ -258,6 +300,16 @@ def set_cron_service(cron_service: CronService) -> None:
     # app_bootstrap.py expects this function
     global _cron_service
     _cron_service = cron_service
+
+    # Best-effort: auto-register outcome feedback loop job when cron is injected.
+    try:
+        if _cron_service is not None:
+            _cron_service.register(
+                _OFL_CRON_JOB_NAME, _cron_job_outcome_feedback_loop_evaluate_due
+            )
+    except Exception:
+        # fail-soft
+        pass
 
 
 def set_ai_ops_services(*, orchestrator: ExecutionOrchestrator, approvals: Any) -> None:
@@ -432,7 +484,7 @@ async def approve(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[st
             md = cmd_snapshot.get("metadata") if isinstance(cmd_snapshot, dict) else {}
             md = md if isinstance(md, dict) else {}
 
-            dor.create_or_get_for_approval(
+            decision_record = dor.create_or_get_for_approval(
                 approval=approval if isinstance(approval, dict) else {},
                 cmd_snapshot=cmd_snapshot if isinstance(cmd_snapshot, dict) else {},
                 behaviour_mode=md.get("behaviour_mode"),
@@ -440,6 +492,9 @@ async def approve(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[st
                 owner=approved_by if isinstance(approved_by, str) else "unknown",
                 accepted=True,
             )
+
+            # OutcomeFeedbackLoop: schedule review rows (best-effort)
+            _schedule_outcome_feedback_reviews(decision_record)
         except Exception:
             pass
     except KeyError:
@@ -563,7 +618,7 @@ def reject(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[str, Any]
             md = cmd_snapshot.get("metadata") if isinstance(cmd_snapshot, dict) else {}
             md = md if isinstance(md, dict) else {}
 
-            dor.create_or_get_for_approval(
+            decision_record = dor.create_or_get_for_approval(
                 approval=approval if isinstance(approval, dict) else {},
                 cmd_snapshot=cmd_snapshot if isinstance(cmd_snapshot, dict) else {},
                 behaviour_mode=md.get("behaviour_mode"),
@@ -571,6 +626,9 @@ def reject(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[str, Any]
                 owner=rejected_by if isinstance(rejected_by, str) else "unknown",
                 accepted=False,
             )
+
+            # OutcomeFeedbackLoop: schedule review rows (best-effort)
+            _schedule_outcome_feedback_reviews(decision_record)
         except Exception:
             pass
     except KeyError:
