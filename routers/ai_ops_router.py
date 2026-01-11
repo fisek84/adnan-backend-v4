@@ -25,7 +25,6 @@ logger.setLevel(logging.INFO)
 # CANONICAL WRITE GUARDS (runtime reads)
 # ------------------------------------------------------------
 
-# CANON: meta/proposal wrapper intents must never be approved/executed.
 from models.canon import PROPOSAL_WRAPPER_INTENT
 
 
@@ -34,7 +33,6 @@ def _env_true(name: str, default: str = "false") -> bool:
 
 
 def _ops_safe_mode_enabled() -> bool:
-    # IMPORTANT: runtime read
     return _env_true("OPS_SAFE_MODE", "false")
 
 
@@ -79,11 +77,6 @@ def _get_approval_state() -> Any:
 
 # ------------------------------------------------------------
 # IDempotency cache (prevents double-write on repeated approve calls)
-# NOTE:
-# - This is process-local (in-memory). It eliminates accidental double-approve
-#   in the same running server process.
-# - True SSOT idempotency should also be enforced in ApprovalState/Orchestrator,
-#   but this router-level guard is the safest minimal fix you asked for.
 # ------------------------------------------------------------
 
 _APPROVAL_TO_EXECUTION: Dict[str, str] = {}
@@ -97,14 +90,9 @@ def _norm_status(v: Any) -> str:
 def _try_get_existing_approval(
     approval_state: Any, approval_id: str
 ) -> Optional[Dict[str, Any]]:
-    """
-    Best-effort read without assuming an interface.
-    If ApprovalState exposes a getter, we use it; otherwise returns None.
-    """
     if approval_state is None:
         return None
 
-    # Common method names seen in similar codebases.
     for meth_name in ("get", "read", "get_approval", "read_approval", "lookup"):
         meth = getattr(approval_state, meth_name, None)
         if callable(meth):
@@ -118,10 +106,6 @@ def _try_get_existing_approval(
 
 
 def _extract_intent_from_approval(approval: Any) -> Optional[str]:
-    """
-    Best-effort extraction of intent/command from approval payload_summary, if present.
-    This is only a defensive UX error; SSOT fix is in gateway (unwrap before approval creation).
-    """
     if not isinstance(approval, dict):
         return None
     ps = approval.get("payload_summary")
@@ -132,9 +116,6 @@ def _extract_intent_from_approval(approval: Any) -> Optional[str]:
 
 
 def _cached_response_for_approval(approval_id: str) -> Optional[Dict[str, Any]]:
-    """
-    Return a stable response if we've already executed this approval in this process.
-    """
     execution_id = _APPROVAL_TO_EXECUTION.get(approval_id)
     if not execution_id:
         return None
@@ -160,10 +141,6 @@ _OFL_DEFAULT_LIMIT = 50
 
 
 def _schedule_outcome_feedback_reviews(decision_record: Any) -> None:
-    """
-    Best-effort: schedule 7/14/30d review rows in outcome_feedback_loop.
-    Must never raise from router.
-    """
     try:
         if not isinstance(decision_record, dict) or not decision_record:
             return
@@ -174,14 +151,10 @@ def _schedule_outcome_feedback_reviews(decision_record: Any) -> None:
             decision_record=decision_record
         )
     except Exception:
-        # fail-soft by design
         return
 
 
 def _cron_job_outcome_feedback_loop_evaluate_due() -> Dict[str, Any]:
-    """
-    Sync cron job (CronService v2.1 is sync-only).
-    """
     try:
         from services.outcome_feedback_loop_service import OutcomeFeedbackLoopService
 
@@ -193,26 +166,53 @@ def _cron_job_outcome_feedback_loop_evaluate_due() -> Dict[str, Any]:
         return {"ok": False, "error": str(e)}
 
 
+def _enrich_decision_record_with_snapshots(decision_record: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Deterministički, best-effort enrich:
+      - alignment_before: CEOAlignmentEngine(identity_pack, world_state_snapshot)
+      - kpi_before: world_state_snapshot["kpis"] (canonical per services/world_state_engine.py)
+
+    Ne smije bacati exception (router-level fail-soft).
+    """
+    if not isinstance(decision_record, dict) or not decision_record:
+        return decision_record
+
+    try:
+        from services.identity_loader import load_ceo_identity_pack
+        from services.world_state_engine import WorldStateEngine
+        from services.ceo_alignment_engine import CEOAlignmentEngine
+
+        identity_pack = load_ceo_identity_pack()
+        world_state_snapshot = WorldStateEngine().build_snapshot()
+        alignment_before = CEOAlignmentEngine().evaluate(identity_pack, world_state_snapshot)
+
+        kpi_before = None
+        kpi_note = "kpis_missing_or_not_dict"
+        if isinstance(world_state_snapshot, dict) and isinstance(world_state_snapshot.get("kpis"), dict):
+            kpi_before = world_state_snapshot.get("kpis")
+            kpi_note = "kpis_from_world_state.kpis"
+        elif not isinstance(world_state_snapshot, dict):
+            kpi_note = "world_state_snapshot_not_dict"
+
+        enriched = dict(decision_record)
+        enriched["alignment_before"] = alignment_before if isinstance(alignment_before, dict) else {"note": "alignment_before_not_dict"}
+        # store canonical dict directly (JSONB)
+        enriched["kpi_before"] = kpi_before if isinstance(kpi_before, dict) else {"note": kpi_note, "kpis": None}
+        return enriched
+    except Exception:
+        return decision_record
+
+
 # ------------------------------------------------------------
 # AGENT REGISTRY (READ-ONLY INTROSPECTION)
 # ------------------------------------------------------------
 
 
 def _repo_root() -> Path:
-    # routers/ai_ops_router.py -> routers -> repo root
     return Path(__file__).resolve().parents[1]
 
 
 def _agents_registry_path() -> Path:
-    """
-    SSOT path for registry (agents.json).
-
-    Preferred env:
-      - AGENTS_JSON_PATH (canonical elsewhere)
-      - AGENTS_REGISTRY_PATH (legacy)
-    Default:
-      <repo_root>/config/agents.json
-    """
     repo_root = _repo_root()
 
     env_path = (os.getenv("AGENTS_JSON_PATH") or "").strip()
@@ -226,10 +226,6 @@ def _agents_registry_path() -> Path:
 
 
 def _load_agents_registry() -> Dict[str, Any]:
-    """
-    READ-ONLY: Load agents.json for introspection/debugging.
-    Must never crash the server; returns error payload on failure.
-    """
     p = _agents_registry_path()
 
     try:
@@ -282,9 +278,6 @@ _metrics_persistence = MetricsPersistenceService()
 _alert_forwarder = AlertForwardingService()
 _cron_service: Optional[CronService] = None
 
-# IMPORTANT:
-# Do NOT instantiate orchestrator at import time.
-# Lazy init prevents mismatch with approval_state singleton / bootstrap order.
 _orchestrator: Optional[ExecutionOrchestrator] = None
 
 
@@ -297,35 +290,23 @@ def _get_orchestrator() -> ExecutionOrchestrator:
 
 
 def set_cron_service(cron_service: CronService) -> None:
-    # app_bootstrap.py expects this function
     global _cron_service
     _cron_service = cron_service
 
-    # Best-effort: auto-register outcome feedback loop job when cron is injected.
     try:
         if _cron_service is not None:
             _cron_service.register(
                 _OFL_CRON_JOB_NAME, _cron_job_outcome_feedback_loop_evaluate_due
             )
     except Exception:
-        # fail-soft
         pass
 
 
 def set_ai_ops_services(*, orchestrator: ExecutionOrchestrator, approvals: Any) -> None:
-    """
-    Optional injection hook used by gateway_server.py lifespan to ensure:
-      - shared orchestrator instance
-      - shared approval state instance
-    """
     global _orchestrator, _approval_state_override
     _orchestrator = orchestrator
     _approval_state_override = approvals
 
-    # PATCH (CANON):
-    # Ensure orchestrator uses the same approvals instance used by the router.
-    # Prevents edge-case mismatches if approvals injection is not the same object
-    # as get_approval_state() return value.
     try:
         setattr(_orchestrator, "approvals", approvals)
     except Exception:
@@ -334,18 +315,7 @@ def set_ai_ops_services(*, orchestrator: ExecutionOrchestrator, approvals: Any) 
     logger.info("ai_ops_router: services injected (shared orchestrator/approvals)")
 
 
-# ============================================================
-# ROUTER
-# IMPORTANT:
-# gateway_server.py does include_router(ai_ops_router, prefix="/api")
-# therefore prefix here must be "/ai-ops" (NOT "/api/ai-ops")
-# ============================================================
 router = APIRouter(prefix="/ai-ops", tags=["AI Ops"])
-
-
-# ============================================================
-# CRON OPS
-# ============================================================
 
 
 @router.post("/cron/run")
@@ -364,14 +334,6 @@ def cron_status() -> Dict[str, Any]:
     return {"ok": True, "status": _cron_service.status(), "read_only": True}
 
 
-# ============================================================
-# APPROVAL OPS (Happy Path CONTRACT)
-# Test expects:
-#   GET  /api/ai-ops/approval/pending   -> {"approvals":[...]} each item has approval_id
-#   POST /api/ai-ops/approval/approve   body {approval_id: "..."} -> execution_state == "COMPLETED"
-# ============================================================
-
-
 @router.get("/approval/pending")
 def list_pending() -> Dict[str, Any]:
     approval_state = _get_approval_state()
@@ -381,13 +343,6 @@ def list_pending() -> Dict[str, Any]:
 
 @router.post("/approval/approve")
 async def approve(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
-    """
-    IMPORTANT FIX:
-    - Router-level idempotency guard to prevent repeated /approve calls from re-executing writes.
-    - If approval is already approved/completed, return cached result (same process),
-      or no-op response without invoking orchestrator.resume().
-    - TTL behavior (prod hygiene): if approval is expired, return 410 and do not execute.
-    """
     _guard_write(request)
 
     approval_id = body.get("approval_id")
@@ -395,7 +350,6 @@ async def approve(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[st
         raise HTTPException(400, detail="approval_id is required")
     approval_id = approval_id.strip()
 
-    # 0) Fast path: if we already completed this approval in this process, return stable result.
     cached = _cached_response_for_approval(approval_id)
     if isinstance(cached, dict) and cached:
         logger.info(
@@ -408,19 +362,15 @@ async def approve(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[st
 
     approval_state = _get_approval_state()
 
-    # 1) Best-effort: detect terminal states BEFORE mutating state and BEFORE resuming orchestrator.
     existing = _try_get_existing_approval(approval_state, approval_id)
     if isinstance(existing, dict):
         st = _norm_status(existing.get("status"))
 
-        # TTL: expired approvals are terminal and must not execute.
         if st == "expired":
             raise HTTPException(status_code=410, detail="Approval expired")
 
-        # Treat both "approved" and "completed" as idempotent terminal-ish from router POV.
         if st in ("approved", "completed"):
             execution_id0 = existing.get("execution_id")
-            # If we have an execution_id and maybe cached result, return it. Otherwise no-op.
             if isinstance(execution_id0, str) and execution_id0.strip():
                 cached2 = _EXECUTION_RESULT_CACHE.get(execution_id0.strip())
                 if isinstance(cached2, dict) and cached2:
@@ -444,11 +394,9 @@ async def approve(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[st
                 "note": "idempotent_noop_already_approved",
             }
 
-        # If already rejected: treat as terminal (do not resume).
         if st == "rejected":
             raise HTTPException(status_code=409, detail="Approval rejected")
 
-        # FIX: if this approval is a proposal wrapper, block BEFORE state mutation.
         intent0 = _extract_intent_from_approval(existing)
         if intent0 == PROPOSAL_WRAPPER_INTENT:
             raise HTTPException(
@@ -456,7 +404,6 @@ async def approve(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[st
                 detail="cannot approve proposal wrapper (ceo.command.propose); unwrap required before approval is created",
             )
 
-    # 2) Approve state transition (first time).
     try:
         approval = approval_state.approve(
             approval_id,
@@ -493,23 +440,20 @@ async def approve(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[st
                 accepted=True,
             )
 
-            # OutcomeFeedbackLoop: schedule review rows (best-effort)
+            decision_record = _enrich_decision_record_with_snapshots(decision_record)
             _schedule_outcome_feedback_reviews(decision_record)
         except Exception:
             pass
     except KeyError:
         raise HTTPException(status_code=404, detail="Approval not found")
     except ValueError as e:
-        # e.g. ApprovalStateService: "Approval expired"
         raise HTTPException(status_code=410, detail=str(e) or "Approval expired")
 
     execution_id = approval.get("execution_id") if isinstance(approval, dict) else None
     if not isinstance(execution_id, str) or not execution_id.strip():
-        # This should never be "normal": it means /api/execute didn't attach execution_id properly
         raise HTTPException(500, detail="Approval has no execution_id")
     execution_id = execution_id.strip()
 
-    # 4) Defensive: make failure mode explicit instead of a silent 500.
     try:
         orch = _get_orchestrator()
     except Exception as exc:  # noqa: BLE001
@@ -520,11 +464,9 @@ async def approve(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[st
     if orch is None:
         raise HTTPException(500, detail="Orchestrator not initialized")
 
-    # 5) Execute ONCE.
     try:
         execution_result = await orch.resume(execution_id)
 
-        # DecisionOutcomeRegistry: persist execution outcome (best-effort)
         try:
             dor = get_decision_outcome_registry()
             if isinstance(execution_result, dict):
@@ -534,25 +476,20 @@ async def approve(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[st
         except Exception:
             pass
     except KeyError as exc:
-        # Common case: execution_id not present in orchestrator registry/store.
         raise HTTPException(
             404, detail=f"Execution not found for execution_id={execution_id}"
         ) from exc
     except HTTPException:
-        # Do not wrap explicit HTTP errors.
         raise
     except Exception as exc:  # noqa: BLE001
-        # Make the root cause visible to happy path scripts/tests.
         raise HTTPException(
             500, detail=f"approve_failed: {type(exc).__name__}: {exc}"
         ) from exc
 
-    # 6) Normalize response shape + cache result to prevent accidental re-run.
     if isinstance(execution_result, dict):
         execution_result.setdefault("approval", approval)
         execution_result.setdefault("read_only", False)
 
-        # Cache by approval_id and execution_id (process-local idempotency).
         _cache_execution_result(
             approval_id=approval_id,
             execution_id=execution_id,
@@ -561,7 +498,6 @@ async def approve(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[st
 
         return execution_result
 
-    # Non-dict execution_result: wrap it, but still cache a stable dict response.
     wrapped = {
         "ok": True,
         "execution_id": execution_id,
@@ -595,7 +531,6 @@ def reject(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[str, Any]
             note=note if isinstance(note, str) else None,
         )
 
-        # DecisionOutcomeRegistry: create decision record at reject-time (best-effort)
         try:
             from services.decision_outcome_registry import get_decision_outcome_registry
             import json
@@ -627,7 +562,7 @@ def reject(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[str, Any]
                 accepted=False,
             )
 
-            # OutcomeFeedbackLoop: schedule review rows (best-effort)
+            decision_record = _enrich_decision_record_with_snapshots(decision_record)
             _schedule_outcome_feedback_reviews(decision_record)
         except Exception:
             pass
@@ -641,26 +576,13 @@ def reject(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[str, Any]
     return {"ok": True, "approval": approval, "read_only": False}
 
 
-# ============================================================
-# AGENTS (READ-ONLY)
-# ============================================================
-
-
 @router.get("/agents/registry")
 def agents_registry() -> Dict[str, Any]:
-    """
-    READ-ONLY introspection endpoint for SSOT registry (agents.json).
-    Path: /api/ai-ops/agents/registry
-    """
     return _load_agents_registry()
 
 
 @router.get("/agents/health")
 def agents_health() -> Dict[str, Any]:
-    """
-    Runtime health (heartbeats/workers) + registry summary.
-    Runtime may be empty if you haven't implemented agent heartbeat registration yet.
-    """
     runtime = _agent_health.snapshot()
     reg = _load_agents_registry()
 
@@ -671,18 +593,13 @@ def agents_health() -> Dict[str, Any]:
 
     return {
         "read_only": True,
-        "agents": runtime,  # backward compatible key
+        "agents": runtime,
         "runtime_agents": runtime,
         "runtime_count": len(runtime) if isinstance(runtime, dict) else 0,
         "registry_loaded": registry_loaded,
         "registry_count": registry_count,
         "registry_path": str(_agents_registry_path()),
     }
-
-
-# ============================================================
-# METRICS OPS (WRITE)
-# ============================================================
 
 
 @router.post("/metrics/persist")
@@ -692,11 +609,6 @@ def persist_metrics_snapshot(request: Request) -> Dict[str, Any]:
     return {"ok": True, "result": result, "read_only": False}
 
 
-# ============================================================
-# ALERTS OPS (WRITE)
-# ============================================================
-
-
 @router.post("/alerts/forward")
 def forward_alerts(request: Request) -> Dict[str, Any]:
     _guard_write(request)
@@ -704,5 +616,4 @@ def forward_alerts(request: Request) -> Dict[str, Any]:
     return {"ok": True, "result": result, "read_only": False}
 
 
-# Export name expected by gateway_server.py
 ai_ops_router = router

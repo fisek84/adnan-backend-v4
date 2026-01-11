@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import logging
@@ -50,15 +50,15 @@ def _parse_iso_datetime(s: Any) -> Optional[datetime]:
 
 def _safe_json_payload(d: Any, max_chars: int = 8000) -> Any:
     """
-    JSON/JSONB: može dict/list direktno.
-    TEXT fallback: skraćeni JSON string.
+    JSON/JSONB: moĹľe dict/list direktno.
+    TEXT fallback: skraÄ‡eni JSON string.
     """
     try:
         if isinstance(d, (dict, list)):
             s = json.dumps(d, ensure_ascii=False, default=str)
             if len(s) <= max_chars:
                 return d
-            return s[: max_chars - 1] + "…"
+            return s[: max_chars - 1] + "â€¦"
         if isinstance(d, str):
             return d[:max_chars]
         return str(d)[:max_chars]
@@ -78,7 +78,7 @@ def _alignment_payload_from_hash(alignment_snapshot_hash: Any) -> Dict[str, Any]
 
 def _extract_alignment_score(snapshot: Any) -> Optional[float]:
     """
-    Očekuje CEOAlignmentEngine snapshot shape:
+    OÄŤekuje CEOAlignmentEngine snapshot shape:
       snapshot["strategic_alignment"]["alignment_score"] (int 0..100)
     """
     if not isinstance(snapshot, dict):
@@ -97,7 +97,7 @@ def _extract_alignment_score(snapshot: Any) -> Optional[float]:
 
 def _extract_risk_level(snapshot: Any) -> Optional[str]:
     """
-    Očekuje CEOAlignmentEngine snapshot shape:
+    OÄŤekuje CEOAlignmentEngine snapshot shape:
       snapshot["law_compliance"]["risk_level"] in {"none","low","medium","high"} (case-insensitive)
     """
     if not isinstance(snapshot, dict):
@@ -113,7 +113,7 @@ def _extract_risk_level(snapshot: Any) -> Optional[str]:
 
 def _risk_level_to_numeric(risk_level: Optional[str]) -> float:
     """
-    Deterministički mapping za numeric delta_risk.
+    DeterministiÄŤki mapping za numeric delta_risk.
     """
     m = {"none": 0.0, "low": 1.0, "medium": 2.0, "high": 3.0}
     if not risk_level:
@@ -162,6 +162,57 @@ def _compute_delta_score_and_risk(
     return delta_score, delta_risk, notes
 
 
+def _extract_kpis_from_world_state(world_state_snapshot: Any) -> Tuple[Optional[Dict[str, Any]], str]:
+    """
+    WorldStateEngine snapshot (services/world_state_engine.py) canonical:
+      snapshot["kpis"] = {"summary": [...], "alerts": [...], "as_of": "...Z"}
+
+    Zato je canonical extract:
+      - world_state_snapshot["kpis"] ako je dict
+      - inaÄŤe None + note
+    """
+    if not isinstance(world_state_snapshot, dict):
+        return None, "world_state_snapshot_not_dict"
+    k = world_state_snapshot.get("kpis")
+    if isinstance(k, dict):
+        return k, "kpis_from_world_state.kpis"
+    return None, "kpis_missing_or_not_dict"
+
+
+def _diff_numeric_kpis(
+    *, before: Any, after: Any
+) -> Tuple[Dict[str, float], List[str]]:
+    """
+    DeterministiÄŤki diff: common keys gdje su i before i after numeric (int/float, ne bool).
+    Ako shape nije dict -> vraÄ‡a prazno + note.
+
+    Napomena:
+      world_state_engine.py kpis shape sadrĹľi liste (summary/alerts),
+      pa numeric diff tipiÄŤno neÄ‡e imati output. To je OK i eksplicitno se notira.
+    """
+    notes: List[str] = []
+    if not isinstance(before, dict):
+        notes.append("kpi_before_not_dict")
+        return {}, notes
+    if not isinstance(after, dict):
+        notes.append("kpi_after_not_dict")
+        return {}, notes
+
+    out: Dict[str, float] = {}
+    common = set(before.keys()) & set(after.keys())
+    for k in sorted(common, key=lambda x: str(x)):
+        b = before.get(k)
+        a = after.get(k)
+        if isinstance(b, bool) or isinstance(a, bool):
+            continue
+        if isinstance(b, (int, float)) and isinstance(a, (int, float)):
+            out[str(k)] = float(a) - float(b)
+
+    if not out:
+        notes.append("kpi_no_numeric_common_keys")
+    return out, notes
+
+
 @dataclass(frozen=True)
 class _SchemaCols:
     id: str
@@ -193,11 +244,11 @@ class _SchemaCols:
 
 class OutcomeFeedbackLoopService:
     """
-    outcome_feedback_loop — SSOT persistence (DB).
+    outcome_feedback_loop â€” SSOT persistence (DB).
 
     Kanon:
       - schedule_reviews_for_decision(): INSERT .. ON CONFLICT DO NOTHING (Postgres unique index)
-        + RETURNING id za tačan inserted counter.
+        + RETURNING id za taÄŤan inserted counter.
       - evaluate_due_reviews(): marker evaluacije je delta (JSONB) (nema status kolone)
     """
 
@@ -335,9 +386,11 @@ class OutcomeFeedbackLoopService:
         recommendation_type = decision_record.get("recommendation_type")
         execution_result = decision_record.get("execution_result")
         owner = decision_record.get("owner")
-        kpi_before = decision_record.get("kpi_before")
 
-        # Optional: allow caller to pass full alignment_before snapshot (preferred)
+        # Optional: caller can pass:
+        # - kpi_before (dict preferred)
+        # - alignment_before (dict preferred)
+        kpi_before = decision_record.get("kpi_before")
         alignment_before_payload = decision_record.get("alignment_before")
 
         with engine.begin() as conn:
@@ -386,16 +439,12 @@ class OutcomeFeedbackLoopService:
                 if sc.kpi_before and kpi_before is not None:
                     row[sc.kpi_before] = _safe_json_payload(kpi_before)
 
-                # Minimal contract: alignment_before at decision time (best-effort)
+                # alignment_before at decision time (preferred if provided)
                 if sc.alignment_before:
-                    if (
-                        isinstance(alignment_before_payload, dict)
-                        and alignment_before_payload
-                    ):
-                        row[sc.alignment_before] = _safe_json_payload(
-                            alignment_before_payload
-                        )
+                    if isinstance(alignment_before_payload, dict) and alignment_before_payload:
+                        row[sc.alignment_before] = _safe_json_payload(alignment_before_payload)
                     else:
+                        # fallback: at least keep hash reference payload
                         row[sc.alignment_before] = _safe_json_payload(
                             _alignment_payload_from_hash(alignment_snapshot_hash)
                         )
@@ -461,12 +510,14 @@ class OutcomeFeedbackLoopService:
 
         now = _utc_now()
 
-        # Build alignment_after snapshot once per run (same "now" for all rows)
+        # Evaluate "after" snapshots ONCE per run
         identity_pack = load_ceo_identity_pack()
         world_state_snapshot = WorldStateEngine().build_snapshot()
         alignment_after_snapshot = CEOAlignmentEngine().evaluate(
             identity_pack, world_state_snapshot
         )
+
+        kpis_after, kpi_after_note = _extract_kpis_from_world_state(world_state_snapshot)
 
         marker_expr = table.c[marker_col].is_(None)
 
@@ -475,6 +526,8 @@ class OutcomeFeedbackLoopService:
             table.c[sc.decision_id],
             table.c[sc.evaluation_window_days],
         ]
+        if sc.kpi_before:
+            select_cols.append(table.c[sc.kpi_before])
         if sc.alignment_before:
             select_cols.append(table.c[sc.alignment_before])
         if sc.alignment_snapshot_hash:
@@ -500,61 +553,74 @@ class OutcomeFeedbackLoopService:
                 decision_id = row[1]
                 window_days = row[2]
 
+                kpi_before_value: Any = None
                 alignment_before_value: Any = None
                 alignment_hash_value: Any = None
 
-                # Row layout depends on optional select cols
                 idx = 3
+                if sc.kpi_before:
+                    kpi_before_value = row[idx]
+                    idx += 1
                 if sc.alignment_before:
                     alignment_before_value = row[idx]
                     idx += 1
                 if sc.alignment_snapshot_hash:
                     alignment_hash_value = row[idx] if idx < len(row) else None
 
-                delta_score_val, delta_risk_val, delta_notes = (
-                    _compute_delta_score_and_risk(
-                        alignment_before=alignment_before_value,
-                        alignment_after=alignment_after_snapshot,
-                    )
+                delta_score_val, delta_risk_val, delta_notes = _compute_delta_score_and_risk(
+                    alignment_before=alignment_before_value,
+                    alignment_after=alignment_after_snapshot,
                 )
+
+                # KPI delta (numeric only, deterministic)
+                kpi_deltas: Dict[str, float] = {}
+                kpi_delta_notes: List[str] = []
+                if kpis_after is not None:
+                    kpi_deltas, kpi_delta_notes = _diff_numeric_kpis(
+                        before=kpi_before_value, after=kpis_after
+                    )
+                else:
+                    kpi_delta_notes.append("kpis_after_missing")
 
                 notes_parts = [
                     f"evaluated_at={now.isoformat()}",
                     "source=alignment_engine+world_state_engine",
+                    f"kpi_extract_note={kpi_after_note}",
                 ]
-                if (
-                    isinstance(alignment_hash_value, str)
-                    and alignment_hash_value.strip()
-                ):
+                if isinstance(alignment_hash_value, str) and alignment_hash_value.strip():
                     notes_parts.append(
                         f"alignment_snapshot_hash={alignment_hash_value.strip()}"
                     )
                 if delta_notes:
                     notes_parts.append("flags=" + ",".join(delta_notes))
+                if kpi_delta_notes:
+                    notes_parts.append("kpi_flags=" + ",".join(kpi_delta_notes))
 
                 upd: Dict[str, Any] = {}
 
                 if sc.kpi_after:
-                    upd[sc.kpi_after] = _safe_json_payload(
-                        {
-                            "evaluated_at": now.isoformat(),
-                            "note": "KPI source not wired (world_state_engine.kpis is placeholder)",
-                        }
-                    )
+                    # store canonical kpis dict as-is (JSONB)
+                    upd[sc.kpi_after] = _safe_json_payload(kpis_after)
 
                 if sc.delta:
                     upd[sc.delta] = _safe_json_payload(
                         {
                             "evaluation_result": "evaluated",
                             "evaluated_at": now.isoformat(),
-                            "note": "marker_only; numeric deltas are in delta_score/delta_risk",
+                            "decision_id": decision_id,
+                            "evaluation_window_days": int(window_days),
+                            "alignment": {
+                                "delta_score": float(delta_score_val),
+                                "delta_risk": float(delta_risk_val),
+                            },
+                            "kpi_extract_note": kpi_after_note,
+                            "kpi_deltas_numeric": kpi_deltas,
+                            "note": "delta is marker+summary; numeric deltas are also in delta_score/delta_risk columns if present",
                         }
                     )
 
                 if sc.alignment_after:
-                    upd[sc.alignment_after] = _safe_json_payload(
-                        alignment_after_snapshot
-                    )
+                    upd[sc.alignment_after] = _safe_json_payload(alignment_after_snapshot)
 
                 if sc.delta_score:
                     upd[sc.delta_score] = float(delta_score_val)
