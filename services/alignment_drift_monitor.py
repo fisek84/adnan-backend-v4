@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 import sqlalchemy as sa
 
@@ -38,10 +38,9 @@ class AlignmentDriftMonitor:
             return {"ok": True, "processed": 0, "signals": 0}
 
         identity = load_ceo_identity_pack()
-        immutable_laws = (
-            identity.get("immutable_laws")
-            or identity.get("kernel", {}).get("immutable_laws")
-        )
+        immutable_laws = identity.get("immutable_laws") or identity.get(
+            "kernel", {}
+        ).get("immutable_laws")
 
         if not isinstance(immutable_laws, list):
             return {"ok": False, "error": "immutable_laws_missing"}

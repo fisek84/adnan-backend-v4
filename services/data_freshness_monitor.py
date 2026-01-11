@@ -36,13 +36,13 @@ class DataFreshnessMonitor:
 
         stale_goals = len(goals.get("stale", [])) if isinstance(goals, dict) else 0
         overdue_tasks = len(tasks.get("overdue", [])) if isinstance(tasks, dict) else 0
-        data_quality_issues = len(tasks.get("data_quality", [])) if isinstance(tasks, dict) else 0
+        data_quality_issues = (
+            len(tasks.get("data_quality", [])) if isinstance(tasks, dict) else 0
+        )
 
         # Deterministički score (jednostavan, čitljiv, bez magije)
         staleness_score = float(
-            stale_goals * 1.0
-            + overdue_tasks * 1.5
-            + data_quality_issues * 0.5
+            stale_goals * 1.0 + overdue_tasks * 1.5 + data_quality_issues * 0.5
         )
 
         engine = _db_engine()
