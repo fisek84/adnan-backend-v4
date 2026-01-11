@@ -1,21 +1,16 @@
 # services/app_bootstrap.py
 """
-APPLICATION BOOTSTRAP — CANONICAL (FAZA 14)
+APPLICATION BOOTSTRAP — CANONICAL
 
 Uloga:
 - Centralno mjesto za runtime wiring servisa
 - JEDINI entrypoint za inicijalizaciju sistema
 - NE sadrži biznis logiku
-- NE sadrži UX logiku
-- NE izvršava komande
+- NE izvršava cron automatski (samo capability)
 
 Garantuje:
 - jednokratnu inicijalizaciju
 - ARCH_LOCK enforcement
-
-FAZA 4 napomena:
-- adnan_ai_router je READ/PROPOSE ONLY wrapper (ne izvršava)
-- canonical chat endpoint (/api/chat) se wira u gateway_server.py
 """
 
 from services.coo_translation_service import COOTranslationService
@@ -23,6 +18,8 @@ from services.coo_conversation_service import COOConversationService
 from services.ai_command_service import AICommandService
 from services.cron_service import CronService
 from services.knowledge_snapshot_service import KnowledgeSnapshotService
+from services.alignment_drift_monitor import AlignmentDriftMonitor
+from services.data_freshness_monitor import DataFreshnessMonitor
 
 from routers.adnan_ai_router import set_adnan_ai_services
 from routers.ai_ops_router import set_cron_service
@@ -35,45 +32,70 @@ from system_version import ARCH_LOCK
 _BOOTSTRAPPED = False
 
 
+# ---------------------------------------------------------
+# CRON JOB WRAPPERS (FAIL-SAFE)
+# ---------------------------------------------------------
+def _cron_job_alignment_drift_monitor() -> dict:
+    try:
+        return AlignmentDriftMonitor().run()
+    except Exception as e:
+        return {
+            "ok": False,
+            "skipped": True,
+            "reason": "alignment_drift_monitor_failed",
+            "error": str(e),
+        }
+
+
+def _cron_job_data_freshness_monitor() -> dict:
+    try:
+        return DataFreshnessMonitor().run()
+    except Exception as e:
+        return {
+            "ok": False,
+            "skipped": True,
+            "reason": "data_freshness_monitor_failed",
+            "error": str(e),
+        }
+
+
+# ---------------------------------------------------------
+# BOOTSTRAP
+# ---------------------------------------------------------
 def bootstrap_application() -> None:
-    """
-    Wire core AI services into routers.
-    Must be called ONCE during application startup.
-    """
     global _BOOTSTRAPPED
 
     if _BOOTSTRAPPED:
         raise RuntimeError("Application already bootstrapped")
 
-    # ---------------------------------------------------------
-    # ARCHITECTURE LOCK ENFORCEMENT
-    # ---------------------------------------------------------
+    # ARCH LOCK
     if ARCH_LOCK is not True:
         raise RuntimeError("ARCH_LOCK must be True in production bootstrap")
 
-    # ---------------------------------------------------------
-    # Instantiate canonical services
-    # ---------------------------------------------------------
+    # Core services
     coo_translation_service = COOTranslationService()
     coo_conversation_service = COOConversationService()
     ai_command_service = AICommandService()
 
-    # ---------------------------------------------------------
-    # READ-ONLY Scheduler (CAPABILITY ONLY — NO JOBS)
-    # ---------------------------------------------------------
+    # Cron capability (NO AUTOMATIC EXECUTION)
     cron_service = CronService()
+
+    # Snapshot capability (on-demand)
     KnowledgeSnapshotService()
 
-    # ❌ NAMJERNO NEMA cron job registracije
-    # READ-ONLY snapshot se poziva ISKLJUČIVO na zahtjev
+    # Register cron jobs (manual trigger only)
+    cron_service.register(
+        "alignment_drift_monitor",
+        _cron_job_alignment_drift_monitor,
+    )
+    cron_service.register(
+        "data_freshness_monitor",
+        _cron_job_data_freshness_monitor,
+    )
 
     set_cron_service(cron_service)
 
-    # ---------------------------------------------------------
-    # Inject into AdnanAI legacy router (READ/PROPOSE ONLY)
-    # ---------------------------------------------------------
-    # IMPORTANT: signature is positional (command_service, coo_translation, coo_conversation).
-    # Using positional args avoids keyword mismatch regressions.
+    # Inject legacy AdnanAI router (READ / PROPOSE ONLY)
     set_adnan_ai_services(
         ai_command_service,
         coo_translation_service,
