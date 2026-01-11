@@ -1,0 +1,220 @@
+﻿# ruff: noqa: E402
+# routers/ai_ops_router.py
+from __future__ import annotations
+
+import json
+import logging
+import os
+from pathlib import Path
+from typing import Any, Dict, Optional
+
+from fastapi import APIRouter, Body, HTTPException, Request
+
+from services.agent_health_service import AgentHealthService
+from services.alert_forwarding_service import AlertForwardingService
+from services.approval_state_service import get_approval_state
+from services.cron_service import CronService
+from services.decision_outcome_registry import get_decision_outcome_registry
+from services.execution_orchestrator import ExecutionOrchestrator
+from services.metrics_persistence_service import MetricsPersistenceService
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+# ------------------------------------------------------------
+# CANONICAL WRITE GUARDS (runtime reads)
+# ------------------------------------------------------------
+
+from models.canon import PROPOSAL_WRAPPER_INTENT
+
+
+def _env_true(name: str, default: str = "false") -> bool:
+    return (os.getenv(name, default) or "").strip().lower() == "true"
+
+
+def _ops_safe_mode_enabled() -> bool:
+    return _env_true("OPS_SAFE_MODE", "false")
+
+
+def _ceo_token_enforcement_enabled() -> bool:
+    return _env_true("CEO_TOKEN_ENFORCEMENT", "false")
+
+
+def _require_ceo_token_if_enforced(request: Request) -> None:
+    if not _ceo_token_enforcement_enabled():
+        return
+
+    expected = (os.getenv("CEO_APPROVAL_TOKEN", "") or "").strip()
+    if not expected:
+        raise HTTPException(
+            status_code=500,
+            detail="CEO token enforcement enabled but CEO_APPROVAL_TOKEN is not set",
+        )
+
+    provided = (request.headers.get("X-CEO-Token") or "").strip()
+    if provided != expected:
+        raise HTTPException(status_code=403, detail="CEO token required")
+
+
+def _guard_write(request: Request) -> None:
+    if _ops_safe_mode_enabled():
+        raise HTTPException(
+            status_code=403, detail="OPS_SAFE_MODE enabled (writes blocked)"
+        )
+    _require_ceo_token_if_enforced(request)
+
+
+# ------------------------------------------------------------
+# APPROVAL STATE (optional injection to avoid singleton mismatch)
+# ------------------------------------------------------------
+
+_approval_state_override: Optional[Any] = None
+
+
+def _get_approval_state() -> Any:
+    return _approval_state_override or get_approval_state()
+
+
+# ------------------------------------------------------------
+# IDempotency cache (prevents double-write on repeated approve calls)
+# ------------------------------------------------------------
+
+_APPROVAL_TO_EXECUTION: Dict[str, str] = {}
+_EXECUTION_RESULT_CACHE: Dict[str, Dict[str, Any]] = {}
+
+
+def _norm_status(v: Any) -> str:
+    return (v or "").__str__().strip().lower()
+
+
+def _try_get_existing_approval(
+    approval_state: Any, approval_id: str
+) -> Optional[Dict[str, Any]]:
+    if approval_state is None:
+        return None
+
+    for meth_name in ("get", "read", "get_approval", "read_approval", "lookup"):
+        meth = getattr(approval_state, meth_name, None)
+        if callable(meth):
+            try:
+                a = meth(approval_id)
+                return a if isinstance(a, dict) else None
+            except Exception:
+                continue
+
+    return None
+
+
+def _extract_intent_from_approval(approval: Any) -> Optional[str]:
+    if not isinstance(approval, dict):
+        return None
+    ps = approval.get("payload_summary")
+    if not isinstance(ps, dict):
+        return None
+    intent = ps.get("intent") or ps.get("command")
+    return intent.strip() if isinstance(intent, str) and intent.strip() else None
+
+
+def _cached_response_for_approval(approval_id: str) -> Optional[Dict[str, Any]]:
+    execution_id = _APPROVAL_TO_EXECUTION.get(approval_id)
+    if not execution_id:
+        return None
+    cached = _EXECUTION_RESULT_CACHE.get(execution_id)
+    if isinstance(cached, dict) and cached:
+        return cached
+    return None
+
+
+def _cache_execution_result(
+    *, approval_id: str, execution_id: str, execution_result: Dict[str, Any]
+) -> None:
+    _APPROVAL_TO_EXECUTION[approval_id] = execution_id
+    _EXECUTION_RESULT_CACHE[execution_id] = execution_result
+
+
+# ------------------------------------------------------------
+# OUTCOME FEEDBACK LOOP (best-effort hooks)
+# ------------------------------------------------------------
+
+_OFL_CRON_JOB_NAME = "outcome_feedback_loop.evaluate_due"
+_OFL_DEFAULT_LIMIT = 50
+
+
+def _schedule_outcome_feedback_reviews(decision_record: Any) -> None:
+    try:
+        if not isinstance(decision_record, dict) or not decision_record:
+            return
+
+        from services.outcome_feedback_loop_service import OutcomeFeedbackLoopService
+
+        OutcomeFeedbackLoopService().schedule_reviews_for_decision(
+            decision_record=decision_record
+        )
+    except Exception:
+        return
+
+
+def _cron_job_outcome_feedback_loop_evaluate_due() -> Dict[str, Any]:
+    try:
+        from services.outcome_feedback_loop_service import OutcomeFeedbackLoopService
+
+        raw = (os.getenv("OUTCOME_FEEDBACK_LOOP_CRON_LIMIT") or "").strip()
+        limit = int(raw) if raw.isdigit() else _OFL_DEFAULT_LIMIT
+
+        return OutcomeFeedbackLoopService().evaluate_due_reviews(limit=limit)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": str(e)}
+
+
+def _enrich_decision_record_with_snapshots(
+    decision_record: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    DeterministiÄŤki, best-effort enrich:
+      - alignment_before: CEOAlignmentEngine(identity_pack, world_state_snapshot)
+      - kpi_before: world_state_snapshot["kpis"] (canonical per services/world_state_engine.py)
+
+    Ne smije bacati exception (router-level fail-soft).
+    """
+    if not isinstance(decision_record, dict) or not decision_record:
+        return decision_record
+
+    try:
+        from services.identity_loader import load_ceo_identity_pack
+        from services.world_state_engine import WorldStateEngine
+        from services.ceo_alignment_engine import CEOAlignmentEngine
+
+        identity_pack = load_ceo_identity_pack()
+        world_state_snapshot = WorldStateEngine().build_snapshot()
+        alignment_before = CEOAlignmentEngine().evaluate(
+            identity_pack, world_state_snapshot
+        )
+
+        kpi_before = None
+        kpi_note = "kpis_missing_or_not_dict"
+        if isinstance(world_state_snapshot, dict) and isinstance(
+            world_state_snapshot.get("kpis"), dict
+        ):
+            kpi_before = world_state_snapshot.get("kpis")
+            kpi_note = "kpis_from_world_state.kpis"
+        elif not isinstance(world_state_snapshot, dict):
+            kpi_note = "world_state_snapshot_not_dict"
+
+        enriched = dict(decision_record)
+        enriched["alignment_before"] = (
+            alignment_before
+            if isinstance(alignment_before, dict)
+            else {"note": "alignment_before_not_dict"}
+        )
+        # store canonical dict directly (JSONB)
+        enriched["kpi_before"] = (
+            kpi_before
+            if isinstance(kpi_before, dict)
+            else {"note": kpi_note, "kpis": None}
+        )
+        return enriched
+    except Exception:
+        return decision_record
+
+
+# ------------------------------------------------------------

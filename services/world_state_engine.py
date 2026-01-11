@@ -96,9 +96,12 @@ class WorldStateEngine:
     def build_snapshot(self) -> JsonDict:
         try:
             asyncio.get_running_loop()
-            raise RuntimeError("Use await abuild_snapshot() inside event loop")
         except RuntimeError:
+            # Nema running event loop → sigurno je koristiti asyncio.run
             return asyncio.run(self.abuild_snapshot())
+
+        # Ima running event loop → ne smijemo zvati asyncio.run (to pravi warning)
+        raise RuntimeError("Use await abuild_snapshot() inside event loop")
 
     async def abuild_snapshot(self) -> JsonDict:
         tw_end = utc_now()
@@ -125,7 +128,7 @@ class WorldStateEngine:
             tasks = self._build_tasks(tasks_pages)
             projects = self._build_projects(projects_pages, tasks_pages)
 
-            # KPI / Agents / Summaries not wired â†’ explicit UNKNOWN
+            # KPI / Agents / Summaries not wired → explicit UNKNOWN
             kpis = {"summary": [], "alerts": [], "as_of": iso(tw_end)}
             agents = {
                 "health": [],

@@ -1,6 +1,6 @@
 # gateway/gateway_server.py
 # ruff: noqa: E402
-# FULL FILE — replace the whole gateway_server.py with this.
+# FULL FILE â€” replace the whole gateway_server.py with this.
 
 from __future__ import annotations
 
@@ -168,7 +168,7 @@ from services.identity_loader import load_identity
 from services.ceo_console_snapshot_service import CEOConsoleSnapshotService
 
 # ================================================================
-# NOTION SERVICE (KANONSKI INIT) — NO SIDE EFFECTS AT IMPORT
+# NOTION SERVICE (KANONSKI INIT) â€” NO SIDE EFFECTS AT IMPORT
 # ================================================================
 from services.knowledge_snapshot_service import KnowledgeSnapshotService
 from services.notion_service import (
@@ -214,7 +214,7 @@ from services.app_bootstrap import bootstrap_application
 # INITIAL LOAD
 # ================================================================
 if not OS_ENABLED:
-    logger.critical("OS_ENABLED=false — system will not start.")
+    logger.critical("OS_ENABLED=false â€” system will not start.")
     raise RuntimeError("OS is disabled by configuration.")
 
 identity = load_identity()
@@ -334,11 +334,17 @@ def _safe_command_summary(ai_command: AICommand) -> Dict[str, Any]:
     intent = getattr(ai_command, "intent", None)
     cmd = getattr(ai_command, "command", None)
 
-    return {
+    summary = {
         "command": cmd,
         "intent": intent,
         "params": params if isinstance(params, dict) else {},
     }
+
+    md = getattr(ai_command, "metadata", None)
+    if isinstance(md, dict) and isinstance(md.get("confidence_risk"), dict):
+        summary["confidence_risk"] = md.get("confidence_risk")
+
+    return summary
 
 
 def _to_serializable(obj: Any) -> Any:
@@ -628,7 +634,7 @@ async def _shutdown_best_effort() -> None:
     _execution_orchestrator = None
 
     _BOOT_READY = False
-    logger.info("System shutdown — boot_ready=False.")
+    logger.info("System shutdown â€” boot_ready=False.")
 
 
 def _is_boot_exempt_path(path: str) -> bool:
@@ -891,7 +897,7 @@ def _proposal_wrapper_dict(*, prompt: str, source: str) -> Dict[str, Any]:
         "command": PROPOSAL_WRAPPER_INTENT,
         "args": {"prompt": safe_prompt},
         "intent": None,
-        "reason": "Notion write intent ide kroz approval pipeline; predlažem komandu za promotion/execute.",
+        "reason": "Notion write intent ide kroz approval pipeline; predlaĹľem komandu za promotion/execute.",
         "dry_run": True,
         "requires_approval": True,
         "risk": "LOW",
@@ -1113,7 +1119,7 @@ def _normalize_execute_raw_payload_dict(body: Dict[str, Any]) -> ExecuteRawInput
 
 
 # ================================================================
-# /api/execute — EXECUTION PATH (NL INPUT)
+# /api/execute â€” EXECUTION PATH (NL INPUT)
 # ================================================================
 @app.post("/api/execute")
 async def execute_command(payload: ExecuteInput):
@@ -1350,6 +1356,19 @@ async def execute_proposal(payload: ProposalExecuteInput):
         merged_md.update(proposal_meta)
     if isinstance(meta_in, dict):
         merged_md.update(meta_in)
+    if isinstance(meta_in, dict):
+        merged_md.update(meta_in)
+
+    # === CANON: propagate confidence_risk into metadata for DOR ===
+    cr = None
+    if isinstance(proposal_meta, dict):
+        cr = proposal_meta.get("confidence_risk")
+    if cr is None and isinstance(meta_in, dict):
+        cr = meta_in.get("confidence_risk")
+
+    if isinstance(cr, dict):
+        merged_md["confidence_risk"] = cr
+    # === END CANON ===
 
     ai_command = _unwrap_proposal_wrapper_or_raise(
         command=proposal_cmd,
@@ -1403,7 +1422,7 @@ async def execute_proposal(payload: ProposalExecuteInput):
 
 
 # ================================================================
-# NOTION READ — READ ONLY (NO APPROVAL / NO EXECUTION)
+# NOTION READ â€” READ ONLY (NO APPROVAL / NO EXECUTION)
 # ================================================================
 @app.post("/api/notion/read", response_model=NotionReadResponse)
 async def notion_read(payload: Any = Body(None)) -> Any:
@@ -1499,7 +1518,7 @@ async def notion_read(payload: Any = Body(None)) -> Any:
 
 
 # ================================================================
-# NOTION OPS — LIST DATABASES (READ ONLY)
+# NOTION OPS â€” LIST DATABASES (READ ONLY)
 # ================================================================
 @app.get("/api/notion-ops/databases")
 @app.get("/notion-ops/databases")
@@ -1970,6 +1989,45 @@ async def _ceo_command_core(payload_dict: Dict[str, Any]) -> JSONResponse:
         )
     result["trace"] = tr2
 
+    # === CANON PATCH: propagate confidence/risk into proposal payloads ===
+    cr = tr2.get("confidence_risk")
+    if isinstance(cr, dict):
+        for pc in result.get("proposed_commands", []):
+            if not isinstance(pc, dict):
+                continue
+
+            ps = pc.get("payload_summary")
+            if not isinstance(ps, dict):
+                ps = {}
+                pc["payload_summary"] = ps
+
+            ps.setdefault("confidence_score", cr.get("confidence_score"))
+            ps.setdefault("assumption_count", cr.get("assumption_count", 0))
+            ps.setdefault("recommendation_type", "OPERATIONAL")
+
+            rl = cr.get("risk_level")
+            if isinstance(rl, str):
+                pc.setdefault(
+                    "risk",
+                    {"low": "LOW", "medium": "MED", "high": "HIGH"}.get(rl, "LOW"),
+                )
+    # === END CANON PATCH ===
+
+    # === CANON STABILITY PATCH: ensure args.prompt exists ===
+    for pc in result.get("proposed_commands", []):
+        if not isinstance(pc, dict):
+            continue
+
+        if pc.get("command") == "ceo.command.propose":
+            args = pc.get("args")
+            if not isinstance(args, dict):
+                args = {}
+                pc["args"] = args
+
+            if "prompt" not in args or not isinstance(args.get("prompt"), str):
+                args["prompt"] = cleaned_text.strip()
+    # === END CANON STABILITY PATCH ===
+
     return JSONResponse(content=result, media_type="application/json; charset=utf-8")
 
 
@@ -2177,7 +2235,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 
 # ================================================================
-# REACT FRONTEND (PROD BUILD) — SERVE dist/
+# REACT FRONTEND (PROD BUILD) â€” SERVE dist/
 # ================================================================
 if not FRONTEND_DIST_DIR.is_dir():
     logger.warning("React dist directory not found: %s", FRONTEND_DIST_DIR)
