@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import logging
@@ -162,7 +162,9 @@ def _compute_delta_score_and_risk(
     return delta_score, delta_risk, notes
 
 
-def _extract_kpis_from_world_state(world_state_snapshot: Any) -> Tuple[Optional[Dict[str, Any]], str]:
+def _extract_kpis_from_world_state(
+    world_state_snapshot: Any,
+) -> Tuple[Optional[Dict[str, Any]], str]:
     """
     WorldStateEngine snapshot (services/world_state_engine.py) canonical:
       snapshot["kpis"] = {"summary": [...], "alerts": [...], "as_of": "...Z"}
@@ -441,8 +443,13 @@ class OutcomeFeedbackLoopService:
 
                 # alignment_before at decision time (preferred if provided)
                 if sc.alignment_before:
-                    if isinstance(alignment_before_payload, dict) and alignment_before_payload:
-                        row[sc.alignment_before] = _safe_json_payload(alignment_before_payload)
+                    if (
+                        isinstance(alignment_before_payload, dict)
+                        and alignment_before_payload
+                    ):
+                        row[sc.alignment_before] = _safe_json_payload(
+                            alignment_before_payload
+                        )
                     else:
                         # fallback: at least keep hash reference payload
                         row[sc.alignment_before] = _safe_json_payload(
@@ -517,7 +524,9 @@ class OutcomeFeedbackLoopService:
             identity_pack, world_state_snapshot
         )
 
-        kpis_after, kpi_after_note = _extract_kpis_from_world_state(world_state_snapshot)
+        kpis_after, kpi_after_note = _extract_kpis_from_world_state(
+            world_state_snapshot
+        )
 
         marker_expr = table.c[marker_col].is_(None)
 
@@ -567,9 +576,11 @@ class OutcomeFeedbackLoopService:
                 if sc.alignment_snapshot_hash:
                     alignment_hash_value = row[idx] if idx < len(row) else None
 
-                delta_score_val, delta_risk_val, delta_notes = _compute_delta_score_and_risk(
-                    alignment_before=alignment_before_value,
-                    alignment_after=alignment_after_snapshot,
+                delta_score_val, delta_risk_val, delta_notes = (
+                    _compute_delta_score_and_risk(
+                        alignment_before=alignment_before_value,
+                        alignment_after=alignment_after_snapshot,
+                    )
                 )
 
                 # KPI delta (numeric only, deterministic)
@@ -587,7 +598,10 @@ class OutcomeFeedbackLoopService:
                     "source=alignment_engine+world_state_engine",
                     f"kpi_extract_note={kpi_after_note}",
                 ]
-                if isinstance(alignment_hash_value, str) and alignment_hash_value.strip():
+                if (
+                    isinstance(alignment_hash_value, str)
+                    and alignment_hash_value.strip()
+                ):
                     notes_parts.append(
                         f"alignment_snapshot_hash={alignment_hash_value.strip()}"
                     )
@@ -620,7 +634,9 @@ class OutcomeFeedbackLoopService:
                     )
 
                 if sc.alignment_after:
-                    upd[sc.alignment_after] = _safe_json_payload(alignment_after_snapshot)
+                    upd[sc.alignment_after] = _safe_json_payload(
+                        alignment_after_snapshot
+                    )
 
                 if sc.delta_score:
                     upd[sc.delta_score] = float(delta_score_val)

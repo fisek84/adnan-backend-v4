@@ -166,7 +166,9 @@ def _cron_job_outcome_feedback_loop_evaluate_due() -> Dict[str, Any]:
         return {"ok": False, "error": str(e)}
 
 
-def _enrich_decision_record_with_snapshots(decision_record: Dict[str, Any]) -> Dict[str, Any]:
+def _enrich_decision_record_with_snapshots(
+    decision_record: Dict[str, Any],
+) -> Dict[str, Any]:
     """
     Deterministički, best-effort enrich:
       - alignment_before: CEOAlignmentEngine(identity_pack, world_state_snapshot)
@@ -184,20 +186,32 @@ def _enrich_decision_record_with_snapshots(decision_record: Dict[str, Any]) -> D
 
         identity_pack = load_ceo_identity_pack()
         world_state_snapshot = WorldStateEngine().build_snapshot()
-        alignment_before = CEOAlignmentEngine().evaluate(identity_pack, world_state_snapshot)
+        alignment_before = CEOAlignmentEngine().evaluate(
+            identity_pack, world_state_snapshot
+        )
 
         kpi_before = None
         kpi_note = "kpis_missing_or_not_dict"
-        if isinstance(world_state_snapshot, dict) and isinstance(world_state_snapshot.get("kpis"), dict):
+        if isinstance(world_state_snapshot, dict) and isinstance(
+            world_state_snapshot.get("kpis"), dict
+        ):
             kpi_before = world_state_snapshot.get("kpis")
             kpi_note = "kpis_from_world_state.kpis"
         elif not isinstance(world_state_snapshot, dict):
             kpi_note = "world_state_snapshot_not_dict"
 
         enriched = dict(decision_record)
-        enriched["alignment_before"] = alignment_before if isinstance(alignment_before, dict) else {"note": "alignment_before_not_dict"}
+        enriched["alignment_before"] = (
+            alignment_before
+            if isinstance(alignment_before, dict)
+            else {"note": "alignment_before_not_dict"}
+        )
         # store canonical dict directly (JSONB)
-        enriched["kpi_before"] = kpi_before if isinstance(kpi_before, dict) else {"note": kpi_note, "kpis": None}
+        enriched["kpi_before"] = (
+            kpi_before
+            if isinstance(kpi_before, dict)
+            else {"note": kpi_note, "kpis": None}
+        )
         return enriched
     except Exception:
         return decision_record
