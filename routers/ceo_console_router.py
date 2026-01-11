@@ -455,7 +455,9 @@ def _clamp01(x: float) -> float:
     return x
 
 
-def _extract_intent_and_risk_from_proposal(pc: Dict[str, Any]) -> Tuple[Optional[str], Optional[str], Optional[bool]]:
+def _extract_intent_and_risk_from_proposal(
+    pc: Dict[str, Any],
+) -> Tuple[Optional[str], Optional[str], Optional[bool]]:
     """
     Returns: (intent, risk_hint, requires_approval)
     - intent: prefers args.ai_command.intent
@@ -511,7 +513,9 @@ def _compute_risk_level(proposed: List[Dict[str, Any]]) -> RiskLevel:
         if isinstance(cmd, str) and cmd.strip().lower() == "notion_write":
             return "high"
 
-        intent, risk_hint, requires_approval = _extract_intent_and_risk_from_proposal(pc)
+        intent, risk_hint, requires_approval = _extract_intent_and_risk_from_proposal(
+            pc
+        )
 
         if requires_approval is True:
             return "high"
@@ -569,9 +573,13 @@ def _inject_confidence_risk(resp: CEOCommandResponse) -> None:
       - resp.confidence_risk (top-level)
       - resp.trace["confidence_risk"] mirror (+ assumption_count_source)
     """
-    proposed = resp.proposed_commands if isinstance(resp.proposed_commands, list) else []
+    proposed = (
+        resp.proposed_commands if isinstance(resp.proposed_commands, list) else []
+    )
     risk_level = _compute_risk_level(proposed)
-    confidence_score = _compute_confidence_score(risk_level=risk_level, trace=resp.trace)
+    confidence_score = _compute_confidence_score(
+        risk_level=risk_level, trace=resp.trace
+    )
 
     # NIJE POZNATO: sistem ne emitira assumptions -> istinito 0 + source marker
     assumption_count = 0

@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+from typing import Any, Dict, List, Optional
+
+from services.decision_outcome_registry import get_decision_outcome_registry
+from services.memory_service import MemoryService
+
 """
 OBSERVABILITY & AUDIT SURFACE — FAZA 12 (READ-ONLY)
 
@@ -14,11 +19,6 @@ Uloga:
 - nema pisanja
 - nema mutacije stanja
 """
-
-from typing import Any, Dict, List, Optional
-
-from services.decision_outcome_registry import get_decision_outcome_registry
-from services.memory_service import MemoryService
 
 
 class ObservabilityService:

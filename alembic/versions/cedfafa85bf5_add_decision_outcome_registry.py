@@ -5,6 +5,7 @@ Revises: 83fef38f86bc
 Create Date: 2026-01-11 13:05:58.966532
 
 """
+
 from typing import Sequence, Union
 
 from alembic import op
@@ -21,7 +22,9 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     op.create_table(
         "decision_outcome_registry",
-        sa.Column("decision_id", sa.String(length=128), primary_key=True, nullable=False),
+        sa.Column(
+            "decision_id", sa.String(length=128), primary_key=True, nullable=False
+        ),
         sa.Column(
             "timestamp",
             sa.DateTime(timezone=True),
@@ -32,8 +35,12 @@ def upgrade() -> None:
         sa.Column("behaviour_mode", sa.String(length=64), nullable=True),
         sa.Column("recommendation_type", sa.String(length=64), nullable=True),
         sa.Column("recommendation_summary", sa.Text(), nullable=True),
-        sa.Column("accepted", sa.Boolean(), server_default=sa.text("false"), nullable=False),
-        sa.Column("executed", sa.Boolean(), server_default=sa.text("false"), nullable=False),
+        sa.Column(
+            "accepted", sa.Boolean(), server_default=sa.text("false"), nullable=False
+        ),
+        sa.Column(
+            "executed", sa.Boolean(), server_default=sa.text("false"), nullable=False
+        ),
         sa.Column(
             "execution_result",
             sa.String(length=16),

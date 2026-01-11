@@ -22,7 +22,6 @@ def upgrade() -> None:
         "outcome_feedback_loop",
         sa.Column("id", sa.BigInteger(), sa.Identity(start=1), primary_key=True),
         sa.Column("decision_id", sa.Text(), nullable=False),
-
         # kada je zapis kreiran (u bazi)
         sa.Column(
             "timestamp",
@@ -30,25 +29,24 @@ def upgrade() -> None:
             nullable=False,
             server_default=sa.text("now()"),
         ),
-
         # kada treba raditi review (npr. +7/+14/+30 dana)
         sa.Column("review_at", sa.TIMESTAMP(timezone=True), nullable=True),
         sa.Column("evaluation_window_days", sa.Integer(), nullable=True),
-
         # alignment/mode info
         sa.Column("alignment_snapshot_hash", sa.Text(), nullable=True),
         sa.Column("behaviour_mode", sa.Text(), nullable=True),
-
         # recommendation info
         sa.Column("recommendation_type", sa.Text(), nullable=True),
         sa.Column("recommendation_summary", sa.Text(), nullable=False),
-
         # outcome flags
-        sa.Column("accepted", sa.Boolean(), nullable=False, server_default=sa.text("false")),
-        sa.Column("executed", sa.Boolean(), nullable=False, server_default=sa.text("false")),
+        sa.Column(
+            "accepted", sa.Boolean(), nullable=False, server_default=sa.text("false")
+        ),
+        sa.Column(
+            "executed", sa.Boolean(), nullable=False, server_default=sa.text("false")
+        ),
         sa.Column("execution_result", sa.Text(), nullable=True),  # success/fail/partial
         sa.Column("owner", sa.Text(), nullable=True),  # CEO/agent/system
-
         # opcionalno: KPI snapshots / delta (JSONB)
         sa.Column("kpi_before", postgresql.JSONB(), nullable=True),
         sa.Column("kpi_after", postgresql.JSONB(), nullable=True),

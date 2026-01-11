@@ -42,7 +42,9 @@ def run_once() -> int:
             logger.error("ofl_job_requires_postgres_for_advisory_lock")
             return 2
 
-        got_lock = conn.execute(sa.text("SELECT pg_try_advisory_lock(:k)"), {"k": lock_key}).scalar()
+        got_lock = conn.execute(
+            sa.text("SELECT pg_try_advisory_lock(:k)"), {"k": lock_key}
+        ).scalar()
         if not got_lock:
             logger.info("ofl_job_lock_not_acquired", extra={"lock_key": lock_key})
             return 0

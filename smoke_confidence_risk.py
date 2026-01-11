@@ -1,4 +1,4 @@
-﻿from fastapi.testclient import TestClient
+from fastapi.testclient import TestClient
 from gateway.gateway_server import app
 
 c = TestClient(app)
@@ -14,7 +14,10 @@ assert r.status_code == 200 and r.json().get("read_only") is True
 r0 = c.post("/api/ai/run", json={})
 assert r0.status_code in (400, 422)
 
-r = c.post("/api/ai/run", json={"text": "napravi cilj test cilj, prioritet High, status Active"})
+r = c.post(
+    "/api/ai/run",
+    json={"text": "napravi cilj test cilj, prioritet High, status Active"},
+)
 assert r.status_code == 200
 body = r.json()
 

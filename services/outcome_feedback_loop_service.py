@@ -217,7 +217,9 @@ class OutcomeFeedbackLoopService:
         return db_url
 
     def _engine(self) -> sa.Engine:
-        return sa.create_engine(self._db_url_or_raise(), pool_pre_ping=True, future=True)
+        return sa.create_engine(
+            self._db_url_or_raise(), pool_pre_ping=True, future=True
+        )
 
     def _table(self, engine: sa.Engine) -> sa.Table:
         md = sa.MetaData()
@@ -281,7 +283,9 @@ class OutcomeFeedbackLoopService:
     # -------------------------
     # PUBLIC API
     # -------------------------
-    def schedule_reviews_for_decision(self, *, decision_record: Dict[str, Any]) -> Dict[str, Any]:
+    def schedule_reviews_for_decision(
+        self, *, decision_record: Dict[str, Any]
+    ) -> Dict[str, Any]:
         if not isinstance(decision_record, dict) or not decision_record:
             return {"ok": False, "error": "invalid_decision_record"}
 
@@ -293,16 +297,28 @@ class OutcomeFeedbackLoopService:
         decided_at = _parse_iso_datetime(decision_record.get("timestamp")) or _utc_now()
 
         recommendation_summary = decision_record.get("recommendation_summary")
-        if not isinstance(recommendation_summary, str) or not recommendation_summary.strip():
-            return {"ok": False, "error": "decision_record_missing_recommendation_summary"}
+        if (
+            not isinstance(recommendation_summary, str)
+            or not recommendation_summary.strip()
+        ):
+            return {
+                "ok": False,
+                "error": "decision_record_missing_recommendation_summary",
+            }
         recommendation_summary = recommendation_summary.strip()
 
         accepted = decision_record.get("accepted")
         executed = decision_record.get("executed")
         if not _is_bool(accepted):
-            return {"ok": False, "error": "decision_record_missing_or_invalid_accepted_bool"}
+            return {
+                "ok": False,
+                "error": "decision_record_missing_or_invalid_accepted_bool",
+            }
         if not _is_bool(executed):
-            return {"ok": False, "error": "decision_record_missing_or_invalid_executed_bool"}
+            return {
+                "ok": False,
+                "error": "decision_record_missing_or_invalid_executed_bool",
+            }
 
         review_days = self._review_days()
 
@@ -340,13 +356,29 @@ class OutcomeFeedbackLoopService:
                     sc.executed: bool(executed),
                 }
 
-                if sc.alignment_snapshot_hash and isinstance(alignment_snapshot_hash, str) and alignment_snapshot_hash.strip():
+                if (
+                    sc.alignment_snapshot_hash
+                    and isinstance(alignment_snapshot_hash, str)
+                    and alignment_snapshot_hash.strip()
+                ):
                     row[sc.alignment_snapshot_hash] = alignment_snapshot_hash.strip()
-                if sc.behaviour_mode and isinstance(behaviour_mode, str) and behaviour_mode.strip():
+                if (
+                    sc.behaviour_mode
+                    and isinstance(behaviour_mode, str)
+                    and behaviour_mode.strip()
+                ):
                     row[sc.behaviour_mode] = behaviour_mode.strip()
-                if sc.recommendation_type and isinstance(recommendation_type, str) and recommendation_type.strip():
+                if (
+                    sc.recommendation_type
+                    and isinstance(recommendation_type, str)
+                    and recommendation_type.strip()
+                ):
                     row[sc.recommendation_type] = recommendation_type.strip()
-                if sc.execution_result and isinstance(execution_result, str) and execution_result.strip():
+                if (
+                    sc.execution_result
+                    and isinstance(execution_result, str)
+                    and execution_result.strip()
+                ):
                     row[sc.execution_result] = execution_result.strip()
                 if sc.owner and isinstance(owner, str) and owner.strip():
                     row[sc.owner] = owner.strip()
@@ -356,17 +388,26 @@ class OutcomeFeedbackLoopService:
 
                 # Minimal contract: alignment_before at decision time (best-effort)
                 if sc.alignment_before:
-                    if isinstance(alignment_before_payload, dict) and alignment_before_payload:
-                        row[sc.alignment_before] = _safe_json_payload(alignment_before_payload)
+                    if (
+                        isinstance(alignment_before_payload, dict)
+                        and alignment_before_payload
+                    ):
+                        row[sc.alignment_before] = _safe_json_payload(
+                            alignment_before_payload
+                        )
                     else:
-                        row[sc.alignment_before] = _safe_json_payload(_alignment_payload_from_hash(alignment_snapshot_hash))
+                        row[sc.alignment_before] = _safe_json_payload(
+                            _alignment_payload_from_hash(alignment_snapshot_hash)
+                        )
 
                 try:
                     if is_pg:
                         stmt = (
                             pg_insert(table)
                             .values(**row)
-                            .on_conflict_do_nothing(index_elements=list(self.UNIQUE_INDEX_ELEMENTS))
+                            .on_conflict_do_nothing(
+                                index_elements=list(self.UNIQUE_INDEX_ELEMENTS)
+                            )
                             .returning(table.c[sc.id])
                         )
                         res = conn.execute(stmt)
@@ -423,11 +464,17 @@ class OutcomeFeedbackLoopService:
         # Build alignment_after snapshot once per run (same "now" for all rows)
         identity_pack = load_ceo_identity_pack()
         world_state_snapshot = WorldStateEngine().build_snapshot()
-        alignment_after_snapshot = CEOAlignmentEngine().evaluate(identity_pack, world_state_snapshot)
+        alignment_after_snapshot = CEOAlignmentEngine().evaluate(
+            identity_pack, world_state_snapshot
+        )
 
         marker_expr = table.c[marker_col].is_(None)
 
-        select_cols = [table.c[sc.id], table.c[sc.decision_id], table.c[sc.evaluation_window_days]]
+        select_cols = [
+            table.c[sc.id],
+            table.c[sc.decision_id],
+            table.c[sc.evaluation_window_days],
+        ]
         if sc.alignment_before:
             select_cols.append(table.c[sc.alignment_before])
         if sc.alignment_snapshot_hash:
@@ -464,17 +511,24 @@ class OutcomeFeedbackLoopService:
                 if sc.alignment_snapshot_hash:
                     alignment_hash_value = row[idx] if idx < len(row) else None
 
-                delta_score_val, delta_risk_val, delta_notes = _compute_delta_score_and_risk(
-                    alignment_before=alignment_before_value,
-                    alignment_after=alignment_after_snapshot,
+                delta_score_val, delta_risk_val, delta_notes = (
+                    _compute_delta_score_and_risk(
+                        alignment_before=alignment_before_value,
+                        alignment_after=alignment_after_snapshot,
+                    )
                 )
 
                 notes_parts = [
                     f"evaluated_at={now.isoformat()}",
                     "source=alignment_engine+world_state_engine",
                 ]
-                if isinstance(alignment_hash_value, str) and alignment_hash_value.strip():
-                    notes_parts.append(f"alignment_snapshot_hash={alignment_hash_value.strip()}")
+                if (
+                    isinstance(alignment_hash_value, str)
+                    and alignment_hash_value.strip()
+                ):
+                    notes_parts.append(
+                        f"alignment_snapshot_hash={alignment_hash_value.strip()}"
+                    )
                 if delta_notes:
                     notes_parts.append("flags=" + ",".join(delta_notes))
 
@@ -498,7 +552,9 @@ class OutcomeFeedbackLoopService:
                     )
 
                 if sc.alignment_after:
-                    upd[sc.alignment_after] = _safe_json_payload(alignment_after_snapshot)
+                    upd[sc.alignment_after] = _safe_json_payload(
+                        alignment_after_snapshot
+                    )
 
                 if sc.delta_score:
                     upd[sc.delta_score] = float(delta_score_val)
@@ -510,7 +566,9 @@ class OutcomeFeedbackLoopService:
                     upd[sc.notes] = " ".join(notes_parts)
 
                 try:
-                    res = conn.execute(sa.update(table).where(table.c[sc.id] == rid).values(**upd))
+                    res = conn.execute(
+                        sa.update(table).where(table.c[sc.id] == rid).values(**upd)
+                    )
                     if res.rowcount and int(res.rowcount) > 0:
                         updated += int(res.rowcount)
                 except Exception:

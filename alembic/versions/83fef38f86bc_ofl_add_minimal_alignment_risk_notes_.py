@@ -5,6 +5,7 @@ Revises: a68c7d6c488c
 Create Date: 2026-01-10 21:55:22.031971
 
 """
+
 from typing import Sequence, Union
 
 from alembic import op
@@ -21,9 +22,17 @@ TABLE_NAME = "outcome_feedback_loop"
 
 
 def upgrade() -> None:
-    op.add_column(TABLE_NAME, sa.Column("alignment_before", sa.dialects.postgresql.JSONB(), nullable=True))
-    op.add_column(TABLE_NAME, sa.Column("alignment_after", sa.dialects.postgresql.JSONB(), nullable=True))
-    op.add_column(TABLE_NAME, sa.Column("delta_score", sa.Numeric(18, 6), nullable=True))
+    op.add_column(
+        TABLE_NAME,
+        sa.Column("alignment_before", sa.dialects.postgresql.JSONB(), nullable=True),
+    )
+    op.add_column(
+        TABLE_NAME,
+        sa.Column("alignment_after", sa.dialects.postgresql.JSONB(), nullable=True),
+    )
+    op.add_column(
+        TABLE_NAME, sa.Column("delta_score", sa.Numeric(18, 6), nullable=True)
+    )
     op.add_column(TABLE_NAME, sa.Column("delta_risk", sa.Numeric(18, 6), nullable=True))
     op.add_column(TABLE_NAME, sa.Column("notes", sa.Text(), nullable=True))
 

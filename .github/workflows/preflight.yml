@@ -2,7 +2,7 @@ name: Preflight (API + DB)
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   pull_request:
 
 jobs:
@@ -42,7 +42,7 @@ jobs:
         env:
           DATABASE_URL: postgresql+psycopg://admin:password@127.0.0.1:5432/alignment_db
         run: |
-          alembic upgrade head
+          python -m alembic upgrade head
 
       - name: Start API (uvicorn)
         env:

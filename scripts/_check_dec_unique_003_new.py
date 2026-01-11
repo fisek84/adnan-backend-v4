@@ -1,4 +1,4 @@
-﻿import os
+import os
 import sqlalchemy as sa
 
 eng = sa.create_engine(os.environ["DATABASE_URL"], future=True)
