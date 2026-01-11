@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from typing import Dict, Any, Literal
+from typing import Any, Dict, Literal
 
 RecommendationType = Literal[
     "STRATEGIC",
@@ -44,10 +44,8 @@ def classify_recommendation(
     r = (risk_level or "").lower()
     b = (behaviour_mode or "").lower()
 
-    cmd = ""
     intent = ""
     if isinstance(proposed_command, dict):
-        cmd = str(proposed_command.get("command") or "").lower()
         intent = str(proposed_command.get("intent") or "").lower()
 
     # 1️⃣ DEFENSIVE — risk containment / damage control
