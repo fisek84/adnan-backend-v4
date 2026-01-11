@@ -37,16 +37,16 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          pip install alembic
 
       - name: Alembic upgrade
         env:
           DATABASE_URL: postgresql+psycopg://admin:password@127.0.0.1:5432/alignment_db
         run: |
-          python -m alembic upgrade head
+          alembic upgrade head
 
       - name: Start API (uvicorn)
         env:
-          # ako tvoj app koristi env varijable, ovdje ih setuj
           DATABASE_URL: postgresql+psycopg://admin:password@127.0.0.1:5432/alignment_db
         run: |
           nohup python -m uvicorn gateway.gateway_server:app --host 127.0.0.1 --port 8000 > uvicorn.log 2>&1 &
