@@ -9,6 +9,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
+from services.decision_history_writer import insert_decision_history
+from services.identity_resolver import resolve_identity_id
+
 logger = logging.getLogger(__name__)
 
 # Keep consistent with other persistence patterns (ExecutionRegistry uses a base path).
@@ -146,6 +149,12 @@ class DecisionOutcomeRegistry:
                 return dict(existing) if isinstance(existing, dict) else {}
 
             decision_id = str(uuid4())
+
+            try:
+                identity_id = resolve_identity_id(record_owner)
+                insert_decision_history(decision_id=decision_id, identity_id=identity_id, origin='adnan.ai', executor=None, command=rec_type, payload=cs, confidence=None, confirmed=bool(accepted))
+            except Exception:
+                pass
 
             # Enterprise canon: approved ≠ executed
             executed = False

@@ -44,7 +44,6 @@ def _parse_iso_datetime(s: Any) -> Optional[datetime]:
         if dt.tzinfo is None:
             return dt.replace(tzinfo=timezone.utc)
         return dt.astimezone(timezone.utc)
-
     except Exception:
         return None
 
@@ -178,9 +177,7 @@ def _extract_kpis_from_world_state(
     return None, "kpis_missing_or_not_dict"
 
 
-def _diff_numeric_kpis(
-    *, before: Any, after: Any
-) -> Tuple[Dict[str, float], List[str]]:
+def _diff_numeric_kpis(*, before: Any, after: Any) -> Tuple[Dict[str, float], List[str]]:
     """
     Deterministički diff: common keys gdje su i before i after numeric (int/float, ne bool).
     """
@@ -207,6 +204,79 @@ def _diff_numeric_kpis(
     return out, notes
 
 
+# -------------------------
+# identity_id helpers (NEW)
+# -------------------------
+def _normalize_identity_type(owner: Any) -> str:
+    """
+    Mapira owner -> identity_type u identity_root.
+    Prihvatamo: 'CEO', 'agent', 'system' (case-insensitive).
+    Default: 'system'
+    """
+    if isinstance(owner, str) and owner.strip():
+        v = owner.strip()
+        if v.lower() == "ceo":
+            return "CEO"
+        if v.lower() == "agent":
+            return "agent"
+        if v.lower() == "system":
+            return "system"
+    return "system"
+
+
+def _looks_like_uuid(s: Any) -> bool:
+    if not isinstance(s, str):
+        return False
+    v = s.strip()
+    if not v or len(v) < 32:
+        return False
+    allowed = set("0123456789abcdefABCDEF-")
+    return all(ch in allowed for ch in v)
+
+
+def _resolve_identity_id(
+    conn: sa.Connection, *, owner: Any, identity_id: Any
+) -> Optional[str]:
+    """
+    Vraća identity_id (UUID string) deterministički:
+      1) koristi decision_record['identity_id'] ako izgleda kao UUID
+      2) lookup po identity_type iz owner
+      3) ako ne postoji identity_type u identity_root, insert + ponovni select
+    """
+    if _looks_like_uuid(identity_id):
+        return str(identity_id).strip()
+
+    itype = _normalize_identity_type(owner)
+
+    row = conn.execute(
+        sa.text(
+            "SELECT identity_id FROM identity_root WHERE identity_type = :t LIMIT 1"
+        ),
+        {"t": itype},
+    ).fetchone()
+    if row and row[0]:
+        return str(row[0])
+
+    # NOTE: identity_type nema UNIQUE constraint u prikazanom migrationu (NIJE POZNATO da li postoji u DB),
+    # pa ne koristimo ON CONFLICT. Insert pa select je deterministički i radi.
+    conn.execute(
+        sa.text("INSERT INTO identity_root (identity_type) VALUES (:t)"),
+        {"t": itype},
+    )
+
+    row2 = conn.execute(
+        sa.text(
+            "SELECT identity_id FROM identity_root WHERE identity_type = :t "
+            "ORDER BY created_at DESC LIMIT 1"
+        ),
+        {"t": itype},
+    ).fetchone()
+    if row2 and row2[0]:
+        return str(row2[0])
+
+    return None
+
+
 @dataclass(frozen=True)
 class _SchemaCols:
     id: str
@@ -214,6 +284,9 @@ class _SchemaCols:
     timestamp: str
     review_at: str
     evaluation_window_days: str
+
+    # NEW
+    identity_id: Optional[str]
 
     alignment_snapshot_hash: Optional[str]
     behaviour_mode: Optional[str]
@@ -258,9 +331,7 @@ class OutcomeFeedbackLoopService:
         return db_url
 
     def _engine(self) -> sa.Engine:
-        return sa.create_engine(
-            self._db_url_or_raise(), pool_pre_ping=True, future=True
-        )
+        return sa.create_engine(self._db_url_or_raise(), pool_pre_ping=True, future=True)
 
     def _table(self, engine: sa.Engine) -> sa.Table:
         md = sa.MetaData()
@@ -283,6 +354,7 @@ class OutcomeFeedbackLoopService:
             timestamp=req("timestamp"),
             review_at=req("review_at"),
             evaluation_window_days=req("evaluation_window_days"),
+            identity_id=opt("identity_id"),
             alignment_snapshot_hash=opt("alignment_snapshot_hash"),
             behaviour_mode=opt("behaviour_mode"),
             recommendation_type=opt("recommendation_type"),
@@ -332,28 +404,16 @@ class OutcomeFeedbackLoopService:
         decided_at = _parse_iso_datetime(decision_record.get("timestamp")) or _utc_now()
 
         recommendation_summary = decision_record.get("recommendation_summary")
-        if (
-            not isinstance(recommendation_summary, str)
-            or not recommendation_summary.strip()
-        ):
-            return {
-                "ok": False,
-                "error": "decision_record_missing_recommendation_summary",
-            }
+        if not isinstance(recommendation_summary, str) or not recommendation_summary.strip():
+            return {"ok": False, "error": "decision_record_missing_recommendation_summary"}
         recommendation_summary = recommendation_summary.strip()
 
         accepted = decision_record.get("accepted")
         executed = decision_record.get("executed")
         if not _is_bool(accepted):
-            return {
-                "ok": False,
-                "error": "decision_record_missing_or_invalid_accepted_bool",
-            }
+            return {"ok": False, "error": "decision_record_missing_or_invalid_accepted_bool"}
         if not _is_bool(executed):
-            return {
-                "ok": False,
-                "error": "decision_record_missing_or_invalid_executed_bool",
-            }
+            return {"ok": False, "error": "decision_record_missing_or_invalid_executed_bool"}
 
         review_days = self._review_days()
 
@@ -371,11 +431,27 @@ class OutcomeFeedbackLoopService:
         execution_result = decision_record.get("execution_result")
         owner = decision_record.get("owner")
 
+        # NEW
+        identity_id = decision_record.get("identity_id")
+
         kpi_before = decision_record.get("kpi_before")
         alignment_before_payload = decision_record.get("alignment_before")
 
         with engine.begin() as conn:
             is_pg = conn.dialect.name == "postgresql"
+
+            # NEW: resolve identity_id once per call (only if schema has identity_id)
+            resolved_identity_id: Optional[str] = None
+            if sc.identity_id:
+                resolved_identity_id = _resolve_identity_id(
+                    conn, owner=owner, identity_id=identity_id
+                )
+                if not resolved_identity_id:
+                    return {
+                        "ok": False,
+                        "error": "cannot_resolve_identity_id_for_ofl_insert",
+                        "decision_id": decision_id,
+                    }
 
             for d in review_days:
                 due = decided_at + timedelta(days=int(d))
@@ -390,30 +466,26 @@ class OutcomeFeedbackLoopService:
                     sc.executed: bool(executed),
                 }
 
+                # NEW: identity_id (fail-fast already ensured above)
+                if sc.identity_id:
+                    row[sc.identity_id] = resolved_identity_id
+
                 if (
                     sc.alignment_snapshot_hash
                     and isinstance(alignment_snapshot_hash, str)
                     and alignment_snapshot_hash.strip()
                 ):
                     row[sc.alignment_snapshot_hash] = alignment_snapshot_hash.strip()
-                if (
-                    sc.behaviour_mode
-                    and isinstance(behaviour_mode, str)
-                    and behaviour_mode.strip()
-                ):
+
+                if sc.behaviour_mode and isinstance(behaviour_mode, str) and behaviour_mode.strip():
                     row[sc.behaviour_mode] = behaviour_mode.strip()
-                if (
-                    sc.recommendation_type
-                    and isinstance(recommendation_type, str)
-                    and recommendation_type.strip()
-                ):
+
+                if sc.recommendation_type and isinstance(recommendation_type, str) and recommendation_type.strip():
                     row[sc.recommendation_type] = recommendation_type.strip()
-                if (
-                    sc.execution_result
-                    and isinstance(execution_result, str)
-                    and execution_result.strip()
-                ):
+
+                if sc.execution_result and isinstance(execution_result, str) and execution_result.strip():
                     row[sc.execution_result] = execution_result.strip()
+
                 if sc.owner and isinstance(owner, str) and owner.strip():
                     row[sc.owner] = owner.strip()
 
@@ -421,13 +493,8 @@ class OutcomeFeedbackLoopService:
                     row[sc.kpi_before] = _safe_json_payload(kpi_before)
 
                 if sc.alignment_before:
-                    if (
-                        isinstance(alignment_before_payload, dict)
-                        and alignment_before_payload
-                    ):
-                        row[sc.alignment_before] = _safe_json_payload(
-                            alignment_before_payload
-                        )
+                    if isinstance(alignment_before_payload, dict) and alignment_before_payload:
+                        row[sc.alignment_before] = _safe_json_payload(alignment_before_payload)
                     else:
                         row[sc.alignment_before] = _safe_json_payload(
                             _alignment_payload_from_hash(alignment_snapshot_hash)
@@ -500,12 +567,9 @@ class OutcomeFeedbackLoopService:
             identity_pack, world_state_snapshot
         )
 
-        kpis_after, kpi_after_note = _extract_kpis_from_world_state(
-            world_state_snapshot
-        )
+        kpis_after, kpi_after_note = _extract_kpis_from_world_state(world_state_snapshot)
 
-        marker_expr = table.c[marker_col].is_(None)
-
+        marker_expr = sa.or_(table.c[marker_col].is_(None), table.c[marker_col] == sa.text("'null'::jsonb"))
         select_cols = [
             table.c[sc.id],
             table.c[sc.decision_id],
@@ -557,11 +621,9 @@ class OutcomeFeedbackLoopService:
                 if sc.alignment_snapshot_hash:
                     alignment_hash_value = row[idx] if idx < len(row) else None
 
-                delta_score_val, delta_risk_val, delta_notes = (
-                    _compute_delta_score_and_risk(
-                        alignment_before=alignment_before_value,
-                        alignment_after=alignment_after_snapshot,
-                    )
+                delta_score_val, delta_risk_val, delta_notes = _compute_delta_score_and_risk(
+                    alignment_before=alignment_before_value,
+                    alignment_after=alignment_after_snapshot,
                 )
 
                 kpi_deltas: Dict[str, float] = {}
@@ -578,13 +640,8 @@ class OutcomeFeedbackLoopService:
                     "source=alignment_engine+world_state_engine",
                     f"kpi_extract_note={kpi_after_note}",
                 ]
-                if (
-                    isinstance(alignment_hash_value, str)
-                    and alignment_hash_value.strip()
-                ):
-                    notes_parts.append(
-                        f"alignment_snapshot_hash={alignment_hash_value.strip()}"
-                    )
+                if isinstance(alignment_hash_value, str) and alignment_hash_value.strip():
+                    notes_parts.append(f"alignment_snapshot_hash={alignment_hash_value.strip()}")
                 if delta_notes:
                     notes_parts.append("flags=" + ",".join(delta_notes))
                 if kpi_delta_notes:
@@ -613,9 +670,7 @@ class OutcomeFeedbackLoopService:
                     )
 
                 if sc.alignment_after:
-                    upd[sc.alignment_after] = _safe_json_payload(
-                        alignment_after_snapshot
-                    )
+                    upd[sc.alignment_after] = _safe_json_payload(alignment_after_snapshot)
 
                 if sc.delta_score:
                     upd[sc.delta_score] = float(delta_score_val)
@@ -627,9 +682,7 @@ class OutcomeFeedbackLoopService:
                     upd[sc.notes] = " ".join(notes_parts)
 
                 try:
-                    res = conn.execute(
-                        sa.update(table).where(table.c[sc.id] == rid).values(**upd)
-                    )
+                    res = conn.execute(sa.update(table).where(table.c[sc.id] == rid).values(**upd))
                     if res.rowcount and int(res.rowcount) > 0:
                         updated += int(res.rowcount)
                 except Exception:
@@ -682,11 +735,7 @@ class OutcomeFeedbackLoopService:
         sc = self._require_cols(table)
 
         upd: Dict[str, Any] = {sc.executed: bool(executed)}
-        if (
-            sc.execution_result
-            and isinstance(execution_result, str)
-            and execution_result.strip()
-        ):
+        if sc.execution_result and isinstance(execution_result, str) and execution_result.strip():
             upd[sc.execution_result] = execution_result.strip()
 
         with engine.begin() as conn:
