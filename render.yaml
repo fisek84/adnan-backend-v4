@@ -68,6 +68,10 @@ services:
       - key: OS_ENABLED
         value: "true"
 
+      # --- DB (REQUIRED za alembic + OFL service)
+      - key: DATABASE_URL
+        sync: false
+
     # ============================
     # DEPLOY TRIGGER SETTINGS
     # ============================
@@ -90,3 +94,53 @@ services:
       maxRetries: 5
       delay: 10
       factor: 2
+
+  # ============================
+  # OFL PERIODIC EVALUATOR (CRON)
+  # ============================
+  - type: cron
+    name: adnan-backend-v4-ofl-cron
+    env: docker
+    region: frankfurt
+
+    dockerfilePath: Dockerfile
+    dockerContext: .
+
+    # every 15 minutes (promijeni po potrebi)
+    schedule: "*/15 * * * *"
+
+    # runs your already-tested entrypoint
+    command: "python -m jobs.ofl_scheduler"
+
+    envVars:
+      - key: RENDER
+        value: "true"
+
+      - key: OPENAI_API_KEY
+        sync: false
+
+      - key: NOTION_API_KEY
+        sync: false
+      - key: NOTION_GOALS_DB_ID
+        sync: false
+      - key: NOTION_TASKS_DB_ID
+        sync: false
+      - key: NOTION_PROJECTS_DB_ID
+        sync: false
+
+      - key: NOTION_OPS_ASSISTANT_ID
+        sync: false
+
+      - key: AGENTS_JSON_PATH
+        value: "/app/config/agents.json"
+
+      - key: OPS_SAFE_MODE
+        value: "false"
+      - key: CEO_TOKEN_ENFORCEMENT
+        value: "false"
+      - key: OS_ENABLED
+        value: "true"
+
+      # DB needed by OutcomeFeedbackLoopService
+      - key: DATABASE_URL
+        sync: false
