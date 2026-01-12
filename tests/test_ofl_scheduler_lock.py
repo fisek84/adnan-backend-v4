@@ -12,7 +12,9 @@ def test_scheduler_advisory_lock_blocks_second_runner(monkeypatch):
 
     # Hold the lock in this test session
     with e.connect() as c:
-        got = c.execute(text("select pg_try_advisory_lock(:k)"), {"k": 0x0F1A0F1A}).scalar()
+        got = c.execute(
+            text("select pg_try_advisory_lock(:k)"), {"k": 0x0F1A0F1A}
+        ).scalar()
         assert bool(got) is True
 
         # Now scheduler should see lock and exit 0 (no work)

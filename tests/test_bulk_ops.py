@@ -106,7 +106,9 @@ async def test_happy_path_execute_approve(client):
     pending = pending_response.json()
     approvals = pending.get("approvals", [])
     approval_ids = [a.get("approval_id") for a in approvals]
-    assert approval_id in approval_ids, "approval_id from execute must be in pending approvals"
+    assert (
+        approval_id in approval_ids
+    ), "approval_id from execute must be in pending approvals"
 
     # 3) Approve -> očekujemo COMPLETED
     approve_response = await client.post(
@@ -126,7 +128,9 @@ async def test_happy_path_execute_approve(client):
         pytest.skip("DATABASE_URL not set; skipping OFL DB-backed E2E segment")
 
     execution_id = approved.get("execution_id")
-    assert isinstance(execution_id, str) and execution_id.strip(), "execution_id missing"
+    assert (
+        isinstance(execution_id, str) and execution_id.strip()
+    ), "execution_id missing"
     execution_id = execution_id.strip()
 
     # Get decision_id from DOR
@@ -147,7 +151,11 @@ async def test_happy_path_execute_approve(client):
     now = datetime.now(timezone.utc)
     due = now - timedelta(seconds=5)
 
-    marker_col = "delta" if "delta" in table.c else ("kpi_after" if "kpi_after" in table.c else None)
+    marker_col = (
+        "delta"
+        if "delta" in table.c
+        else ("kpi_after" if "kpi_after" in table.c else None)
+    )
     if marker_col is None:
         pytest.skip("OFL schema missing both delta and kpi_after columns")
 

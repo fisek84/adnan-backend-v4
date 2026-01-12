@@ -3,6 +3,7 @@ import sqlalchemy as sa
 from sqlalchemy import text, bindparam
 from jobs.outcome_feedback_loop_job import run_once
 
+
 def test_ofl_due_e2e():
     e = sa.create_engine(os.getenv("DATABASE_URL"))
     ids = ["test-decision-001", "test-decision-002"]
