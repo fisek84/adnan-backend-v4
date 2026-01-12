@@ -118,7 +118,9 @@ async def test_happy_path_execute_approve(client):
         pytest.skip("DATABASE_URL not set; skipping OFL DB-backed E2E segment")
 
     execution_id = approved.get("execution_id")
-    assert isinstance(execution_id, str) and execution_id.strip(), "execution_id missing"
+    assert (
+        isinstance(execution_id, str) and execution_id.strip()
+    ), "execution_id missing"
     execution_id = execution_id.strip()
 
     # Get decision_id from DOR
@@ -133,9 +135,7 @@ async def test_happy_path_execute_approve(client):
     decision_id = decision_id.strip()
 
     # Force OFL rows to be due NOW (so cron can evaluate in this test run)
-    from services.outcome_feedback_loop_service import OutcomeFeedbackLoopService
 
-    svc = OutcomeFeedbackLoopService()
     engine = sa.create_engine(db_url, pool_pre_ping=True, future=True)
     md = sa.MetaData()
     table = sa.Table("outcome_feedback_loop", md, autoload_with=engine)
@@ -159,9 +159,7 @@ async def test_happy_path_execute_approve(client):
             marker_col: None,
         }
         res = conn.execute(
-            sa.update(table)
-            .where(table.c["decision_id"] == decision_id)
-            .values(**upd)
+            sa.update(table).where(table.c["decision_id"] == decision_id).values(**upd)
         )
         assert int(res.rowcount or 0) > 0, "No OFL rows updated for decision_id"
 
@@ -173,10 +171,14 @@ async def test_happy_path_execute_approve(client):
 
     # Verify at least one OFL row got evaluated (marker not null)
     with engine.begin() as conn:
-        sel = sa.select(sa.func.count()).select_from(table).where(
-            sa.and_(
-                table.c["decision_id"] == decision_id,
-                table.c[marker_col].is_not(None),
+        sel = (
+            sa.select(sa.func.count())
+            .select_from(table)
+            .where(
+                sa.and_(
+                    table.c["decision_id"] == decision_id,
+                    table.c[marker_col].is_not(None),
+                )
             )
         )
         evaluated_count = int(conn.execute(sel).scalar() or 0)
