@@ -55,3 +55,9 @@ rapidfuzz==3.6.1
 ruff==0.6.4
 mypy==1.13.0
 pre-commit==4.0.1
+
+# ===========================
+# POSTGRES DRIVER (required by DATABASE_URL postgresql+psycopg://...)
+# ===========================
+psycopg[binary]==3.2.3
+
