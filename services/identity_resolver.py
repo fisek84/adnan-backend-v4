@@ -1,31 +1,42 @@
-from __future__ import annotations
+﻿import os
+import sqlalchemy as sa
 
-import os
+def _db_url() -> str:
+    return (os.getenv("DATABASE_URL") or "").strip()
 
-from sqlalchemy import create_engine, text
+def resolve_identity_id(owner: str) -> str:
+    db_url = _db_url()
+    if not db_url:
+        return "system"  # fallback, no DB configured
 
-_DATABASE_URL = os.getenv("DATABASE_URL")
-if not _DATABASE_URL:
-    raise RuntimeError("DATABASE_URL is not set")
+    engine = sa.create_engine(db_url, pool_pre_ping=True, future=True)
+    itype = (owner or "system").strip().lower()
+    if itype == "ceo":
+        itype_db = "CEO"
+    elif itype == "agent":
+        itype_db = "agent"
+    else:
+        itype_db = "system"
 
-_engine = create_engine(_DATABASE_URL, pool_pre_ping=True)
-
-
-def resolve_identity_id(identity_type: str) -> str:
-    with _engine.begin() as conn:
+    with engine.begin() as conn:
         row = conn.execute(
-            text(
-                """
-                SELECT identity_id
-                FROM identity_root
-                WHERE identity_type = :t
-                LIMIT 1
-                """
-            ),
-            {"t": identity_type},
+            sa.text("SELECT identity_id FROM identity_root WHERE identity_type = :t LIMIT 1"),
+            {"t": itype_db},
         ).fetchone()
+        if row and row[0]:
+            return str(row[0])
 
-        if not row:
-            raise RuntimeError(f"identity_type not found: {identity_type}")
+        conn.execute(
+            sa.text("INSERT INTO identity_root (identity_type) VALUES (:t)"),
+            {"t": itype_db},
+        )
+        row2 = conn.execute(
+            sa.text(
+                "SELECT identity_id FROM identity_root WHERE identity_type = :t ORDER BY created_at DESC LIMIT 1"
+            ),
+            {"t": itype_db},
+        ).fetchone()
+        if row2 and row2[0]:
+            return str(row2[0])
 
-        return str(row[0])
+    return "system"

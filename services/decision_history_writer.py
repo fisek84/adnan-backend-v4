@@ -1,52 +1,39 @@
-from __future__ import annotations
+﻿import os
+from typing import Any, Optional, Dict
 
-import os
-from typing import Any, Dict, Optional
+import sqlalchemy as sa
 
-from sqlalchemy import create_engine, text
 
-_DATABASE_URL = os.getenv("DATABASE_URL")
-if not _DATABASE_URL:
-    raise RuntimeError("DATABASE_URL is not set")
-
-_engine = create_engine(_DATABASE_URL, pool_pre_ping=True)
+def _db_url() -> str:
+    return (os.getenv("DATABASE_URL") or "").strip()
 
 
 def insert_decision_history(
     *,
     decision_id: str,
-    identity_id,
-    origin: Optional[str],
+    identity_id: str,
+    origin: str,
     executor: Optional[str],
-    command: Optional[str],
-    payload: Optional[Dict[str, Any]],
+    command: str,
+    payload: Dict[str, Any],
     confidence: Optional[float],
     confirmed: bool,
 ) -> None:
-    with _engine.begin() as conn:
+    db_url = _db_url()
+    if not db_url:
+        # BEST-EFFORT: no DB configured => skip, do not crash runtime
+        return
+
+    engine = sa.create_engine(db_url, pool_pre_ping=True, future=True)
+
+    with engine.begin() as conn:
         conn.execute(
-            text(
+            sa.text(
                 """
-                INSERT INTO decision_history (
-                    decision_id,
-                    identity_id,
-                    origin,
-                    executor,
-                    command,
-                    payload,
-                    confidence,
-                    confirmed
-                )
-                VALUES (
-                    :decision_id,
-                    :identity_id,
-                    :origin,
-                    :executor,
-                    :command,
-                    :payload,
-                    :confidence,
-                    :confirmed
-                )
+                INSERT INTO decision_history
+                  (decision_id, identity_id, origin, executor, command, payload, confidence, confirmed)
+                VALUES
+                  (:decision_id, :identity_id, :origin, :executor, :command, CAST(:payload AS jsonb), :confidence, :confirmed)
                 """
             ),
             {
@@ -57,6 +44,6 @@ def insert_decision_history(
                 "command": command,
                 "payload": payload,
                 "confidence": confidence,
-                "confirmed": confirmed,
+                "confirmed": bool(confirmed),
             },
         )
