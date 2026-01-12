@@ -1,3 +1,4 @@
+# alembic/versions/b9c0d1e2f3a4_backfill_identity_ai_signals.py
 """
 backfill identity_id for ai_signals
 
@@ -15,7 +16,8 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.execute("""
+    op.execute(
+        """
         UPDATE ai_signals s
         SET identity_id = i.identity_id
         FROM identity_root i
@@ -26,7 +28,8 @@ def upgrade() -> None:
                 WHEN s.source = 'agent' THEN 'agent'
                 ELSE 'system'
             END;
-    """)
+        """
+    )
 
 
 def downgrade() -> None:

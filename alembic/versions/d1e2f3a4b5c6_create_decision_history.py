@@ -13,7 +13,12 @@ from sqlalchemy.dialects import postgresql
 revision = "d1e2f3a4b5c6"
 down_revision = "f6a7b8c9d0e1"
 branch_labels = None
-depends_on = None
+depends_on = "a1b2c3d4e5f6"  # create_identity_root
+
+
+def _has_table(conn, name: str) -> bool:
+    insp = sa.inspect(conn)
+    return bool(insp.has_table(name))
 
 
 def upgrade() -> None:
@@ -38,7 +43,10 @@ def upgrade() -> None:
         sa.Column("payload", postgresql.JSONB(), nullable=True),
         sa.Column("confidence", sa.Float(), nullable=True),
         sa.Column(
-            "confirmed", sa.Boolean(), nullable=False, server_default=sa.text("false")
+            "confirmed",
+            sa.Boolean(),
+            nullable=False,
+            server_default=sa.text("false"),
         ),
     )
 
@@ -53,22 +61,26 @@ def upgrade() -> None:
         ["created_at"],
     )
 
-    op.create_foreign_key(
-        "fk_decision_history_identity",
-        "decision_history",
-        "identity_root",
-        ["identity_id"],
-        ["identity_id"],
-        ondelete="RESTRICT",
-    )
+    conn = op.get_bind()
+    if _has_table(conn, "identity_root"):
+        op.create_foreign_key(
+            "fk_decision_history_identity",
+            "decision_history",
+            "identity_root",
+            ["identity_id"],
+            ["identity_id"],
+            ondelete="RESTRICT",
+        )
 
 
 def downgrade() -> None:
-    op.drop_constraint(
-        "fk_decision_history_identity",
-        "decision_history",
-        type_="foreignkey",
-    )
+    conn = op.get_bind()
+    if _has_table(conn, "decision_history") and _has_table(conn, "identity_root"):
+        op.drop_constraint(
+            "fk_decision_history_identity",
+            "decision_history",
+            type_="foreignkey",
+        )
     op.drop_index("ix_decision_history_created_at", table_name="decision_history")
     op.drop_index("ix_decision_history_decision_id", table_name="decision_history")
     op.drop_table("decision_history")
