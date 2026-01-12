@@ -1,7 +1,9 @@
 import os
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
+import sqlalchemy as sa
 
 from main import app
 
@@ -75,6 +77,7 @@ async def test_happy_path_execute_approve(client):
     1) POST /api/execute  -> očekujemo BLOCKED + approval_id
     2) GET /api/ai-ops/approval/pending -> approval_id se mora pojaviti u pending listi
     3) POST /api/ai-ops/approval/approve -> očekujemo COMPLETED
+    4) (OFL E2E) cron/run -> OFL evaluacija upiše marker za decision_id
     """
     # 1) CEO input -> očekujemo BLOCKED + approval_id
     execute_payload = {"text": "create goal Test Happy Path"}
@@ -106,3 +109,76 @@ async def test_happy_path_execute_approve(client):
 
     approved = approve_response.json()
     assert approved.get("execution_state") == "COMPLETED"
+
+    # -----------------------------
+    # 4) OFL E2E (best-effort, requires DB)
+    # -----------------------------
+    db_url = (os.getenv("DATABASE_URL") or "").strip()
+    if not db_url:
+        pytest.skip("DATABASE_URL not set; skipping OFL DB-backed E2E segment")
+
+    execution_id = approved.get("execution_id")
+    assert isinstance(execution_id, str) and execution_id.strip(), "execution_id missing"
+    execution_id = execution_id.strip()
+
+    # Get decision_id from DOR
+    from services.decision_outcome_registry import get_decision_outcome_registry
+
+    dor = get_decision_outcome_registry()
+    dor_rec = dor.get_by_execution_id(execution_id)
+    assert isinstance(dor_rec, dict) and dor_rec, "DOR record missing for execution_id"
+
+    decision_id = dor_rec.get("decision_id")
+    assert isinstance(decision_id, str) and decision_id.strip(), "decision_id missing"
+    decision_id = decision_id.strip()
+
+    # Force OFL rows to be due NOW (so cron can evaluate in this test run)
+    from services.outcome_feedback_loop_service import OutcomeFeedbackLoopService
+
+    svc = OutcomeFeedbackLoopService()
+    engine = sa.create_engine(db_url, pool_pre_ping=True, future=True)
+    md = sa.MetaData()
+    table = sa.Table("outcome_feedback_loop", md, autoload_with=engine)
+
+    now = datetime.now(timezone.utc)
+    due = now - timedelta(seconds=5)
+
+    # Marker column: prefer delta if exists, else kpi_after
+    marker_col = None
+    if "delta" in table.c:
+        marker_col = "delta"
+    elif "kpi_after" in table.c:
+        marker_col = "kpi_after"
+    else:
+        pytest.skip("OFL schema missing both delta and kpi_after columns")
+
+    with engine.begin() as conn:
+        # Make due + clear marker to ensure evaluate_due_reviews selects these rows
+        upd = {
+            "review_at": due,
+            marker_col: None,
+        }
+        res = conn.execute(
+            sa.update(table)
+            .where(table.c["decision_id"] == decision_id)
+            .values(**upd)
+        )
+        assert int(res.rowcount or 0) > 0, "No OFL rows updated for decision_id"
+
+    # Run cron runner (should invoke registered OFL job too)
+    cron_response = await client.post("/api/ai-ops/cron/run", json={})
+    assert cron_response.status_code == 200
+    cron_data = cron_response.json()
+    assert cron_data.get("ok") is True
+
+    # Verify at least one OFL row got evaluated (marker not null)
+    with engine.begin() as conn:
+        sel = sa.select(sa.func.count()).select_from(table).where(
+            sa.and_(
+                table.c["decision_id"] == decision_id,
+                table.c[marker_col].is_not(None),
+            )
+        )
+        evaluated_count = int(conn.execute(sel).scalar() or 0)
+
+    assert evaluated_count >= 1, "Expected at least one evaluated OFL row"

@@ -10,6 +10,7 @@ from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Body, HTTPException, Request
 
+from models.canon import PROPOSAL_WRAPPER_INTENT
 from services.agent_health_service import AgentHealthService
 from services.alert_forwarding_service import AlertForwardingService
 from services.approval_state_service import get_approval_state
@@ -24,8 +25,6 @@ logger.setLevel(logging.INFO)
 # ------------------------------------------------------------
 # CANONICAL WRITE GUARDS (runtime reads)
 # ------------------------------------------------------------
-
-from models.canon import PROPOSAL_WRAPPER_INTENT
 
 
 def _env_true(name: str, default: str = "false") -> bool:
@@ -154,6 +153,40 @@ def _schedule_outcome_feedback_reviews(decision_record: Any) -> None:
         return
 
 
+def _sync_ofl_execution_outcome_from_dor_record(dor_record: Any) -> None:
+    """
+    Best-effort: after execution finishes, sync OFL rows (executed/execution_result)
+    using decision_id from DOR record.
+    """
+    try:
+        if not isinstance(dor_record, dict) or not dor_record:
+            return
+
+        decision_id = dor_record.get("decision_id")
+        executed = dor_record.get("executed")
+        execution_result = dor_record.get("execution_result")
+
+        if not isinstance(decision_id, str) or not decision_id.strip():
+            return
+        if not isinstance(executed, bool):
+            return
+
+        from services.outcome_feedback_loop_service import OutcomeFeedbackLoopService
+
+        svc = OutcomeFeedbackLoopService()
+        meth = getattr(svc, "update_execution_outcome_for_decision", None)
+        if callable(meth):
+            meth(
+                decision_id=decision_id.strip(),
+                executed=bool(executed),
+                execution_result=(
+                    str(execution_result) if execution_result is not None else None
+                ),
+            )
+    except Exception:
+        return
+
+
 def _cron_job_outcome_feedback_loop_evaluate_due() -> Dict[str, Any]:
     try:
         from services.outcome_feedback_loop_service import OutcomeFeedbackLoopService
@@ -180,9 +213,9 @@ def _enrich_decision_record_with_snapshots(
         return decision_record
 
     try:
+        from services.ceo_alignment_engine import CEOAlignmentEngine
         from services.identity_loader import load_ceo_identity_pack
         from services.world_state_engine import WorldStateEngine
-        from services.ceo_alignment_engine import CEOAlignmentEngine
 
         identity_pack = load_ceo_identity_pack()
         world_state_snapshot = WorldStateEngine().build_snapshot()
@@ -206,7 +239,6 @@ def _enrich_decision_record_with_snapshots(
             if isinstance(alignment_before, dict)
             else {"note": "alignment_before_not_dict"}
         )
-        # store canonical dict directly (JSONB)
         enriched["kpi_before"] = (
             kpi_before
             if isinstance(kpi_before, dict)
@@ -386,6 +418,14 @@ async def approve(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[st
         if st in ("approved", "completed"):
             execution_id0 = existing.get("execution_id")
             if isinstance(execution_id0, str) and execution_id0.strip():
+                # Best-effort OFL sync even on idempotent path
+                try:
+                    dor0 = get_decision_outcome_registry()
+                    dor_rec0 = dor0.get_by_execution_id(execution_id0.strip())
+                    _sync_ofl_execution_outcome_from_dor_record(dor_rec0)
+                except Exception:
+                    pass
+
                 cached2 = _EXECUTION_RESULT_CACHE.get(execution_id0.strip())
                 if isinstance(cached2, dict) and cached2:
                     logger.info(
@@ -429,7 +469,7 @@ async def approve(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[st
         try:
             dor = get_decision_outcome_registry()
 
-            cmd_snapshot = {}
+            cmd_snapshot: Dict[str, Any] = {}
             if isinstance(approval, dict) and isinstance(
                 approval.get("payload_summary"), dict
             ):
@@ -481,12 +521,14 @@ async def approve(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[st
     try:
         execution_result = await orch.resume(execution_id)
 
+        # DOR + OFL sync at execution completion (best-effort)
         try:
             dor = get_decision_outcome_registry()
             if isinstance(execution_result, dict):
-                dor.set_execution_outcome(
+                updated = dor.set_execution_outcome(
                     execution_id=execution_id, outcome=execution_result
                 )
+                _sync_ofl_execution_outcome_from_dor_record(updated)
         except Exception:
             pass
     except KeyError as exc:
@@ -545,13 +587,11 @@ def reject(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[str, Any]
             note=note if isinstance(note, str) else None,
         )
 
+        # DecisionOutcomeRegistry + OFL scheduling at reject-time (best-effort)
         try:
-            from services.decision_outcome_registry import get_decision_outcome_registry
-            import json
-
             dor = get_decision_outcome_registry()
 
-            cmd_snapshot = {}
+            cmd_snapshot: Dict[str, Any] = {}
             if isinstance(approval, dict) and isinstance(
                 approval.get("payload_summary"), dict
             ):

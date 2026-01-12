@@ -191,6 +191,7 @@ class DecisionOutcomeRegistry:
 
         out = _ensure_dict(outcome)
         state = _ensure_str(out.get("execution_state"))
+
         # Normalize outcome -> execution_result deterministically, no guessing.
         if state == "FAILED":
             normalized = "fail"
@@ -217,13 +218,54 @@ class DecisionOutcomeRegistry:
             if isinstance(out.get("failure"), dict):
                 rec["failure"] = out.get("failure")
             elif isinstance(out.get("result"), dict):
-                # don't dump huge result; keep only top-level keys
                 rr = out.get("result")
                 rec["result_keys"] = sorted(list(rr.keys()))
 
             self._store[did] = rec
             self._persist_to_disk_locked()
             return dict(rec)
+
+    # ----------------------------
+    # LEGACY/TEST COMPAT (required by current tests)
+    # ----------------------------
+    def evaluate_and_update_decision(
+        self, decision_id: str, execution_result: str, feedback: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Minimalna, deterministička update funkcija (test/legacy kompatibilnost).
+
+        - decision_id mora postojati
+        - executed se postavlja True
+        - execution_result se snima kao string (testovi šalju "success"/"fail")
+        - feedback je opcionalan (mali debug surface)
+        """
+        did = _ensure_str(decision_id)
+        if not did:
+            raise ValueError("decision_id is required")
+
+        exec_res = _ensure_str(execution_result) or "unknown"
+
+        with self._lock:
+            rec = self._store.get(did)
+            if not isinstance(rec, dict):
+                return None
+
+            rec["executed"] = True
+            rec["execution_result"] = exec_res
+
+            if isinstance(feedback, str) and feedback.strip():
+                rec["feedback"] = feedback.strip()
+
+            self._store[did] = rec
+            self._persist_to_disk_locked()
+            return dict(rec)
+
+    def update_memory_periodically(self) -> Dict[str, Any]:
+        """
+        Test hook / placeholder. Nema runtime schedulera.
+        Cron/job sistem eksterno poziva evaluatore (npr. OFL job).
+        """
+        return {"ok": True, "ts": _utc_now_iso()}
 
     # ----------------------------
     # READ (debug)
@@ -245,10 +287,7 @@ class DecisionOutcomeRegistry:
             nn = 50
         with self._lock:
             items = list(self._store.values())
-            # Sort by timestamp descending (string ISO; safe enough for utc isoformat)
-            items.sort(
-                key=lambda x: str(_ensure_dict(x).get("timestamp")), reverse=True
-            )
+            items.sort(key=lambda x: str(_ensure_dict(x).get("timestamp")), reverse=True)
             return [dict(_ensure_dict(x)) for x in items[:nn]]
 
     # ----------------------------
@@ -273,13 +312,9 @@ class DecisionOutcomeRegistry:
                         {str(k): _ensure_dict(v) for k, v in store.items()}
                     )
                 if isinstance(by_approval, dict):
-                    self._by_approval_id.update(
-                        {str(k): str(v) for k, v in by_approval.items()}
-                    )
+                    self._by_approval_id.update({str(k): str(v) for k, v in by_approval.items()})
                 if isinstance(by_exec, dict):
-                    self._by_execution_id.update(
-                        {str(k): str(v) for k, v in by_exec.items()}
-                    )
+                    self._by_execution_id.update({str(k): str(v) for k, v in by_exec.items()})
 
             except Exception as e:
                 logger.warning("DecisionOutcomeRegistry load failed: %s", str(e))
@@ -305,13 +340,6 @@ def get_decision_outcome_registry() -> DecisionOutcomeRegistry:
     global _DECISION_OUTCOME_REGISTRY_SINGLETON
 
     with _DECISION_OUTCOME_REGISTRY_LOCK:
-        # If file was deleted between runs, reset process-memory registry to match disk reality.
-        if (
-            _DECISION_OUTCOME_REGISTRY_SINGLETON is not None
-            and not _REGISTRY_FILE.exists()
-        ):
-            _DECISION_OUTCOME_REGISTRY_SINGLETON = None
-
         if _DECISION_OUTCOME_REGISTRY_SINGLETON is None:
             _DECISION_OUTCOME_REGISTRY_SINGLETON = DecisionOutcomeRegistry()
 
