@@ -10,17 +10,9 @@ from main import app
 
 @pytest.fixture
 async def client():
-    """Async httpx client against the FastAPI ASGI app.
-
-    This avoids httpx's deprecated `app=` shortcut (which Starlette/FastAPI's
-    TestClient used historically) and keeps test output warning-free.
-    """
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(
-        transport=transport,
-        base_url="http://test",
-    ) as client:
-        yield client
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+        yield c
 
 
 @pytest.mark.anyio
@@ -31,10 +23,9 @@ async def test_bulk_create_minimal(client):
             {"type": "task", "title": "Test Task A", "goal_id": None},
         ]
     }
-
-    response = await client.post("/notion-ops/bulk/create", json=payload)
-    assert response.status_code == 200
-    data = response.json()
+    r = await client.post("/notion-ops/bulk/create", json=payload)
+    assert r.status_code == 200
+    data = r.json()
     assert "created" in data
     assert len(data["created"]) == 2
 
@@ -42,27 +33,28 @@ async def test_bulk_create_minimal(client):
 @pytest.mark.anyio
 async def test_bulk_update_empty(client):
     payload = {"updates": []}
-
-    response = await client.post("/notion-ops/bulk/update", json=payload)
-    assert response.status_code == 200
-    assert response.json() == {"updated": []}
+    r = await client.post("/notion-ops/bulk/update", json=payload)
+    assert r.status_code == 200
+    assert r.json() == {"updated": []}
 
 
 @pytest.mark.anyio
 async def test_bulk_query_empty(client):
     payload = {"queries": []}
-
-    response = await client.post("/notion-ops/bulk/query", json=payload)
-    assert response.status_code == 200
-    assert response.json() == {"results": []}
+    r = await client.post("/notion-ops/bulk/query", json=payload)
+    assert r.status_code == 200
+    assert r.json() == {"results": []}
 
 
 @pytest.mark.anyio
 async def test_bulk_invalid_type(client):
     payload = {"items": [{"type": "invalid_test_type", "title": "Bad"}]}
+    r = await client.post("/notion-ops/bulk/create", json=payload)
+    assert r.status_code == 400
 
-    response = await client.post("/notion-ops/bulk/create", json=payload)
-    assert response.status_code == 400
+
+def _env_true(name: str, default: str = "false") -> bool:
+    return (os.getenv(name, default) or "").strip().lower() == "true"
 
 
 @pytest.mark.anyio
@@ -78,7 +70,25 @@ async def test_happy_path_execute_approve(client):
     2) GET /api/ai-ops/approval/pending -> approval_id se mora pojaviti u pending listi
     3) POST /api/ai-ops/approval/approve -> očekujemo COMPLETED
     4) (OFL E2E) cron/run -> OFL evaluacija upiše marker za decision_id
+
+    NOTE: ovaj test je OPT-IN jer pravi Notion write može failati lokalno zbog permisa/DB mappinga;
+          pokreće se samo ako HAPPY_PATH_LIVE_NOTION=true.
     """
+    if not _env_true("HAPPY_PATH_LIVE_NOTION", "false"):
+        pytest.skip("Set HAPPY_PATH_LIVE_NOTION=true to run live Notion happy-path")
+
+    # minimal env sanity (da ne dobijemo lažne FAIL-ove)
+    required = [
+        "OPENAI_API_KEY",
+        "NOTION_API_KEY",
+        "NOTION_GOALS_DB_ID",
+        "NOTION_TASKS_DB_ID",
+        "NOTION_PROJECTS_DB_ID",
+    ]
+    missing = [k for k in required if not (os.getenv(k) or "").strip()]
+    if missing:
+        pytest.skip(f"Missing required env for live happy-path: {', '.join(missing)}")
+
     # 1) CEO input -> očekujemo BLOCKED + approval_id
     execute_payload = {"text": "create goal Test Happy Path"}
     response = await client.post("/api/execute", json=execute_payload)
@@ -96,9 +106,7 @@ async def test_happy_path_execute_approve(client):
     pending = pending_response.json()
     approvals = pending.get("approvals", [])
     approval_ids = [a.get("approval_id") for a in approvals]
-    assert (
-        approval_id in approval_ids
-    ), "approval_id from execute must be in pending approvals"
+    assert approval_id in approval_ids, "approval_id from execute must be in pending approvals"
 
     # 3) Approve -> očekujemo COMPLETED
     approve_response = await client.post(
@@ -108,7 +116,7 @@ async def test_happy_path_execute_approve(client):
     assert approve_response.status_code == 200
 
     approved = approve_response.json()
-    assert approved.get("execution_state") == "COMPLETED"
+    assert approved.get("execution_state") == "COMPLETED", f"approve failed: {approved}"
 
     # -----------------------------
     # 4) OFL E2E (best-effort, requires DB)
@@ -118,9 +126,7 @@ async def test_happy_path_execute_approve(client):
         pytest.skip("DATABASE_URL not set; skipping OFL DB-backed E2E segment")
 
     execution_id = approved.get("execution_id")
-    assert (
-        isinstance(execution_id, str) and execution_id.strip()
-    ), "execution_id missing"
+    assert isinstance(execution_id, str) and execution_id.strip(), "execution_id missing"
     execution_id = execution_id.strip()
 
     # Get decision_id from DOR
@@ -134,8 +140,6 @@ async def test_happy_path_execute_approve(client):
     assert isinstance(decision_id, str) and decision_id.strip(), "decision_id missing"
     decision_id = decision_id.strip()
 
-    # Force OFL rows to be due NOW (so cron can evaluate in this test run)
-
     engine = sa.create_engine(db_url, pool_pre_ping=True, future=True)
     md = sa.MetaData()
     table = sa.Table("outcome_feedback_loop", md, autoload_with=engine)
@@ -143,44 +147,36 @@ async def test_happy_path_execute_approve(client):
     now = datetime.now(timezone.utc)
     due = now - timedelta(seconds=5)
 
-    # Marker column: prefer delta if exists, else kpi_after
-    marker_col = None
-    if "delta" in table.c:
-        marker_col = "delta"
-    elif "kpi_after" in table.c:
-        marker_col = "kpi_after"
-    else:
+    marker_col = "delta" if "delta" in table.c else ("kpi_after" if "kpi_after" in table.c else None)
+    if marker_col is None:
         pytest.skip("OFL schema missing both delta and kpi_after columns")
 
     with engine.begin() as conn:
-        # Make due + clear marker to ensure evaluate_due_reviews selects these rows
-        upd = {
-            "review_at": due,
-            marker_col: None,
-        }
         res = conn.execute(
-            sa.update(table).where(table.c["decision_id"] == decision_id).values(**upd)
+            sa.update(table)
+            .where(table.c["decision_id"] == decision_id)
+            .values(**{"review_at": due, marker_col: None})
         )
         assert int(res.rowcount or 0) > 0, "No OFL rows updated for decision_id"
 
-    # Run cron runner (should invoke registered OFL job too)
     cron_response = await client.post("/api/ai-ops/cron/run", json={})
     assert cron_response.status_code == 200
     cron_data = cron_response.json()
-    assert cron_data.get("ok") is True
+    assert cron_data.get("ok") is True, f"cron/run failed: {cron_data}"
 
-    # Verify at least one OFL row got evaluated (marker not null)
     with engine.begin() as conn:
-        sel = (
-            sa.select(sa.func.count())
-            .select_from(table)
-            .where(
-                sa.and_(
-                    table.c["decision_id"] == decision_id,
-                    table.c[marker_col].is_not(None),
+        evaluated_count = int(
+            conn.execute(
+                sa.select(sa.func.count())
+                .select_from(table)
+                .where(
+                    sa.and_(
+                        table.c["decision_id"] == decision_id,
+                        table.c[marker_col].is_not(None),
+                    )
                 )
-            )
+            ).scalar()
+            or 0
         )
-        evaluated_count = int(conn.execute(sel).scalar() or 0)
 
     assert evaluated_count >= 1, "Expected at least one evaluated OFL row"
