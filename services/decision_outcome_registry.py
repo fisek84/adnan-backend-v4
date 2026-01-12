@@ -152,7 +152,16 @@ class DecisionOutcomeRegistry:
 
             try:
                 identity_id = resolve_identity_id(record_owner)
-                insert_decision_history(decision_id=decision_id, identity_id=identity_id, origin='adnan.ai', executor=None, command=rec_type, payload=cs, confidence=None, confirmed=bool(accepted))
+                insert_decision_history(
+                    decision_id=decision_id,
+                    identity_id=identity_id,
+                    origin="adnan.ai",
+                    executor=None,
+                    command=rec_type,
+                    payload=cs,
+                    confidence=None,
+                    confirmed=bool(accepted),
+                )
             except Exception:
                 pass
 

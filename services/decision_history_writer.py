@@ -1,4 +1,4 @@
-﻿import os
+import os
 from typing import Any, Optional, Dict
 
 import sqlalchemy as sa

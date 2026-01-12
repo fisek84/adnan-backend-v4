@@ -81,9 +81,13 @@ def downgrade() -> None:
     if _has_table(conn, "outcome_feedback_loop") and _fk_exists(
         conn, "outcome_feedback_loop", "fk_ofl_identity"
     ):
-        op.drop_constraint("fk_ofl_identity", "outcome_feedback_loop", type_="foreignkey")
+        op.drop_constraint(
+            "fk_ofl_identity", "outcome_feedback_loop", type_="foreignkey"
+        )
 
     if _has_table(conn, "decision_outcome_registry") and _fk_exists(
         conn, "decision_outcome_registry", "fk_dor_identity"
     ):
-        op.drop_constraint("fk_dor_identity", "decision_outcome_registry", type_="foreignkey")
+        op.drop_constraint(
+            "fk_dor_identity", "decision_outcome_registry", type_="foreignkey"
+        )

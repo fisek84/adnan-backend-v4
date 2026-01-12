@@ -1,8 +1,10 @@
-﻿import os
+import os
 import sqlalchemy as sa
+
 
 def _db_url() -> str:
     return (os.getenv("DATABASE_URL") or "").strip()
+
 
 def resolve_identity_id(owner: str) -> str:
     db_url = _db_url()
@@ -20,7 +22,9 @@ def resolve_identity_id(owner: str) -> str:
 
     with engine.begin() as conn:
         row = conn.execute(
-            sa.text("SELECT identity_id FROM identity_root WHERE identity_type = :t LIMIT 1"),
+            sa.text(
+                "SELECT identity_id FROM identity_root WHERE identity_type = :t LIMIT 1"
+            ),
             {"t": itype_db},
         ).fetchone()
         if row and row[0]:

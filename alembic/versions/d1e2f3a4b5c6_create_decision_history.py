@@ -37,7 +37,9 @@ def upgrade() -> None:
         sa.Column("command", sa.String(length=128), nullable=True),
         sa.Column("payload", postgresql.JSONB(), nullable=True),
         sa.Column("confidence", sa.Float(), nullable=True),
-        sa.Column("confirmed", sa.Boolean(), nullable=False, server_default=sa.text("false")),
+        sa.Column(
+            "confirmed", sa.Boolean(), nullable=False, server_default=sa.text("false")
+        ),
     )
 
     op.create_index(
