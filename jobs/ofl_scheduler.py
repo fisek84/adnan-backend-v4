@@ -3,14 +3,15 @@ from __future__ import annotations
 
 import logging
 import os
-import sys
 
 import sqlalchemy as sa
 from sqlalchemy import text
 
 from jobs.outcome_feedback_loop_job import run_once
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
+)
 logger = logging.getLogger("ofl.scheduler")
 
 
@@ -25,7 +26,9 @@ def _acquire_lock(conn) -> bool:
     # Stable, deterministic advisory lock key (32-bit signed int)
     # 0x0F1A0F1A = 253,513,498
     lock_key = 0x0F1A0F1A
-    got = conn.execute(text("select pg_try_advisory_lock(:k)"), {"k": lock_key}).scalar()
+    got = conn.execute(
+        text("select pg_try_advisory_lock(:k)"), {"k": lock_key}
+    ).scalar()
     return bool(got)
 
 
