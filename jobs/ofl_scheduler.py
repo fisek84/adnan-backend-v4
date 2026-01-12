@@ -4,8 +4,7 @@ from jobs.outcome_feedback_loop_job import _configure_logging, run_once
 
 
 def main() -> int:
-    # Keep behavior identical: reuse existing OFL job (advisory lock + evaluation).
-    return run_once()
+    return int(run_once() or 0)
 
 
 if __name__ == "__main__":

@@ -1,4 +1,7 @@
 services:
+  # ============================
+  # WEB API (uvicorn)
+  # ============================
   - type: web
     name: adnan-backend-v4
     env: docker
@@ -9,38 +12,28 @@ services:
     dockerfilePath: Dockerfile
     dockerContext: .
 
-    # ============================
-    # HEALTH / READINESS
-    # ============================
     healthCheckPath: "/ready"
     healthCheckInterval: 30
     healthCheckTimeout: 10
 
-    # ============================
-    # RUNTIME SETTINGS
-    # ============================
     numInstances: 1
 
     resources:
       cpu: 0.5
       memory: 512Mi
 
-    # ============================
-    # ENVIRONMENT VARIABLES
-    # ============================
     envVars:
-      # --- runtime marker (koristiš u kodu da ne load_dotenv na Renderu)
       - key: RENDER
         value: "true"
 
-      # --- OpenAI
+      - key: DATABASE_URL
+        sync: false
+
       - key: OPENAI_API_KEY
         sync: false
 
-      # --- Notion core
       - key: NOTION_API_KEY
         sync: false
-
       - key: NOTION_GOALS_DB_ID
         sync: false
       - key: NOTION_TASKS_DB_ID
@@ -48,33 +41,20 @@ services:
       - key: NOTION_PROJECTS_DB_ID
         sync: false
 
-      # --- Ops assistant / internal
       - key: NOTION_OPS_ASSISTANT_ID
         sync: false
 
-      # --- Agent registry (opcionalno, ali preporučeno eksplicitno)
       - key: AGENTS_JSON_PATH
         value: "/app/config/agents.json"
 
-      # --- Safety controls (opcionalno)
       - key: OPS_SAFE_MODE
         value: "false"
       - key: CEO_TOKEN_ENFORCEMENT
         value: "false"
-      # - key: CEO_APPROVAL_TOKEN
-      #   sync: false  # set only if CEO_TOKEN_ENFORCEMENT=true
 
-      # --- OS switch (opcionalno)
       - key: OS_ENABLED
         value: "true"
 
-      # --- DB (REQUIRED za alembic + OFL service)
-      - key: DATABASE_URL
-        sync: false
-
-    # ============================
-    # DEPLOY TRIGGER SETTINGS
-    # ============================
     buildFilter:
       paths:
         - Dockerfile
@@ -96,25 +76,28 @@ services:
       factor: 2
 
   # ============================
-  # OFL PERIODIC EVALUATOR (CRON)
+  # CRON (OFL periodic scheduler)
   # ============================
   - type: cron
-    name: adnan-backend-v4-ofl-cron
+    name: adnan-backend-v4-ofl-scheduler
     env: docker
+    plan: starter
     region: frankfurt
+    autoDeploy: true
 
     dockerfilePath: Dockerfile
     dockerContext: .
 
-    # every 15 minutes (promijeni po potrebi)
+    # svaka 15 minuta (promijeni po potrebi)
     schedule: "*/15 * * * *"
-
-    # runs your already-tested entrypoint
     command: "python -m jobs.ofl_scheduler"
 
     envVars:
       - key: RENDER
         value: "true"
+
+      - key: DATABASE_URL
+        sync: false
 
       - key: OPENAI_API_KEY
         sync: false
@@ -138,9 +121,6 @@ services:
         value: "false"
       - key: CEO_TOKEN_ENFORCEMENT
         value: "false"
+
       - key: OS_ENABLED
         value: "true"
-
-      # DB needed by OutcomeFeedbackLoopService
-      - key: DATABASE_URL
-        sync: false
