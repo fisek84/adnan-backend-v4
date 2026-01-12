@@ -530,6 +530,11 @@ class OutcomeFeedbackLoopService:
         update_errors: List[str] = []
 
         with engine.begin() as conn:
+            is_pg = conn.dialect.name == "postgresql"
+            if is_pg:
+                # Concurrency-safe due processing: each worker locks rows it selects.
+                sel = sel.with_for_update(skip_locked=True)
+
             rows = conn.execute(sel).fetchall()
             processed = len(rows)
 
