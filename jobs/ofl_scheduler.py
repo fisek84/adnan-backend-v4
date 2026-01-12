@@ -1,12 +1,6 @@
-﻿from __future__ import annotations
-
-import logging
-import os
-import sys
+from __future__ import annotations
 
 from jobs.outcome_feedback_loop_job import _configure_logging, run_once
-
-logger = logging.getLogger("jobs.ofl_scheduler")
 
 
 def main() -> int:
