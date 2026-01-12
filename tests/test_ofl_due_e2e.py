@@ -108,29 +108,25 @@ def test_ofl_due_e2e():
 
     ids = ["test-decision-001", "test-decision-002"]
 
-    upd = (
-        text(
-            """
+    upd = text(
+        """
             update outcome_feedback_loop
             set review_at = now() - interval '2 minutes',
                 delta = null,
                 execution_result = null
             where decision_id in :ids
             """
-        ).bindparams(bindparam("ids", expanding=True))
-    )
+    ).bindparams(bindparam("ids", expanding=True))
 
-    cnt = (
-        text(
-            """
+    cnt = text(
+        """
             select count(*)
             from outcome_feedback_loop
             where decision_id in :ids
               and review_at <= now()
               and delta is null
             """
-        ).bindparams(bindparam("ids", expanding=True))
-    )
+    ).bindparams(bindparam("ids", expanding=True))
 
     # 0) SEED: eksplicitno seed-uj 7/14/30 (2 * 3 = 6)
     with e.begin() as c:

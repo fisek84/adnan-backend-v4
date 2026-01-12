@@ -23,7 +23,9 @@ def _db_url() -> str:
     # Force psycopg3 driver, because bare postgres/postgresql URLs may resolve to psycopg2 dialect.
     if url.startswith("postgres://"):
         url = "postgresql+psycopg://" + url[len("postgres://") :]
-    elif url.startswith("postgresql://") and not url.startswith("postgresql+psycopg://"):
+    elif url.startswith("postgresql://") and not url.startswith(
+        "postgresql+psycopg://"
+    ):
         url = "postgresql+psycopg://" + url[len("postgresql://") :]
 
     return url
@@ -31,7 +33,9 @@ def _db_url() -> str:
 
 def _acquire_lock(conn) -> bool:
     lock_key = 0x0F1A0F1A
-    got = conn.execute(text("select pg_try_advisory_lock(:k)"), {"k": lock_key}).scalar()
+    got = conn.execute(
+        text("select pg_try_advisory_lock(:k)"), {"k": lock_key}
+    ).scalar()
     return bool(got)
 
 
@@ -50,7 +54,8 @@ def _db_driver_probe_stdout() -> None:
         import psycopg  # psycopg3
 
         print(
-            f"db_driver_probe: psycopg_present version={psycopg.__version__}", flush=True
+            f"db_driver_probe: psycopg_present version={psycopg.__version__}",
+            flush=True,
         )
     except Exception as e:
         print(f"db_driver_probe: psycopg_missing err={repr(e)}", flush=True)
@@ -59,7 +64,8 @@ def _db_driver_probe_stdout() -> None:
         import psycopg2  # psycopg2
 
         print(
-            f"db_driver_probe: psycopg2_present version={psycopg2.__version__}", flush=True
+            f"db_driver_probe: psycopg2_present version={psycopg2.__version__}",
+            flush=True,
         )
     except Exception as e:
         print(f"db_driver_probe: psycopg2_missing err={repr(e)}", flush=True)
@@ -72,7 +78,9 @@ def main() -> int:
     try:
         with e.connect() as c:
             if not _acquire_lock(c):
-                logger.info("ofl_scheduler: lock_not_acquired (another instance running)")
+                logger.info(
+                    "ofl_scheduler: lock_not_acquired (another instance running)"
+                )
                 return 0
 
             try:

@@ -17,7 +17,9 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column("ai_signals", sa.Column("identity_id", sa.String(length=64), nullable=True))
+    op.add_column(
+        "ai_signals", sa.Column("identity_id", sa.String(length=64), nullable=True)
+    )
 
 
 def downgrade() -> None:
