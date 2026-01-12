@@ -1,28 +1,40 @@
 import os
+
+import pytest
 import sqlalchemy as sa
-from sqlalchemy import text, bindparam
+from sqlalchemy import bindparam, text
+
 from jobs.outcome_feedback_loop_job import run_once
+
+if not os.getenv("DATABASE_URL"):
+    pytest.skip(
+        "DATABASE_URL not set; skipping DB-backed OFL E2E", allow_module_level=True
+    )
 
 
 def test_ofl_due_e2e():
     e = sa.create_engine(os.getenv("DATABASE_URL"))
     ids = ["test-decision-001", "test-decision-002"]
 
-    upd = text("""
-        update outcome_feedback_loop
-        set review_at = now() - interval '2 minutes',
-            delta = null,
-            execution_result = null
-        where decision_id in :ids
-    """).bindparams(bindparam("ids", expanding=True))
+    upd = text(
+        """
+            update outcome_feedback_loop
+            set review_at = now() - interval '2 minutes',
+                delta = null,
+                execution_result = null
+            where decision_id in :ids
+            """
+    ).bindparams(bindparam("ids", expanding=True))
 
-    cnt = text("""
-        select count(*)
-        from outcome_feedback_loop
-        where decision_id in :ids
-          and review_at <= now()
-          and delta is null
-    """).bindparams(bindparam("ids", expanding=True))
+    cnt = text(
+        """
+            select count(*)
+            from outcome_feedback_loop
+            where decision_id in :ids
+              and review_at <= now()
+              and delta is null
+            """
+    ).bindparams(bindparam("ids", expanding=True))
 
     with e.begin() as c:
         c.execute(upd, {"ids": ids})
