@@ -258,7 +258,9 @@ class OutcomeFeedbackLoopService:
         return db_url
 
     def _engine(self) -> sa.Engine:
-        return sa.create_engine(self._db_url_or_raise(), pool_pre_ping=True, future=True)
+        return sa.create_engine(
+            self._db_url_or_raise(), pool_pre_ping=True, future=True
+        )
 
     def _table(self, engine: sa.Engine) -> sa.Table:
         md = sa.MetaData()
@@ -316,7 +318,9 @@ class OutcomeFeedbackLoopService:
 
         return out or list(self.DEFAULT_REVIEW_DAYS)
 
-    def schedule_reviews_for_decision(self, *, decision_record: Dict[str, Any]) -> Dict[str, Any]:
+    def schedule_reviews_for_decision(
+        self, *, decision_record: Dict[str, Any]
+    ) -> Dict[str, Any]:
         if not isinstance(decision_record, dict) or not decision_record:
             return {"ok": False, "error": "invalid_decision_record"}
 
@@ -328,16 +332,28 @@ class OutcomeFeedbackLoopService:
         decided_at = _parse_iso_datetime(decision_record.get("timestamp")) or _utc_now()
 
         recommendation_summary = decision_record.get("recommendation_summary")
-        if not isinstance(recommendation_summary, str) or not recommendation_summary.strip():
-            return {"ok": False, "error": "decision_record_missing_recommendation_summary"}
+        if (
+            not isinstance(recommendation_summary, str)
+            or not recommendation_summary.strip()
+        ):
+            return {
+                "ok": False,
+                "error": "decision_record_missing_recommendation_summary",
+            }
         recommendation_summary = recommendation_summary.strip()
 
         accepted = decision_record.get("accepted")
         executed = decision_record.get("executed")
         if not _is_bool(accepted):
-            return {"ok": False, "error": "decision_record_missing_or_invalid_accepted_bool"}
+            return {
+                "ok": False,
+                "error": "decision_record_missing_or_invalid_accepted_bool",
+            }
         if not _is_bool(executed):
-            return {"ok": False, "error": "decision_record_missing_or_invalid_executed_bool"}
+            return {
+                "ok": False,
+                "error": "decision_record_missing_or_invalid_executed_bool",
+            }
 
         review_days = self._review_days()
 
@@ -374,13 +390,29 @@ class OutcomeFeedbackLoopService:
                     sc.executed: bool(executed),
                 }
 
-                if sc.alignment_snapshot_hash and isinstance(alignment_snapshot_hash, str) and alignment_snapshot_hash.strip():
+                if (
+                    sc.alignment_snapshot_hash
+                    and isinstance(alignment_snapshot_hash, str)
+                    and alignment_snapshot_hash.strip()
+                ):
                     row[sc.alignment_snapshot_hash] = alignment_snapshot_hash.strip()
-                if sc.behaviour_mode and isinstance(behaviour_mode, str) and behaviour_mode.strip():
+                if (
+                    sc.behaviour_mode
+                    and isinstance(behaviour_mode, str)
+                    and behaviour_mode.strip()
+                ):
                     row[sc.behaviour_mode] = behaviour_mode.strip()
-                if sc.recommendation_type and isinstance(recommendation_type, str) and recommendation_type.strip():
+                if (
+                    sc.recommendation_type
+                    and isinstance(recommendation_type, str)
+                    and recommendation_type.strip()
+                ):
                     row[sc.recommendation_type] = recommendation_type.strip()
-                if sc.execution_result and isinstance(execution_result, str) and execution_result.strip():
+                if (
+                    sc.execution_result
+                    and isinstance(execution_result, str)
+                    and execution_result.strip()
+                ):
                     row[sc.execution_result] = execution_result.strip()
                 if sc.owner and isinstance(owner, str) and owner.strip():
                     row[sc.owner] = owner.strip()
@@ -389,17 +421,26 @@ class OutcomeFeedbackLoopService:
                     row[sc.kpi_before] = _safe_json_payload(kpi_before)
 
                 if sc.alignment_before:
-                    if isinstance(alignment_before_payload, dict) and alignment_before_payload:
-                        row[sc.alignment_before] = _safe_json_payload(alignment_before_payload)
+                    if (
+                        isinstance(alignment_before_payload, dict)
+                        and alignment_before_payload
+                    ):
+                        row[sc.alignment_before] = _safe_json_payload(
+                            alignment_before_payload
+                        )
                     else:
-                        row[sc.alignment_before] = _safe_json_payload(_alignment_payload_from_hash(alignment_snapshot_hash))
+                        row[sc.alignment_before] = _safe_json_payload(
+                            _alignment_payload_from_hash(alignment_snapshot_hash)
+                        )
 
                 try:
                     if is_pg:
                         stmt = (
                             pg_insert(table)
                             .values(**row)
-                            .on_conflict_do_nothing(index_elements=list(self.UNIQUE_INDEX_ELEMENTS))
+                            .on_conflict_do_nothing(
+                                index_elements=list(self.UNIQUE_INDEX_ELEMENTS)
+                            )
                             .returning(table.c[sc.id])
                         )
                         res = conn.execute(stmt)
@@ -416,10 +457,23 @@ class OutcomeFeedbackLoopService:
 
         logger.info(
             "ofl_schedule_summary",
-            extra={"decision_id": decision_id, "inserted": inserted, "skipped": skipped, "errors": len(errors), "review_days": review_days},
+            extra={
+                "decision_id": decision_id,
+                "inserted": inserted,
+                "skipped": skipped,
+                "errors": len(errors),
+                "review_days": review_days,
+            },
         )
 
-        return {"ok": len(errors) == 0, "decision_id": decision_id, "inserted": inserted, "skipped": skipped, "errors": errors, "review_days": review_days}
+        return {
+            "ok": len(errors) == 0,
+            "decision_id": decision_id,
+            "inserted": inserted,
+            "skipped": skipped,
+            "errors": errors,
+            "review_days": review_days,
+        }
 
     def evaluate_due_reviews(self, *, limit: int = DEFAULT_LIMIT) -> Dict[str, Any]:
         limit_eff = int(limit or 0)
@@ -442,13 +496,21 @@ class OutcomeFeedbackLoopService:
 
         identity_pack = load_ceo_identity_pack()
         world_state_snapshot = WorldStateEngine().build_snapshot()
-        alignment_after_snapshot = CEOAlignmentEngine().evaluate(identity_pack, world_state_snapshot)
+        alignment_after_snapshot = CEOAlignmentEngine().evaluate(
+            identity_pack, world_state_snapshot
+        )
 
-        kpis_after, kpi_after_note = _extract_kpis_from_world_state(world_state_snapshot)
+        kpis_after, kpi_after_note = _extract_kpis_from_world_state(
+            world_state_snapshot
+        )
 
         marker_expr = table.c[marker_col].is_(None)
 
-        select_cols = [table.c[sc.id], table.c[sc.decision_id], table.c[sc.evaluation_window_days]]
+        select_cols = [
+            table.c[sc.id],
+            table.c[sc.decision_id],
+            table.c[sc.evaluation_window_days],
+        ]
         if sc.kpi_before:
             select_cols.append(table.c[sc.kpi_before])
         if sc.alignment_before:
@@ -490,14 +552,19 @@ class OutcomeFeedbackLoopService:
                 if sc.alignment_snapshot_hash:
                     alignment_hash_value = row[idx] if idx < len(row) else None
 
-                delta_score_val, delta_risk_val, delta_notes = _compute_delta_score_and_risk(
-                    alignment_before=alignment_before_value, alignment_after=alignment_after_snapshot
+                delta_score_val, delta_risk_val, delta_notes = (
+                    _compute_delta_score_and_risk(
+                        alignment_before=alignment_before_value,
+                        alignment_after=alignment_after_snapshot,
+                    )
                 )
 
                 kpi_deltas: Dict[str, float] = {}
                 kpi_delta_notes: List[str] = []
                 if kpis_after is not None:
-                    kpi_deltas, kpi_delta_notes = _diff_numeric_kpis(before=kpi_before_value, after=kpis_after)
+                    kpi_deltas, kpi_delta_notes = _diff_numeric_kpis(
+                        before=kpi_before_value, after=kpis_after
+                    )
                 else:
                     kpi_delta_notes.append("kpis_after_missing")
 
@@ -506,8 +573,13 @@ class OutcomeFeedbackLoopService:
                     "source=alignment_engine+world_state_engine",
                     f"kpi_extract_note={kpi_after_note}",
                 ]
-                if isinstance(alignment_hash_value, str) and alignment_hash_value.strip():
-                    notes_parts.append(f"alignment_snapshot_hash={alignment_hash_value.strip()}")
+                if (
+                    isinstance(alignment_hash_value, str)
+                    and alignment_hash_value.strip()
+                ):
+                    notes_parts.append(
+                        f"alignment_snapshot_hash={alignment_hash_value.strip()}"
+                    )
                 if delta_notes:
                     notes_parts.append("flags=" + ",".join(delta_notes))
                 if kpi_delta_notes:
@@ -525,7 +597,10 @@ class OutcomeFeedbackLoopService:
                             "evaluated_at": now.isoformat(),
                             "decision_id": decision_id,
                             "evaluation_window_days": int(window_days),
-                            "alignment": {"delta_score": float(delta_score_val), "delta_risk": float(delta_risk_val)},
+                            "alignment": {
+                                "delta_score": float(delta_score_val),
+                                "delta_risk": float(delta_risk_val),
+                            },
                             "kpi_extract_note": kpi_after_note,
                             "kpi_deltas_numeric": kpi_deltas,
                             "note": "delta is marker+summary; numeric deltas are also in delta_score/delta_risk columns if present",
@@ -533,7 +608,9 @@ class OutcomeFeedbackLoopService:
                     )
 
                 if sc.alignment_after:
-                    upd[sc.alignment_after] = _safe_json_payload(alignment_after_snapshot)
+                    upd[sc.alignment_after] = _safe_json_payload(
+                        alignment_after_snapshot
+                    )
 
                 if sc.delta_score:
                     upd[sc.delta_score] = float(delta_score_val)
@@ -545,22 +622,41 @@ class OutcomeFeedbackLoopService:
                     upd[sc.notes] = " ".join(notes_parts)
 
                 try:
-                    res = conn.execute(sa.update(table).where(table.c[sc.id] == rid).values(**upd))
+                    res = conn.execute(
+                        sa.update(table).where(table.c[sc.id] == rid).values(**upd)
+                    )
                     if res.rowcount and int(res.rowcount) > 0:
                         updated += int(res.rowcount)
                 except Exception:
                     update_errors.append(f"update_failed_id={rid}")
                     logger.exception(
                         "ofl_evaluate_row_failed",
-                        extra={"id": rid, "decision_id": decision_id, "evaluation_window_days": window_days},
+                        extra={
+                            "id": rid,
+                            "decision_id": decision_id,
+                            "evaluation_window_days": window_days,
+                        },
                     )
 
         logger.info(
             "ofl_evaluate_summary",
-            extra={"processed": processed, "updated": updated, "errors": len(update_errors), "limit": limit_eff, "marker_column": marker_col},
+            extra={
+                "processed": processed,
+                "updated": updated,
+                "errors": len(update_errors),
+                "limit": limit_eff,
+                "marker_column": marker_col,
+            },
         )
 
-        return {"ok": len(update_errors) == 0, "processed": processed, "updated": updated, "errors": update_errors, "limit": limit_eff, "marker_column": marker_col}
+        return {
+            "ok": len(update_errors) == 0,
+            "processed": processed,
+            "updated": updated,
+            "errors": update_errors,
+            "limit": limit_eff,
+            "marker_column": marker_col,
+        }
 
     # -------------------------
     # NEW: sync execution outcome into OFL rows
@@ -581,16 +677,27 @@ class OutcomeFeedbackLoopService:
         sc = self._require_cols(table)
 
         upd: Dict[str, Any] = {sc.executed: bool(executed)}
-        if sc.execution_result and isinstance(execution_result, str) and execution_result.strip():
+        if (
+            sc.execution_result
+            and isinstance(execution_result, str)
+            and execution_result.strip()
+        ):
             upd[sc.execution_result] = execution_result.strip()
 
         with engine.begin() as conn:
-            res = conn.execute(sa.update(table).where(table.c[sc.decision_id] == did).values(**upd))
+            res = conn.execute(
+                sa.update(table).where(table.c[sc.decision_id] == did).values(**upd)
+            )
             count = int(res.rowcount or 0)
 
         logger.info(
             "ofl_update_execution_outcome",
-            extra={"decision_id": did, "updated_rows": count, "executed": bool(executed), "has_execution_result": bool(execution_result)},
+            extra={
+                "decision_id": did,
+                "updated_rows": count,
+                "executed": bool(executed),
+                "has_execution_result": bool(execution_result),
+            },
         )
 
         return {"ok": True, "decision_id": did, "updated_rows": count}

@@ -287,7 +287,9 @@ class DecisionOutcomeRegistry:
             nn = 50
         with self._lock:
             items = list(self._store.values())
-            items.sort(key=lambda x: str(_ensure_dict(x).get("timestamp")), reverse=True)
+            items.sort(
+                key=lambda x: str(_ensure_dict(x).get("timestamp")), reverse=True
+            )
             return [dict(_ensure_dict(x)) for x in items[:nn]]
 
     # ----------------------------
@@ -312,9 +314,13 @@ class DecisionOutcomeRegistry:
                         {str(k): _ensure_dict(v) for k, v in store.items()}
                     )
                 if isinstance(by_approval, dict):
-                    self._by_approval_id.update({str(k): str(v) for k, v in by_approval.items()})
+                    self._by_approval_id.update(
+                        {str(k): str(v) for k, v in by_approval.items()}
+                    )
                 if isinstance(by_exec, dict):
-                    self._by_execution_id.update({str(k): str(v) for k, v in by_exec.items()})
+                    self._by_execution_id.update(
+                        {str(k): str(v) for k, v in by_exec.items()}
+                    )
 
             except Exception as e:
                 logger.warning("DecisionOutcomeRegistry load failed: %s", str(e))

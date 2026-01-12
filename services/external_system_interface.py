@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import Dict, Any
 
+
 class ExternalSystemInterface(ABC):
     """
     Apstraktna klasa za interfejs koji se koristi za povezivanje sa spoljnim sistemima.

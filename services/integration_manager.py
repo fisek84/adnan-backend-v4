@@ -3,8 +3,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, Mapping, MutableMapping, Optional, Protocol, runtime_checkable
-
+from typing import Any, Dict, Mapping, MutableMapping, Protocol, runtime_checkable
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +14,7 @@ class IntegrationAdapter(Protocol):
     Minimalni kontrakt koji adapter mora imati.
     Namjerno samo ono što sistem treba: fetch_data + send_data.
     """
+
     def fetch_data(self) -> Mapping[str, Any]: ...
     def send_data(self, data: Mapping[str, Any]) -> bool: ...
 
@@ -38,6 +38,7 @@ class IntegrationManager:
       - fetch_and_send_data() poziva fetch_data() i send_data(data)
       - KeyError ako nema registrovanih adaptera
     """
+
     adapters: MutableMapping[str, IntegrationAdapter] = field(default_factory=dict)
     fail_fast: bool = True  # produkcijski default: prekini na prvoj grešci
 
@@ -47,10 +48,16 @@ class IntegrationManager:
 
         if normalized in self.adapters:
             # U produkciji je bolje eksplicitno failati nego “tiho” pregaziti.
-            raise AdapterRegistrationError(f"Adapter '{normalized}' is already registered.")
+            raise AdapterRegistrationError(
+                f"Adapter '{normalized}' is already registered."
+            )
 
         self.adapters[normalized] = adapter
-        logger.info("Integration adapter registered: name=%s type=%s", normalized, type(adapter).__name__)
+        logger.info(
+            "Integration adapter registered: name=%s type=%s",
+            normalized,
+            type(adapter).__name__,
+        )
 
     def fetch_and_send_data(self) -> Dict[str, bool]:
         """
@@ -69,8 +76,12 @@ class IntegrationManager:
                 data = self._safe_fetch(name, adapter)
                 ok = self._safe_send(name, adapter, data)
                 results[name] = ok
-            except Exception as exc:  # namjerno hvatanje, da možemo agregirati/izlogovati
-                logger.exception("Integration adapter failed: name=%s error=%s", name, exc)
+            except (
+                Exception
+            ) as exc:  # namjerno hvatanje, da možemo agregirati/izlogovati
+                logger.exception(
+                    "Integration adapter failed: name=%s error=%s", name, exc
+                )
                 errors[name] = exc
                 if self.fail_fast:
                     raise IntegrationRunError(f"Adapter '{name}' failed.") from exc
@@ -78,7 +89,9 @@ class IntegrationManager:
         if errors:
             # Ako nije fail_fast, propagiramo zbirno stanje kroz izuzetak
             # (ali ostavljamo rezultate koji su uspjeli).
-            raise IntegrationRunError(f"{len(errors)} adapter(s) failed: {', '.join(errors.keys())}")
+            raise IntegrationRunError(
+                f"{len(errors)} adapter(s) failed: {', '.join(errors.keys())}"
+            )
 
         return results
 
@@ -105,24 +118,38 @@ class IntegrationManager:
         send = getattr(adapter, "send_data", None)
 
         if not callable(fetch):
-            raise AdapterRegistrationError("Adapter must implement callable fetch_data().")
+            raise AdapterRegistrationError(
+                "Adapter must implement callable fetch_data()."
+            )
         if not callable(send):
-            raise AdapterRegistrationError("Adapter must implement callable send_data(data).")
+            raise AdapterRegistrationError(
+                "Adapter must implement callable send_data(data)."
+            )
 
     @staticmethod
     def _safe_fetch(name: str, adapter: IntegrationAdapter) -> Mapping[str, Any]:
         logger.debug("Fetching data via adapter: name=%s", name)
         data = adapter.fetch_data()
         if data is None:
-            raise IntegrationRunError(f"Adapter '{name}' returned None from fetch_data().")
+            raise IntegrationRunError(
+                f"Adapter '{name}' returned None from fetch_data()."
+            )
         if not isinstance(data, Mapping):
-            raise IntegrationRunError(f"Adapter '{name}' must return a mapping/dict from fetch_data().")
+            raise IntegrationRunError(
+                f"Adapter '{name}' must return a mapping/dict from fetch_data()."
+            )
         return data
 
     @staticmethod
-    def _safe_send(name: str, adapter: IntegrationAdapter, data: Mapping[str, Any]) -> bool:
-        logger.debug("Sending data via adapter: name=%s keys=%s", name, list(data.keys()))
+    def _safe_send(
+        name: str, adapter: IntegrationAdapter, data: Mapping[str, Any]
+    ) -> bool:
+        logger.debug(
+            "Sending data via adapter: name=%s keys=%s", name, list(data.keys())
+        )
         ok = adapter.send_data(data)
         if not isinstance(ok, bool):
-            raise IntegrationRunError(f"Adapter '{name}' must return bool from send_data(data).")
+            raise IntegrationRunError(
+                f"Adapter '{name}' must return bool from send_data(data)."
+            )
         return ok
