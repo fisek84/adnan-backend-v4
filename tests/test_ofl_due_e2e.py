@@ -2,6 +2,7 @@
 import os
 from datetime import datetime, timedelta
 
+import pytest
 import sqlalchemy as sa
 from sqlalchemy import bindparam, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -104,7 +105,11 @@ def _seed_ofl_rows(conn, ids):
 
 
 def test_ofl_due_e2e():
-    e = sa.create_engine(os.getenv("DATABASE_URL"))
+    db_url = (os.getenv("DATABASE_URL") or "").strip()
+    if not db_url:
+        pytest.skip("DATABASE_URL not set in CI; skipping OFL DB-backed E2E test")
+
+    e = sa.create_engine(db_url, pool_pre_ping=True, future=True)
 
     ids = ["test-decision-001", "test-decision-002"]
 
