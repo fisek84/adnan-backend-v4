@@ -1,6 +1,6 @@
 # CEO_CONSOLE_EXECUTION_FLOW.md
 
-## CANON: CEO Console – Approval‑Gated Execution Flow (Forward‑Compatible)
+## CANON: CEO Console – Approval-Gated Execution Flow (Forward-Compatible)
 
 > **Cilj ovog dokumenta**
 >
@@ -16,7 +16,7 @@
 Adnan.ai sistem se sastoji od:
 
 * **Frontend (CEO Console)**
-* **Backend (Execution + Governance + Integrations)**
+* **Backend (Execution + Governance + Integrations + Memory)**
 * **Notion (DBs, Pages, Relations)**
 * **LLM Agent(i)**
 
@@ -24,23 +24,21 @@ Adnan.ai sistem se sastoji od:
 
 #### A) CEO Advisor (Adnan.ai klon) – **LLM**
 
-* Jedini LLM agent u runtime‑u (za sada)
-* Direktna komunikacija s CEO‑om kroz chat
+* Jedini LLM agent u runtime-u (za sada)
+* Direktna komunikacija s CEO-om kroz chat
 * Ima:
-
   * identitet
-  * memoriju
+  * memoriju (read snapshot)
   * snapshot znanja (Notion, SOP, KPI, itd.)
 * Odgovornosti:
-
-  * razumijevanje CEO intent‑a
+  * razumijevanje CEO intent-a
   * prirodan razgovor
   * analiza, planiranje, rezime
   * **predlaganje izvršnih akcija** (proposals)
 * **NE SMIJE**:
-
   * pisati u Notion
-  * imati side‑effects
+  * pisati u Memory
+  * imati side-effects
 
 ➡️ CEO Advisor = *Planner / Strateg / Predlagač*
 
@@ -50,25 +48,39 @@ Adnan.ai sistem se sastoji od:
 
 * **NIJE LLM**
 * Implementiran kroz:
-
   * execution pipeline
   * approval gate
   * `NotionService`
 * Odgovornosti:
-
   * izvršavanje odobrenih komandi
-  * create / update / query Notion pages i DB‑ova
-  * poštivanje schema registry‑a i write policies
+  * create / update / query Notion pages i DB-ova
+  * poštivanje schema registry-a i write policies
 
 ➡️ Notion Ops Executor = *Pouzdan radnik*
 
-> ⚠️ Napomena: U budućnosti se može dodati LLM‑bazirani Ops agent, ali **nikada direktno na write path** – samo kao planner.
+> ⚠️ Napomena: U budućnosti se može dodati LLM-bazirani Ops agent, ali **nikada direktno na write path** – samo kao planner.
+
+---
+
+#### C) Memory Ops Executor – **Backend komponenta (deterministička)**
+
+* **NIJE LLM**
+* Implementiran kroz:
+  * execution pipeline
+  * approval gate
+  * `MemoryOpsExecutor`
+  * `MemoryService` kao SSOT state/memory sloj
+* Odgovornosti:
+  * izvršavanje odobrenih memorijskih operacija (RW)
+  * append-only audit trail memorijskih promjena (dok SQL event-store ne bude uveden)
+
+➡️ Memory Ops Executor = *Pouzdan radnik za memoriju*
 
 ---
 
 ## 2. Ključno arhitektonsko pravilo
 
-> **LLM nikada ne piše direktno u Notion.**
+> **LLM nikada ne piše direktno u Notion ili Memory.**
 
 Razlozi:
 
@@ -86,10 +98,9 @@ LLM **predlaže**. Backend **izvršava**.
 ### 3.1 Chat (READ / ADVISORY)
 
 * Endpoint: `POST /api/chat`
-* Nema side‑effects
+* Nema side-effects
 * Nema approval
 * CEO Advisor vraća:
-
   * `text`
   * `proposed_commands` (0..N)
 
@@ -98,24 +109,27 @@ Primjeri:
 * analiza
 * plan
 * objašnjenje
-* pregled Notion podataka (iz snapshot‑a)
+* pregled Notion podataka (iz snapshot-a)
+* pregled memorije (iz read-only snapshot-a)
 
 ---
 
-### 3.2 Execution (WRITE / SIDE‑EFFECTS)
+### 3.2 Execution (WRITE / SIDE-EFFECTS)
 
 * Kreiranje, izmjena, povezivanje, promjena statusa
+* Bilo koji RW side-effect (Notion ili Memory)
 * UVIJEK ide kroz approval gate
 
 Primjeri:
 
-* create goal
-* update task status
-* link task → goal
+* create goal (Notion)
+* update task status (Notion)
+* link task → goal (Notion)
+* upis memorijskog događaja / memorijske promjene (Memory)
 
 ---
 
-## 4. Kanonski execution flow (Approve‑First)
+## 4. Kanonski execution flow (Approve-First)
 
 ### KORAK 1 — Chat / Plan
 
@@ -128,145 +142,3 @@ CEO Advisor vraća:
   "text": "Predlažem da kreiramo novi cilj…",
   "proposed_commands": [ ... ]
 }
-```
-
-Frontend:
-
-* prikaže tekst
-* prikaže akcije
-* **ne izvršava ništa automatski**
-
----
-
-### KORAK 2 — Create Execution (BLOCKED)
-
-Kada CEO klikne **Approve / Execute**:
-
-`POST /api/execute/raw`
-
-```json
-{
-  "command": "notion_write",
-  "intent": "notion_write",
-  "initiator": "ceo",
-  "read_only": false,
-  "params": {
-    "ai_command": {
-      "intent": "create_page",
-      "params": { ... }
-    }
-  },
-  "metadata": {
-    "source": "ceo_console",
-    "canon": "CEO_CONSOLE_EXECUTION_FLOW"
-  }
-}
-```
-
-Backend:
-
-* registruje execution
-* vraća `BLOCKED + approval_id`
-
----
-
-### KORAK 3 — Approve & Execute
-
-`POST /api/ai-ops/approval/approve`
-
-Backend:
-
-* validira approval
-* delegira execution u **Notion Ops Executor**
-* poziva `NotionService.execute(ai_command)`
-
-Rezultat:
-
-```json
-{
-  "execution_state": "COMPLETED",
-  "result": { "notion_page_id": "…" }
-}
-```
-
----
-
-## 5. `notion_write` – šta je to zapravo
-
-`notion_write` **nije Notion API akcija**.
-
-To je:
-
-* **wrapper command** u execution pipeline‑u
-* signal backendu da:
-
-  * uzme `params.ai_command`
-  * izvrši ga kroz `NotionService`
-
-### Pravilo routinga
-
-```
-if command.intent == "notion_write":
-    NotionService.execute(ai_command)
-```
-
-➡️ Stvarni intent je **uvijek** u `ai_command.intent`:
-
-* `create_page`
-* `update_page`
-* `query_database`
-* `refresh_snapshot`
-
----
-
-## 6. Frontend – NEPREGOVARIVA pravila
-
-Frontend **mora**:
-
-1. Slati tačan user input u `/api/chat`
-2. Prikazivati *ono što je CEO napisao*, bez templatinga
-3. Prikazivati proposals tačno kako su vraćeni
-4. Nikada:
-
-   * reuse‑ati stare proposals
-   * koristiti hardcoded tekst
-   * automatski pozivati execute
-
-> Source‑of‑truth za write payload = **proposal koji je CEO upravo odobrio**
-
----
-
-## 7. Zašto je ovo bolji pristup (napredak)
-
-✔ Stabilan backend (deterministički writes)
-✔ LLM fokusiran na ono u čemu je najbolji (razmišljanje)
-✔ Frontend jednostavan (chat + approve UI)
-✔ Lako dodavanje novih agenata kasnije:
-
-* Planner agent
-* Research agent
-* Ops‑planner agent
-
-Bez lomljenja jezgre.
-
----
-
-## 8. Buduća ekspanzija (bez refactora)
-
-Kasnije možeš dodati:
-
-* Ops Planner LLM (generiše `ai_command` plan)
-* Više CEO‑level agenata
-* Delegaciju između agenata
-
-Ali **write path ostaje isti**.
-
-To je temelj koji ne puca.
-
----
-
-## 9. Finalna kanonska istina
-
-> **CEO govori → LLM razmišlja → CEO odobrava → Backend izvršava → Notion se mijenja**
-
-Ništa više. Ništa manje.

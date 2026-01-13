@@ -12,6 +12,7 @@ from services.execution_governance_service import ExecutionGovernanceService
 from services.execution_registry import get_execution_registry
 from services.notion_ops_agent import NotionOpsAgent
 from services.notion_service import get_notion_service
+from services.memory_ops_executor import MemoryOpsExecutor
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -32,6 +33,7 @@ class ExecutionOrchestrator:
         self.governance = ExecutionGovernanceService()
         self.registry = get_execution_registry()
         self.notion_agent = NotionOpsAgent(get_notion_service())
+        self.memory_ops = MemoryOpsExecutor()
         self.approvals = get_approval_state()
 
     # --------------------------------------------------
@@ -47,6 +49,10 @@ class ExecutionOrchestrator:
     @staticmethod
     def _is_goal_task_workflow(cmd: AICommand) -> bool:
         return cmd.command == "goal_task_workflow" or cmd.intent == "goal_task_workflow"
+
+    @staticmethod
+    def _is_memory_write(cmd: AICommand) -> bool:
+        return cmd.command == "memory_write" or cmd.intent == "memory_write"
 
     @staticmethod
     def _is_failure_result(result: Any) -> bool:
@@ -130,6 +136,8 @@ class ExecutionOrchestrator:
             # ---------- WORKFLOW ----------
             if self._is_goal_task_workflow(cmd):
                 result = await self._execute_goal_task_workflow(cmd)
+            elif self._is_memory_write(cmd):
+                result = await self.memory_ops.execute(cmd)
             else:
                 result = await self.notion_agent.execute(cmd)
 
