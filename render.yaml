@@ -12,7 +12,7 @@ services:
     dockerfilePath: Dockerfile
     dockerContext: .
 
-    # ✅ PRODUKCIJSKI: migracije prije deploya nove verzije
+    # NOTE: na free/starter planu Render može ignorisati preDeployCommand; zato migracije radimo preko cron-a (vidi ispod).
     preDeployCommand: "alembic upgrade head"
 
     healthCheckPath: "/ready"
@@ -93,7 +93,9 @@ services:
 
     # svaka 15 minuta (promijeni po potrebi)
     schedule: "*/15 * * * *"
-    command: "python -m jobs.ofl_scheduler"
+
+    # ✅ Bez Shell-a: prvo migracije, pa onda scheduler
+    command: "alembic upgrade head && python -m jobs.ofl_scheduler"
 
     envVars:
       - key: RENDER
