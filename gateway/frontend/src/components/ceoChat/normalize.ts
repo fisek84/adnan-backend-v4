@@ -114,13 +114,11 @@ const looksLikeEmptySnapshotMessage = (s: string): boolean => {
 };
 
 const deriveSystemTextFromCeoConsole = (obj: any): string | undefined => {
-  // CEO Console canonical response: { summary, questions[], plan[], options[], proposed_commands[] }
   let summary = asString(obj?.summary) ?? asString(obj?.text) ?? asString(obj?.message);
   const questions = asArrayOfStrings(obj?.questions) ?? [];
   const plan = asArrayOfStrings(obj?.plan) ?? [];
   const options = asArrayOfStrings(obj?.options) ?? [];
 
-  // --- IMPORTANT: if backend says "snapshot empty" but snapshot actually contains goals/tasks, override summary ---
   if (summary && looksLikeEmptySnapshotMessage(summary)) {
     const snap = getDashboardSnapshot(obj);
     if (snap && (snap.goals.length > 0 || snap.tasks.length > 0)) {
@@ -147,14 +145,13 @@ const deriveSystemTextFromCeoConsole = (obj: any): string | undefined => {
     }
   }
 
-  const proposed = Array.isArray(obj?.proposed_commands) ? obj.proposed_commands : [];
+  const proposed = Array.isArray(obj?.proposed_commands) ? obj.proposed_commands.filter((p: any) => p?.command !== "ceo.command.propose") : [];
   const proposedLines =
     proposed.length > 0
       ? proposed
           .map((p: any, idx: number) => {
             const t = asString(p?.command_type) ?? asString(p?.command) ?? "";
             const risk = asString(p?.risk_hint) ?? asString(p?.risk) ?? "";
-            // FIX: proper dash char
             const extra = [t || `Command #${idx + 1}`, risk ? `risk: ${risk}` : ""].filter(Boolean).join(" — ");
             return extra || `Command #${idx + 1}`;
           })
@@ -188,7 +185,6 @@ export const normalizeConsoleResponse = (raw: unknown, responseHeaders?: Headers
     asString(obj?.trace?.request_id) ??
     asString(obj?.trace?.requestId);
 
-  // Prefer CEO Console canonical formatting if present
   let sysText =
     deriveSystemTextFromCeoConsole(obj) ??
     asString(obj?.system_text) ??
@@ -201,7 +197,6 @@ export const normalizeConsoleResponse = (raw: unknown, responseHeaders?: Headers
     asString(obj?.ai_response?.message) ??
     asString(obj?.aiResponse?.text);
 
-  // If approve/resume returns structured execution payload, surface something readable
   if (!sysText) {
     const execState =
       asString(obj?.execution_state) ?? asString(obj?.executionState) ?? asString(obj?.status) ?? asString(obj?.state);
@@ -215,9 +210,10 @@ export const normalizeConsoleResponse = (raw: unknown, responseHeaders?: Headers
     if (lines.length) sysText = lines.join("\n");
   }
 
-  // Governance state derivation (best-effort)
-  // CEO Console itself is read-only; proposals are inherently BLOCKED (no approval_id yet).
-  const hasProposals = Array.isArray(obj?.proposed_commands) && obj.proposed_commands.length > 0;
+  // FIX: filter wrapper proposals (ceo.command.propose)
+  const hasProposals =
+    Array.isArray(obj?.proposed_commands) &&
+    obj.proposed_commands.some((p: any) => p?.command !== "ceo.command.propose");
 
   const gStateExplicit =
     normalizeState(obj?.governance?.state) ??
@@ -230,17 +226,14 @@ export const normalizeConsoleResponse = (raw: unknown, responseHeaders?: Headers
 
   let gState: GovernanceState | undefined = gStateExplicit;
 
-  // If we have proposals, show BLOCKED governance card
   if (!gState && hasProposals) gState = "BLOCKED";
 
-  // If execution completed/failed, mark as EXECUTED (UI uses EXECUTED for terminal)
   const executionState = asString(obj?.execution_state) ?? asString(obj?.executionState);
   if (!gState && executionState) {
     const up = executionState.toUpperCase();
     if (up === "COMPLETED" || up === "FAILED" || up === "ERROR") gState = "EXECUTED";
   }
 
-  // Approval id normalization (backend uses approval_id)
   const approvalRequestId =
     asString(obj?.approval_id) ??
     asString(obj?.approvalId) ??
@@ -307,3 +300,4 @@ export const streamTextFromResponse = (res: Response): AsyncIterable<string> | n
   if (!mode || !res.body) return null;
   return mode === "sse" ? parseSseText(res.body) : parseNdjsonText(res.body);
 };
+

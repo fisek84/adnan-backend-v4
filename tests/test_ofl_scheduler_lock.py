@@ -16,6 +16,13 @@ if not os.getenv("DATABASE_URL"):
 
 def test_scheduler_advisory_lock_blocks_second_runner(monkeypatch):
     url = os.environ["DATABASE_URL"]
+
+    try:
+        with sa.create_engine(url, pool_pre_ping=True).connect():
+            pass
+    except Exception:
+        pytest.skip("PostgreSQL not reachable")
+
     e = sa.create_engine(url, pool_pre_ping=True)
 
     # Ensure scheduler reads DATABASE_URL

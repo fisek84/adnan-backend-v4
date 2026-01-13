@@ -89,7 +89,7 @@ NEMA DOVOLJNO PODATAKA U SNAPSHOT-U
 
 
 # -------------------------------------------------------------------
-# OPTION C (BEHAVIOUR OVERLAY) â€” ENTERPRISE, DETERMINISTIC, FAIL-SOFT
+# OPTION C (BEHAVIOUR OVERLAY) Ă˘â‚¬â€ť ENTERPRISE, DETERMINISTIC, FAIL-SOFT
 # -------------------------------------------------------------------
 _BEHAVIOUR_MODE_SUFFIX: Dict[str, str] = {
     # Minimal output when everything is aligned and no action is required.
@@ -264,7 +264,7 @@ def _derive_behaviour_mode_fallback(alignment_snapshot: Any) -> Optional[str]:
     risk_level = lc.get("risk_level")
     overall_status = sa.get("overall_status")
 
-    # If integrity is explicitly compromised â†’ red_alert
+    # If integrity is explicitly compromised Ă˘â€ â€™ red_alert
     if system_integrity is False:
         return "red_alert"
 
@@ -275,11 +275,11 @@ def _derive_behaviour_mode_fallback(alignment_snapshot: Any) -> Optional[str]:
     }:
         return "red_alert"
 
-    # If action is explicitly required â†’ executive
+    # If action is explicitly required Ă˘â€ â€™ executive
     if requires_action is True:
         return "executive"
 
-    # If alignment explicitly says misaligned/weak â†’ advisory
+    # If alignment explicitly says misaligned/weak Ă˘â€ â€™ advisory
     if isinstance(overall_status, str) and overall_status.strip().lower() in {
         "misaligned",
         "weak",
@@ -405,10 +405,10 @@ def _compact_snapshot(snapshot: Any) -> Any:
 
 def _compact_identity_pack(identity_pack: Any) -> Any:
     """
-    DeterministiÄŤka kompakcija identity pack-a da se sigurno poĹˇalje u LLM context.
+    DeterministiĂ„Ĺ¤ka kompakcija identity pack-a da se sigurno poÄąË‡alje u LLM context.
 
-    Reuse postojeÄ‡e snapshot kompaktovanje (lista cap + trim), uz dodatno izbacivanje
-    heavy/raw kljuÄŤeva ako se pojave.
+    Reuse postojeĂ„â€ˇe snapshot kompaktovanje (lista cap + trim), uz dodatno izbacivanje
+    heavy/raw kljuĂ„Ĺ¤eva ako se pojave.
     """
     if identity_pack is None:
         return None
@@ -706,7 +706,7 @@ def _is_dashboard_query(user_text: str) -> bool:
         "top3",
         "top 5",
         "top5",
-        "najvaĹľn",
+        "najvaÄąÄľn",
         "najhitnij",
         "snapshot",
         "status",
@@ -755,8 +755,8 @@ def _run_last_error_details(run_status: Any) -> Dict[str, Any]:
 class OpenAIAssistantExecutor:
     """
     CANON (nakon ustava):
-    - Ova klasa sluĹľi kao CEO Advisor (READ-ONLY, bez tool poziva).
-    - Legacy execution put (LLM Notion Ops) je onemoguÄ‡en i hard-blokiran.
+    - Ova klasa sluÄąÄľi kao CEO Advisor (READ-ONLY, bez tool poziva).
+    - Legacy execution put (LLM Notion Ops) je onemoguĂ„â€ˇen i hard-blokiran.
     """
 
     def __init__(
@@ -996,10 +996,10 @@ class OpenAIAssistantExecutor:
 
     async def execute(self, task: Dict[str, Any]) -> Dict[str, Any]:
         """
-        LEGACY (ONEMOGUÄ†ENO).
+        LEGACY (ONEMOGUĂ„â€ ENO).
         """
         raise RuntimeError(
-            "OpenAIAssistantExecutor.execute je onemoguÄ‡en: "
+            "OpenAIAssistantExecutor.execute je onemoguĂ„â€ˇen: "
             "LLM-based Notion Ops execution path je uklonjen. "
             "Koristi backend Notion Ops Executor / NotionService preko approval flow-a."
         )
@@ -1027,13 +1027,15 @@ class OpenAIAssistantExecutor:
                 "questions": [
                     "Postavi Assistant ID (CEO_ADVISOR_ASSISTANT_ID ili NOTION_OPS_ASSISTANT_ID)."
                 ],
-                "plan": ["KonfiguriĹˇi LLM executor i ponovi CEO Command."],
+                "plan": ["KonfiguriÄąË‡i LLM executor i ponovi CEO Command."],
                 "options": [],
                 "proposed_commands": [],
                 "trace": {"llm": "not_configured"},
             }
 
-        enforce_dashboard_text = _is_dashboard_query(t)
+        enforce_dashboard_text = bool(
+            ((context or {}).get("metadata") or {}).get("structured_mode")
+        )
         thread = await self._to_thread(self.client.beta.threads.create)
 
         safe_context = dict(context)
@@ -1236,19 +1238,17 @@ class OpenAIAssistantExecutor:
             err_repr = repr(exc)[:2000]
 
             if isinstance(exc, ReadOnlyToolCallAttempt):
-                summary = (
-                    "CEO advisory je pokuĹˇao tool poziv u read-only modu (blokirano)."
-                )
+                summary = "CEO advisory je pokuÄąË‡ao tool poziv u read-only modu (blokirano)."
                 text_out = (
-                    "CEO advisory je pokuĹˇao tool poziv u read-only modu, Ĺˇto je zabranjeno.\n"
+                    "CEO advisory je pokuÄąË‡ao tool poziv u read-only modu, ÄąË‡to je zabranjeno.\n"
                     "Provjeri Assistant instrukcije i konfiguraciju; read-only path mora biti bez tool poziva."
                 )
             else:
                 summary = (
-                    f"CEO advisory nije mogao zavrĹˇiti (internal error: {err_type})."
+                    f"CEO advisory nije mogao zavrÄąË‡iti (internal error: {err_type})."
                 )
                 text_out = (
-                    f"CEO advisory nije mogao zavrĹˇiti (internal error: {err_type})."
+                    f"CEO advisory nije mogao zavrÄąË‡iti (internal error: {err_type})."
                 )
 
             if os.getenv("DEBUG_CEO_ADVISOR_ERRORS") == "1":

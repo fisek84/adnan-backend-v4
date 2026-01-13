@@ -693,7 +693,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       const gov = toGovernanceCard(resp);
       if (gov && shouldShowBackendGovernanceCard(gov, actionableCount)) appendItem(gov);
 
-      if (actionableCount > 0) {
+      if (actionableCount > 0 && proposals.some((p: any) => p?.command !== "ceo.command.propose")) {
         appendItem({
           id: uid(),
           kind: "governance",
@@ -1145,3 +1145,4 @@ declare global {
     }
   }
 }
+

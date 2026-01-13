@@ -19,11 +19,11 @@ def _is_propose_only_request(user_text: str) -> bool:
         "propose",
         "proposed_commands",
         "do not execute",
-        "ne izvršavaj",
+        "ne izvrĹˇavaj",
         "ne izvrsavaj",
-        "nemoj izvršiti",
+        "nemoj izvrĹˇiti",
         "nemoj izvrsiti",
-        "samo predloži",
+        "samo predloĹľi",
         "samo predlozi",
         "return proposed",
     )
@@ -83,8 +83,8 @@ def _format_enforcer(user_text: str) -> str:
         "4) <title> | <status> | <priority>\n"
         "5) <title> | <status> | <priority>\n\n"
         "PRAVILA:\n"
-        "- Koristi ISKLJUČIVO podatke iz snapshot-a.\n"
-        "- Ako nema dovoljno podataka, napiši: NEMA DOVOLJNO PODATAKA U SNAPSHOT-U.\n"
+        "- Koristi ISKLJUÄŚIVO podatke iz snapshot-a.\n"
+        "- Ako nema dovoljno podataka, napiĹˇi: NEMA DOVOLJNO PODATAKA U SNAPSHOT-U.\n"
     )
 
 
@@ -97,6 +97,10 @@ def _needs_structured_snapshot_answer(user_text: str) -> bool:
     if _is_propose_only_request(t):
         return False
 
+    # "prijedlog/predlog" = advisory (ne dashboard format)
+    if ("prijedlog" in t) or ("predlog" in t):
+        return False
+
     # If user is issuing an action (create/update/etc.), this is NOT dashboard mode.
     action_signals = (
         "napravi",
@@ -104,15 +108,15 @@ def _needs_structured_snapshot_answer(user_text: str) -> bool:
         "create",
         "dodaj",
         "upisi",
-        "upiši",
+        "upiĹˇi",
         "azuriraj",
-        "ažuriraj",
+        "aĹľuriraj",
         "update",
         "promijeni",
         "promeni",
         "move",
         "premjesti",
-        "pošalji",
+        "poĹˇalji",
         "posalji",
     )
     if any(a in t for a in action_signals):
@@ -142,12 +146,12 @@ def _needs_structured_snapshot_answer(user_text: str) -> bool:
         "nedjelja",
         "top 3",
         "top 5",
-        "prikaži",
+        "prikaĹľi",
         "prikazi",
-        "pokaži",
+        "pokaĹľi",
         "pokazi",
         "izlistaj",
-        "sažetak",
+        "saĹľetak",
         "sazetak",
     )
     return any(k in t for k in keywords)
@@ -276,7 +280,7 @@ def _normalize_status(v: Any) -> str:
         return "To Do"
     if s_low in ("in progress", "u toku"):
         return "In Progress"
-    if s_low in ("done", "completed", "završeno", "zavrseno"):
+    if s_low in ("done", "completed", "zavrĹˇeno", "zavrseno"):
         return "Done"
     return s
 
@@ -527,7 +531,7 @@ async def create_ceo_advisor_agent(
 ) -> AgentOutput:
     base_text = (agent_input.message or "").strip()
     if not base_text:
-        base_text = "Reci ukratko šta možeš i kako mogu tražiti akciju."
+        base_text = "Reci ukratko Ĺˇta moĹľeĹˇ i kako mogu traĹľiti akciju."
 
     raw_snapshot = (
         agent_input.snapshot if isinstance(agent_input.snapshot, dict) else {}
@@ -540,14 +544,14 @@ async def create_ceo_advisor_agent(
     wants_notion = _wants_notion_task_or_goal(base_text)
 
     # =========================================================
-    # SNAPSHOT GUARD — only for structured dashboard requests
+    # SNAPSHOT GUARD â€” only for structured dashboard requests
     # =========================================================
     goals, tasks = _extract_goals_tasks(snapshot_payload)
     if structured_mode and not goals and not tasks:
         return AgentOutput(
             text=(
                 "NEMA DOVOLJNO PODATAKA U SNAPSHOT-U.\n\n"
-                "Snapshot je prazan ili ne sadrži ciljeve i taskove."
+                "Snapshot je prazan ili ne sadrĹľi ciljeve i taskove."
             ),
             proposed_commands=[
                 ProposedCommand(
@@ -577,15 +581,16 @@ async def create_ceo_advisor_agent(
         )
 
     # =========================================================
-    # LLM PUT (read-only) — GUARDED (CI-safe)
+    # LLM PUT (read-only) â€” GUARDED (CI-safe)
     # =========================================================
     safe_context: Dict[str, Any] = {
         "canon": {"read_only": True, "no_tools": True, "no_side_effects": True},
         # IMPORTANT: give LLM the SSOT payload (not wrapper noise)
         "snapshot": snapshot_payload,
-        "metadata": agent_input.metadata
-        if isinstance(agent_input.metadata, dict)
-        else {},
+        "metadata": {
+            **(agent_input.metadata if isinstance(agent_input.metadata, dict) else {}),
+            "structured_mode": bool(structured_mode),
+        },
     }
 
     if structured_mode:
@@ -593,8 +598,8 @@ async def create_ceo_advisor_agent(
     else:
         prompt_text = (
             f"{base_text}\n\n"
-            "Ako predlažeš akciju, vrati je u proposed_commands. "
-            "Ne izvršavaj ništa."
+            "Ako predlaĹľeĹˇ akciju, vrati je u proposed_commands. "
+            "Ne izvrĹˇavaj niĹˇta."
         )
 
     result: Dict[str, Any] = {}
@@ -633,7 +638,7 @@ async def create_ceo_advisor_agent(
         if structured_mode:
             text_out = _render_snapshot_summary(goals, tasks)
         else:
-            text_out = "OK. Predložiću akciju (propose-only), bez izvršavanja."
+            text_out = "OK. PredloĹľiÄ‡u akciju (propose-only), bez izvrĹˇavanja."
 
     # =========================================================
     # CANON: always ensure Notion write requests can produce a deterministic proposal

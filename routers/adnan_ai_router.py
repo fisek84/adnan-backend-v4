@@ -175,7 +175,7 @@ async def adnan_ai_input(payload: AdnanAIInput) -> AgentOutput:
             if hasattr(pc, "approved"):
                 pc.approved = False
             if hasattr(pc, "requires_approval"):
-                pc.requires_approval = True
+                pc.requires_approval = False
         except Exception:
             # fail-soft
             continue

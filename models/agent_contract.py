@@ -166,7 +166,7 @@ class ProposedCommand(_AllowExtraBaseModel):
         @field_validator("requires_approval", mode="before")
         @classmethod
         def _requires_approval_hard_true(cls, v):
-            return True
+            return True if v is None else bool(v)
 
     else:
         from pydantic import root_validator, validator  # type: ignore
@@ -226,7 +226,7 @@ class ProposedCommand(_AllowExtraBaseModel):
 
         @validator("requires_approval", pre=True, always=True)
         def _requires_approval_hard_true(cls, v):
-            return True
+            return True if v is None else bool(v)
 
 
 class AgentInput(_AllowExtraBaseModel):

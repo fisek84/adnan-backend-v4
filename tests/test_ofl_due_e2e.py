@@ -109,6 +109,12 @@ def test_ofl_due_e2e():
     if not db_url:
         pytest.skip("DATABASE_URL not set in CI; skipping OFL DB-backed E2E test")
 
+    try:
+        with sa.create_engine(db_url, pool_pre_ping=True).connect():
+            pass
+    except Exception:
+        pytest.skip("PostgreSQL not reachable")
+
     e = sa.create_engine(db_url, pool_pre_ping=True, future=True)
 
     ids = ["test-decision-001", "test-decision-002"]

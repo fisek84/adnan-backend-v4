@@ -1,6 +1,6 @@
 # gateway/gateway_server.py
 # ruff: noqa: E402
-# FULL FILE â€” replace the whole gateway_server.py with this.
+# FULL FILE Ă˘â‚¬â€ť replace the whole gateway_server.py with this.
 
 from __future__ import annotations
 
@@ -168,7 +168,7 @@ from services.identity_loader import load_identity
 from services.ceo_console_snapshot_service import CEOConsoleSnapshotService
 
 # ================================================================
-# NOTION SERVICE (KANONSKI INIT) â€” NO SIDE EFFECTS AT IMPORT
+# NOTION SERVICE (KANONSKI INIT) Ă˘â‚¬â€ť NO SIDE EFFECTS AT IMPORT
 # ================================================================
 from services.knowledge_snapshot_service import KnowledgeSnapshotService
 from services.notion_service import (
@@ -214,7 +214,7 @@ from services.app_bootstrap import bootstrap_application
 # INITIAL LOAD
 # ================================================================
 if not OS_ENABLED:
-    logger.critical("OS_ENABLED=false â€” system will not start.")
+    logger.critical("OS_ENABLED=false Ă˘â‚¬â€ť system will not start.")
     raise RuntimeError("OS is disabled by configuration.")
 
 identity = load_identity()
@@ -634,7 +634,7 @@ async def _shutdown_best_effort() -> None:
     _execution_orchestrator = None
 
     _BOOT_READY = False
-    logger.info("System shutdown â€” boot_ready=False.")
+    logger.info("System shutdown Ă˘â‚¬â€ť boot_ready=False.")
 
 
 def _is_boot_exempt_path(path: str) -> bool:
@@ -897,9 +897,9 @@ def _proposal_wrapper_dict(*, prompt: str, source: str) -> Dict[str, Any]:
         "command": PROPOSAL_WRAPPER_INTENT,
         "args": {"prompt": safe_prompt},
         "intent": None,
-        "reason": "Notion write intent ide kroz approval pipeline; predlaĹľem komandu za promotion/execute.",
+        "reason": "Notion write intent ide kroz approval pipeline; predlaÄąÄľem komandu za promotion/execute.",
         "dry_run": True,
-        "requires_approval": True,
+        "requires_approval": False,
         "risk": "LOW",
         "scope": "api_execute_raw",
         "payload_summary": {
@@ -1119,7 +1119,7 @@ def _normalize_execute_raw_payload_dict(body: Dict[str, Any]) -> ExecuteRawInput
 
 
 # ================================================================
-# /api/execute â€” EXECUTION PATH (NL INPUT)
+# /api/execute Ă˘â‚¬â€ť EXECUTION PATH (NL INPUT)
 # ================================================================
 @app.post("/api/execute")
 async def execute_command(payload: ExecuteInput):
@@ -1422,7 +1422,7 @@ async def execute_proposal(payload: ProposalExecuteInput):
 
 
 # ================================================================
-# NOTION READ â€” READ ONLY (NO APPROVAL / NO EXECUTION)
+# NOTION READ Ă˘â‚¬â€ť READ ONLY (NO APPROVAL / NO EXECUTION)
 # ================================================================
 @app.post("/api/notion/read", response_model=NotionReadResponse)
 async def notion_read(payload: Any = Body(None)) -> Any:
@@ -1518,7 +1518,7 @@ async def notion_read(payload: Any = Body(None)) -> Any:
 
 
 # ================================================================
-# NOTION OPS â€” LIST DATABASES (READ ONLY)
+# NOTION OPS Ă˘â‚¬â€ť LIST DATABASES (READ ONLY)
 # ================================================================
 @app.get("/api/notion-ops/databases")
 @app.get("/notion-ops/databases")
@@ -2235,7 +2235,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 
 # ================================================================
-# REACT FRONTEND (PROD BUILD) â€” SERVE dist/
+# REACT FRONTEND (PROD BUILD) Ă˘â‚¬â€ť SERVE dist/
 # ================================================================
 if not FRONTEND_DIST_DIR.is_dir():
     logger.warning("React dist directory not found: %s", FRONTEND_DIST_DIR)

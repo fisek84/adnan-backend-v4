@@ -196,7 +196,7 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 )
             ]
         else:
-            out.proposed_commands = [_build_contract_noop_wrapper(prompt)]
+            out.proposed_commands = []
 
         out.read_only = True
 
