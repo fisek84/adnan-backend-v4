@@ -1,4 +1,4 @@
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 import time
 
 from services.intent_classifier import IntentClassifier
@@ -9,6 +9,7 @@ from .playbook_engine import PlaybookEngine
 
 from services.adnan_ai_decision_service import AdnanAIDecisionService
 from services.memory_service import MemoryService
+from services.memory_read_only import ReadOnlyMemoryService
 from services.sop_knowledge_registry import SOPKnowledgeRegistry
 from services.conversation_state_service import ConversationStateService
 
@@ -31,6 +32,11 @@ class ContextOrchestrator:
         mode: Dict[str, Any],
         state: Dict[str, Any],
         conversation_state: ConversationStateService,
+        *,
+        memory_ro: Optional[ReadOnlyMemoryService] = None,
+        memory_rw: Optional[MemoryService] = None,
+        agent_router: Optional[AgentRouter] = None,
+        playbook_engine: Optional[PlaybookEngine] = None,
     ):
         self.identity = identity
         self.mode = mode
@@ -40,14 +46,22 @@ class ContextOrchestrator:
         self.intent_binder = IntentCSIBinder()
 
         self.response_engine = FinalResponseEngine(identity)
-        self.playbook_engine = PlaybookEngine()
+
+        # READ-ONLY playbook engine: inject RO memory
+        self.memory_ro = memory_ro or ReadOnlyMemoryService(
+            memory_rw or MemoryService()
+        )
+        self.playbook_engine = playbook_engine or PlaybookEngine(memory=self.memory_ro)
+
         self.decision_engine = AdnanAIDecisionService()
-        self.memory_engine = MemoryService()
+
+        # Legacy RW is OPTIONAL; if not provided, writes are skipped (canon-safe)
+        self.memory_rw = memory_rw
 
         self.sop_registry = SOPKnowledgeRegistry()
         self.conversation_state = conversation_state
 
-        self.agent_router = AgentRouter()
+        self.agent_router = agent_router or AgentRouter()
 
         self.autonomy = AutonomyHook(
             conversation_state=conversation_state,
@@ -86,8 +100,8 @@ class ContextOrchestrator:
 
         if bind.action == "confirm_goal":
             goal = self.conversation_state.get().get("goal_draft")
-            if goal:
-                self.memory_engine.store_goal(goal)
+            if goal and self.memory_rw is not None:
+                self.memory_rw.store_goal(goal)
             self.conversation_state.set_idle(request_id=request_id)
             return self._final({"type": "goal_confirmed", "goal": goal})
 
@@ -116,8 +130,8 @@ class ContextOrchestrator:
 
         if bind.action == "confirm_plan":
             plan = self.conversation_state.get().get("plan_draft")
-            if plan:
-                self.memory_engine.store_plan(plan)
+            if plan and self.memory_rw is not None:
+                self.memory_rw.store_plan(plan)
             self.conversation_state.confirm_plan(request_id=request_id)
             self.conversation_state.set_idle(request_id=request_id)
             return self._final({"type": "plan_confirmed", "plan": plan})
@@ -149,31 +163,18 @@ class ContextOrchestrator:
                 self.conversation_state.fail_task(request_id=request_id)
                 return self._final({"type": "task_failed", "reason": "no_task"})
 
-            command = {
-                "command": "create_database_entry",
-                "payload": task,
-            }
+            command = {"command": "create_database_entry", "payload": task}
 
             result = await self.agent_router.execute(command)
 
             if result.get("success"):
                 self.conversation_state.complete_task(request_id=request_id)
                 self.conversation_state.set_idle(request_id=request_id)
-                return self._final(
-                    {
-                        "type": "task_done",
-                        "agent_result": result,
-                    }
-                )
+                return self._final({"type": "task_done", "agent_result": result})
 
             self.conversation_state.fail_task(request_id=request_id)
             self.conversation_state.set_idle(request_id=request_id)
-            return self._final(
-                {
-                    "type": "task_failed",
-                    "agent_result": result,
-                }
-            )
+            return self._final({"type": "task_failed", "agent_result": result})
 
         return self._fallback()
 

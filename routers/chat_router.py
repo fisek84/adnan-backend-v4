@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 
 from models.agent_contract import AgentInput, AgentOutput, ProposedCommand
 from services.ceo_advisor_agent import create_ceo_advisor_agent
+from dependencies import get_memory_read_only_service
 
 # Must match gateway_server.PROPOSAL_WRAPPER_INTENT
 from models.canon import PROPOSAL_WRAPPER_INTENT
@@ -176,7 +177,9 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
 
     @router.post("/chat", response_model=AgentOutput, response_model_by_alias=False)
     async def chat(payload: AgentInput):
-        out = await create_ceo_advisor_agent(payload, {})
+        mem_ro = get_memory_read_only_service()
+        mem_snapshot = mem_ro.export_public_snapshot() if mem_ro else {}
+        out = await create_ceo_advisor_agent(payload, {"memory": mem_snapshot})
         prompt = _extract_prompt(payload)
 
         pcs = getattr(out, "proposed_commands", None)

@@ -1,7 +1,7 @@
 from typing import Dict, Any, List, Optional
 
 from services.decision_engine.sop_mapper import SOPMapper
-from services.memory_service import MemoryService
+from services.memory_read_only import ReadOnlyMemoryService
 
 
 class PlaybookEngine:
@@ -15,9 +15,9 @@ class PlaybookEngine:
     - READ-ONLY (NEMA izvršenja)
     """
 
-    def __init__(self):
+    def __init__(self, memory: Optional[ReadOnlyMemoryService] = None):
         self.sop_mapper = SOPMapper()
-        self.memory = MemoryService()  # READ-ONLY
+        self.memory = memory or ReadOnlyMemoryService()
 
     # ============================================================
     # PUBLIC API
@@ -29,7 +29,7 @@ class PlaybookEngine:
         context: Dict[str, Any],
     ) -> Dict[str, Any]:
         context_type = context.get("context_type")
-        text = user_input.lower()
+        text = (user_input or "").lower()
 
         if context_type == "sop":
             sop_name = self.sop_mapper.resolve_sop(text)
@@ -43,7 +43,11 @@ class PlaybookEngine:
 
             base_plan = self._build_sop_execution_plan(sop_name)
 
-            sop_bias = self.memory.get_cross_sop_bias(sop_name)
+            # SAFE READS ONLY (no implicit contract on underlying MemoryService)
+            sop_bias = []
+            if hasattr(self.memory, "get_cross_sop_bias"):
+                sop_bias = self.memory.get_cross_sop_bias(sop_name)
+
             sop_success_rate = self.memory.sop_success_rate(sop_name)
 
             recommendation = self._build_sop_recommendation(
@@ -111,9 +115,7 @@ class PlaybookEngine:
                 "agent": "agent",
                 "command": "query_database",
                 "critical": False,
-                "payload": {
-                    "database_key": "tasks",
-                },
+                "payload": {"database_key": "tasks"},
             }
         ]
 
@@ -150,9 +152,7 @@ class PlaybookEngine:
         sop_name: str,
         base_plan: List[Dict[str, Any]],
     ) -> Dict[str, List[Dict[str, Any]]]:
-        variants: Dict[str, List[Dict[str, Any]]] = {
-            "default": base_plan,
-        }
+        variants: Dict[str, List[Dict[str, Any]]] = {"default": base_plan}
 
         if sop_name == "customer onboarding sop":
             variants["fast"] = [

@@ -13,6 +13,7 @@ from services.write_gateway.write_gateway import WriteGateway
 from services.queue.queue_service import QueueService
 from services.orchestrator.orchestrator_service import OrchestratorService
 from services.memory_service import MemoryService
+from services.memory_read_only import ReadOnlyMemoryService
 from services.agent_router.agent_router import AgentRouter
 
 # Učitamo .env konfiguraciju
@@ -33,6 +34,8 @@ _sync: Optional[NotionSyncService] = None
 _write_gateway: Optional[WriteGateway] = None
 
 _memory: Optional[MemoryService] = None
+_memory_ro: Optional[ReadOnlyMemoryService] = None
+
 _agent_router: Optional[AgentRouter] = None
 _queue: Optional[QueueService] = None
 _orchestrator: Optional[OrchestratorService] = None
@@ -72,6 +75,10 @@ def get_memory_service() -> Optional[MemoryService]:
     return _memory
 
 
+def get_memory_read_only_service() -> Optional[ReadOnlyMemoryService]:
+    return _memory_ro
+
+
 def get_agent_router() -> Optional[AgentRouter]:
     return _agent_router
 
@@ -102,6 +109,7 @@ def init_services() -> None:
     global _db_conn
     global _write_gateway
     global _memory
+    global _memory_ro
     global _agent_router
     global _queue
     global _orchestrator
@@ -115,6 +123,7 @@ def init_services() -> None:
         and _sync is not None
         and _write_gateway is not None
         and _memory is not None
+        and _memory_ro is not None
         and _agent_router is not None
         and _queue is not None
         and _orchestrator is not None
@@ -152,11 +161,14 @@ def init_services() -> None:
     logger.info("✍️ WriteGateway initialized.")
 
     # ----------------------------------------
-    # 4) Memory + AgentRouter (Phase 6/7 shared SSOT singletons)
+    # 4) Memory (RW) + Memory (RO) + AgentRouter
     # ----------------------------------------
     _memory = MemoryService()
+    _memory_ro = ReadOnlyMemoryService(_memory)
     _agent_router = AgentRouter()
-    logger.info("🧠 MemoryService + 🤖 AgentRouter initialized.")
+    logger.info(
+        "🧠 MemoryService (RW) + 🔒 ReadOnlyMemoryService (RO) + 🤖 AgentRouter initialized."
+    )
 
     # ----------------------------------------
     # 5) Local backend services (wired to WriteGateway)
