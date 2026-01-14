@@ -19,11 +19,11 @@ def _is_propose_only_request(user_text: str) -> bool:
         "propose",
         "proposed_commands",
         "do not execute",
-        "ne izvrĹˇavaj",
+        "ne izvrÄąË‡avaj",
         "ne izvrsavaj",
-        "nemoj izvrĹˇiti",
+        "nemoj izvrÄąË‡iti",
         "nemoj izvrsiti",
-        "samo predloĹľi",
+        "samo predloÄąÄľi",
         "samo predlozi",
         "return proposed",
     )
@@ -83,8 +83,8 @@ def _format_enforcer(user_text: str) -> str:
         "4) <title> | <status> | <priority>\n"
         "5) <title> | <status> | <priority>\n\n"
         "PRAVILA:\n"
-        "- Koristi ISKLJUÄŚIVO podatke iz snapshot-a.\n"
-        "- Ako nema dovoljno podataka, napiĹˇi: NEMA DOVOLJNO PODATAKA U SNAPSHOT-U.\n"
+        "- Snapshot je kontekst (input za inteligenciju). Ako nema podataka, nastavi savjetovanje.\n"
+        "- Ako snapshot nema ciljeve/taskove: savjetuj kako da se krene, postavi pametna pitanja i predlozi okvir.\n"
     )
 
 
@@ -108,15 +108,15 @@ def _needs_structured_snapshot_answer(user_text: str) -> bool:
         "create",
         "dodaj",
         "upisi",
-        "upiĹˇi",
+        "upiÄąË‡i",
         "azuriraj",
-        "aĹľuriraj",
+        "aÄąÄľuriraj",
         "update",
         "promijeni",
         "promeni",
         "move",
         "premjesti",
-        "poĹˇalji",
+        "poÄąË‡alji",
         "posalji",
     )
     if any(a in t for a in action_signals):
@@ -146,12 +146,12 @@ def _needs_structured_snapshot_answer(user_text: str) -> bool:
         "nedjelja",
         "top 3",
         "top 5",
-        "prikaĹľi",
+        "prikaÄąÄľi",
         "prikazi",
-        "pokaĹľi",
+        "pokaÄąÄľi",
         "pokazi",
         "izlistaj",
-        "saĹľetak",
+        "saÄąÄľetak",
         "sazetak",
     )
     return any(k in t for k in keywords)
@@ -196,7 +196,9 @@ def _render_snapshot_summary(goals: Any, tasks: Any) -> str:
     lines: List[str] = []
     lines.append("GOALS (top 3)")
     if not g:
-        lines.append("NEMA DOVOLJNO PODATAKA U SNAPSHOT-U")
+        lines.append("1) - | - | -")
+        lines.append("2) - | - | -")
+        lines.append("3) - | - | -")
     else:
         for i, it in enumerate(g[:3], start=1):
             name = str(
@@ -208,7 +210,11 @@ def _render_snapshot_summary(goals: Any, tasks: Any) -> str:
 
     lines.append("TASKS (top 5)")
     if not t:
-        lines.append("NEMA DOVOLJNO PODATAKA U SNAPSHOT-U")
+        lines.append("1) - | - | -")
+        lines.append("2) - | - | -")
+        lines.append("3) - | - | -")
+        lines.append("4) - | - | -")
+        lines.append("5) - | - | -")
     else:
         for i, it in enumerate(t[:5], start=1):
             title = str(
@@ -280,7 +286,7 @@ def _normalize_status(v: Any) -> str:
         return "To Do"
     if s_low in ("in progress", "u toku"):
         return "In Progress"
-    if s_low in ("done", "completed", "zavrĹˇeno", "zavrseno"):
+    if s_low in ("done", "completed", "zavrÄąË‡eno", "zavrseno"):
         return "Done"
     return s
 
@@ -531,7 +537,7 @@ async def create_ceo_advisor_agent(
 ) -> AgentOutput:
     base_text = (agent_input.message or "").strip()
     if not base_text:
-        base_text = "Reci ukratko Ĺˇta moĹľeĹˇ i kako mogu traĹľiti akciju."
+        base_text = "Reci ukratko ÄąË‡ta moÄąÄľeÄąË‡ i kako mogu traÄąÄľiti akciju."
 
     raw_snapshot = (
         agent_input.snapshot if isinstance(agent_input.snapshot, dict) else {}
@@ -544,14 +550,14 @@ async def create_ceo_advisor_agent(
     wants_notion = _wants_notion_task_or_goal(base_text)
 
     # =========================================================
-    # SNAPSHOT GUARD â€” only for structured dashboard requests
+    # SNAPSHOT GUARD Ă˘â‚¬â€ť only for structured dashboard requests
     # =========================================================
     goals, tasks = _extract_goals_tasks(snapshot_payload)
     if structured_mode and not goals and not tasks:
         return AgentOutput(
             text=(
-                "NEMA DOVOLJNO PODATAKA U SNAPSHOT-U.\n\n"
-                "Snapshot je prazan ili ne sadrĹľi ciljeve i taskove."
+                "Vidim da je stanje prazno (nema ciljeva ni taskova u snapshot-u). To nije blokada — krenimo od brzog okvira.\n\n"
+                "Krenimo: odgovori na 2-3 pitanja iznad, pa cu ti sloziti top 3 cilja i top 5 taskova u istom formatu.\n"
             ),
             proposed_commands=[
                 ProposedCommand(
@@ -581,7 +587,7 @@ async def create_ceo_advisor_agent(
         )
 
     # =========================================================
-    # LLM PUT (read-only) â€” GUARDED (CI-safe)
+    # LLM PUT (read-only) Ă˘â‚¬â€ť GUARDED (CI-safe)
     # =========================================================
     safe_context: Dict[str, Any] = {
         "canon": {"read_only": True, "no_tools": True, "no_side_effects": True},
@@ -598,8 +604,8 @@ async def create_ceo_advisor_agent(
     else:
         prompt_text = (
             f"{base_text}\n\n"
-            "Ako predlaĹľeĹˇ akciju, vrati je u proposed_commands. "
-            "Ne izvrĹˇavaj niĹˇta."
+            "Ako predlaÄąÄľeÄąË‡ akciju, vrati je u proposed_commands. "
+            "Ne izvrÄąË‡avaj niÄąË‡ta."
         )
 
     result: Dict[str, Any] = {}
@@ -638,7 +644,9 @@ async def create_ceo_advisor_agent(
         if structured_mode:
             text_out = _render_snapshot_summary(goals, tasks)
         else:
-            text_out = "OK. PredloĹľiÄ‡u akciju (propose-only), bez izvrĹˇavanja."
+            text_out = (
+                "OK. PredloÄąÄľiĂ„â€ˇu akciju (propose-only), bez izvrÄąË‡avanja."
+            )
 
     # =========================================================
     # CANON: always ensure Notion write requests can produce a deterministic proposal
