@@ -19,11 +19,11 @@ def _is_propose_only_request(user_text: str) -> bool:
         "propose",
         "proposed_commands",
         "do not execute",
-        "ne izvrÄąË‡avaj",
+        "ne izvrĂ„Ä…Ă‹â€ˇavaj",
         "ne izvrsavaj",
-        "nemoj izvrÄąË‡iti",
+        "nemoj izvrĂ„Ä…Ă‹â€ˇiti",
         "nemoj izvrsiti",
-        "samo predloÄąÄľi",
+        "samo predloĂ„Ä…Ă„Äľi",
         "samo predlozi",
         "return proposed",
     )
@@ -108,15 +108,15 @@ def _needs_structured_snapshot_answer(user_text: str) -> bool:
         "create",
         "dodaj",
         "upisi",
-        "upiÄąË‡i",
+        "upiĂ„Ä…Ă‹â€ˇi",
         "azuriraj",
-        "aÄąÄľuriraj",
+        "aĂ„Ä…Ă„Äľuriraj",
         "update",
         "promijeni",
         "promeni",
         "move",
         "premjesti",
-        "poÄąË‡alji",
+        "poĂ„Ä…Ă‹â€ˇalji",
         "posalji",
     )
     if any(a in t for a in action_signals):
@@ -146,12 +146,12 @@ def _needs_structured_snapshot_answer(user_text: str) -> bool:
         "nedjelja",
         "top 3",
         "top 5",
-        "prikaÄąÄľi",
+        "prikaĂ„Ä…Ă„Äľi",
         "prikazi",
-        "pokaÄąÄľi",
+        "pokaĂ„Ä…Ă„Äľi",
         "pokazi",
         "izlistaj",
-        "saÄąÄľetak",
+        "saĂ„Ä…Ă„Äľetak",
         "sazetak",
     )
     return any(k in t for k in keywords)
@@ -286,7 +286,7 @@ def _normalize_status(v: Any) -> str:
         return "To Do"
     if s_low in ("in progress", "u toku"):
         return "In Progress"
-    if s_low in ("done", "completed", "zavrÄąË‡eno", "zavrseno"):
+    if s_low in ("done", "completed", "zavrĂ„Ä…Ă‹â€ˇeno", "zavrseno"):
         return "Done"
     return s
 
@@ -537,7 +537,7 @@ async def create_ceo_advisor_agent(
 ) -> AgentOutput:
     base_text = (agent_input.message or "").strip()
     if not base_text:
-        base_text = "Reci ukratko ÄąË‡ta moÄąÄľeÄąË‡ i kako mogu traÄąÄľiti akciju."
+        base_text = "Reci ukratko Ă„Ä…Ă‹â€ˇta moĂ„Ä…Ă„ÄľeĂ„Ä…Ă‹â€ˇ i kako mogu traĂ„Ä…Ă„Äľiti akciju."
 
     raw_snapshot = (
         agent_input.snapshot if isinstance(agent_input.snapshot, dict) else {}
@@ -550,13 +550,13 @@ async def create_ceo_advisor_agent(
     wants_notion = _wants_notion_task_or_goal(base_text)
 
     # =========================================================
-    # SNAPSHOT GUARD Ă˘â‚¬â€ť only for structured dashboard requests
+    # SNAPSHOT GUARD Ä‚ËĂ˘â€šÂ¬Ă˘â‚¬ĹĄ only for structured dashboard requests
     # =========================================================
     goals, tasks = _extract_goals_tasks(snapshot_payload)
     if structured_mode and not goals and not tasks:
         return AgentOutput(
             text=(
-                "Vidim da je stanje prazno (nema ciljeva ni taskova u snapshot-u). To nije blokada — krenimo od brzog okvira.\n\n"
+                "Vidim da je stanje prazno (nema ciljeva ni taskova u snapshot-u). To nije blokada â€” krenimo od brzog okvira.\n\n"
                 "Krenimo: odgovori na 2-3 pitanja iznad, pa cu ti sloziti top 3 cilja i top 5 taskova u istom formatu.\n"
             ),
             proposed_commands=[
@@ -587,7 +587,7 @@ async def create_ceo_advisor_agent(
         )
 
     # =========================================================
-    # LLM PUT (read-only) Ă˘â‚¬â€ť GUARDED (CI-safe)
+    # LLM PUT (read-only) Ä‚ËĂ˘â€šÂ¬Ă˘â‚¬ĹĄ GUARDED (CI-safe)
     # =========================================================
     safe_context: Dict[str, Any] = {
         "canon": {"read_only": True, "no_tools": True, "no_side_effects": True},
@@ -604,8 +604,8 @@ async def create_ceo_advisor_agent(
     else:
         prompt_text = (
             f"{base_text}\n\n"
-            "Ako predlaÄąÄľeÄąË‡ akciju, vrati je u proposed_commands. "
-            "Ne izvrÄąË‡avaj niÄąË‡ta."
+            "Ako predlaĂ„Ä…Ă„ÄľeĂ„Ä…Ă‹â€ˇ akciju, vrati je u proposed_commands. "
+            "Ne izvrĂ„Ä…Ă‹â€ˇavaj niĂ„Ä…Ă‹â€ˇta."
         )
 
     result: Dict[str, Any] = {}
@@ -640,13 +640,31 @@ async def create_ceo_advisor_agent(
             result.get("proposed_commands") if isinstance(result, dict) else None
         )
         proposed = _to_proposed_commands(proposed_items)
+
+        # ---------------------------------------------------------
+        # CANON: do not leak contract-stability fallback propose wrappers into UX
+        # ---------------------------------------------------------
+        if proposed:
+            filtered = []
+            for pc in proposed:
+                cmd = getattr(pc, "command", None)
+                if cmd == "ceo.command.propose":
+                    intent = getattr(pc, "intent", None)
+                    reason = str(getattr(pc, "reason", "") or "").lower()
+                    if (
+                        (intent is None)
+                        or ("fallback" in reason)
+                        or ("contract-stability" in reason)
+                    ):
+                        continue
+                filtered.append(pc)
+            proposed = filtered
+
     else:
         if structured_mode:
             text_out = _render_snapshot_summary(goals, tasks)
         else:
-            text_out = (
-                "OK. PredloÄąÄľiĂ„â€ˇu akciju (propose-only), bez izvrÄąË‡avanja."
-            )
+            text_out = "OK. PredloĂ„Ä…Ă„ÄľiÄ‚â€žĂ˘â‚¬Ë‡u akciju (propose-only), bez izvrĂ„Ä…Ă‹â€ˇavanja."
 
     # =========================================================
     # CANON: always ensure Notion write requests can produce a deterministic proposal
