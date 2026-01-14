@@ -1,6 +1,6 @@
 # gateway/gateway_server.py
 # ruff: noqa: E402
-# FULL FILE — replace the whole gateway_server.py with this.
+# FULL FILE â€” replace the whole gateway_server.py with this.
 
 from __future__ import annotations
 
@@ -168,7 +168,7 @@ from services.identity_loader import load_identity
 from services.ceo_console_snapshot_service import CEOConsoleSnapshotService
 
 # ================================================================
-# NOTION SERVICE (KANONSKI INIT) — NO SIDE EFFECTS AT IMPORT
+# NOTION SERVICE (KANONSKI INIT) â€” NO SIDE EFFECTS AT IMPORT
 # ================================================================
 from services.knowledge_snapshot_service import KnowledgeSnapshotService
 from services.notion_service import (
@@ -214,7 +214,7 @@ from services.app_bootstrap import bootstrap_application
 # INITIAL LOAD
 # ================================================================
 if not OS_ENABLED:
-    logger.critical("OS_ENABLED=false — system will not start.")
+    logger.critical("OS_ENABLED=false â€” system will not start.")
     raise RuntimeError("OS is disabled by configuration.")
 
 identity = load_identity()
@@ -622,7 +622,7 @@ async def _shutdown_best_effort() -> None:
     _execution_orchestrator = None
 
     _BOOT_READY = False
-    logger.info("System shutdown — boot_ready=False.")
+    logger.info("System shutdown â€” boot_ready=False.")
 
 
 def _is_boot_exempt_path(path: str) -> bool:
@@ -877,7 +877,7 @@ def _proposal_wrapper_dict(*, prompt: str, source: str) -> Dict[str, Any]:
         "command": PROPOSAL_WRAPPER_INTENT,
         "args": {"prompt": safe_prompt},
         "intent": None,
-        "reason": "Notion write intent ide kroz approval pipeline; predlažem komandu za promotion/execute.",
+        "reason": "Notion write intent ide kroz approval pipeline; predlaĹľem komandu za promotion/execute.",
         "dry_run": True,
         "requires_approval": False,
         "risk": "LOW",
@@ -1114,7 +1114,7 @@ def _normalize_execute_raw_payload_dict(body: Dict[str, Any]) -> ExecuteRawInput
 
 
 # ================================================================
-# /api/execute — EXECUTION PATH (NL INPUT)
+# /api/execute â€” EXECUTION PATH (NL INPUT)
 # ================================================================
 @app.post("/api/execute")
 async def execute_command(payload: ExecuteInput):
@@ -1423,7 +1423,7 @@ async def execute_proposal(payload: ProposalExecuteInput):
 
 
 # ================================================================
-# NOTION READ — READ ONLY (NO APPROVAL / NO EXECUTION)
+# NOTION READ â€” READ ONLY (NO APPROVAL / NO EXECUTION)
 # ================================================================
 @app.post("/api/notion/read", response_model=NotionReadResponse)
 async def notion_read(payload: Any = Body(None)) -> Any:
@@ -1519,7 +1519,7 @@ async def notion_read(payload: Any = Body(None)) -> Any:
 
 
 # ================================================================
-# NOTION OPS — LIST DATABASES (READ ONLY)
+# NOTION OPS â€” LIST DATABASES (READ ONLY)
 # ================================================================
 @app.get("/api/notion-ops/databases")
 @app.get("/notion-ops/databases")
@@ -1977,8 +1977,6 @@ async def _ceo_command_core(payload_dict: Dict[str, Any]) -> JSONResponse:
     if not isinstance(result.get("proposed_commands"), list):
         result["proposed_commands"] = []
 
-    _inject_fallback_proposed_commands(result, prompt=cleaned_text.strip())
-
     tr2 = _ensure_dict(result.get("trace"))
     if not isinstance(tr2.get("confidence_risk"), dict):
         tr2["confidence_risk"] = _compute_confidence_risk_block(
@@ -2241,7 +2239,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 
 # ================================================================
-# REACT FRONTEND (PROD BUILD) — SERVE dist/
+# REACT FRONTEND (PROD BUILD) â€” SERVE dist/
 # ================================================================
 if not FRONTEND_DIST_DIR.is_dir():
     logger.warning("React dist directory not found: %s", FRONTEND_DIST_DIR)
