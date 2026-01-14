@@ -209,7 +209,9 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             content={
                 "text": out.text,
                 "proposed_commands": [
-                    _pc_to_dict(pc, prompt=prompt) for pc in out.proposed_commands
+                    _pc_to_dict(pc, prompt=prompt)
+                    for pc in out.proposed_commands
+                    if _pc_to_dict(pc, prompt=prompt).get("intent") is not None
                 ],
                 "agent_id": out.agent_id,
                 "read_only": True,
