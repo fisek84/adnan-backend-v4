@@ -43,53 +43,15 @@ def _get_notion_client() -> "Client":
 
 
 def create_page(database_id: str, properties: Dict[str, Any]):
-    try:
-        notion = _get_notion_client()
-        page = notion.pages.create(
-            parent={"database_id": database_id},
-            properties=properties,
-        )
-
-        # HARD ASSERT — nema silent success-a
-        if (
-            not page
-            or "id" not in page
-            or page.get("parent", {}).get("database_id") != database_id
-        ):
-            raise RuntimeError(f"Notion page creation failed silently: {page}")
-
-        return {
-            "success": True,
-            "page_id": page["id"],
-            "page": page,
-        }
-
-    except Exception as e:
-        return {
-            "success": False,
-            "error": str(e),
-        }
+    raise RuntimeError(
+        "DISABLED: direct ext.notion.client create_page; use services/notion_service governed flow"
+    )
 
 
 def delete_page(page_id: str):
-    try:
-        notion = _get_notion_client()
-        notion.pages.delete(page_id)
-        return {
-            "success": True,
-            "page_id": page_id,
-        }
-
-    except Exception as e:
-        return {
-            "success": False,
-            "error": str(e),
-        }
-
-
-# ============================================================
-# CANONICAL DISPATCHER (KANON)
-# ============================================================
+    raise RuntimeError(
+        "DISABLED: direct ext.notion.client delete_page; use services/notion_service governed flow"
+    )
 
 
 def perform_notion_action(
@@ -102,7 +64,7 @@ def perform_notion_action(
     """
     KANONSKI Notion dispatcher.
     - agent NE zna db_id
-    - payload se gradi ISKLJUČIVO kroz NotionSchemaRegistry
+    - payload se gradi ISKLJUÄŚIVO kroz NotionSchemaRegistry
     - nema mutacije payload-a
     """
     payload = payload or {}

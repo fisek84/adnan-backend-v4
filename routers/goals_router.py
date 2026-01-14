@@ -7,12 +7,12 @@
 # - WRITE path je strogo guarded:
 #   - OPS_SAFE_MODE => hard block (403)
 #   - CEO_TOKEN_ENFORCEMENT => optional token gate (X-CEO-Token)
-# - Nema “chat implicit write” ovdje, ali ovo je direktna write-surface pa mora imati guard.
+# - Nema Ä‚ËĂ˘â€šÂ¬Äąâ€şchat implicit writeÄ‚ËĂ˘â€šÂ¬ÄąÄ„ ovdje, ali ovo je direktna write-surface pa mora imati guard.
 #
 # Napomena:
 # - Ovaj router i dalje koristi WriteGateway/GoalsService approval mehaniku (409 requires_approval),
-#   ali dodatno štitimo rute od “slučajnog” write-a kada je OPS_SAFE_MODE uključen.
-# - Happy path testovi koriste /api/execute i /api/ai-ops/approval/approve — ovaj router ne smije
+#   ali dodatno Ă„Ä…Ă‹â€ˇtitimo rute od Ä‚ËĂ˘â€šÂ¬Äąâ€şsluÄ‚â€žÄąÂ¤ajnogÄ‚ËĂ˘â€šÂ¬ÄąÄ„ write-a kada je OPS_SAFE_MODE ukljuÄ‚â€žÄąÂ¤en.
+# - Happy path testovi koriste /api/execute i /api/ai-ops/approval/approve Ä‚ËĂ˘â€šÂ¬Ă˘â‚¬ĹĄ ovaj router ne smije
 #   lomiti taj tok.
 
 from __future__ import annotations
@@ -111,21 +111,10 @@ async def create_goal(
             raise HTTPException(500, "NOTION_GOALS_DB_ID not set")
 
         async def _wg_create_with_notion(env):
-            data = env.payload.get("data") or {}
-            notion_db_id = env.payload.get("notion_db_id")
-
-            notion_payload = {
-                "parent": {"database_id": notion_db_id},
-                "properties": {
-                    "Name": {"title": [{"text": {"content": data.get("title")}}]}
-                },
-            }
-
-            notion_res = await notion.create_page(notion_payload)
-            if not notion_res.get("ok"):
-                raise RuntimeError("Notion page creation failed")
-
-            notion_id = notion_res["data"]["id"]
+            data = (
+                env.payload.get("data") or {}
+            )  # DISABLED: direct Notion create_page removed (governed flow only)
+            notion_id = None
             new_goal = goals_service.create_goal(data, notion_id=notion_id)
 
             if hasattr(goals_service, "_trigger_sync"):
@@ -263,8 +252,9 @@ async def delete_goal(
                 notion_id = out.get("notion_id")
 
             if notion_id:
-                await notion.delete_page(notion_id)
+                # DISABLED: direct Notion delete_page removed (governed flow only)
 
+                pass
             return {"notion_id": notion_id, "deleted": True}
 
         goals_service.write_gateway.register_handler(

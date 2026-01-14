@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime
 import logging
 import os
 from typing import Any, Dict, List, Optional
@@ -98,36 +97,9 @@ class AlertForwardingService:
                 v_type = "unknown"
 
             try:
-                page = self.notion.pages.create(
-                    parent={"database_id": self.db_id},
-                    properties={
-                        "Name": {"title": [{"text": {"content": f"ALERT: {v_type}"}}]},
-                        "Command": {"rich_text": [{"text": {"content": "alerting"}}]},
-                        "Status": {"select": {"name": "FAILED"}},
-                        "Summary": {
-                            "rich_text": [
-                                {
-                                    "text": {
-                                        "content": (
-                                            f"Violation: {v_type}\n"
-                                            f"Value: {v.get('value')}\n"
-                                            f"Threshold: {v.get('threshold')}\n"
-                                            f"Detected at: {datetime.utcnow().isoformat()}"
-                                        )
-                                    }
-                                }
-                            ]
-                        },
-                    },
+                raise RuntimeError(
+                    "DISABLED: alert forwarding write removed; use governed notion_service"
                 )
-
-                forwarded.append(
-                    {
-                        "type": v_type,
-                        "page_id": page.get("id"),
-                    }
-                )
-
             except Exception as e:
                 logger.exception("Failed to forward alert %s", v_type)
                 forwarded.append(

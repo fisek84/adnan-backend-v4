@@ -155,18 +155,12 @@ async def create_task(
                 notion_payload["properties"]["Goal"] = {
                     "relation": [{"id": goal_id_str}]
                 }
-
-            notion_res = await notion.create_page(notion_payload)
-            if not notion_res.get("ok"):
-                raise RuntimeError(
-                    f"Notion page creation failed: {notion_res.get('error')}"
-                )
-
-            notion_id = notion_res["data"]["id"]
-            notion_url = notion_res["data"].get("url")
-
+            # DISABLED: direct Notion create_page removed (governed flow only)
+            pass
             # 3) attach notion ids locally
             created_task_id_s = str(created_task_id)
+            notion_id = None
+            notion_url = None
             t = tasks_service.tasks.get(created_task_id_s)
             if t:
                 t.notion_id = notion_id
@@ -308,12 +302,8 @@ async def delete_task(
             out = await tasks_service._wg_delete_task(env)
 
             if notion_id:
-                notion_res = await notion.delete_page(notion_id)
-                if not notion_res.get("ok"):
-                    raise RuntimeError(
-                        f"Notion deletion failed: {notion_res.get('error')}"
-                    )
-
+                # DISABLED: direct Notion delete_page removed (governed flow only)
+                pass
             return {"deleted": True, "notion_id": notion_id, "domain": out}
 
         tasks_service.write_gateway.register_handler(
@@ -376,7 +366,7 @@ async def list_tasks(tasks_service: TasksService = Depends(get_tasks_service)):
 
 
 # ============================================================
-# FAZA 9 — PLAN → TASK → EXECUTION VIEW (READ-ONLY)
+# FAZA 9 Ä‚ËĂ˘â€šÂ¬Ă˘â‚¬ĹĄ PLAN Ä‚ËĂ˘â‚¬Â Ă˘â‚¬â„˘ TASK Ä‚ËĂ˘â‚¬Â Ă˘â‚¬â„˘ EXECUTION VIEW (READ-ONLY)
 # ============================================================
 @router.get("/overview")
 async def task_execution_overview(
