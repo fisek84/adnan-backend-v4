@@ -1,11 +1,13 @@
-﻿import asyncio
+import asyncio
 from dataclasses import dataclass
+
 
 @dataclass
 class DummyAgentInput:
     message: str
     snapshot: dict
     metadata: dict
+
 
 def test_ceo_advisor_empty_snapshot_is_advisory():
     from services.ceo_advisor_agent import create_ceo_advisor_agent
