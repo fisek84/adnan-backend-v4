@@ -1,303 +1,162 @@
 // gateway/frontend/src/components/ceoChat/normalize.ts
-import type { GovernanceState, NormalizedConsoleResponse } from "./types";
 
-const asString = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
-const asArrayOfStrings = (v: unknown): string[] | undefined =>
-  Array.isArray(v) && v.every((x) => typeof x === "string") ? (v as string[]) : undefined;
+import { isObject } from "../../utils/isObject";
 
-const normalizeState = (v: unknown): GovernanceState | undefined => {
-  const s = asString(v)?.toUpperCase();
-  if (s === "BLOCKED" || s === "APPROVED" || s === "EXECUTED") return s;
+type AnyRecord = Record<string, any>;
+
+export type CeoConsoleEnvelope = {
+  id?: string;
+  type?: string;
+  role?: string;
+  content?: any;
+  text?: string;
+  delta?: string;
+  proposed_commands?: any[];
+  proposedCommands?: any[];
+  governance_state?: string;
+  governanceState?: string;
+  meta?: AnyRecord;
+};
+
+export type NormalizedCeoConsoleMessage = {
+  id: string;
+  role: "user" | "assistant" | "system";
+  text: string;
+  raw: AnyRecord | string;
+  proposedCommands: any[];
+  governanceState?: string;
+};
+
+/* ---------------- helpers ---------------- */
+
+function asString(v: any): string | undefined {
+  if (v == null) return undefined;
+  if (typeof v === "string") return v;
+  if (typeof v === "number" || typeof v === "boolean") return String(v);
   return undefined;
-};
+}
 
-const redactAgentDetails = (text: string): string => {
-  const lines = text.split("\n");
-  const filtered = lines.filter((l) => {
-    const ll = l.toLowerCase();
-    if (ll.includes("executor:") || ll.includes("agent:") || ll.includes("tool_call") || ll.includes("tool call"))
-      return false;
-    if (ll.includes("openai_assistant") || ll.includes("assistant id") || ll.includes("notion sdk")) return false;
-    return true;
-  });
-  return filtered.join("\n").trim();
-};
-
-function* ndjsonIterator(body: ReadableStream<Uint8Array>): Generator<Promise<string | null>, void, unknown> {
-  const reader = body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  while (true) {
-    yield (async () => {
-      const { value, done } = await reader.read();
-      if (done) return null;
-      buffer += decoder.decode(value, { stream: true });
-      const idx = buffer.indexOf("\n");
-      if (idx === -1) return "";
-      const line = buffer.slice(0, idx).trim();
-      buffer = buffer.slice(idx + 1);
-      return line;
-    })();
+function safeJsonParse(s: string): any | null {
+  try {
+    return JSON.parse(s);
+  } catch {
+    return null;
   }
 }
 
-async function* parseNdjsonText(body: ReadableStream<Uint8Array>): AsyncIterable<string> {
-  for (const next of ndjsonIterator(body)) {
-    const line = await next;
-    if (line === null) break;
-    if (!line) continue;
-
-    try {
-      const obj = JSON.parse(line) as any;
-      const delta = asString(obj?.delta) ?? asString(obj?.text) ?? asString(obj?.content);
-      if (delta) yield delta;
-    } catch {
-      yield line;
-    }
-  }
+function normalizeRole(v: any): "user" | "assistant" | "system" {
+  const r = String(v ?? "").toLowerCase();
+  if (r === "user") return "user";
+  if (r === "assistant") return "assistant";
+  if (r === "system") return "system";
+  return "assistant";
 }
 
-async function* parseSseText(body: ReadableStream<Uint8Array>): AsyncIterable<string> {
-  const reader = body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-
-    let splitIndex = buffer.indexOf("\n\n");
-    while (splitIndex !== -1) {
-      const frame = buffer.slice(0, splitIndex);
-      buffer = buffer.slice(splitIndex + 2);
-
-      const dataLines = frame
-        .split("\n")
-        .map((l) => l.trimEnd())
-        .filter((l) => l.startsWith("data:"))
-        .map((l) => l.slice(5).trimStart());
-
-      for (const dl of dataLines) {
-        if (!dl || dl === "[DONE]") continue;
-        try {
-          const obj = JSON.parse(dl) as any;
-          const delta = asString(obj?.delta) ?? asString(obj?.text) ?? asString(obj?.content);
-          if (delta) yield delta;
-        } catch {
-          yield dl;
-        }
-      }
-
-      splitIndex = buffer.indexOf("\n\n");
-    }
-  }
+function pickProposedCommands(obj: AnyRecord): any[] {
+  if (Array.isArray(obj?.proposed_commands)) return obj.proposed_commands;
+  if (Array.isArray(obj?.proposedCommands)) return obj.proposedCommands;
+  if (Array.isArray(obj?.raw?.proposed_commands)) return obj.raw.proposed_commands;
+  if (Array.isArray(obj?.raw?.proposedCommands)) return obj.raw.proposedCommands;
+  return [];
 }
 
-const formatSection = (title: string, lines: string[]) => {
-  const clean = (lines || []).map((x) => (typeof x === "string" ? x.trim() : "")).filter(Boolean);
-  if (!clean.length) return "";
-  return `${title}\n${clean.map((x) => `- ${x}`).join("\n")}`;
-};
+/* ---------------- core ---------------- */
 
-const getDashboardSnapshot = (obj: any): { goals: any[]; tasks: any[] } | null => {
-  const dash = obj?.context?.snapshot?.ceo_dashboard_snapshot?.dashboard;
-  if (!dash || typeof dash !== "object") return null;
-  const goals = Array.isArray(dash?.goals) ? dash.goals : [];
-  const tasks = Array.isArray(dash?.tasks) ? dash.tasks : [];
-  return { goals, tasks };
-};
-
-const looksLikeEmptySnapshotMessage = (s: string): boolean => {
-  const ll = s.toLowerCase();
-  return ll.includes("snapshot je prazan") || ll.includes("nema dovoljno podataka") || ll.includes("prazan");
-};
-
-const deriveSystemTextFromCeoConsole = (obj: any): string | undefined => {
-  let summary = asString(obj?.summary) ?? asString(obj?.text) ?? asString(obj?.message);
-  const questions = asArrayOfStrings(obj?.questions) ?? [];
-  const plan = asArrayOfStrings(obj?.plan) ?? [];
-  const options = asArrayOfStrings(obj?.options) ?? [];
-
-  if (summary && looksLikeEmptySnapshotMessage(summary)) {
-    const snap = getDashboardSnapshot(obj);
-    if (snap && (snap.goals.length > 0 || snap.tasks.length > 0)) {
-      const topGoals = snap.goals.slice(0, 3).map((g: any) => {
-        const name = asString(g?.name) ?? "Untitled goal";
-        const st = asString(g?.status) ?? "Unknown";
-        return `${name} (${st})`;
-      });
-
-      const topTasks = snap.tasks.slice(0, 5).map((t: any) => {
-        const title = asString(t?.title) ?? "Untitled task";
-        const st = asString(t?.status) ?? "Unknown";
-        const pr = asString(t?.priority);
-        return `${title} (${st}${pr ? `, ${pr}` : ""})`;
-      });
-
-      const blocks: string[] = [];
-      blocks.push(`Snapshot: goals=${snap.goals.length}, tasks=${snap.tasks.length}`);
-      const gBlock = formatSection("GOALS (top 3)", topGoals);
-      if (gBlock) blocks.push(gBlock);
-      const tBlock = formatSection("TASKS (top 5)", topTasks);
-      if (tBlock) blocks.push(tBlock);
-      summary = blocks.join("\n\n");
+export function deriveSystemTextFromCeoConsole(input: any): {
+  text: string;
+  proposed_commands: any[];
+  governance_state?: string;
+  raw: AnyRecord | string;
+} {
+  if (typeof input === "string") {
+    const maybeObj = safeJsonParse(input);
+    if (maybeObj && isObject(maybeObj)) {
+      const obj = maybeObj as AnyRecord;
+      return {
+        text:
+          asString(obj.text) ??
+          asString(obj.delta) ??
+          asString(obj.content) ??
+          input,
+        proposed_commands: pickProposedCommands(obj),
+        governance_state:
+          asString(obj.governance_state) ??
+          asString(obj.governanceState),
+        raw: obj,
+      };
     }
+    return { text: input, proposed_commands: [], raw: input };
   }
 
-  const proposed = Array.isArray(obj?.proposed_commands) ? obj.proposed_commands.filter((p: any) => p?.command !== "ceo.command.propose") : [];
-  const proposedLines =
-    proposed.length > 0
-      ? proposed
-          .map((p: any, idx: number) => {
-            const t = asString(p?.command_type) ?? asString(p?.command) ?? "";
-            const risk = asString(p?.risk_hint) ?? asString(p?.risk) ?? "";
-            const extra = [t || `Command #${idx + 1}`, risk ? `risk: ${risk}` : ""].filter(Boolean).join(" — ");
-            return extra || `Command #${idx + 1}`;
-          })
-          .filter(Boolean)
-      : [];
-
-  const blocks: string[] = [];
-  if (summary && summary.trim()) blocks.push(summary.trim());
-  const planBlock = formatSection("Plan", plan);
-  if (planBlock) blocks.push(planBlock);
-  const optBlock = formatSection("Options", options);
-  if (optBlock) blocks.push(optBlock);
-  const qBlock = formatSection("Questions", questions);
-  if (qBlock) blocks.push(qBlock);
-  const pBlock = formatSection("Proposed commands (BLOCKED)", proposedLines);
-  if (pBlock) blocks.push(pBlock);
-
-  const out = blocks.join("\n\n").trim();
-  return out || undefined;
-};
-
-export const normalizeConsoleResponse = (raw: unknown, responseHeaders?: Headers): NormalizedConsoleResponse => {
-  const obj = raw && typeof raw === "object" ? (raw as any) : {};
-
-  const requestId =
-    asString(obj?.request_id) ??
-    asString(obj?.requestId) ??
-    asString(obj?.client_request_id) ??
-    asString(obj?.meta?.request_id) ??
-    asString(obj?.meta?.requestId) ??
-    asString(obj?.trace?.request_id) ??
-    asString(obj?.trace?.requestId);
-
-  let sysText =
-    deriveSystemTextFromCeoConsole(obj) ??
-    asString(obj?.system_text) ??
-    asString(obj?.systemText) ??
-    asString(obj?.message) ??
-    asString(obj?.response) ??
-    asString(obj?.text) ??
-    asString(obj?.content) ??
-    asString(obj?.ai_response?.text) ??
-    asString(obj?.ai_response?.message) ??
-    asString(obj?.aiResponse?.text);
-
-  if (!sysText) {
-    const execState =
-      asString(obj?.execution_state) ?? asString(obj?.executionState) ?? asString(obj?.status) ?? asString(obj?.state);
-    const ok = typeof obj?.ok === "boolean" ? obj.ok : undefined;
-    const msg = asString(obj?.detail) ?? asString(obj?.error) ?? asString(obj?.message);
-    const lines = [
-      execState ? `Execution: ${execState}` : "",
-      typeof ok === "boolean" ? `OK: ${ok ? "true" : "false"}` : "",
-      msg ? `Message: ${msg}` : "",
-    ].filter(Boolean);
-    if (lines.length) sysText = lines.join("\n");
-  }
-
-  // FIX: filter wrapper proposals (ceo.command.propose)
-  const hasProposals =
-    Array.isArray(obj?.proposed_commands) &&
-    obj.proposed_commands.some((p: any) => p?.command !== "ceo.command.propose");
-
-  const gStateExplicit =
-    normalizeState(obj?.governance?.state) ??
-    normalizeState(obj?.governance_state?.state) ??
-    normalizeState(obj?.governanceState?.state) ??
-    normalizeState(obj?.status) ??
-    normalizeState(obj?.state) ??
-    normalizeState(obj?.governance?.status) ??
-    normalizeState(obj?.approval?.status);
-
-  let gState: GovernanceState | undefined = gStateExplicit;
-
-  if (!gState && hasProposals) gState = "BLOCKED";
-
-  const executionState = asString(obj?.execution_state) ?? asString(obj?.executionState);
-  if (!gState && executionState) {
-    const up = executionState.toUpperCase();
-    if (up === "COMPLETED" || up === "FAILED" || up === "ERROR") gState = "EXECUTED";
-  }
-
-  const approvalRequestId =
-    asString(obj?.approval_id) ??
-    asString(obj?.approvalId) ??
-    asString(obj?.approval?.approval_id) ??
-    asString(obj?.approval?.approvalId) ??
-    asString(obj?.governance?.approval_id) ??
-    asString(obj?.governance?.approvalId) ??
-    asString(obj?.governance?.approval_request_id) ??
-    asString(obj?.governance?.approvalRequestId) ??
-    asString(obj?.governance_state?.approval_id) ??
-    asString(obj?.governance_state?.approvalId) ??
-    asString(obj?.governance_state?.approval_request_id) ??
-    asString(obj?.governance_state?.approvalRequestId);
-
-  const reasons =
-    asArrayOfStrings(obj?.reasons) ??
-    asArrayOfStrings(obj?.governance?.reasons) ??
-    asArrayOfStrings(obj?.governance_state?.reasons) ??
-    asArrayOfStrings(obj?.governance?.block_reasons) ??
-    asArrayOfStrings(obj?.governance_state?.block_reasons);
-
-  const title =
-    asString(obj?.governance?.title) ??
-    asString(obj?.governance_state?.title) ??
-    asString(obj?.title) ??
-    (hasProposals ? "Proposals ready (BLOCKED)" : undefined);
-
-  const summary =
-    asString(obj?.governance?.summary) ??
-    asString(obj?.governance_state?.summary) ??
-    asString(obj?.summary) ??
-    (hasProposals ? "Review proposed commands and promote for approval." : undefined);
-
-  const systemText = sysText ? redactAgentDetails(sysText) : undefined;
-
-  const normalized: NormalizedConsoleResponse = {
-    requestId,
-    systemText,
-  };
-
-  if (gState) {
-    normalized.governance = {
-      state: gState,
-      title,
-      summary,
-      reasons,
-      approvalRequestId,
+  if (isObject(input)) {
+    const obj = input as AnyRecord;
+    return {
+      text:
+        asString(obj.delta) ??
+        asString(obj.text) ??
+        asString(obj.content) ??
+        "",
+      proposed_commands: pickProposedCommands(obj),
+      governance_state:
+        asString(obj.governance_state) ??
+        asString(obj.governanceState),
+      raw: obj,
     };
   }
 
-  void responseHeaders;
-  return normalized;
-};
+  return {
+    text: String(input ?? ""),
+    proposed_commands: [],
+    raw: String(input ?? ""),
+  };
+}
 
-export const detectStreamParser = (headers: Headers | undefined) => {
-  const ct = headers?.get("content-type")?.toLowerCase() ?? "";
-  if (ct.includes("text/event-stream")) return "sse" as const;
-  if (ct.includes("application/x-ndjson") || ct.includes("application/ndjson")) return "ndjson" as const;
-  return null;
-};
+export function normalizeCeoConsoleMessage(
+  input: any,
+  fallbackId: string
+): NormalizedCeoConsoleMessage {
+  const { text, proposed_commands, governance_state, raw } =
+    deriveSystemTextFromCeoConsole(input);
 
-export const streamTextFromResponse = (res: Response): AsyncIterable<string> | null => {
-  const mode = detectStreamParser(res.headers);
-  if (!mode || !res.body) return null;
-  return mode === "sse" ? parseSseText(res.body) : parseNdjsonText(res.body);
-};
+  return {
+    id: asString(input?.id) ?? fallbackId,
+    role: normalizeRole(input?.role ?? input?.type),
+    text: text ?? "",
+    raw,
+    proposedCommands: proposed_commands ?? [],
+    governanceState: governance_state,
+  };
+}
 
+export function normalizeCeoConsoleMessages(
+  inputs: any[]
+): NormalizedCeoConsoleMessage[] {
+  if (!Array.isArray(inputs)) return [];
+  return inputs.map((m, i) =>
+    normalizeCeoConsoleMessage(m, `m_${i}`)
+  );
+}
+
+/* ---------------- BACKWARD COMPAT ---------------- */
+
+/**
+ * api.ts poziva sa (raw, headers)
+ * headers se IGNORIŠU – transport level
+ */
+export function normalizeConsoleResponse(
+  input: any,
+  _headers?: any
+): NormalizedCeoConsoleMessage[] {
+  if (Array.isArray(input)) return normalizeCeoConsoleMessages(input);
+  return [normalizeCeoConsoleMessage(input, "m_0")];
+}
+
+/**
+ * api.ts očekuje string → stream helper
+ */
+export function streamTextFromResponse(input: any): AsyncIterable<string> {
+  const { text } = deriveSystemTextFromCeoConsole(input);
+  return (async function* () {
+    yield text;
+  })();
+}

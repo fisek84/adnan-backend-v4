@@ -85,6 +85,8 @@ const _extractProposedCommands = (resp: any): ProposedCmd[] => {
     resp?.result?.proposed_commands,
     resp?.result?.proposedCommands,
     resp?.governance?.proposed_commands,
+    // FAZA A hardening: support camelCase under governance too
+    resp?.governance?.proposedCommands,
   ];
 
   for (const c of candidates) {
@@ -181,7 +183,11 @@ function isActionableProposal(p: ProposedCmd): boolean {
 
   // CANON: real intent can be nested at params.ai_command.intent for notion_write wrapper
   const nestedIntent =
-    typeof (p as any)?.params?.ai_command?.intent === "string" ? (p as any).params.ai_command.intent : "";
+    typeof (p as any)?.params?.ai_command?.intent === "string"
+      ? (p as any).params.ai_command.intent
+      : typeof (p as any)?.params?.aiCommand?.intent === "string"
+        ? (p as any).params.aiCommand.intent
+        : "";
 
   const intent = nestedIntent || topIntent;
 
@@ -231,7 +237,11 @@ function proposalLabel(p: ProposedCmd, idx: number): string {
 
   // CANON: show ai_command.intent for notion_write wrapper
   const nestedIntent =
-    typeof (p as any)?.params?.ai_command?.intent === "string" ? (p as any).params.ai_command.intent : "";
+    typeof (p as any)?.params?.ai_command?.intent === "string"
+      ? (p as any).params.ai_command.intent
+      : typeof (p as any)?.params?.aiCommand?.intent === "string"
+        ? (p as any).params.aiCommand.intent
+        : "";
 
   if (nestedIntent) return nestedIntent;
   if (topIntent) return topIntent;
@@ -693,7 +703,8 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       const gov = toGovernanceCard(resp);
       if (gov && shouldShowBackendGovernanceCard(gov, actionableCount)) appendItem(gov);
 
-      if (actionableCount > 0 && proposals.some((p: any) => p?.command !== "ceo.command.propose")) {
+      // CANON: any actionable proposals => show governance BLOCKED entrypoint
+      if (actionableCount > 0) {
         appendItem({
           id: uid(),
           kind: "governance",
@@ -1145,4 +1156,3 @@ declare global {
     }
   }
 }
-

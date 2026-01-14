@@ -1,6 +1,6 @@
 # gateway/gateway_server.py
 # ruff: noqa: E402
-# FULL FILE Ă˘â‚¬â€ť replace the whole gateway_server.py with this.
+# FULL FILE — replace the whole gateway_server.py with this.
 
 from __future__ import annotations
 
@@ -168,7 +168,7 @@ from services.identity_loader import load_identity
 from services.ceo_console_snapshot_service import CEOConsoleSnapshotService
 
 # ================================================================
-# NOTION SERVICE (KANONSKI INIT) Ă˘â‚¬â€ť NO SIDE EFFECTS AT IMPORT
+# NOTION SERVICE (KANONSKI INIT) — NO SIDE EFFECTS AT IMPORT
 # ================================================================
 from services.knowledge_snapshot_service import KnowledgeSnapshotService
 from services.notion_service import (
@@ -214,7 +214,7 @@ from services.app_bootstrap import bootstrap_application
 # INITIAL LOAD
 # ================================================================
 if not OS_ENABLED:
-    logger.critical("OS_ENABLED=false Ă˘â‚¬â€ť system will not start.")
+    logger.critical("OS_ENABLED=false — system will not start.")
     raise RuntimeError("OS is disabled by configuration.")
 
 identity = load_identity()
@@ -223,7 +223,6 @@ state = load_state()
 
 # ================================================================
 # CANON: NO SERVICE CONSTRUCTION AT IMPORT TIME
-# - these depend (directly/indirectly) on NotionService singleton
 # ================================================================
 ai_command_service: Optional[AICommandService] = None
 coo_translation_service: Optional[COOTranslationService] = None
@@ -482,15 +481,6 @@ def _unwrap_proposal_wrapper_or_raise(
 
 # ================================================================
 # BOOT/SHUTDOWN ROUTINES (SINGLE SSOT)
-# IMPORTANT: pytest/httpx ASGITransport in your environment does NOT
-# reliably run FastAPI lifespan. Your tests call app.router.startup().
-# Therefore we wire BOTH:
-#   - lifespan (production)
-#   - on_event startup/shutdown (in-process tests)
-#
-# CANONICAL FIX FOR YOUR CURRENT FAIL:
-# - Some in-process transports do not trigger startup/lifespan.
-# - Therefore we also lazy-boot on first non-health request.
 # ================================================================
 _boot_lock = asyncio.Lock()
 
@@ -607,7 +597,6 @@ async def _boot_once() -> None:
             _BOOT_READY = True
             logger.info("System boot completed. READY.")
         except Exception:
-            # keep _BOOT_READY False; _BOOT_ERROR already appended
             _BOOT_READY = False
             raise
 
@@ -626,7 +615,6 @@ async def _shutdown_best_effort() -> None:
     except Exception as exc:  # noqa: BLE001
         logger.warning("NotionService shutdown close failed: %s", exc)
 
-    # reset (reload-safe)
     ai_command_service = None
     coo_translation_service = None
     coo_conversation_service = None
@@ -634,28 +622,25 @@ async def _shutdown_best_effort() -> None:
     _execution_orchestrator = None
 
     _BOOT_READY = False
-    logger.info("System shutdown Ă˘â‚¬â€ť boot_ready=False.")
+    logger.info("System shutdown — boot_ready=False.")
 
 
 def _is_boot_exempt_path(path: str) -> bool:
     p = (path or "").strip()
     if not p:
         return True
-    # health/readiness and static assets must not force boot
     if p in {"/health", "/ready", "/", "/favicon.ico"}:
         return True
     if p.startswith("/docs") or p.startswith("/openapi") or p.startswith("/redoc"):
         return True
     if p.startswith("/assets") or p.startswith("/static"):
         return True
-    # status endpoints should not force Notion boot (observability)
     if p in {"/api/ceo-console/status", "/ceo-console/status"}:
         return True
     return False
 
 
 async def _ensure_boot_if_needed(request: Request) -> None:
-    # If startup/lifespan didn't fire (in-process transports), boot on first real request.
     if _BOOT_READY:
         return
     if _is_boot_exempt_path(request.url.path):
@@ -663,7 +648,6 @@ async def _ensure_boot_if_needed(request: Request) -> None:
     try:
         await _boot_once()
     except Exception:
-        # _BOOT_ERROR is already populated by _boot_once via _append_boot_error()
         raise HTTPException(
             status_code=503, detail=_BOOT_ERROR or "System not ready"
         ) from None
@@ -691,11 +675,8 @@ app = FastAPI(
 )
 
 
-# IMPORTANT: support in-process tests that call app.router.startup()
-# (FastAPI lifespan is not guaranteed to run via your httpx ASGITransport)
 @app.on_event("startup")
 async def _startup_event() -> None:
-    # idempotent
     await _boot_once()
 
 
@@ -712,7 +693,6 @@ async def request_trace_middleware(request: Request, call_next):
     req_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
     request.state.req_id = req_id
 
-    # CANONICAL: ensure boot for real requests even if lifespan/startup didn't run.
     await _ensure_boot_if_needed(request)
 
     try:
@@ -897,7 +877,7 @@ def _proposal_wrapper_dict(*, prompt: str, source: str) -> Dict[str, Any]:
         "command": PROPOSAL_WRAPPER_INTENT,
         "args": {"prompt": safe_prompt},
         "intent": None,
-        "reason": "Notion write intent ide kroz approval pipeline; predlaÄąÄľem komandu za promotion/execute.",
+        "reason": "Notion write intent ide kroz approval pipeline; predlažem komandu za promotion/execute.",
         "dry_run": True,
         "requires_approval": False,
         "risk": "LOW",
@@ -996,27 +976,13 @@ def _compute_confidence_risk_block(
     trace: Dict[str, Any],
     proposed_commands: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
-    """
-    CANON (Truthful UX meta):
-      - deterministic, schema-stable block
-      - no hidden assumptions about upstream agent internals
-      - values are conservative heuristics (not "decisions")
-    Required keys:
-      - confidence_score: float 0..1
-      - risk_level: "low"|"medium"|"high"
-      - assumption_count: int >= 0
-    """
     tr = trace if isinstance(trace, dict) else {}
     pcs = proposed_commands if isinstance(proposed_commands, list) else []
 
     fallback = bool(tr.get("fallback_proposed_commands") is True)
 
-    # Assumption count: we do not introspect LLM chain-of-thought.
-    # Deterministic baseline: 0; if fallback proposals were injected, treat as 1 heuristic.
     assumption_count = 1 if fallback else 0
 
-    # Risk: if proposals exist -> at least medium (because action intent exists).
-    # If any proposal signals high risk -> high.
     risk_level = "low"
     if len(pcs) > 0:
         risk_level = "medium"
@@ -1029,16 +995,13 @@ def _compute_confidence_risk_block(
             risk_level = "high"
             break
 
-    # Confidence: conservative heuristic; lower if we had to fallback.
     confidence_score = 0.90
     if fallback:
         confidence_score = 0.60
 
-    # If input is empty-ish (should not happen due to 422 guard), reduce slightly.
     if not (prompt or "").strip():
         confidence_score = min(confidence_score, 0.50)
 
-    # Clamp
     try:
         confidence_score_f = float(confidence_score)
     except Exception:
@@ -1061,11 +1024,20 @@ def _compute_confidence_risk_block(
     }
 
 
+# ===========================
+# PHASE A FIX: robust normalize
+# ===========================
 def _normalize_execute_raw_payload_dict(body: Dict[str, Any]) -> ExecuteRawInput2:
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="Body must be an object")
 
-    cmd = body.get("command") or body.get("command_type") or body.get("type") or ""
+    cmd = (
+        body.get("command")
+        or body.get("name")
+        or body.get("command_type")
+        or body.get("type")
+        or ""
+    )
     if not isinstance(cmd, str) or not cmd.strip():
         raise HTTPException(status_code=422, detail="Field 'command' is required")
     cmd = cmd.strip()
@@ -1080,10 +1052,32 @@ def _normalize_execute_raw_payload_dict(body: Dict[str, Any]) -> ExecuteRawInput
     if not isinstance(params, dict):
         params = {}
 
+    if not params:
+        args0 = body.get("args")
+        if isinstance(args0, dict):
+            params = dict(args0)
+
+    if not params:
+        payload0 = body.get("payload")
+        if isinstance(payload0, dict):
+            params = dict(payload0)
+
     if intent == PROPOSAL_WRAPPER_INTENT and "prompt" not in params:
         args = body.get("args")
         if isinstance(args, dict):
             prompt = args.get("prompt")
+            if isinstance(prompt, str) and prompt.strip():
+                params["prompt"] = prompt.strip()
+
+        if "prompt" not in params:
+            payload = body.get("payload")
+            if isinstance(payload, dict):
+                prompt = payload.get("prompt")
+                if isinstance(prompt, str) and prompt.strip():
+                    params["prompt"] = prompt.strip()
+
+        if "prompt" not in params:
+            prompt = body.get("prompt")
             if isinstance(prompt, str) and prompt.strip():
                 params["prompt"] = prompt.strip()
 
@@ -1098,6 +1092,7 @@ def _normalize_execute_raw_payload_dict(body: Dict[str, Any]) -> ExecuteRawInput
     metadata = body.get("metadata")
     if not isinstance(metadata, dict):
         metadata = {}
+
     payload_summary = body.get("payload_summary")
     if isinstance(payload_summary, dict):
         merged = dict(payload_summary)
@@ -1119,7 +1114,7 @@ def _normalize_execute_raw_payload_dict(body: Dict[str, Any]) -> ExecuteRawInput
 
 
 # ================================================================
-# /api/execute Ă˘â‚¬â€ť EXECUTION PATH (NL INPUT)
+# /api/execute — EXECUTION PATH (NL INPUT)
 # ================================================================
 @app.post("/api/execute")
 async def execute_command(payload: ExecuteInput):
@@ -1191,7 +1186,6 @@ async def execute_raw_command(payload: Dict[str, Any] = Body(...)):
 
     normalized = _normalize_execute_raw_payload_dict(payload)
 
-    # HARD-BLOCK: next_step never enters approval/execute
     if (normalized.intent in _HARD_READ_ONLY_INTENTS) or (
         normalized.command in _HARD_READ_ONLY_INTENTS
     ):
@@ -1215,7 +1209,6 @@ async def execute_raw_command(payload: Dict[str, Any] = Body(...)):
             },
         }
 
-    # need orchestrator/registry now
     _, _, _, registry, orchestrator = _require_boot_services()
 
     ai_command = _unwrap_proposal_wrapper_or_raise(
@@ -1230,13 +1223,24 @@ async def execute_raw_command(payload: Dict[str, Any] = Body(...)):
     execution_id = _ensure_execution_id(ai_command)
 
     approval_state = get_approval_state()
+
+    # PHASE A FIX: robust scope/risk extraction
+    scope_val = payload.get("scope") or payload.get("scope_hint") or "api_execute_raw"
+    risk_val = (
+        payload.get("risk")
+        or payload.get("risk_level")
+        or payload.get("risk_hint")
+        or "unknown"
+    )
+
     approval = approval_state.create(
         command=getattr(ai_command, "command", None) or "execute_raw",
         payload_summary=_safe_command_summary(ai_command),
-        scope=(payload.get("scope") or "api_execute_raw"),
-        risk_level=(payload.get("risk") or "unknown"),
+        scope=scope_val,
+        risk_level=risk_val,
         execution_id=execution_id,
     )
+
     approval_id = approval.get("approval_id")
     if not approval_id:
         raise HTTPException(
@@ -1270,7 +1274,6 @@ async def execute_proposal(payload: ProposalExecuteInput):
     initiator = (payload.initiator or "ceo").strip() or "ceo"
     meta_in = payload.metadata if isinstance(payload.metadata, dict) else {}
 
-    # need orchestrator/registry now
     _, _, _, registry, orchestrator = _require_boot_services()
 
     proposal_cmd: Optional[str] = None
@@ -1359,7 +1362,6 @@ async def execute_proposal(payload: ProposalExecuteInput):
     if isinstance(meta_in, dict):
         merged_md.update(meta_in)
 
-    # === CANON: propagate confidence_risk into metadata for DOR ===
     cr = None
     if isinstance(proposal_meta, dict):
         cr = proposal_meta.get("confidence_risk")
@@ -1368,7 +1370,6 @@ async def execute_proposal(payload: ProposalExecuteInput):
 
     if isinstance(cr, dict):
         merged_md["confidence_risk"] = cr
-    # === END CANON ===
 
     ai_command = _unwrap_proposal_wrapper_or_raise(
         command=proposal_cmd,
@@ -1422,7 +1423,7 @@ async def execute_proposal(payload: ProposalExecuteInput):
 
 
 # ================================================================
-# NOTION READ Ă˘â‚¬â€ť READ ONLY (NO APPROVAL / NO EXECUTION)
+# NOTION READ — READ ONLY (NO APPROVAL / NO EXECUTION)
 # ================================================================
 @app.post("/api/notion/read", response_model=NotionReadResponse)
 async def notion_read(payload: Any = Body(None)) -> Any:
@@ -1518,7 +1519,7 @@ async def notion_read(payload: Any = Body(None)) -> Any:
 
 
 # ================================================================
-# NOTION OPS Ă˘â‚¬â€ť LIST DATABASES (READ ONLY)
+# NOTION OPS — LIST DATABASES (READ ONLY)
 # ================================================================
 @app.get("/api/notion-ops/databases")
 @app.get("/notion-ops/databases")
@@ -1976,10 +1977,8 @@ async def _ceo_command_core(payload_dict: Dict[str, Any]) -> JSONResponse:
     if not isinstance(result.get("proposed_commands"), list):
         result["proposed_commands"] = []
 
-    # Normalize/inject fallback proposals (existing behaviour)
     _inject_fallback_proposed_commands(result, prompt=cleaned_text.strip())
 
-    # Ensure trace exists and inject confidence_risk block (NEW)
     tr2 = _ensure_dict(result.get("trace"))
     if not isinstance(tr2.get("confidence_risk"), dict):
         tr2["confidence_risk"] = _compute_confidence_risk_block(
@@ -2011,6 +2010,13 @@ async def _ceo_command_core(payload_dict: Dict[str, Any]) -> JSONResponse:
                     "risk",
                     {"low": "LOW", "medium": "MED", "high": "HIGH"}.get(rl, "LOW"),
                 )
+
+            # PHASE A FIX: also propagate to proposal metadata
+            md0 = pc.get("metadata")
+            if not isinstance(md0, dict):
+                md0 = {}
+                pc["metadata"] = md0
+            md0.setdefault("confidence_risk", cr)
     # === END CANON PATCH ===
 
     # === CANON STABILITY PATCH: ensure args.prompt exists ===
@@ -2235,7 +2241,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 
 # ================================================================
-# REACT FRONTEND (PROD BUILD) Ă˘â‚¬â€ť SERVE dist/
+# REACT FRONTEND (PROD BUILD) — SERVE dist/
 # ================================================================
 if not FRONTEND_DIST_DIR.is_dir():
     logger.warning("React dist directory not found: %s", FRONTEND_DIST_DIR)
