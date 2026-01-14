@@ -83,14 +83,6 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 "recommendation_type": "OPERATIONAL",
             },
         )
-
-        # Defensive: ensure we do not persist intent on wrapper if the model sets it.
-        try:
-            if hasattr(pc, "intent"):
-                pc.intent = None
-        except Exception:
-            pass
-
         return pc
 
     def _build_contract_noop_wrapper(prompt: str) -> ProposedCommand:
@@ -115,13 +107,6 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 "kind": "contract_noop",
             },
         )
-
-        try:
-            if hasattr(pc, "intent"):
-                pc.intent = None
-        except Exception:
-            pass
-
         return pc
 
     def _pc_to_dict(pc: ProposedCommand, *, prompt: str) -> Dict[str, Any]:
@@ -132,17 +117,6 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         )
         if not isinstance(d, dict):
             return {}
-
-        # Contract enforcement: proposed_commands[0].args.prompt MUST exist.
-        # Also normalize possible "params" -> "args" if present.
-        if "args" not in d and "params" in d:
-            params = d.get("params")
-            d["args"] = params if isinstance(params, dict) else {}
-            try:
-                del d["params"]
-            except Exception:
-                pass
-
         args = d.get("args")
         if not isinstance(args, dict):
             args = {}
@@ -209,9 +183,7 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             content={
                 "text": out.text,
                 "proposed_commands": [
-                    _pc_to_dict(pc, prompt=prompt)
-                    for pc in out.proposed_commands
-                    if _pc_to_dict(pc, prompt=prompt).get("intent") is not None
+                    _pc_to_dict(pc, prompt=prompt) for pc in out.proposed_commands
                 ],
                 "agent_id": out.agent_id,
                 "read_only": True,
