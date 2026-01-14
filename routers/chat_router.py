@@ -196,7 +196,12 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 )
             ]
         else:
-            out.proposed_commands = []
+            out.proposed_commands = [
+                _build_approval_wrapper(
+                    prompt,
+                    reason="Contract-stability fallback wrapper (no actionable intent).",
+                )
+            ]
 
         out.read_only = True
 
