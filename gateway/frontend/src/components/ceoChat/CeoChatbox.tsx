@@ -135,14 +135,6 @@ function renderTextWithNotionLink(text: string): React.ReactNode {
   const m = text.match(re);
   if (!m) return text;
 
-  const prefix = m[_attach: string, url: string);
-  return m;
-}
-function renderTextWithNotionLink(text: string): React.ReactNode {
-  const re = /(Open in Notion:\s*)(https?:\/\/\S+)/;
-  const m = text.match(re);
-  if (!m) return text;
-
   const prefix = m[1];
   const url = m[2];
 
