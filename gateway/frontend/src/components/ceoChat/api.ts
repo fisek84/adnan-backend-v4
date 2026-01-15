@@ -346,7 +346,10 @@ async function fetchAndNormalize(opts: {
     };
   }
 
+  // ✅ ADDED: runtime proof of what client actually receives (for debugging frontend mismatch)
   const raw = await fetchJsonOrText(res);
+  console.log("[api.ts] raw from /api/chat =", raw);
+
   return normalizeRawToUi(raw, url, res.headers);
 }
 
