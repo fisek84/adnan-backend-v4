@@ -2060,6 +2060,38 @@ async def _ceo_command_core(payload_dict: Dict[str, Any]) -> JSONResponse:
     ):
         _inject_fallback_proposed_commands(result, prompt=cleaned_text.strip())
 
+    # === POST-FALLBACK CANON PATCH: ensure payload_summary fields on injected proposals ===
+    cr2 = _ensure_dict(_ensure_dict(result.get("trace")).get("confidence_risk"))
+    if isinstance(cr2, dict):
+        for pc in result.get("proposed_commands", []):
+            if not isinstance(pc, dict):
+                continue
+
+            ps = pc.get("payload_summary")
+            if not isinstance(ps, dict):
+                ps = {}
+                pc["payload_summary"] = ps
+
+            cs = ps.get("confidence_score", None)
+            if cs is None:
+                cs2 = cr2.get("confidence_score")
+                cs = float(cs2) if isinstance(cs2, (int, float)) else 0.50
+            if cs < 0.0:
+                cs = 0.0
+            if cs > 1.0:
+                cs = 1.0
+            ps["confidence_score"] = float(cs)
+
+            ac = ps.get("assumption_count", None)
+            if not isinstance(ac, int) or ac < 0:
+                ac2 = cr2.get("assumption_count")
+                ac = int(ac2) if isinstance(ac2, int) and ac2 >= 0 else 0
+            ps["assumption_count"] = ac
+
+            rt = ps.get("recommendation_type")
+            if not isinstance(rt, str) or not rt.strip():
+                ps["recommendation_type"] = "OPERATIONAL"
+    # === END POST-FALLBACK CANON PATCH ===
     return JSONResponse(content=result, media_type="application/json; charset=utf-8")
 
 
