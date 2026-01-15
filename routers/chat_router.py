@@ -131,6 +131,7 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 "canon": "CEO_CONSOLE_EXECUTION_FLOW",
                 "source": "api_chat",
                 "kind": "contract_noop",
+                # NOTE: do NOT rely on this being complete; we hard-normalize below anyway.
             },
         )
         return pc
@@ -155,6 +156,50 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             args["prompt"] = (prompt or "").strip() or "noop"
 
         return d
+
+    def _ensure_payload_summary_contract(pc_dict: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        HARD CONTRACT (SSOT):
+        Every proposed_command returned from /api/chat MUST include payload_summary fields:
+          - confidence_score: float [0.0, 1.0]
+          - assumption_count: int >= 0
+          - recommendation_type: enum string (at least INFORMATIONAL/OPERATIONAL)
+        This prevents "new problems" across fallback paths.
+        """
+        if not isinstance(pc_dict, dict):
+            return {}
+
+        ps = pc_dict.get("payload_summary")
+        if not isinstance(ps, dict):
+            ps = {}
+            pc_dict["payload_summary"] = ps
+
+        kind = ps.get("kind")
+        is_noop = kind == "contract_noop"
+
+        # confidence_score: float in [0,1]
+        cs = ps.get("confidence_score")
+        if not isinstance(cs, (int, float)):
+            cs = 1.0 if is_noop else 0.5
+        csf = float(cs)
+        if csf < 0.0:
+            csf = 0.0
+        if csf > 1.0:
+            csf = 1.0
+        ps["confidence_score"] = csf
+
+        # assumption_count: int >= 0
+        ac = ps.get("assumption_count")
+        if not isinstance(ac, int) or ac < 0:
+            ac = 0
+        ps["assumption_count"] = ac
+
+        # recommendation_type: required
+        rt = ps.get("recommendation_type")
+        if not isinstance(rt, str) or not rt.strip():
+            ps["recommendation_type"] = "INFORMATIONAL" if is_noop else "OPERATIONAL"
+
+        return pc_dict
 
     def _is_actionable(pc: ProposedCommand) -> bool:
         """
@@ -221,17 +266,21 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             for pc in actionable:
                 _finalize_actionable(pc)
 
+            # Hard-normalize payload_summary contract in dict output (safe across model versions)
+            pcs_out: List[Dict[str, Any]] = []
+            for pc in actionable:
+                d = (
+                    pc.model_dump(by_alias=False)
+                    if hasattr(pc, "model_dump")
+                    else pc.dict(by_alias=False)
+                )
+                if isinstance(d, dict):
+                    pcs_out.append(_ensure_payload_summary_contract(d))
+
             return JSONResponse(
                 content={
                     "text": out.text,
-                    "proposed_commands": [
-                        (
-                            pc.model_dump(by_alias=False)
-                            if hasattr(pc, "model_dump")
-                            else pc.dict(by_alias=False)
-                        )
-                        for pc in actionable
-                    ],
+                    "proposed_commands": pcs_out,
                     "agent_id": out.agent_id,
                     "read_only": True,
                     "trace": out.trace or {},
@@ -251,10 +300,13 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
 
         out.read_only = True
 
+        fb = _pc_to_dict(fallback, prompt=prompt)
+        fb = _ensure_payload_summary_contract(fb)
+
         return JSONResponse(
             content={
                 "text": out.text,
-                "proposed_commands": [_pc_to_dict(fallback, prompt=prompt)],
+                "proposed_commands": [fb],
                 "agent_id": out.agent_id,
                 "read_only": True,
                 "trace": out.trace or {},
