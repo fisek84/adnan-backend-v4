@@ -202,6 +202,15 @@ function isActionableProposal(p: ProposedCmd): boolean {
 
   /**
    * CRITICAL FIX:
+   * Contract no-op MUST be hidden when backend explicitly marks it.
+   * This is NOT heuristics — it is an explicit backend marker.
+   */
+  const kind =
+    typeof (p as any)?.payload_summary?.kind === "string" ? (p as any).payload_summary.kind : "";
+  if (kind === "contract_noop") return false;
+
+  /**
+   * CRITICAL FIX:
    * Fallback MUST be recognized only via explicit backend marker in reason.
    * Do NOT use cmd/dryRun/requiresApproval heuristics to suppress proposals,
    * because ceo.command.propose may be the canonical wrapper.
@@ -693,7 +702,14 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         return;
       }
 
-      const sysText = (resp as any).systemText ?? (resp as any).summary ?? (resp as any).text ?? "";
+      // ✅ FIX: pick text from top-level OR common wrappers (result/raw/data)
+      const sysText =
+        _pickText(resp as any) ||
+        _pickText((resp as any)?.result) ||
+        _pickText((resp as any)?.raw) ||
+        _pickText((resp as any)?.data) ||
+        "";
+
       updateItem(placeholderId, { content: sysText, status: "final" });
 
       const proposalsRaw = _extractProposedCommands(resp as any);
