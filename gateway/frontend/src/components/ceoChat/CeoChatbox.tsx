@@ -850,20 +850,6 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
 
       const resp = await api.sendCommand(req, controller.signal);
 
-      // ✅ DEBUG IN-UI (no Console needed): shows what the frontend actually received.
-      appendItem({
-        id: uid(),
-        kind: "message",
-        role: "system",
-        content:
-          "[DEBUG] systemText=" +
-          String((resp as any)?.systemText ?? "<missing>") +
-          " | raw.text=" +
-          String((resp as any)?.raw?.text ?? "<missing>"),
-        status: "final",
-        createdAt: now(),
-      });
-
       abortRef.current = null;
       await flushResponseToUi(placeholder.id, resp);
 
