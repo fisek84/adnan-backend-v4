@@ -201,7 +201,6 @@ function isActionableProposal(p: ProposedCmd): boolean {
     (p as any).requiredApproval === true;
 
   /**
-   * CRITICAL FIX:
    * Contract no-op MUST be hidden when backend explicitly marks it.
    * This is NOT heuristics — it is an explicit backend marker.
    */
@@ -210,7 +209,6 @@ function isActionableProposal(p: ProposedCmd): boolean {
   if (kind === "contract_noop") return false;
 
   /**
-   * CRITICAL FIX:
    * Fallback MUST be recognized only via explicit backend marker in reason.
    * Do NOT use cmd/dryRun/requiresApproval heuristics to suppress proposals,
    * because ceo.command.propose may be the canonical wrapper.
@@ -230,9 +228,6 @@ function isActionableProposal(p: ProposedCmd): boolean {
   // If not approval-gated, avoid showing empty/no-op proposals.
   if (!intent && !hasSomePayload) return false;
 
-  // Optional: keep dryRun proposals visible only if they have explicit intent/payload.
-  // If you want to hide dry-run without payload/intent, this is already covered above.
-  // cmd is kept for labeling only; not used for fallback suppression.
   void cmd;
   void dryRun;
 
@@ -838,8 +833,6 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
     abortRef.current = controller;
 
     try {
-      // FIX: backend (per your working example) accepts { message: "..." }.
-      // Keep text as well for backwards compatibility if backend also supports it.
       const req: any = {
         message: trimmed,
         text: trimmed,
@@ -852,6 +845,17 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       };
 
       const resp = await api.sendCommand(req, controller.signal);
+
+      // ✅ DEBUG (UI-visible): emit raw.text so we can prove what UI actually received
+      appendItem({
+        id: uid(),
+        kind: "message",
+        role: "system",
+        content: "[DEBUG] resp.raw.text=" + String((resp as any)?.raw?.text ?? "<missing>"),
+        status: "final",
+        createdAt: now(),
+        requestId: clientRequestId,
+      } as ChatMessageItem);
 
       abortRef.current = null;
       await flushResponseToUi(placeholder.id, resp);
