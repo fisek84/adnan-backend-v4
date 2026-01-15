@@ -135,6 +135,14 @@ function renderTextWithNotionLink(text: string): React.ReactNode {
   const m = text.match(re);
   if (!m) return text;
 
+  const prefix = m[_attach: string, url: string);
+  return m;
+}
+function renderTextWithNotionLink(text: string): React.ReactNode {
+  const re = /(Open in Notion:\s*)(https?:\/\/\S+)/;
+  const m = text.match(re);
+  if (!m) return text;
+
   const prefix = m[1];
   const url = m[2];
 
@@ -201,6 +209,7 @@ function isActionableProposal(p: ProposedCmd): boolean {
     (p as any).requiredApproval === true;
 
   /**
+   * CRITICAL FIX:
    * Contract no-op MUST be hidden when backend explicitly marks it.
    * This is NOT heuristics — it is an explicit backend marker.
    */
@@ -209,6 +218,7 @@ function isActionableProposal(p: ProposedCmd): boolean {
   if (kind === "contract_noop") return false;
 
   /**
+   * CRITICAL FIX:
    * Fallback MUST be recognized only via explicit backend marker in reason.
    * Do NOT use cmd/dryRun/requiresApproval heuristics to suppress proposals,
    * because ceo.command.propose may be the canonical wrapper.
@@ -228,6 +238,7 @@ function isActionableProposal(p: ProposedCmd): boolean {
   // If not approval-gated, avoid showing empty/no-op proposals.
   if (!intent && !hasSomePayload) return false;
 
+  // Optional: keep dryRun proposals visible only if they have explicit intent/payload.
   void cmd;
   void dryRun;
 
@@ -697,9 +708,10 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         return;
       }
 
-      // ✅ FIX: pick text from top-level OR common wrappers (result/raw/data)
+      // ✅ FIX (evidence-based): NormalizedConsoleResponse uses `systemText`, so prefer it explicitly.
       const sysText =
         _pickText(resp as any) ||
+        (typeof (resp as any)?.systemText === "string" ? (resp as any).systemText.trim() : "") ||
         _pickText((resp as any)?.result) ||
         _pickText((resp as any)?.raw) ||
         _pickText((resp as any)?.data) ||
@@ -846,16 +858,19 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
 
       const resp = await api.sendCommand(req, controller.signal);
 
-      // ✅ DEBUG (UI-visible): emit raw.text so we can prove what UI actually received
+      // ✅ DEBUG IN-UI (no Console needed): shows what the frontend actually received.
       appendItem({
         id: uid(),
         kind: "message",
         role: "system",
-        content: "[DEBUG] resp.raw.text=" + String((resp as any)?.raw?.text ?? "<missing>"),
+        content:
+          "[DEBUG] systemText=" +
+          String((resp as any)?.systemText ?? "<missing>") +
+          " | raw.text=" +
+          String((resp as any)?.raw?.text ?? "<missing>"),
         status: "final",
         createdAt: now(),
-        requestId: clientRequestId,
-      } as ChatMessageItem);
+      });
 
       abortRef.current = null;
       await flushResponseToUi(placeholder.id, resp);
