@@ -313,6 +313,17 @@ async function fetchJsonOrText(res: Response): Promise<any> {
   });
 }
 
+// ✅ Streaming must be explicit (SSE/NDJSON), otherwise normalize JSON.
+// This prevents raw={stream:true} and systemText=<missing> in UI.
+function isExplicitStreamingResponse(res: Response): boolean {
+  const ct = String(res.headers.get("content-type") || "").toLowerCase();
+  return (
+    ct.includes("text/event-stream") ||
+    ct.includes("application/x-ndjson") ||
+    ct.includes("application/ndjson")
+  );
+}
+
 async function fetchAndNormalize(opts: {
   url: string;
   payload: any;
@@ -336,14 +347,16 @@ async function fetchAndNormalize(opts: {
     throw new Error(`HTTP ${res.status} from ${url}: ${txt || res.statusText}`);
   }
 
-  // Streaming support: ne konzumirati stream ovdje — UI (CeoChatbox) će ga čitati.
-  const stream = streamTextFromResponse(res);
-  if (stream) {
-    return {
-      stream,
-      raw: { stream: true },
-      source_endpoint: url,
-    };
+  // ✅ FIX: only treat as stream if server explicitly returns streaming content-type.
+  if (isExplicitStreamingResponse(res)) {
+    const stream = streamTextFromResponse(res);
+    if (stream) {
+      return {
+        stream,
+        raw: { stream: true },
+        source_endpoint: url,
+      };
+    }
   }
 
   // ✅ ADDED: runtime proof of what client actually receives (for debugging frontend mismatch)
