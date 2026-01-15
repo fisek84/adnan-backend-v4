@@ -46,11 +46,11 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 d = item if isinstance(item, dict) else {}
                 args = d.get("args") or d.get("params") or {}
                 pc = ProposedCommand(
-                    command=str(d.get("command") or PROPOSAL_WRAPPER_INTENT),
+                    command=str(d.get("command") or ""),
                     args=args if isinstance(args, dict) else {},
                 )
 
-            # Ensure chat is read-only: proposals are always dry_run here.
+            # /api/chat je uvijek read-only: dry_run mora biti True
             try:
                 pc.dry_run = True
             except Exception:
@@ -60,9 +60,37 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
 
         return out
 
+    def _looks_like_write_intent(text: str) -> bool:
+        t = (text or "").strip().lower()
+        if not t:
+            return False
+        return any(
+            k in t
+            for k in [
+                "create",
+                "kreiraj",
+                "napravi",
+                "dodaj",
+                "update",
+                "azuriraj",
+                "izmijeni",
+                "promijeni",
+                "delete",
+                "obrisi",
+                "ukloni",
+                "task",
+                "zadatak",
+                "goal",
+                "cilj",
+                "notion",
+                "db:",
+                "database",
+            ]
+        )
+
     def _build_approval_wrapper(prompt: str, *, reason: str) -> ProposedCommand:
         """
-        Enterprise/canon: use when we have an actionable proposal that must go through approval.
+        Wrapper koji se šalje na /api/execute/raw (gateway će unwrap+translate i kreirati approval).
         """
         safe_prompt = (prompt or "").strip() or "noop"
 
@@ -87,9 +115,7 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
 
     def _build_contract_noop_wrapper(prompt: str) -> ProposedCommand:
         """
-        Contract stability wrapper:
-          - satisfies proposed_commands[0].args.prompt
-          - MUST NOT be actionable (no approval, no execute scope)
+        NOOP wrapper: stabilizira contract, ali nije executable.
         """
         safe_prompt = (prompt or "").strip() or "noop"
 
@@ -117,6 +143,8 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         )
         if not isinstance(d, dict):
             return {}
+
+        # osiguraj args dict + args.prompt za wrapper
         args = d.get("args")
         if not isinstance(args, dict):
             args = {}
@@ -130,14 +158,10 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
 
     def _is_actionable(pc: ProposedCommand) -> bool:
         """
-        Minimal actionable heuristic:
-          - anything not in NON_ACTIONABLE, and not the wrapper itself.
+        Actionable = nije wrapper i nije u NON_ACTIONABLE setu.
+        (tj. stvarna komanda: create_page, notion.query, itd.)
         """
-        try:
-            cmd = getattr(pc, "command", None)
-        except Exception:
-            cmd = None
-
+        cmd = getattr(pc, "command", None)
         if not isinstance(cmd, str) or not cmd.strip():
             return False
 
@@ -149,42 +173,88 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
 
         return True
 
+    def _finalize_actionable(pc: ProposedCommand) -> None:
+        """
+        /api/chat: dry_run True, ali "requires_approval" treba biti True da UI zna da ide approval tok.
+        """
+        try:
+            pc.dry_run = True
+        except Exception:
+            pass
+
+        try:
+            if getattr(pc, "requires_approval", None) is not True:
+                pc.requires_approval = True
+        except Exception:
+            pass
+
+        try:
+            scope = getattr(pc, "scope", None)
+            if not isinstance(scope, str) or not scope.strip():
+                pc.scope = "api_execute_raw"
+        except Exception:
+            pass
+
+        try:
+            risk = getattr(pc, "risk", None)
+            if not isinstance(risk, str) or not risk.strip():
+                pc.risk = "LOW"
+        except Exception:
+            pass
+
     @router.post("/chat", response_model=AgentOutput, response_model_by_alias=False)
     async def chat(payload: AgentInput):
         mem_ro = get_memory_read_only_service()
         mem_snapshot = mem_ro.export_public_snapshot() if mem_ro else {}
+
         out = await create_ceo_advisor_agent(payload, {"memory": mem_snapshot})
         prompt = _extract_prompt(payload)
 
         pcs = getattr(out, "proposed_commands", None)
-        out.proposed_commands = _normalize_proposed_commands(pcs)
+        normalized = _normalize_proposed_commands(pcs)
 
-        # Enterprise behavior:
-        # - if actionable commands appear, wrap into approval-required wrapper
-        # - else return contract-stability no-op wrapper (non-actionable)
-        if any(_is_actionable(pc) for pc in out.proposed_commands):
-            out.proposed_commands = [
-                _build_approval_wrapper(
-                    prompt,
-                    reason="Approval required (actionable intent detected).",
-                )
-            ]
+        actionable = [pc for pc in normalized if _is_actionable(pc)]
+
+        # ✅ KLJUČNA PROMJENA:
+        # Ako imamo stvarne actionable komande, VRATI IH (ne wrapaj).
+        if actionable:
+            for pc in actionable:
+                _finalize_actionable(pc)
+
+            return JSONResponse(
+                content={
+                    "text": out.text,
+                    "proposed_commands": [
+                        (
+                            pc.model_dump(by_alias=False)
+                            if hasattr(pc, "model_dump")
+                            else pc.dict(by_alias=False)
+                        )
+                        for pc in actionable
+                    ],
+                    "agent_id": out.agent_id,
+                    "read_only": True,
+                    "trace": out.trace or {},
+                }
+            )
+
+        # Nema actionable komandi → fallback:
+        # - ako je write intent → vrati approval wrapper (da gateway može translate na /execute/raw)
+        # - ako nije write → noop wrapper
+        if _looks_like_write_intent(prompt):
+            fallback = _build_approval_wrapper(
+                prompt,
+                reason="Approval required (write intent, but no structured proposal returned).",
+            )
         else:
-            out.proposed_commands = [
-                _build_approval_wrapper(
-                    prompt,
-                    reason="Contract-stability fallback wrapper (no actionable intent).",
-                )
-            ]
+            fallback = _build_contract_noop_wrapper(prompt)
 
         out.read_only = True
 
         return JSONResponse(
             content={
                 "text": out.text,
-                "proposed_commands": [
-                    _pc_to_dict(pc, prompt=prompt) for pc in out.proposed_commands
-                ],
+                "proposed_commands": [_pc_to_dict(fallback, prompt=prompt)],
                 "agent_id": out.agent_id,
                 "read_only": True,
                 "trace": out.trace or {},

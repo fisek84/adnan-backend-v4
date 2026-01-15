@@ -1,6 +1,6 @@
 # gateway/gateway_server.py
 # ruff: noqa: E402
-# FULL FILE â€” replace the whole gateway_server.py with this.
+# FULL FILE — replace the whole gateway_server.py with this.
 
 from __future__ import annotations
 
@@ -168,7 +168,7 @@ from services.identity_loader import load_identity
 from services.ceo_console_snapshot_service import CEOConsoleSnapshotService
 
 # ================================================================
-# NOTION SERVICE (KANONSKI INIT) â€” NO SIDE EFFECTS AT IMPORT
+# NOTION SERVICE (KANONSKI INIT) — NO SIDE EFFECTS AT IMPORT
 # ================================================================
 from services.knowledge_snapshot_service import KnowledgeSnapshotService
 from services.notion_service import (
@@ -214,7 +214,7 @@ from services.app_bootstrap import bootstrap_application
 # INITIAL LOAD
 # ================================================================
 if not OS_ENABLED:
-    logger.critical("OS_ENABLED=false â€” system will not start.")
+    logger.critical("OS_ENABLED=false — system will not start.")
     raise RuntimeError("OS is disabled by configuration.")
 
 identity = load_identity()
@@ -400,6 +400,9 @@ def _noop_executable_from_wrapper(
     )
 
 
+# ================================================================
+# ✅ REPLACED FUNCTION (robust prompt extraction)
+# ================================================================
 def _unwrap_proposal_wrapper_or_raise(
     *,
     command: str,
@@ -422,14 +425,29 @@ def _unwrap_proposal_wrapper_or_raise(
             metadata=metadata,
         )
 
-    prompt = None
+    # ✅ Robust prompt extraction: params.prompt OR metadata.prompt OR metadata.wrapper.prompt
+    prompt: Optional[str] = None
     if isinstance(params, dict):
-        prompt = params.get("prompt")
+        p0 = params.get("prompt")
+        if isinstance(p0, str) and p0.strip():
+            prompt = p0.strip()
+
+    if prompt is None and isinstance(metadata, dict):
+        p1 = metadata.get("prompt")
+        if isinstance(p1, str) and p1.strip():
+            prompt = p1.strip()
+
+    if prompt is None and isinstance(metadata, dict):
+        w = metadata.get("wrapper")
+        if isinstance(w, dict):
+            p2 = w.get("prompt")
+            if isinstance(p2, str) and p2.strip():
+                prompt = p2.strip()
 
     if not isinstance(prompt, str) or not prompt.strip():
         raise HTTPException(
             status_code=400,
-            detail="ceo.command.propose cannot enter execution. Missing params.prompt for unwrap/translation.",
+            detail="ceo.command.propose cannot enter execution. Missing prompt for unwrap/translation (expected params.prompt or metadata.wrapper.prompt).",
         )
 
     # require translation service to exist (booted)
@@ -445,6 +463,7 @@ def _unwrap_proposal_wrapper_or_raise(
     except Exception:
         ai_command = None
 
+    # Never allow wrapper to remain wrapper after translate (avoid loops)
     if ai_command and getattr(ai_command, "intent", None) == PROPOSAL_WRAPPER_INTENT:
         ai_command = None
 
@@ -622,7 +641,7 @@ async def _shutdown_best_effort() -> None:
     _execution_orchestrator = None
 
     _BOOT_READY = False
-    logger.info("System shutdown â€” boot_ready=False.")
+    logger.info("System shutdown — boot_ready=False.")
 
 
 def _is_boot_exempt_path(path: str) -> bool:
@@ -874,12 +893,12 @@ def _ensure_dict(x: Any) -> Dict[str, Any]:
 def _proposal_wrapper_dict(*, prompt: str, source: str) -> Dict[str, Any]:
     safe_prompt = (prompt or "").strip() or "noop"
     return {
-        "command": PROPOSAL_WRAPPER_INTENT,
+        "command": PROPOSAL_WRAPPER_INTENT,  # ceo.command.propose
         "args": {"prompt": safe_prompt},
         "intent": None,
-        "reason": "Notion write intent ide kroz approval pipeline; predlaĹľem komandu za promotion/execute.",
+        "reason": "Notion write intent ide kroz approval pipeline; predlažem komandu za promotion/execute.",
         "dry_run": True,
-        "requires_approval": False,
+        "requires_approval": True,
         "risk": "LOW",
         "scope": "api_execute_raw",
         "payload_summary": {
@@ -1114,7 +1133,7 @@ def _normalize_execute_raw_payload_dict(body: Dict[str, Any]) -> ExecuteRawInput
 
 
 # ================================================================
-# /api/execute â€” EXECUTION PATH (NL INPUT)
+# /api/execute — EXECUTION PATH (NL INPUT)
 # ================================================================
 @app.post("/api/execute")
 async def execute_command(payload: ExecuteInput):
@@ -1423,7 +1442,7 @@ async def execute_proposal(payload: ProposalExecuteInput):
 
 
 # ================================================================
-# NOTION READ â€” READ ONLY (NO APPROVAL / NO EXECUTION)
+# NOTION READ — READ ONLY (NO APPROVAL / NO EXECUTION)
 # ================================================================
 @app.post("/api/notion/read", response_model=NotionReadResponse)
 async def notion_read(payload: Any = Body(None)) -> Any:
@@ -1519,7 +1538,7 @@ async def notion_read(payload: Any = Body(None)) -> Any:
 
 
 # ================================================================
-# NOTION OPS â€” LIST DATABASES (READ ONLY)
+# NOTION OPS — LIST DATABASES (READ ONLY)
 # ================================================================
 @app.get("/api/notion-ops/databases")
 @app.get("/notion-ops/databases")
@@ -2032,6 +2051,15 @@ async def _ceo_command_core(payload_dict: Dict[str, Any]) -> JSONResponse:
                 args["prompt"] = cleaned_text.strip()
     # === END CANON STABILITY PATCH ===
 
+    # ✅ PATCH: fallback proposal injection when write-like but proposed_commands empty
+    # If ceo-console agent says "I propose approval" but returns no proposed_commands,
+    # inject a canonical proposal wrapper so UI can execute it via /api/execute/raw.
+    if (
+        isinstance(result.get("proposed_commands"), list)
+        and len(result.get("proposed_commands")) == 0
+    ):
+        _inject_fallback_proposed_commands(result, prompt=cleaned_text.strip())
+
     return JSONResponse(content=result, media_type="application/json; charset=utf-8")
 
 
@@ -2239,7 +2267,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 
 # ================================================================
-# REACT FRONTEND (PROD BUILD) â€” SERVE dist/
+# REACT FRONTEND (PROD BUILD) — SERVE dist/
 # ================================================================
 if not FRONTEND_DIST_DIR.is_dir():
     logger.warning("React dist directory not found: %s", FRONTEND_DIST_DIR)
