@@ -214,7 +214,7 @@ from services.app_bootstrap import bootstrap_application
 # INITIAL LOAD
 # ================================================================
 if not OS_ENABLED:
-    logger.critical("OS_ENABLED=false — system will not start.")
+    logger.critical("OS_ENABLED=false - system will not start.")
     raise RuntimeError("OS is disabled by configuration.")
 
 identity = load_identity()
@@ -401,8 +401,99 @@ def _noop_executable_from_wrapper(
 
 
 # ================================================================
-# ✅ REPLACED FUNCTION (robust prompt extraction)
+# ? REPLACED FUNCTION (robust prompt extraction)
 # ================================================================
+def _extract_wrapper_patch_from_params(params: Dict[str, Any]) -> Dict[str, Any]:
+    """Extract fill_missing patch from wrapper params.
+
+    Canon: wrapper args/params contain prompt + optional fields (Status/Priority/Deadline/...).
+    Gateway must ignore prompt and forward the rest as wrapper_patch.
+    """
+    if not isinstance(params, dict) or not params:
+        return {}
+
+    patch: Dict[str, Any] = {}
+    for k, v in params.items():
+        if k == "prompt":
+            continue
+        patch[k] = v
+    return patch
+
+
+def _apply_wrapper_patch_to_ai_command(
+    ai_command: AICommand, wrapper_patch: Dict[str, Any]
+) -> None:
+    """Apply UI fill_missing patch to translated AICommand (post-translate).
+
+    HARD RULES:
+      - Only apply to notion_write/create_page.
+      - Do not mutate prompt/title mapping except explicit patch overrides.
+      - Use COOTranslationService normalizers.
+      - If translation produced next_step/noop, caller must skip patch.
+    """
+    if not isinstance(wrapper_patch, dict) or not wrapper_patch:
+        return
+
+    if getattr(ai_command, "command", None) != "notion_write":
+        return
+    if getattr(ai_command, "intent", None) != "create_page":
+        return
+
+    params = getattr(ai_command, "params", None)
+    if not isinstance(params, dict):
+        params = {}
+        ai_command.params = params
+
+    property_specs = params.get("property_specs")
+    if not isinstance(property_specs, dict):
+        property_specs = {}
+        params["property_specs"] = property_specs
+
+    # Determine Status property type: goals use status, tasks use select.
+    status_type = "select"
+    db_key = params.get("db_key")
+    if isinstance(db_key, str) and db_key.strip():
+        lk = db_key.strip().lower()
+        if lk in {"goals", "goal"}:
+            status_type = "status"
+        elif lk in {"tasks", "task"}:
+            status_type = "select"
+
+    if "Status" in wrapper_patch:
+        raw = wrapper_patch.get("Status")
+        if isinstance(raw, str) and raw.strip():
+            name = COOTranslationService._normalize_status(raw)
+            property_specs["Status"] = {"type": status_type, "name": name}
+
+    if "Priority" in wrapper_patch:
+        raw = wrapper_patch.get("Priority")
+        if isinstance(raw, str) and raw.strip():
+            name = COOTranslationService._normalize_priority(raw)
+            property_specs["Priority"] = {"type": "select", "name": name}
+
+    if "Deadline" in wrapper_patch:
+        raw = wrapper_patch.get("Deadline")
+        if isinstance(raw, str) and raw.strip():
+            iso = COOTranslationService._try_parse_date_to_iso(raw)
+            if iso:
+                property_specs["Deadline"] = {"type": "date", "start": iso}
+
+    if "Due Date" in wrapper_patch:
+        raw = wrapper_patch.get("Due Date")
+        if isinstance(raw, str) and raw.strip():
+            iso = COOTranslationService._try_parse_date_to_iso(raw)
+            if iso:
+                property_specs["Due Date"] = {"type": "date", "start": iso}
+
+    if "Description" in wrapper_patch:
+        raw = wrapper_patch.get("Description")
+        if isinstance(raw, str) and raw.strip():
+            property_specs["Description"] = {"type": "rich_text", "text": raw.strip()}
+
+    params["property_specs"] = property_specs
+    ai_command.params = params
+
+
 def _unwrap_proposal_wrapper_or_raise(
     *,
     command: str,
@@ -425,7 +516,11 @@ def _unwrap_proposal_wrapper_or_raise(
             metadata=metadata,
         )
 
-    # ✅ Robust prompt extraction: params.prompt OR metadata.prompt OR metadata.wrapper.prompt
+    wrapper_patch = _extract_wrapper_patch_from_params(
+        params if isinstance(params, dict) else {}
+    )
+
+    # ? Robust prompt extraction: params.prompt OR metadata.prompt OR metadata.wrapper.prompt
     prompt: Optional[str] = None
     if isinstance(params, dict):
         p0 = params.get("prompt")
@@ -458,7 +553,11 @@ def _unwrap_proposal_wrapper_or_raise(
         ai_command = trans.translate(
             raw_input=prompt.strip(),
             source="system",
-            context={"mode": "execute", "via": "execute_raw_unwrap"},
+            context={
+                "mode": "execute",
+                "via": "execute_raw_unwrap",
+                "wrapper_patch": wrapper_patch,
+            },
         )
     except Exception:
         ai_command = None
@@ -476,6 +575,15 @@ def _unwrap_proposal_wrapper_or_raise(
             metadata=metadata,
         )
 
+    # Apply UI fill_missing patch (Status/Priority/Deadline/...) to final AICommand
+    # Ignore if translate returned NOOP/next_step.
+    if isinstance(wrapper_patch, dict) and wrapper_patch:
+        if (
+            getattr(ai_command, "command", None) not in _HARD_READ_ONLY_INTENTS
+            and getattr(ai_command, "intent", None) not in _HARD_READ_ONLY_INTENTS
+        ):
+            _apply_wrapper_patch_to_ai_command(ai_command, wrapper_patch)
+
     ai_command.initiator = initiator
     ai_command.read_only = False
 
@@ -489,6 +597,8 @@ def _unwrap_proposal_wrapper_or_raise(
         md["wrapper"].setdefault("command", command)
         md["wrapper"].setdefault("intent", intent)
         md["wrapper"].setdefault("prompt", prompt.strip())
+        if isinstance(wrapper_patch, dict) and wrapper_patch:
+            md["wrapper"].setdefault("patch", dict(wrapper_patch))
 
     if isinstance(metadata, dict):
         for k, v in metadata.items():
@@ -895,7 +1005,7 @@ def _proposal_wrapper_dict(*, prompt: str, source: str) -> Dict[str, Any]:
     return {
         "command": PROPOSAL_WRAPPER_INTENT,  # ceo.command.propose
         "args": {"prompt": safe_prompt},
-        "intent": None,
+        "intent": PROPOSAL_WRAPPER_INTENT,
         "reason": "Notion write intent ide kroz approval pipeline; predlažem komandu za promotion/execute.",
         "dry_run": True,
         "requires_approval": True,
@@ -939,6 +1049,7 @@ def _inject_fallback_proposed_commands(result: Dict[str, Any], *, prompt: str) -
     pcs = result.get("proposed_commands")
     pcs_list = _normalize_gateway_proposed_commands(pcs)
 
+    # If backend already provided proposals, just normalize and exit.
     if len(pcs_list) > 0:
         result["proposed_commands"] = pcs_list
         tr0 = _ensure_dict(result.get("trace"))
@@ -978,14 +1089,36 @@ def _inject_fallback_proposed_commands(result: Dict[str, Any], *, prompt: str) -
         result["trace"] = tr
         return
 
-    pc = _proposal_wrapper_dict(prompt=(prompt or "").strip(), source="ceo_console")
-    pc["reason"] = "Approval required (write intent detected)."
-    pc["intent"] = "notion_write"
+    # CANON FALLBACK (SSOT): emit notion_write envelope directly (NO ceo.command.propose wrapper).
+    pc = {
+        "command": PROPOSAL_WRAPPER_INTENT,  # ceo.command.propose
+        "intent": PROPOSAL_WRAPPER_INTENT,  # ceo.command.propose
+        "dry_run": True,
+        "requires_approval": True,
+        "risk": "LOW",
+        "scope": "api_execute_raw",
+        "params": {
+            "ai_command": {
+                # Keep prompt so backend can translate later if needed.
+                "intent": PROPOSAL_WRAPPER_INTENT,
+                "prompt": (prompt or "").strip(),
+                "target": None,
+                "operations": [],
+            }
+        },
+        "payload_summary": {
+            "endpoint": "/api/execute/raw",
+            "canon": "CEO_CONSOLE_EXECUTION_FLOW",
+            "source": "ceo_console",
+        },
+        "reason": "Approval required (write intent detected).",
+    }
+
     result["proposed_commands"] = [pc]
 
     tr = _ensure_dict(result.get("trace"))
     tr["fallback_proposed_commands"] = True
-    tr["router_version"] = "gateway-fallback-proposed-commands-writeonly-v1"
+    tr["router_version"] = "gateway-fallback-proposed-commands-writeonly-v2-canon"
     result["trace"] = tr
 
 
@@ -1376,8 +1509,6 @@ async def execute_proposal(payload: ProposalExecuteInput):
     merged_md: Dict[str, Any] = {}
     if isinstance(proposal_meta, dict):
         merged_md.update(proposal_meta)
-    if isinstance(meta_in, dict):
-        merged_md.update(meta_in)
     if isinstance(meta_in, dict):
         merged_md.update(meta_in)
 
@@ -2051,7 +2182,7 @@ async def _ceo_command_core(payload_dict: Dict[str, Any]) -> JSONResponse:
                 args["prompt"] = cleaned_text.strip()
     # === END CANON STABILITY PATCH ===
 
-    # ✅ PATCH: fallback proposal injection when write-like but proposed_commands empty
+    # ? PATCH: fallback proposal injection when write-like but proposed_commands empty
     # If ceo-console agent says "I propose approval" but returns no proposed_commands,
     # inject a canonical proposal wrapper so UI can execute it via /api/execute/raw.
     if (
@@ -2059,6 +2190,60 @@ async def _ceo_command_core(payload_dict: Dict[str, Any]) -> JSONResponse:
         and len(result.get("proposed_commands")) == 0
     ):
         _inject_fallback_proposed_commands(result, prompt=cleaned_text.strip())
+
+    # === POST-FALLBACK STABILITY PATCH: ensure args.prompt exists ===
+    for pc in result.get("proposed_commands", []):
+        if not isinstance(pc, dict):
+            continue
+        if pc.get("command") == "ceo.command.propose":
+            args = pc.get("args")
+            if not isinstance(args, dict):
+                args = {}
+                pc["args"] = args
+            if (
+                "prompt" not in args
+                or not isinstance(args.get("prompt"), str)
+                or not args.get("prompt")
+            ):
+                args["prompt"] = cleaned_text.strip()
+    # === END POST-FALLBACK STABILITY PATCH ===
+    # === POST-FALLBACK EXECUTION PATCH: ensure params.prompt + metadata.wrapper.prompt ===
+    for pc in result.get("proposed_commands", []):
+        if not isinstance(pc, dict):
+            continue
+        if pc.get("command") != "ceo.command.propose":
+            continue
+
+        # ensure args.prompt (already for happy-path script)
+        args = pc.get("args")
+        if not isinstance(args, dict):
+            args = {}
+            pc["args"] = args
+        if not isinstance(args.get("prompt"), str) or not args.get("prompt"):
+            args["prompt"] = cleaned_text.strip()
+
+        # ensure params.prompt (required by /api/proposals/execute)
+        params = pc.get("params")
+        if not isinstance(params, dict):
+            params = {}
+            pc["params"] = params
+        if not isinstance(params.get("prompt"), str) or not params.get("prompt"):
+            params["prompt"] = args.get("prompt") or cleaned_text.strip()
+
+        # ensure metadata.wrapper.prompt (also accepted by gateway)
+        md = pc.get("metadata")
+        if not isinstance(md, dict):
+            md = {}
+            pc["metadata"] = md
+        wrapper = md.get("wrapper")
+        if not isinstance(wrapper, dict):
+            wrapper = {}
+            md["wrapper"] = wrapper
+        if not isinstance(wrapper.get("prompt"), str) or not wrapper.get("prompt"):
+            wrapper["prompt"] = (
+                params.get("prompt") or args.get("prompt") or cleaned_text.strip()
+            )
+    # === END POST-FALLBACK EXECUTION PATCH ===
 
     # === POST-FALLBACK CANON PATCH: ensure payload_summary fields on injected proposals ===
     cr2 = _ensure_dict(_ensure_dict(result.get("trace")).get("confidence_risk"))
@@ -2269,8 +2454,11 @@ app.include_router(ai_router_module.router, prefix="/api")
 app.include_router(ai_ops_router, prefix="/api")
 app.include_router(metrics_router, prefix="/api")
 app.include_router(alerting_router, prefix="/api")
-app.include_router(_chat_router, prefix="/api")  # /api/chat
-app.include_router(_chat_router, prefix="")  # /chat alias
+if _chat_router is not None:
+    app.include_router(_chat_router, prefix="/api")  # /api/chat
+    app.include_router(_chat_router, prefix="")  # /chat alias
+else:
+    logger.warning("chat_router is None — chat endpoints disabled")
 app.include_router(ceo_console_module.router, prefix="/api/internal")
 
 
