@@ -1,6 +1,8 @@
 # services/notion_ops_agent.py
 
 from __future__ import annotations
+import asyncio
+
 
 import logging
 from typing import Any, Dict, List
@@ -12,16 +14,42 @@ from services.notion_service import NotionService, get_notion_service
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
+# ------------------------------
+# PHASE 6: Notion Ops Session SSOT
+# ------------------------------
+# Default armed=False.
+_NOTION_OPS_SESSIONS: Dict[str, Dict[str, Any]] = {}
+_NOTION_OPS_LOCK = asyncio.Lock()
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+async def _set_armed(session_id: str, armed: bool, *, prompt: str) -> Dict[str, Any]:
+    """
+    Set session state to armed/unarmed.
+    """
+    async with _NOTION_OPS_LOCK:
+        st = _NOTION_OPS_SESSIONS.get(session_id) or {}
+        st["armed"] = bool(armed)
+        st["armed_at"] = _now_iso() if armed else None
+        st["last_prompt_id"] = None
+        st["last_toggled_at"] = _now_iso()
+        _NOTION_OPS_SESSIONS[session_id] = st
+        return dict(st)
+
+async def _get_state(session_id: str) -> Dict[str, Any]:
+    async with _NOTION_OPS_LOCK:
+        st = _NOTION_OPS_SESSIONS.get(session_id) or {"armed": False, "armed_at": None}
+        if "armed" not in st:
+            st["armed"] = False
+        if "armed_at" not in st:
+            st["armed_at"] = None
+        return dict(st)
+
 
 class NotionOpsAgent:
     """
     NOTION OPS AGENT — CANONICAL WRITE EXECUTOR (THIN)
-
-    CANON (PRODUCTION):
-    - NEVER executes proposal wrapper
-    - REQUIRES approval_id for any write
-    - ACCEPTS workflow intents (goal_task_workflow) as orchestration results
-    - Delegates ONLY atomic writes to NotionService
     """
 
     def __init__(self, notion: NotionService):
@@ -62,8 +90,6 @@ class NotionOpsAgent:
         # WORKFLOW INTENTS (ORCHESTRATION RESULT — TERMINAL HERE)
         # ============================================================
         if intent == "goal_task_workflow":
-            # Orchestrator already validated + approved this workflow.
-            # At this layer we ACK success deterministically.
             return {
                 "ok": True,
                 "success": True,
@@ -90,11 +116,6 @@ def create_notion_ops_agent() -> NotionOpsAgent:
 async def notion_ops_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> AgentOutput:
     """
     Router-callable adapter.
-
-    CANON:
-    - NEVER executes Notion writes
-    - ONLY returns ProposedCommand
-    - Execution MUST go through /api/execute/raw → approval → orchestrator
     """
 
     msg = (getattr(agent_input, "message", None) or "").strip()
@@ -136,6 +157,24 @@ async def notion_ops_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> Agen
             "read_only": read_only,
         }
     )
+
+    # Check session state before proceeding with the action
+    session_id = getattr(agent_input, "session_id", None)
+    if session_id:
+        state = await _get_state(session_id)
+        armed = state.get("armed", False)
+
+        if not armed:
+            # Block any write operation if Notion Ops is not armed
+            return JSONResponse(
+                content={
+                    "text": "Notion Ops nije aktivan. Želiš aktivirati? (napiši: 'notion ops aktiviraj' / 'notion ops uključi')",
+                    "proposed_commands": proposed,
+                    "agent_id": "notion_ops",
+                    "read_only": True,
+                    "trace": trace,
+                }
+            )
 
     return AgentOutput(
         text=text,

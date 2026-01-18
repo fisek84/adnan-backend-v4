@@ -1,7 +1,10 @@
 # routers/chat_router.py
+# PHASE 6: Notion Ops ARMED Gate
 
 from __future__ import annotations
 
+import asyncio
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter
@@ -17,9 +20,40 @@ from models.canon import PROPOSAL_WRAPPER_INTENT
 # Commands that are NOT considered "structured/actionable proposals" for fallback detection.
 _NON_ACTIONABLE_PROPOSALS = {"refresh_snapshot"}
 
+# ------------------------------
+# PHASE 6: Notion Ops Session SSOT
+# ------------------------------
+# NOTE:
+# - Per-session, in-memory (no new deps).
+# - Default armed=False.
+# - Keyed by session_id extracted from AgentInput (best-effort).
+_NOTION_OPS_SESSIONS: Dict[str, Dict[str, Any]] = {}
+_NOTION_OPS_LOCK = asyncio.Lock()
+
+# Activation keywords (exact per spec)
+_ACTIVATE_KEYWORDS = (
+    "notion ops active",
+    "notion ops aktivan",
+    "notion ops aktiviraj",
+    "notion ops uključi",
+    "notion ops ukljuci",
+)
+
+# Deactivation keywords (exact per spec + Bosnian variants mentioned)
+_DEACTIVATE_KEYWORDS = (
+    "stop notion ops",
+    "notion ops deaktiviraj",
+    "notion ops ugasi",
+    "notion ops isključi",
+    "notion ops iskljuci",
+    "notion ops deactivate",
+)
 
 def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
     router = APIRouter()
+
+    def _now_iso() -> str:
+        return datetime.now(timezone.utc).isoformat()
 
     def _extract_prompt(payload: AgentInput) -> str:
         for k in ("message", "text", "input_text", "prompt"):
@@ -28,13 +62,64 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 return v.strip()
         return ""
 
+    def _extract_session_id(payload: AgentInput) -> Optional[str]:
+        """
+        PHASE 6: Notion Ops ARMED Gate
+        Best-effort extraction. We do NOT invent a global key.
+        If no session_id is available, we keep Notion Ops DISARMED.
+        """
+        for attr in ("session_id", "sessionId"):
+            v = getattr(payload, attr, None)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+
+        md = getattr(payload, "metadata", None)
+        if isinstance(md, dict):
+            v = md.get("session_id") or md.get("sessionId")
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+
+        return None
+
+    def _norm_text(s: str) -> str:
+        return " ".join((s or "").strip().lower().split())
+
+    def _is_activate(text: str) -> bool:
+        t = _norm_text(text)
+        return any(k in t for k in _ACTIVATE_KEYWORDS)
+
+    def _is_deactivate(text: str) -> bool:
+        t = _norm_text(text)
+        return any(k in t for k in _DEACTIVATE_KEYWORDS)
+
+    async def _set_armed(session_id: str, armed: bool, *, prompt: str) -> Dict[str, Any]:
+        """
+        PHASE 6: Notion Ops ARMED Gate
+        SSOT session state.
+        """
+        async with _NOTION_OPS_LOCK:
+            st = _NOTION_OPS_SESSIONS.get(session_id) or {}
+            st["armed"] = bool(armed)
+            st["armed_at"] = _now_iso() if armed else None
+            st["last_prompt_id"] = None
+            st["last_toggled_at"] = _now_iso()
+            _NOTION_OPS_SESSIONS[session_id] = st
+            return dict(st)
+
+    async def _get_state(session_id: str) -> Dict[str, Any]:
+        async with _NOTION_OPS_LOCK:
+            st = _NOTION_OPS_SESSIONS.get(session_id) or {"armed": False, "armed_at": None}
+            if "armed" not in st:
+                st["armed"] = False
+            if "armed_at" not in st:
+                st["armed_at"] = None
+            return dict(st)
+
     def _normalize_proposed_commands(raw: Any) -> List[ProposedCommand]:
         if raw is None:
             return []
-
         items = [raw] if isinstance(raw, dict) else raw if isinstance(raw, list) else []
         out: List[ProposedCommand] = []
-
         for item in items:
             try:
                 pc = (
@@ -50,7 +135,6 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                     args=args if isinstance(args, dict) else {},
                 )
 
-            # /api/chat je uvijek read-only: dry_run mora biti True
             try:
                 pc.dry_run = True
             except Exception:
@@ -88,12 +172,26 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             ]
         )
 
-    def _build_approval_wrapper(prompt: str, *, reason: str) -> ProposedCommand:
-        """
-        Wrapper koji se šalje na /api/execute/raw (gateway će unwrap+translate i kreirati approval).
-        """
+    def _build_contract_noop_wrapper(prompt: str, *, reason: str) -> ProposedCommand:
         safe_prompt = (prompt or "").strip() or "noop"
+        pc = ProposedCommand(
+            command=PROPOSAL_WRAPPER_INTENT,
+            args={"prompt": safe_prompt},
+            reason=reason,
+            dry_run=True,
+            requires_approval=False,
+            risk="NONE",
+            scope="none",
+            payload_summary={
+                "canon": "CEO_CONSOLE_EXECUTION_FLOW",
+                "source": "api_chat",
+                "kind": "contract_noop",
+            },
+        )
+        return pc
 
+    def _build_approval_wrapper(prompt: str, *, reason: str) -> ProposedCommand:
+        safe_prompt = (prompt or "").strip() or "noop"
         pc = ProposedCommand(
             command=PROPOSAL_WRAPPER_INTENT,
             args={"prompt": safe_prompt},
@@ -113,29 +211,6 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         )
         return pc
 
-    def _build_contract_noop_wrapper(prompt: str) -> ProposedCommand:
-        """
-        NOOP wrapper: stabilizira contract, ali nije executable.
-        """
-        safe_prompt = (prompt or "").strip() or "noop"
-
-        pc = ProposedCommand(
-            command=PROPOSAL_WRAPPER_INTENT,
-            args={"prompt": safe_prompt},
-            reason="Contract stability no-op (read-only chat produced no actionable proposals).",
-            dry_run=True,
-            requires_approval=False,
-            risk="NONE",
-            scope="none",
-            payload_summary={
-                "canon": "CEO_CONSOLE_EXECUTION_FLOW",
-                "source": "api_chat",
-                "kind": "contract_noop",
-                # NOTE: do NOT rely on this being complete; we hard-normalize below anyway.
-            },
-        )
-        return pc
-
     def _pc_to_dict(pc: ProposedCommand, *, prompt: str) -> Dict[str, Any]:
         d = (
             pc.model_dump(by_alias=False)
@@ -144,28 +219,16 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         )
         if not isinstance(d, dict):
             return {}
-
-        # osiguraj args dict + args.prompt za wrapper
         args = d.get("args")
         if not isinstance(args, dict):
             args = {}
             d["args"] = args
-
         p = args.get("prompt")
         if not isinstance(p, str) or not p.strip():
             args["prompt"] = (prompt or "").strip() or "noop"
-
         return d
 
     def _ensure_payload_summary_contract(pc_dict: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        HARD CONTRACT (SSOT):
-        Every proposed_command returned from /api/chat MUST include payload_summary fields:
-          - confidence_score: float [0.0, 1.0]
-          - assumption_count: int >= 0
-          - recommendation_type: enum string (at least INFORMATIONAL/OPERATIONAL)
-        This prevents "new problems" across fallback paths.
-        """
         if not isinstance(pc_dict, dict):
             return {}
 
@@ -177,7 +240,6 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         kind = ps.get("kind")
         is_noop = kind == "contract_noop"
 
-        # confidence_score: float in [0,1]
         cs = ps.get("confidence_score")
         if not isinstance(cs, (int, float)):
             cs = 1.0 if is_noop else 0.5
@@ -188,13 +250,11 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             csf = 1.0
         ps["confidence_score"] = csf
 
-        # assumption_count: int >= 0
         ac = ps.get("assumption_count")
         if not isinstance(ac, int) or ac < 0:
             ac = 0
         ps["assumption_count"] = ac
 
-        # recommendation_type: required
         rt = ps.get("recommendation_type")
         if not isinstance(rt, str) or not rt.strip():
             ps["recommendation_type"] = "INFORMATIONAL" if is_noop else "OPERATIONAL"
@@ -202,26 +262,16 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         return pc_dict
 
     def _is_actionable(pc: ProposedCommand) -> bool:
-        """
-        Actionable = nije wrapper i nije u NON_ACTIONABLE setu.
-        (tj. stvarna komanda: create_page, notion.query, itd.)
-        """
         cmd = getattr(pc, "command", None)
         if not isinstance(cmd, str) or not cmd.strip():
             return False
-
         if cmd == PROPOSAL_WRAPPER_INTENT:
             return False
-
         if cmd in _NON_ACTIONABLE_PROPOSALS:
             return False
-
         return True
 
     def _finalize_actionable(pc: ProposedCommand) -> None:
-        """
-        /api/chat: dry_run True, ali "requires_approval" treba biti True da UI zna da ide approval tok.
-        """
         try:
             pc.dry_run = True
         except Exception:
@@ -247,26 +297,138 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         except Exception:
             pass
 
+    def _blocked_response(
+        *,
+        out: Any,
+        prompt: str,
+        session_id: Optional[str],
+        state: Dict[str, Any],
+        why: str,
+    ) -> JSONResponse:
+        msg = "Notion Ops nije aktivan. Želiš aktivirati? (napiši: 'notion ops aktiviraj' / 'notion ops uključi')"
+        if isinstance(why, str) and why.strip():
+            msg = f"{msg}\n\nReason: {why}"
+
+        noop = _build_contract_noop_wrapper(prompt, reason="NOTION OPS NOT ARMED: read-only gate enforced.")
+        fb = _ensure_payload_summary_contract(_pc_to_dict(noop, prompt=prompt))
+
+        tr = out.trace or {} if hasattr(out, "trace") else {}
+        if not isinstance(tr, dict):
+            tr = {}
+        tr.setdefault("phase6_notion_ops_gate", {})
+        tr["phase6_notion_ops_gate"] = {
+            "armed": False,
+            "session_id_present": bool(session_id),
+            "why": why,
+        }
+
+        return JSONResponse(
+            content={
+                "text": (getattr(out, "text", "") or "").strip() or msg,
+                "proposed_commands": [fb],
+                "agent_id": getattr(out, "agent_id", None),
+                "read_only": True,
+                "notion_ops": {
+                    "armed": False,
+                    "armed_at": None,
+                    "session_id": session_id,
+                    "armed_state": state,
+                },
+                "trace": tr,
+            }
+        )
+
     @router.post("/chat", response_model=AgentOutput, response_model_by_alias=False)
     async def chat(payload: AgentInput):
         mem_ro = get_memory_read_only_service()
         mem_snapshot = mem_ro.export_public_snapshot() if mem_ro else {}
 
-        out = await create_ceo_advisor_agent(payload, {"memory": mem_snapshot})
         prompt = _extract_prompt(payload)
+        session_id = _extract_session_id(payload)
+
+        # PHASE 6: Notion Ops ARMED Gate (activation/deactivation)
+        if session_id and _is_activate(prompt):
+            st = await _set_armed(session_id, True, prompt=prompt)
+            return JSONResponse(
+                content={
+                    "text": "NOTION OPS: ARMED",
+                    "proposed_commands": [],
+                    "agent_id": None,
+                    "read_only": True,
+                    "notion_ops": {
+                        "armed": True,
+                        "armed_at": st.get("armed_at"),
+                        "session_id": session_id,
+                        "armed_state": st,
+                    },
+                    "trace": {"phase6_notion_ops_gate": {"event": "armed", "session_id": session_id}},
+                }
+            )
+
+        if session_id and _is_deactivate(prompt):
+            st = await _set_armed(session_id, False, prompt=prompt)
+            return JSONResponse(
+                content={
+                    "text": "NOTION OPS: DISARMED",
+                    "proposed_commands": [],
+                    "agent_id": None,
+                    "read_only": True,
+                    "notion_ops": {
+                        "armed": False,
+                        "armed_at": None,
+                        "session_id": session_id,
+                        "armed_state": st,
+                    },
+                    "trace": {"phase6_notion_ops_gate": {"event": "disarmed", "session_id": session_id}},
+                }
+            )
+
+        # Determine armed state (default false if no session_id)
+        st = await _get_state(session_id) if session_id else {"armed": False, "armed_at": None}
+        armed = bool(st.get("armed") is True)
+
+        # Call advisor agent
+        out = await create_ceo_advisor_agent(payload, {"memory": mem_snapshot})
 
         pcs = getattr(out, "proposed_commands", None)
         normalized = _normalize_proposed_commands(pcs)
-
         actionable = [pc for pc in normalized if _is_actionable(pc)]
 
-        # ✅ KLJUČNA PROMJENA:
-        # Ako imamo stvarne actionable komande, VRATI IH (ne wrapaj).
+        # PHASE 6: hard gate when not ARMED
+        if not armed:
+            if actionable or _looks_like_write_intent(prompt):
+                return _blocked_response(
+                    out=out,
+                    prompt=prompt,
+                    session_id=session_id,
+                    state=st,
+                    why="Write intent detected but Notion Ops is not ARMED.",
+                )
+
+            # Read-only, non-write: keep existing behavior (contract NOOP when no actionable)
+            fallback = _build_contract_noop_wrapper(prompt, reason="Read-only (no actionable proposals).")
+            fb = _ensure_payload_summary_contract(_pc_to_dict(fallback, prompt=prompt))
+            return JSONResponse(
+                content={
+                    "text": out.text,
+                    "proposed_commands": [fb],
+                    "agent_id": out.agent_id,
+                    "read_only": True,
+                    "notion_ops": {
+                        "armed": False,
+                        "armed_at": None,
+                        "session_id": session_id,
+                        "armed_state": st,
+                    },
+                    "trace": out.trace or {},
+                }
+            )
+
+        # ARMED: allow actionable, otherwise allow approval-wrapper fallback
         if actionable:
             for pc in actionable:
                 _finalize_actionable(pc)
 
-            # Hard-normalize payload_summary contract in dict output (safe across model versions)
             pcs_out: List[Dict[str, Any]] = []
             for pc in actionable:
                 d = (
@@ -277,31 +439,49 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 if isinstance(d, dict):
                     pcs_out.append(_ensure_payload_summary_contract(d))
 
+            tr = out.trace or {}
+            if not isinstance(tr, dict):
+                tr = {}
+            tr.setdefault("phase6_notion_ops_gate", {})
+            tr["phase6_notion_ops_gate"] = {"armed": True, "session_id_present": bool(session_id)}
+
             return JSONResponse(
                 content={
                     "text": out.text,
                     "proposed_commands": pcs_out,
                     "agent_id": out.agent_id,
                     "read_only": True,
-                    "trace": out.trace or {},
+                    "notion_ops": {
+                        "armed": True,
+                        "armed_at": st.get("armed_at"),
+                        "session_id": session_id,
+                        "armed_state": st,
+                    },
+                    "trace": tr,
                 }
             )
 
-        # Nema actionable komandi → fallback:
-        # - ako je write intent → vrati approval wrapper (da gateway može translate na /execute/raw)
-        # - ako nije write → noop wrapper
+        # No actionable → fallback:
         if _looks_like_write_intent(prompt):
             fallback = _build_approval_wrapper(
                 prompt,
                 reason="Approval required (write intent, but no structured proposal returned).",
             )
         else:
-            fallback = _build_contract_noop_wrapper(prompt)
+            fallback = _build_contract_noop_wrapper(
+                prompt,
+                reason="Contract stability no-op (read-only chat produced no actionable proposals).",
+            )
 
         out.read_only = True
-
         fb = _pc_to_dict(fallback, prompt=prompt)
         fb = _ensure_payload_summary_contract(fb)
+
+        tr = out.trace or {}
+        if not isinstance(tr, dict):
+            tr = {}
+        tr.setdefault("phase6_notion_ops_gate", {})
+        tr["phase6_notion_ops_gate"] = {"armed": True, "session_id_present": bool(session_id), "fallback": True}
 
         return JSONResponse(
             content={
@@ -309,7 +489,13 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 "proposed_commands": [fb],
                 "agent_id": out.agent_id,
                 "read_only": True,
-                "trace": out.trace or {},
+                "notion_ops": {
+                    "armed": True,
+                    "armed_at": st.get("armed_at"),
+                    "session_id": session_id,
+                    "armed_state": st,
+                },
+                "trace": tr,
             }
         )
 

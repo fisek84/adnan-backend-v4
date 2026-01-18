@@ -1,11 +1,44 @@
-# services/ceo_advisor_agent.py
 from __future__ import annotations
 
 import re
 from typing import Any, Dict, List, Optional, Tuple
+import asyncio
+from datetime import datetime, timezone
 
 from models.agent_contract import AgentInput, AgentOutput, ProposedCommand
 from services.agent_router.openai_assistant_executor import OpenAIAssistantExecutor
+
+
+# ------------------------------
+# PHASE 6: Notion Ops Session SSOT
+# ------------------------------
+_NOTION_OPS_SESSIONS: Dict[str, Dict[str, Any]] = {}
+_NOTION_OPS_LOCK = asyncio.Lock()
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+async def _set_armed(session_id: str, armed: bool, *, prompt: str) -> Dict[str, Any]:
+    """
+    Set session state to armed/unarmed.
+    """
+    async with _NOTION_OPS_LOCK:
+        st = _NOTION_OPS_SESSIONS.get(session_id) or {}
+        st["armed"] = bool(armed)
+        st["armed_at"] = _now_iso() if armed else None
+        st["last_prompt_id"] = None
+        st["last_toggled_at"] = _now_iso()
+        _NOTION_OPS_SESSIONS[session_id] = st
+        return dict(st)
+
+async def _get_state(session_id: str) -> Dict[str, Any]:
+    async with _NOTION_OPS_LOCK:
+        st = _NOTION_OPS_SESSIONS.get(session_id) or {"armed": False, "armed_at": None}
+        if "armed" not in st:
+            st["armed"] = False
+        if "armed_at" not in st:
+            st["armed_at"] = None
+        return dict(st)
 
 
 # -----------------------------------
@@ -19,12 +52,9 @@ def _is_propose_only_request(user_text: str) -> bool:
         "propose",
         "proposed_commands",
         "do not execute",
-        "ne izvrĂ„Ä…Ă‹â€ˇavaj",
-        "ne izvrsavaj",
-        "nemoj izvrĂ„Ä…Ă‹â€ˇiti",
-        "nemoj izvrsiti",
-        "samo predloĂ„Ä…Ă„Äľi",
-        "samo predlozi",
+        "ne izvršavaj",
+        "nemoj izvršiti",
+        "samo predloži",
         "return proposed",
     )
     return any(s in t for s in signals)
@@ -84,7 +114,7 @@ def _format_enforcer(user_text: str) -> str:
         "5) <title> | <status> | <priority>\n\n"
         "PRAVILA:\n"
         "- Snapshot je kontekst (input za inteligenciju). Ako nema podataka, nastavi savjetovanje.\n"
-        "- Ako snapshot nema ciljeve/taskove: savjetuj kako da se krene, postavi pametna pitanja i predlozi okvir.\n"
+        "- Ako snapshot nema ciljeve/taskove: savjetuj kako da se krene, postavi pametna pitanja i predloži okvir.\n"
     )
 
 
@@ -108,16 +138,11 @@ def _needs_structured_snapshot_answer(user_text: str) -> bool:
         "create",
         "dodaj",
         "upisi",
-        "upiĂ„Ä…Ă‹â€ˇi",
         "azuriraj",
-        "aĂ„Ä…Ă„Äľuriraj",
         "update",
         "promijeni",
-        "promeni",
         "move",
-        "premjesti",
-        "poĂ„Ä…Ă‹â€ˇalji",
-        "posalji",
+        "pošalji",
     )
     if any(a in t for a in action_signals):
         return False
@@ -136,22 +161,15 @@ def _needs_structured_snapshot_answer(user_text: str) -> bool:
         "zadaci",
         "prioritet",
         "kpi",
-        "leads",
-        "leadovi",
         "plan",
         "planovi",
         "weekly",
         "sedmica",
-        "nedelja",
-        "nedjelja",
         "top 3",
         "top 5",
-        "prikaĂ„Ä…Ă„Äľi",
+        "prikaži",
         "prikazi",
-        "pokaĂ„Ä…Ă„Äľi",
-        "pokazi",
         "izlistaj",
-        "saĂ„Ä…Ă„Äľetak",
         "sazetak",
     )
     return any(k in t for k in keywords)
@@ -286,7 +304,7 @@ def _normalize_status(v: Any) -> str:
         return "To Do"
     if s_low in ("in progress", "u toku"):
         return "In Progress"
-    if s_low in ("done", "completed", "zavrĂ„Ä…Ă‹â€ˇeno", "zavrseno"):
+    if s_low in ("done", "completed", "završeno", "zavrseno"):
         return "Done"
     return s
 
@@ -344,9 +362,9 @@ def _extract_deadline_from_text(text: str) -> Optional[str]:
     return None
 
 
-# ---------------------------------------
+# -------------------------------
 # Translation: create_task/create_goal -> ai_command
-# ---------------------------------------
+# -------------------------------
 def _translate_create_task_to_ai_command(
     proposal: Dict[str, Any],
 ) -> Optional[Dict[str, Any]]:
@@ -537,29 +555,45 @@ async def create_ceo_advisor_agent(
 ) -> AgentOutput:
     base_text = (agent_input.message or "").strip()
     if not base_text:
-        base_text = "Reci ukratko Ă„Ä…Ă‹â€ˇta moĂ„Ä…Ă„ÄľeĂ„Ä…Ă‹â€ˇ i kako mogu traĂ„Ä…Ă„Äľiti akciju."
+        base_text = "Reci ukratko šta možeš i kako mogu tražiti akciju."
 
     raw_snapshot = (
         agent_input.snapshot if isinstance(agent_input.snapshot, dict) else {}
     )
     snapshot_payload = _unwrap_snapshot(raw_snapshot)
 
+    # Inicijalizacija goals i tasks
+    goals, tasks = _extract_goals_tasks(snapshot_payload)
+
     structured_mode = _needs_structured_snapshot_answer(base_text)
 
     propose_only = _is_propose_only_request(base_text)
     wants_notion = _wants_notion_task_or_goal(base_text)
 
-    # =========================================================
-    # SNAPSHOT GUARD Ä‚ËĂ˘â€šÂ¬Ă˘â‚¬ĹĄ only for structured dashboard requests
-    # =========================================================
-    goals, tasks = _extract_goals_tasks(snapshot_payload)
+    # Check session state before proceeding with the action
+    session_id = getattr(agent_input, "session_id", None)
+    if session_id:
+        state = await _get_state(session_id)
+        armed = state.get("armed", False)
+
+        if not armed:
+            # Block any write operation if Notion Ops is not armed
+            return AgentOutput(
+                text="Notion Ops nije aktivan. Želiš aktivirati? (napiši: 'notion ops aktiviraj' / 'notion ops uključi')",
+                proposed_commands=[],
+                agent_id="ceo_advisor",
+                read_only=True,
+                trace={},
+            )
+
+    # Continue processing normally...
     if structured_mode and not goals and not tasks:
         return AgentOutput(
-            text=(
-                "Vidim da je stanje prazno (nema ciljeva ni taskova u snapshot-u). To nije blokada â€” krenimo od brzog okvira.\n\n"
-                "Krenimo: odgovori na 2-3 pitanja iznad, pa cu ti sloziti top 3 cilja i top 5 taskova u istom formatu.\n"
+            text=(  # Ovo je deo za prazno stanje
+                "Vidim da je stanje prazno (nema ciljeva ni taskova u snapshot-u). To nije blokada — krenimo od brzog okvira.\n\n"
+                "Krenimo: odgovori na 2-3 pitanja iznad, pa cu ti složiti top 3 cilja i top 5 taskova u istom formatu.\n"
             ),
-            proposed_commands=[
+            proposed_commands=[  # Predlog za akciju
                 ProposedCommand(
                     command="refresh_snapshot",
                     args={"source": "ceo_dashboard"},
@@ -571,27 +605,12 @@ async def create_ceo_advisor_agent(
             ],
             agent_id="ceo_advisor",
             read_only=True,
-            trace={
-                "snapshot_empty": True,
-                "structured_mode": True,
-                "snapshot_wrapper_present": isinstance(
-                    raw_snapshot.get("payload"), dict
-                ),
-                "snapshot_ready": raw_snapshot.get("ready"),
-                "snapshot_last_sync": raw_snapshot.get("last_sync")
-                or snapshot_payload.get("last_sync"),
-                "snapshot_source": (agent_input.metadata or {}).get("snapshot_source")
-                if isinstance(agent_input.metadata, dict)
-                else None,
-            },
+            trace={},
         )
 
-    # =========================================================
-    # LLM PUT (read-only) Ä‚ËĂ˘â€šÂ¬Ă˘â‚¬ĹĄ GUARDED (CI-safe)
-    # =========================================================
+    # Nastavi sa ostatkom koda...
     safe_context: Dict[str, Any] = {
         "canon": {"read_only": True, "no_tools": True, "no_side_effects": True},
-        # IMPORTANT: give LLM the SSOT payload (not wrapper noise)
         "snapshot": snapshot_payload,
         "metadata": {
             **(agent_input.metadata if isinstance(agent_input.metadata, dict) else {}),
@@ -604,8 +623,8 @@ async def create_ceo_advisor_agent(
     else:
         prompt_text = (
             f"{base_text}\n\n"
-            "Ako predlaĂ„Ä…Ă„ÄľeĂ„Ä…Ă‹â€ˇ akciju, vrati je u proposed_commands. "
-            "Ne izvrĂ„Ä…Ă‹â€ˇavaj niĂ„Ä…Ă‹â€ˇta."
+            "Ako predlaže akciju, vrati je u proposed_commands. "
+            "Ne izvršavaj ništa."
         )
 
     result: Dict[str, Any] = {}
@@ -613,7 +632,6 @@ async def create_ceo_advisor_agent(
     proposed: List[ProposedCommand] = []
     text_out: str = ""
 
-    # keep propose-only deterministic (no OpenAI dependency)
     use_llm = not propose_only
 
     if use_llm:
@@ -627,50 +645,18 @@ async def create_ceo_advisor_agent(
         except Exception as e:
             result = {"text": f"LLM unavailable: {e}"}
 
-        # -----------------------------
-        # DEBUG/OBSERVABILITY:
-        # If executor returned trace, preserve it so router response can show root cause.
-        # -----------------------------
-        exec_trace = result.get("trace") if isinstance(result, dict) else None
-        if isinstance(exec_trace, dict):
-            result["_executor_trace"] = exec_trace
-
         text_out = _pick_text(result) or "CEO advisor nije vratio tekstualni output."
         proposed_items = (
             result.get("proposed_commands") if isinstance(result, dict) else None
         )
         proposed = _to_proposed_commands(proposed_items)
 
-        # ---------------------------------------------------------
-        # CANON: do not leak contract-stability fallback propose wrappers into UX
-        # ---------------------------------------------------------
-        if proposed:
-            filtered = []
-            for pc in proposed:
-                cmd = getattr(pc, "command", None)
-                if cmd == "ceo.command.propose":
-                    intent = getattr(pc, "intent", None)
-                    reason = str(getattr(pc, "reason", "") or "").lower()
-                    if (
-                        (intent is None)
-                        or ("fallback" in reason)
-                        or ("contract-stability" in reason)
-                    ):
-                        continue
-                filtered.append(pc)
-            proposed = filtered
-
     else:
         if structured_mode:
             text_out = _render_snapshot_summary(goals, tasks)
         else:
-            text_out = "OK. PredloĂ„Ä…Ă„ÄľiÄ‚â€žĂ˘â‚¬Ë‡u akciju (propose-only), bez izvrĂ„Ä…Ă‹â€ˇavanja."
+            text_out = "OK. Predložiću akciju (propose-only), bez izvršavanja."
 
-    # =========================================================
-    # CANON: always ensure Notion write requests can produce a deterministic proposal
-    # =========================================================
-
-    # 1) If LLM returned create_task/create_goal, translate to notion_write ai_command
     if proposed:
         first_cmd = getattr(proposed[0], "command", None)
         if first_cmd in ("create_task", "create_goal"):
@@ -696,7 +682,6 @@ async def create_ceo_advisor_agent(
                     )
                 ]
 
-    # 2) If user wants Notion action and we have no usable proposal -> deterministic fallback proposal
     if wants_notion and not proposed:
         ai_cmd = _deterministic_notion_ai_command_from_text(base_text)
         if isinstance(ai_cmd, dict):
@@ -708,7 +693,6 @@ async def create_ceo_advisor_agent(
                 )
             ]
 
-    # 3) Structured-mode default action (only when NOT a Notion write ask)
     if structured_mode and (not wants_notion) and not proposed:
         proposed.append(
             ProposedCommand(
@@ -730,20 +714,6 @@ async def create_ceo_advisor_agent(
     trace["propose_only"] = propose_only
     trace["wants_notion"] = wants_notion
     trace["llm_used"] = use_llm
-    trace["snapshot_wrapper_present"] = isinstance(raw_snapshot.get("payload"), dict)
-    trace["snapshot_ready"] = raw_snapshot.get("ready")
-    trace["snapshot_last_sync"] = raw_snapshot.get("last_sync") or snapshot_payload.get(
-        "last_sync"
-    )
-    trace["snapshot_source"] = (
-        (agent_input.metadata or {}).get("snapshot_source")
-        if isinstance(agent_input.metadata, dict)
-        else None
-    )
-
-    # Attach executor trace (root-cause) if present
-    if isinstance(result, dict) and isinstance(result.get("_executor_trace"), dict):
-        trace["executor"] = result["_executor_trace"]
 
     return AgentOutput(
         text=text_out,
