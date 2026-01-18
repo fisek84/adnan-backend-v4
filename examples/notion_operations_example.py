@@ -181,16 +181,31 @@ async def main():
 
 
 if __name__ == "__main__":
+    import sys
+    import os
+    
     # NOTE: This example requires proper environment variables:
     # - NOTION_API_KEY (or NOTION_TOKEN)
     # - NOTION_GOALS_DB_ID
     # - NOTION_TASKS_DB_ID
     # - NOTION_PROJECTS_DB_ID
 
-    print("\n⚠️  WARNING: This will create real pages in your Notion workspace!")
-    print("    Make sure your environment variables are set correctly.\n")
+    # Check for --run flag or NOTION_EXAMPLE_RUN environment variable
+    should_run = (
+        "--run" in sys.argv or 
+        os.getenv("NOTION_EXAMPLE_RUN", "").lower() == "true"
+    )
 
-    # Uncomment to run (commented by default for safety)
-    # asyncio.run(main())
-
-    print("Example code is ready. Uncomment asyncio.run(main()) to execute.")
+    if should_run:
+        print("\n⚠️  WARNING: This will create real pages in your Notion workspace!")
+        print("    Make sure your environment variables are set correctly.\n")
+        asyncio.run(main())
+    else:
+        print("\n📖 Notion Operations Example")
+        print("=" * 60)
+        print("This example demonstrates how to use Notion operations.")
+        print("\nTo run this example, use one of the following methods:")
+        print("  1. python examples/notion_operations_example.py --run")
+        print("  2. NOTION_EXAMPLE_RUN=true python examples/notion_operations_example.py")
+        print("\n⚠️  WARNING: This will create real pages in your Notion workspace!")
+        print("=" * 60 + "\n")
