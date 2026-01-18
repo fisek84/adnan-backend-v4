@@ -6,7 +6,7 @@ import os
 import time
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import httpx
 
@@ -345,6 +345,7 @@ class NotionService:
         Robust rule:
           - If spec.type == "status" but DB schema says property is "select",
             map to select.
+          - Added support for "date" type
         """
         out: Dict[str, Any] = {}
         if not isinstance(property_specs, dict) or not property_specs:
@@ -381,6 +382,11 @@ class NotionService:
                     out[pn] = self._select_prop(name)
                 else:
                     out[pn] = self._status_prop(name)
+                continue
+
+            if stype == "date":
+                date_str = _ensure_str(spec.get("start") or spec.get("value") or "")
+                out[pn] = self._date_prop(date_str)
                 continue
 
             # Unknown types ignored by design (safety)
@@ -494,6 +500,38 @@ class NotionService:
                 metadata=metadata,
             )
 
+        if intent == "create_goal":
+            return await self._execute_create_goal(
+                params=params,
+                execution_id=execution_id,
+                approval_id=approval_id,
+                metadata=metadata,
+            )
+
+        if intent == "create_task":
+            return await self._execute_create_task(
+                params=params,
+                execution_id=execution_id,
+                approval_id=approval_id,
+                metadata=metadata,
+            )
+
+        if intent == "create_project":
+            return await self._execute_create_project(
+                params=params,
+                execution_id=execution_id,
+                approval_id=approval_id,
+                metadata=metadata,
+            )
+
+        if intent == "update_page":
+            return await self._execute_update_page(
+                params=params,
+                execution_id=execution_id,
+                approval_id=approval_id,
+                metadata=metadata,
+            )
+
         raise RuntimeError(f"Unsupported intent: {intent or '(empty)'}")
 
     async def _execute_create_page(
@@ -546,3 +584,352 @@ class NotionService:
             },
             "metadata": metadata,
         }
+
+    async def _execute_create_goal(
+        self,
+        *,
+        params: Dict[str, Any],
+        execution_id: str,
+        approval_id: str,
+        metadata: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Create a goal in Notion goals database."""
+        db_key = "goals"
+        db_id = self._resolve_db_id(db_key)
+
+        # Extract goal properties from params
+        title = _ensure_str(params.get("title"))
+        if not title:
+            raise RuntimeError("create_goal requires title")
+
+        # Build property specs
+        property_specs: Dict[str, Any] = {
+            "Name": {"type": "title", "text": title}
+        }
+
+        # Optional fields
+        description = _ensure_str(params.get("description"))
+        if description:
+            property_specs["Description"] = {"type": "rich_text", "text": description}
+
+        deadline = _ensure_str(params.get("deadline"))
+        if deadline:
+            property_specs["Deadline"] = {"type": "date", "start": deadline}
+
+        priority = _ensure_str(params.get("priority"))
+        if priority:
+            property_specs["Priority"] = {"type": "select", "name": priority}
+
+        status = _ensure_str(params.get("status"))
+        if status:
+            property_specs["Status"] = {"type": "status", "name": status}
+
+        # Build Notion properties
+        notion_properties = await self._build_properties_from_property_specs(
+            db_id=db_id, property_specs=property_specs
+        )
+
+        payload = {"parent": {"database_id": db_id}, "properties": notion_properties}
+        url = f"{self.NOTION_BASE_URL}/pages"
+        res = await self._safe_request("POST", url, payload=payload)
+
+        page_id = _ensure_str(res.get("id"))
+        page_url = _ensure_str(res.get("url"))
+
+        return {
+            "ok": True,
+            "execution_state": "COMPLETED",
+            "read_only": False,
+            "execution_id": execution_id or None,
+            "approval_id": approval_id or None,
+            "result": {
+                "intent": "create_goal",
+                "db_key": db_key,
+                "database_id": db_id,
+                "page_id": page_id or None,
+                "url": page_url or None,
+                "raw": res,
+            },
+            "metadata": metadata,
+        }
+
+    async def _execute_create_task(
+        self,
+        *,
+        params: Dict[str, Any],
+        execution_id: str,
+        approval_id: str,
+        metadata: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Create a task in Notion tasks database."""
+        db_key = "tasks"
+        db_id = self._resolve_db_id(db_key)
+
+        # Extract task properties from params
+        title = _ensure_str(params.get("title"))
+        if not title:
+            raise RuntimeError("create_task requires title")
+
+        # Build property specs
+        property_specs: Dict[str, Any] = {
+            "Name": {"type": "title", "text": title}
+        }
+
+        # Optional fields
+        description = _ensure_str(params.get("description"))
+        if description:
+            property_specs["Description"] = {"type": "rich_text", "text": description}
+
+        deadline = _ensure_str(params.get("deadline"))
+        if deadline:
+            property_specs["Deadline"] = {"type": "date", "start": deadline}
+
+        priority = _ensure_str(params.get("priority"))
+        if priority:
+            property_specs["Priority"] = {"type": "select", "name": priority}
+
+        status = _ensure_str(params.get("status"))
+        if status:
+            property_specs["Status"] = {"type": "status", "name": status}
+
+        # Build Notion properties
+        notion_properties = await self._build_properties_from_property_specs(
+            db_id=db_id, property_specs=property_specs
+        )
+
+        # Handle relations after page creation
+        goal_id = _ensure_str(params.get("goal_id"))
+        project_id = _ensure_str(params.get("project_id"))
+
+        payload = {"parent": {"database_id": db_id}, "properties": notion_properties}
+        url = f"{self.NOTION_BASE_URL}/pages"
+        res = await self._safe_request("POST", url, payload=payload)
+
+        page_id = _ensure_str(res.get("id"))
+        page_url = _ensure_str(res.get("url"))
+
+        # Update relations if provided
+        if goal_id or project_id:
+            await self._update_page_relations(
+                page_id=page_id,
+                goal_id=goal_id,
+                project_id=project_id,
+            )
+
+        return {
+            "ok": True,
+            "execution_state": "COMPLETED",
+            "read_only": False,
+            "execution_id": execution_id or None,
+            "approval_id": approval_id or None,
+            "result": {
+                "intent": "create_task",
+                "db_key": db_key,
+                "database_id": db_id,
+                "page_id": page_id or None,
+                "url": page_url or None,
+                "raw": res,
+            },
+            "metadata": metadata,
+        }
+
+    async def _execute_create_project(
+        self,
+        *,
+        params: Dict[str, Any],
+        execution_id: str,
+        approval_id: str,
+        metadata: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Create a project in Notion projects database."""
+        db_key = "projects"
+        db_id = self._resolve_db_id(db_key)
+
+        # Extract project properties from params
+        title = _ensure_str(params.get("title"))
+        if not title:
+            raise RuntimeError("create_project requires title")
+
+        # Build property specs
+        property_specs: Dict[str, Any] = {
+            "Name": {"type": "title", "text": title}
+        }
+
+        # Optional fields
+        description = _ensure_str(params.get("description"))
+        if description:
+            property_specs["Description"] = {"type": "rich_text", "text": description}
+
+        deadline = _ensure_str(params.get("deadline"))
+        if deadline:
+            property_specs["Deadline"] = {"type": "date", "start": deadline}
+
+        priority = _ensure_str(params.get("priority"))
+        if priority:
+            property_specs["Priority"] = {"type": "select", "name": priority}
+
+        status = _ensure_str(params.get("status"))
+        if status:
+            property_specs["Status"] = {"type": "status", "name": status}
+
+        # Build Notion properties
+        notion_properties = await self._build_properties_from_property_specs(
+            db_id=db_id, property_specs=property_specs
+        )
+
+        # Handle relations after page creation
+        primary_goal_id = _ensure_str(params.get("primary_goal_id"))
+
+        payload = {"parent": {"database_id": db_id}, "properties": notion_properties}
+        url = f"{self.NOTION_BASE_URL}/pages"
+        res = await self._safe_request("POST", url, payload=payload)
+
+        page_id = _ensure_str(res.get("id"))
+        page_url = _ensure_str(res.get("url"))
+
+        # Update relations if provided
+        if primary_goal_id:
+            await self._update_page_relations(
+                page_id=page_id,
+                goal_id=primary_goal_id,
+            )
+
+        return {
+            "ok": True,
+            "execution_state": "COMPLETED",
+            "read_only": False,
+            "execution_id": execution_id or None,
+            "approval_id": approval_id or None,
+            "result": {
+                "intent": "create_project",
+                "db_key": db_key,
+                "database_id": db_id,
+                "page_id": page_id or None,
+                "url": page_url or None,
+                "raw": res,
+            },
+            "metadata": metadata,
+        }
+
+    async def _execute_update_page(
+        self,
+        *,
+        params: Dict[str, Any],
+        execution_id: str,
+        approval_id: str,
+        metadata: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Update an existing page in Notion."""
+        page_id = _ensure_str(params.get("page_id"))
+        if not page_id:
+            raise RuntimeError("update_page requires page_id")
+
+        # Build property specs from update params
+        property_specs: Dict[str, Any] = {}
+
+        title = _ensure_str(params.get("title"))
+        if title:
+            property_specs["Name"] = {"type": "title", "text": title}
+
+        description = _ensure_str(params.get("description"))
+        if description:
+            property_specs["Description"] = {"type": "rich_text", "text": description}
+
+        deadline = _ensure_str(params.get("deadline"))
+        if deadline:
+            property_specs["Deadline"] = {"type": "date", "start": deadline}
+
+        priority = _ensure_str(params.get("priority"))
+        if priority:
+            property_specs["Priority"] = {"type": "select", "name": priority}
+
+        status = _ensure_str(params.get("status"))
+        if status:
+            property_specs["Status"] = {"type": "status", "name": status}
+
+        # Get the database ID from params or infer from page
+        db_key = _ensure_str(params.get("db_key"))
+        db_id = ""
+        if db_key:
+            db_id = self._resolve_db_id(db_key)
+
+        # Build Notion properties
+        notion_properties = {}
+        if property_specs and db_id:
+            notion_properties = await self._build_properties_from_property_specs(
+                db_id=db_id, property_specs=property_specs
+            )
+
+        # Update the page
+        payload: Dict[str, Any] = {}
+        if notion_properties:
+            payload["properties"] = notion_properties
+
+        url = f"{self.NOTION_BASE_URL}/pages/{page_id}"
+        res = await self._safe_request("PATCH", url, payload=payload)
+
+        page_url = _ensure_str(res.get("url"))
+
+        # Update relations if provided
+        goal_id = _ensure_str(params.get("goal_id"))
+        project_id = _ensure_str(params.get("project_id"))
+        if goal_id or project_id:
+            await self._update_page_relations(
+                page_id=page_id,
+                goal_id=goal_id,
+                project_id=project_id,
+            )
+
+        return {
+            "ok": True,
+            "execution_state": "COMPLETED",
+            "read_only": False,
+            "execution_id": execution_id or None,
+            "approval_id": approval_id or None,
+            "result": {
+                "intent": "update_page",
+                "page_id": page_id,
+                "url": page_url or None,
+                "raw": res,
+            },
+            "metadata": metadata,
+        }
+
+    async def _update_page_relations(
+        self,
+        *,
+        page_id: str,
+        goal_id: str = "",
+        project_id: str = "",
+    ) -> None:
+        """Update relations for a page (goal and/or project)."""
+        if not page_id:
+            return
+
+        properties: Dict[str, Any] = {}
+
+        if goal_id:
+            properties["Goal"] = {"relation": [{"id": goal_id}]}
+
+        if project_id:
+            properties["Project"] = {"relation": [{"id": project_id}]}
+
+        if not properties:
+            return
+
+        url = f"{self.NOTION_BASE_URL}/pages/{page_id}"
+        payload = {"properties": properties}
+        await self._safe_request("PATCH", url, payload=payload)
+
+    def _date_prop(self, date_str: str) -> Dict[str, Any]:
+        """Build a date property."""
+        date_str = (date_str or "").strip()
+        if not date_str:
+            return {"date": None}
+        return {"date": {"start": date_str}}
+
+    def _relation_prop(self, page_ids: List[str]) -> Dict[str, Any]:
+        """Build a relation property."""
+        if not page_ids:
+            return {"relation": []}
+        return {"relation": [{"id": pid} for pid in page_ids if pid]}
