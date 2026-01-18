@@ -1,8 +1,9 @@
 """
 Tests for NotionService operations (create_goal, create_task, create_project, update_page)
 """
+
 import unittest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 from services.notion_service import NotionService
 from models.ai_command import AICommand
 
@@ -23,7 +24,7 @@ class TestNotionServiceOperations(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self):
         """Clean up resources."""
-        if hasattr(self, 'service') and self.service:
+        if hasattr(self, "service") and self.service:
             await self.service.aclose()
 
     # ============================================================

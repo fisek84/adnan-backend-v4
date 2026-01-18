@@ -4,9 +4,10 @@ Example demonstrating how to use the extended Notion operations.
 
 This shows how to create goals, tasks, and projects with relations.
 """
+
 import asyncio
-from services.notion_service import NotionService, bootstrap_notion_service_from_env
 from models.ai_command import AICommand
+from services.notion_service import bootstrap_notion_service_from_env
 
 
 async def example_create_goal():
@@ -17,7 +18,9 @@ async def example_create_goal():
     service = bootstrap_notion_service_from_env()
     if not service:
         print("ERROR: NotionService not configured. Set env vars:")
-        print("  NOTION_API_KEY, NOTION_GOALS_DB_ID, NOTION_TASKS_DB_ID, NOTION_PROJECTS_DB_ID")
+        print(
+            "  NOTION_API_KEY, NOTION_GOALS_DB_ID, NOTION_TASKS_DB_ID, NOTION_PROJECTS_DB_ID"
+        )
         return
 
     # Create a goal command
@@ -38,7 +41,7 @@ async def example_create_goal():
 
     try:
         result = await service.execute(command)
-        print(f"✅ Goal created successfully!")
+        print("✅ Goal created successfully!")
         print(f"   Page ID: {result['result']['page_id']}")
         print(f"   URL: {result['result']['url']}")
         return result["result"]["page_id"]
@@ -75,7 +78,7 @@ async def example_create_task_with_goal(goal_id: str):
 
     try:
         result = await service.execute(command)
-        print(f"✅ Task created and linked to goal!")
+        print("✅ Task created and linked to goal!")
         print(f"   Page ID: {result['result']['page_id']}")
         print(f"   URL: {result['result']['url']}")
         return result["result"]["page_id"]
@@ -112,7 +115,7 @@ async def example_create_project_with_goal(goal_id: str):
 
     try:
         result = await service.execute(command)
-        print(f"✅ Project created and linked to goal!")
+        print("✅ Project created and linked to goal!")
         print(f"   Page ID: {result['result']['page_id']}")
         print(f"   URL: {result['result']['url']}")
         return result["result"]["page_id"]
@@ -146,7 +149,7 @@ async def example_update_task_status(task_id: str):
 
     try:
         result = await service.execute(command)
-        print(f"✅ Task updated successfully!")
+        print("✅ Task updated successfully!")
         print(f"   Page ID: {result['result']['page_id']}")
         print(f"   URL: {result['result']['url']}")
     except Exception as e:
@@ -169,7 +172,6 @@ async def main():
         task_id = await example_create_task_with_goal(goal_id)
 
         # Example 3: Create a project linked to the goal
-        project_id = await example_create_project_with_goal(goal_id)
 
         if task_id:
             # Example 4: Update the task status
@@ -183,7 +185,7 @@ async def main():
 if __name__ == "__main__":
     import sys
     import os
-    
+
     # NOTE: This example requires proper environment variables:
     # - NOTION_API_KEY (or NOTION_TOKEN)
     # - NOTION_GOALS_DB_ID
@@ -192,8 +194,7 @@ if __name__ == "__main__":
 
     # Check for --run flag or NOTION_EXAMPLE_RUN environment variable
     should_run = (
-        "--run" in sys.argv or 
-        os.getenv("NOTION_EXAMPLE_RUN", "").lower() == "true"
+        "--run" in sys.argv or os.getenv("NOTION_EXAMPLE_RUN", "").lower() == "true"
     )
 
     if should_run:
@@ -206,6 +207,8 @@ if __name__ == "__main__":
         print("This example demonstrates how to use Notion operations.")
         print("\nTo run this example, use one of the following methods:")
         print("  1. python examples/notion_operations_example.py --run")
-        print("  2. NOTION_EXAMPLE_RUN=true python examples/notion_operations_example.py")
+        print(
+            "  2. NOTION_EXAMPLE_RUN=true python examples/notion_operations_example.py"
+        )
         print("\n⚠️  WARNING: This will create real pages in your Notion workspace!")
         print("=" * 60 + "\n")

@@ -603,9 +603,7 @@ class NotionService:
             raise RuntimeError("create_goal requires title")
 
         # Build property specs
-        property_specs: Dict[str, Any] = {
-            "Name": {"type": "title", "text": title}
-        }
+        property_specs: Dict[str, Any] = {"Name": {"type": "title", "text": title}}
 
         # Optional fields
         description = _ensure_str(params.get("description"))
@@ -671,9 +669,7 @@ class NotionService:
             raise RuntimeError("create_task requires title")
 
         # Build property specs
-        property_specs: Dict[str, Any] = {
-            "Name": {"type": "title", "text": title}
-        }
+        property_specs: Dict[str, Any] = {"Name": {"type": "title", "text": title}}
 
         # Optional fields
         description = _ensure_str(params.get("description"))
@@ -751,9 +747,7 @@ class NotionService:
             raise RuntimeError("create_project requires title")
 
         # Build property specs
-        property_specs: Dict[str, Any] = {
-            "Name": {"type": "title", "text": title}
-        }
+        property_specs: Dict[str, Any] = {"Name": {"type": "title", "text": title}}
 
         # Optional fields
         description = _ensure_str(params.get("description"))
