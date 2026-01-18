@@ -23,7 +23,8 @@ class TestNotionServiceOperations(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self):
         """Clean up resources."""
-        await self.service.aclose()
+        if hasattr(self, 'service') and self.service:
+            await self.service.aclose()
 
     # ============================================================
     # CREATE GOAL TESTS
