@@ -15,8 +15,10 @@ from services.agent_router.openai_assistant_executor import OpenAIAssistantExecu
 _NOTION_OPS_SESSIONS: Dict[str, Dict[str, Any]] = {}
 _NOTION_OPS_LOCK = asyncio.Lock()
 
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
 
 async def _set_armed(session_id: str, armed: bool, *, prompt: str) -> Dict[str, Any]:
     """
@@ -30,6 +32,7 @@ async def _set_armed(session_id: str, armed: bool, *, prompt: str) -> Dict[str, 
         st["last_toggled_at"] = _now_iso()
         _NOTION_OPS_SESSIONS[session_id] = st
         return dict(st)
+
 
 async def _get_state(session_id: str) -> Dict[str, Any]:
     async with _NOTION_OPS_LOCK:

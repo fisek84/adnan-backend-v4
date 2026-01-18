@@ -49,6 +49,7 @@ _DEACTIVATE_KEYWORDS = (
     "notion ops deactivate",
 )
 
+
 def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
     router = APIRouter()
 
@@ -92,7 +93,9 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         t = _norm_text(text)
         return any(k in t for k in _DEACTIVATE_KEYWORDS)
 
-    async def _set_armed(session_id: str, armed: bool, *, prompt: str) -> Dict[str, Any]:
+    async def _set_armed(
+        session_id: str, armed: bool, *, prompt: str
+    ) -> Dict[str, Any]:
         """
         PHASE 6: Notion Ops ARMED Gate
         SSOT session state.
@@ -108,7 +111,10 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
 
     async def _get_state(session_id: str) -> Dict[str, Any]:
         async with _NOTION_OPS_LOCK:
-            st = _NOTION_OPS_SESSIONS.get(session_id) or {"armed": False, "armed_at": None}
+            st = _NOTION_OPS_SESSIONS.get(session_id) or {
+                "armed": False,
+                "armed_at": None,
+            }
             if "armed" not in st:
                 st["armed"] = False
             if "armed_at" not in st:
@@ -309,7 +315,9 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         if isinstance(why, str) and why.strip():
             msg = f"{msg}\n\nReason: {why}"
 
-        noop = _build_contract_noop_wrapper(prompt, reason="NOTION OPS NOT ARMED: read-only gate enforced.")
+        noop = _build_contract_noop_wrapper(
+            prompt, reason="NOTION OPS NOT ARMED: read-only gate enforced."
+        )
         fb = _ensure_payload_summary_contract(_pc_to_dict(noop, prompt=prompt))
 
         tr = out.trace or {} if hasattr(out, "trace") else {}
@@ -361,7 +369,12 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                         "session_id": session_id,
                         "armed_state": st,
                     },
-                    "trace": {"phase6_notion_ops_gate": {"event": "armed", "session_id": session_id}},
+                    "trace": {
+                        "phase6_notion_ops_gate": {
+                            "event": "armed",
+                            "session_id": session_id,
+                        }
+                    },
                 }
             )
 
@@ -379,12 +392,21 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                         "session_id": session_id,
                         "armed_state": st,
                     },
-                    "trace": {"phase6_notion_ops_gate": {"event": "disarmed", "session_id": session_id}},
+                    "trace": {
+                        "phase6_notion_ops_gate": {
+                            "event": "disarmed",
+                            "session_id": session_id,
+                        }
+                    },
                 }
             )
 
         # Determine armed state (default false if no session_id)
-        st = await _get_state(session_id) if session_id else {"armed": False, "armed_at": None}
+        st = (
+            await _get_state(session_id)
+            if session_id
+            else {"armed": False, "armed_at": None}
+        )
         armed = bool(st.get("armed") is True)
 
         # Call advisor agent
@@ -406,7 +428,9 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 )
 
             # Read-only, non-write: keep existing behavior (contract NOOP when no actionable)
-            fallback = _build_contract_noop_wrapper(prompt, reason="Read-only (no actionable proposals).")
+            fallback = _build_contract_noop_wrapper(
+                prompt, reason="Read-only (no actionable proposals)."
+            )
             fb = _ensure_payload_summary_contract(_pc_to_dict(fallback, prompt=prompt))
             return JSONResponse(
                 content={
@@ -443,7 +467,10 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             if not isinstance(tr, dict):
                 tr = {}
             tr.setdefault("phase6_notion_ops_gate", {})
-            tr["phase6_notion_ops_gate"] = {"armed": True, "session_id_present": bool(session_id)}
+            tr["phase6_notion_ops_gate"] = {
+                "armed": True,
+                "session_id_present": bool(session_id),
+            }
 
             return JSONResponse(
                 content={
@@ -481,7 +508,11 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         if not isinstance(tr, dict):
             tr = {}
         tr.setdefault("phase6_notion_ops_gate", {})
-        tr["phase6_notion_ops_gate"] = {"armed": True, "session_id_present": bool(session_id), "fallback": True}
+        tr["phase6_notion_ops_gate"] = {
+            "armed": True,
+            "session_id_present": bool(session_id),
+            "fallback": True,
+        }
 
         return JSONResponse(
             content={
