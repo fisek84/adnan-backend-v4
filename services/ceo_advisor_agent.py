@@ -66,8 +66,8 @@ def _unwrap_snapshot(snapshot: Dict[str, Any]) -> Dict[str, Any]:
 # -------------------------------
 # Snapshot-structured mode (as-is)
 # -------------------------------
-def _format_enforcer(user_text: str) -> str:
-    return (
+def _format_enforcer(user_text: str, english_output: bool) -> str:
+    base = (
         f"{user_text.strip()}\n\n"
         "OBAVEZAN FORMAT ODGOVORA:\n"
         "GOALS (top 3)\n"
@@ -83,6 +83,17 @@ def _format_enforcer(user_text: str) -> str:
         "PRAVILA:\n"
         "- Snapshot je kontekst (input za inteligenciju). Ako nema podataka, nastavi savjetovanje.\n"
         "- Ako snapshot nema ciljeve/taskove: savjetuj kako da se krene, postavi pametna pitanja i predloži okvir.\n"
+    )
+    if english_output:
+        return (
+            base
+            + "\nIMPORTANT: Respond in English (clear, concise, business tone). "
+            + "Do not mix languages unless user explicitly asks.\n"
+        )
+    return (
+        base
+        + "\nVAŽNO: Odgovaraj na bosanskom / hrvatskom jeziku (jasno, poslovno). "
+        + "Ne miješaj jezike osim ako korisnik izričito ne traži drugačije.\n"
     )
 
 
@@ -553,6 +564,13 @@ async def create_ceo_advisor_agent(
     if not base_text:
         base_text = "Reci ukratko šta možeš i kako mogu tražiti akciju."
 
+    # Preferred UI output language (Bosanski / English) from metadata
+    meta = agent_input.metadata if isinstance(agent_input.metadata, dict) else {}
+    ui_lang_raw = str(
+        meta.get("ui_output_lang") or meta.get("output_lang") or ""
+    ).lower()
+    english_output = ui_lang_raw.startswith("en")
+
     raw_snapshot = (
         agent_input.snapshot if isinstance(agent_input.snapshot, dict) else {}
     )
@@ -675,13 +693,23 @@ async def create_ceo_advisor_agent(
     }
 
     if structured_mode:
-        prompt_text = _format_enforcer(base_text)
+        prompt_text = _format_enforcer(base_text, english_output)
     else:
         prompt_text = (
             f"{base_text}\n\n"
             "Ako predlaže akciju, vrati je u proposed_commands. "
             "Ne izvršavaj ništa."
         )
+        if english_output:
+            prompt_text += (
+                "\nIMPORTANT: Respond in English (clear, concise, business tone). "
+                "Do not mix languages unless user explicitly asks."
+            )
+        else:
+            prompt_text += (
+                "\nVAŽNO: Odgovaraj na bosanskom / hrvatskom jeziku (jasno, poslovno). "
+                "Ne miješaj jezike osim ako korisnik izričito ne traži drugačije."
+            )
 
     result: Dict[str, Any] = {}
     proposed_items: Any = None

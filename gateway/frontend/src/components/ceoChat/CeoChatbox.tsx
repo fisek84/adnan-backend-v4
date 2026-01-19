@@ -508,6 +508,15 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
     } catch {}
     return 1.0;
   });
+
+  const [outputLanguage, setOutputLanguage] = useState<string>(() => {
+    if (typeof window === 'undefined') return 'bs';
+    try {
+      const stored = localStorage.getItem('ceo_output_lang');
+      if (stored === 'en' || stored === 'bs') return stored;
+    } catch {}
+    return 'bs';
+  });
   
   // Session ID for Notion ops tracking
   const [sessionId] = useState<string>(() => {
@@ -762,15 +771,18 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         session_id: sessionId,  // Also include at top level for compatibility
         source: "ceo_dashboard",
         preferred_agent_id: "ceo_advisor",
+        output_lang: outputLanguage,
         
         // CRITICAL: metadata with session_id per test protocol
         metadata: {
           session_id: sessionId,
           initiator: "ceo_chat",
+          ui_output_lang: outputLanguage,
         },
         
         context_hint: {
           preferred_agent_id: "ceo_advisor",
+          ui_output_lang: outputLanguage,
         },
       };
 
@@ -1230,7 +1242,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
           updateItem(placeholderId, { content: acc.trim(), status: "final" });
           
           // Auto-speak if enabled
-          if (ttsEnabled && autoSpeakEnabled && acc.trim()) {
+          if (ttsEnabled && (autoSpeakEnabled || autoSendOnVoiceFinalEnabled) && acc.trim()) {
             speak(acc.trim());
           }
           
@@ -1257,7 +1269,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       updateItem(placeholderId, { content: sysText, status: "final" });
 
       // Auto-speak if enabled
-      if (ttsEnabled && autoSpeakEnabled && sysText) {
+      if (ttsEnabled && (autoSpeakEnabled || autoSendOnVoiceFinalEnabled) && sysText) {
         speak(sysText);
       }
 
@@ -1287,7 +1299,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       setBusy("idle");
       setLastError(null);
     },
-    [appendItem, updateItem, isPinnedToBottom, scrollToBottom, ttsEnabled, autoSpeakEnabled, speak]
+    [appendItem, updateItem, isPinnedToBottom, scrollToBottom, ttsEnabled, autoSpeakEnabled, autoSendOnVoiceFinalEnabled, speak]
   );
 
   // ------------------------------
@@ -1485,6 +1497,16 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
           try {
             if (typeof window !== 'undefined') {
               localStorage.setItem('ceo_speech_pitch', String(clamped));
+            }
+          } catch {}
+        }}
+        outputLanguage={outputLanguage}
+        onOutputLanguageChange={(val) => {
+          const norm = val === 'en' ? 'en' : 'bs';
+          setOutputLanguage(norm);
+          try {
+            if (typeof window !== 'undefined') {
+              localStorage.setItem('ceo_output_lang', norm);
             }
           } catch {}
         }}

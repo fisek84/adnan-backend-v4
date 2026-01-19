@@ -30,6 +30,9 @@ interface HeaderProps {
   onSpeechRateChange?: (value: number) => void;
   speechPitch?: number;
   onSpeechPitchChange?: (value: number) => void;
+  // Backend output language (Bosanski / English)
+  outputLanguage?: string;
+  onOutputLanguageChange?: (value: string) => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -60,6 +63,8 @@ export const Header: React.FC<HeaderProps> = ({
   onSpeechRateChange,
   speechPitch,
   onSpeechPitchChange,
+  outputLanguage,
+  onOutputLanguageChange,
 }) => {
   const { theme, toggleTheme } = useTheme();
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -208,6 +213,20 @@ export const Header: React.FC<HeaderProps> = ({
                         <option value="en-GB">English (UK)</option>
                         <option value="bs-BA">Bosanski</option>
                         <option value="hr-HR">Hrvatski</option>
+                      </select>
+                    </label>
+                  )}
+
+                  {onOutputLanguageChange && (
+                    <label className="ceoHeaderSettingsRow">
+                      <span>Output language</span>
+                      <select
+                        className="ceoHeaderSelect"
+                        value={outputLanguage || 'bs'}
+                        onChange={(e) => onOutputLanguageChange(e.target.value)}
+                      >
+                        <option value="bs">Bosanski / Hrvatski</option>
+                        <option value="en">English</option>
                       </select>
                     </label>
                   )}
