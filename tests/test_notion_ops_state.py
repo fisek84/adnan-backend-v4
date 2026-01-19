@@ -1,5 +1,5 @@
 """
-Test for Notion Ops State SSOT module
+Tests for Notion Ops State SSOT module
 
 This test verifies that the shared state module correctly manages
 the armed/disarmed state across different modules.

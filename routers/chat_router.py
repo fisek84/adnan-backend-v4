@@ -46,9 +46,6 @@ _DEACTIVATE_KEYWORDS = (
 def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
     router = APIRouter()
 
-    def _now_iso() -> str:
-        return datetime.now(timezone.utc).isoformat()
-
     def _extract_prompt(payload: AgentInput) -> str:
         for k in ("message", "text", "input_text", "prompt"):
             v = getattr(payload, k, None)
