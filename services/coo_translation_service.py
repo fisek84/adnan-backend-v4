@@ -829,6 +829,7 @@ class COOTranslationService:
         Removes occurrences like:
           Key: value
           Key = value
+                    Key value
         but removes the entire value segment safely, including dd.mm.yyyy dates.
         """
         if not text:
@@ -839,9 +840,43 @@ class COOTranslationService:
         # value candidates (order matters): ISO date, dot-date, then generic until separators
         value_pat = r"(?:\d{4}-\d{2}-\d{2}|\d{2}\.\d{2}\.\d{4}\.?|[^,\n;]+)"
 
+        # Space-delimited key/value is common in natural prompts (e.g. "Status Active").
+        # Only apply this for keys that are expected to take a value (avoid stripping
+        # ambiguous tokens like 'goal' in free-form titles).
+        space_value_keys = {
+            "name",
+            "naziv",
+            "ime",
+            "title",
+            "statusom",
+            "status",
+            "prioritetom",
+            "prioritet",
+            "priority",
+            "deadline-om",
+            "rokom",
+            "due",
+            "rok",
+            "deadline",
+            "opis",
+            "description",
+            "desc",
+        }
+
+        uuid_pat = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+        relation_keys = {"goal", "goal_id", "subgoal_id"}
+
         for k in keys:
             pattern = rf"(?i)\b{re.escape(k)}\b\s*[:=]\s*{value_pat}"
             out = re.sub(pattern, " ", out)
+
+            lk = str(k or "").strip().lower()
+            if lk in space_value_keys:
+                pattern2 = rf"(?i)\b{re.escape(k)}\b\s+{value_pat}"
+                out = re.sub(pattern2, " ", out)
+            elif lk in relation_keys:
+                pattern3 = rf"(?i)\b{re.escape(k)}\b\s+{uuid_pat}"
+                out = re.sub(pattern3, " ", out)
 
         out = re.sub(r"\s+", " ", out)
         out = re.sub(r"\s*([,;:])\s*", r"\1 ", out)
@@ -914,7 +949,11 @@ class COOTranslationService:
             "nepoceto": "Not started",
             "u toku": "In progress",
             "in progress": "In progress",
-            "active": "In progress",
+            # Many workspaces use an explicit "Active" status option.
+            "active": "Active",
+            "aktivan": "Active",
+            "aktivna": "Active",
+            "aktivno": "Active",
             "zavrseno": "Done",
             "završeno": "Done",
             "done": "Done",

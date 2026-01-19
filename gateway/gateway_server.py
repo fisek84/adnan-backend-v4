@@ -1028,6 +1028,10 @@ def _ensure_dict(x: Any) -> Dict[str, Any]:
     return x if isinstance(x, dict) else {}
 
 
+def _ensure_str(x: Any) -> str:
+    return x if isinstance(x, str) else ""
+
+
 def _proposal_wrapper_dict(*, prompt: str, source: str) -> Dict[str, Any]:
     safe_prompt = (prompt or "").strip() or "noop"
     return {
@@ -1293,6 +1297,61 @@ def _normalize_execute_raw_payload_dict(body: Dict[str, Any]) -> ExecuteRawInput
     )
 
 
+def _notion_properties_preview_from_property_specs(
+    property_specs: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Best-effort preview of the Notion `properties` payload.
+
+    IMPORTANT:
+      - No Notion schema lookups and no network calls.
+      - Mirrors the core mapping logic in NotionService for common types.
+      - Execution-time schema normalization (status vs select, option name
+        resolution) may still adjust the final payload.
+    """
+    out: Dict[str, Any] = {}
+    if not isinstance(property_specs, dict) or not property_specs:
+        return out
+
+    for prop_name, spec in property_specs.items():
+        if not isinstance(prop_name, str) or not prop_name.strip():
+            continue
+        if not isinstance(spec, dict):
+            continue
+
+        pn = prop_name.strip()
+        stype = _ensure_str(spec.get("type")).lower()
+
+        if stype == "title":
+            txt = _ensure_str(spec.get("text") or spec.get("value") or "")
+            out[pn] = {"title": [{"text": {"content": txt.strip()}}]}
+            continue
+
+        if stype in ("rich_text", "text"):
+            txt = _ensure_str(spec.get("text") or spec.get("value") or "")
+            out[pn] = {"rich_text": [{"text": {"content": txt.strip()}}]}
+            continue
+
+        if stype == "select":
+            name = _ensure_str(spec.get("name") or spec.get("value") or "").strip()
+            out[pn] = {"select": {"name": name}} if name else {"select": None}
+            continue
+
+        if stype == "status":
+            name = _ensure_str(spec.get("name") or spec.get("value") or "").strip()
+            out[pn] = {"status": {"name": name}} if name else {"status": None}
+            continue
+
+        if stype == "date":
+            date_str = _ensure_str(spec.get("start") or spec.get("value") or "").strip()
+            out[pn] = {"date": {"start": date_str}} if date_str else {"date": None}
+            continue
+
+        # Unknown types ignored by design
+        continue
+
+    return out
+
+
 # ================================================================
 # /api/execute — EXECUTION PATH (NL INPUT)
 # ================================================================
@@ -1442,6 +1501,110 @@ async def execute_raw_command(payload: Dict[str, Any] = Body(...)):
             if hasattr(ai_command, "model_dump")
             else _to_serializable(ai_command)
         ),
+    }
+
+
+@app.post("/api/execute/preview")
+async def execute_preview_command(
+    request: Request, payload: Dict[str, Any] = Body(...)
+):
+    """Preview the *exact* command payload (no approvals, no execution).
+
+    Intended for CEO Console UI so the user can confirm Notion mapping
+    (property_specs -> properties) before hitting Approve.
+    """
+    if not _is_ceo_request(request):
+        raise HTTPException(
+            status_code=403, detail="This endpoint is restricted to CEO users only"
+        )
+    _require_ceo_token_if_enforced(request)
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Body must be an object")
+
+    normalized = _normalize_execute_raw_payload_dict(payload)
+
+    # Hard read-only intents stay read-only.
+    if (normalized.intent in _HARD_READ_ONLY_INTENTS) or (
+        normalized.command in _HARD_READ_ONLY_INTENTS
+    ):
+        return {
+            "ok": True,
+            "read_only": True,
+            "command": {
+                "command": normalized.command,
+                "intent": normalized.intent,
+                "params": normalized.params
+                if isinstance(normalized.params, dict)
+                else {},
+                "initiator": normalized.initiator,
+                "metadata": normalized.metadata
+                if isinstance(normalized.metadata, dict)
+                else {},
+            },
+            "notion": None,
+            "trace": {
+                "canon": "execute_preview_hard_block_read_only",
+                "endpoint": "/api/execute/preview",
+            },
+        }
+
+    ai_command = _unwrap_proposal_wrapper_or_raise(
+        command=normalized.command,
+        intent=normalized.intent,
+        params=normalized.params if isinstance(normalized.params, dict) else {},
+        initiator=normalized.initiator,
+        read_only=True,
+        metadata=normalized.metadata if isinstance(normalized.metadata, dict) else {},
+    )
+
+    # Preview should always be treated as read-only.
+    ai_command.read_only = True
+    md = getattr(ai_command, "metadata", None)
+    if not isinstance(md, dict):
+        md = {}
+    md["canon"] = "execute_preview"
+    md["endpoint"] = "/api/execute/preview"
+    md["preview"] = True
+    ai_command.metadata = md
+
+    cmd_dump = (
+        ai_command.model_dump()
+        if hasattr(ai_command, "model_dump")
+        else _to_serializable(ai_command)
+    )
+
+    notion_block = None
+    try:
+        if getattr(ai_command, "command", None) == "notion_write" and getattr(
+            ai_command, "intent", None
+        ) in {"create_page", "update_page"}:
+            params = getattr(ai_command, "params", None)
+            params = params if isinstance(params, dict) else {}
+            db_key = params.get("db_key")
+            property_specs = params.get("property_specs")
+
+            if isinstance(property_specs, dict) and property_specs:
+                notion_block = {
+                    "db_key": db_key,
+                    "property_specs": property_specs,
+                    "properties_preview": _notion_properties_preview_from_property_specs(
+                        property_specs
+                    ),
+                    "note": "Preview does not hit Notion. Final execution may still normalize select/status types based on DB schema.",
+                }
+    except Exception:
+        notion_block = None
+
+    return {
+        "ok": True,
+        "read_only": True,
+        "command": cmd_dump,
+        "notion": notion_block,
+        "trace": {
+            "canon": "execute_preview",
+            "endpoint": "/api/execute/preview",
+        },
     }
 
 

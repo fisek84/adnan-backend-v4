@@ -144,10 +144,27 @@ class ExecutionOrchestrator:
             if self._is_failure_result(result):
                 cmd.execution_state = "FAILED"
                 self.registry.fail(cmd.execution_id, result)
+                # Provide a human-readable failure message for UI consumers.
+                # CEO Console prefers `text` when available.
+                reason = None
+                if isinstance(result, dict):
+                    reason = (
+                        result.get("reason")
+                        or result.get("message")
+                        or result.get("detail")
+                        or result.get("error")
+                    )
+                reason_str = (
+                    str(reason)
+                    if isinstance(reason, str) and reason.strip()
+                    else "Execution failed"
+                )
                 return {
                     "execution_id": cmd.execution_id,
                     "execution_state": "FAILED",
                     "failure": result,
+                    "ok": False,
+                    "text": f"Execution FAILED: {reason_str}",
                 }
 
             cmd.execution_state = "COMPLETED"
@@ -162,10 +179,16 @@ class ExecutionOrchestrator:
             cmd.execution_state = "FAILED"
             failure = {"reason": str(exc), "error_type": exc.__class__.__name__}
             self.registry.fail(cmd.execution_id, failure)
+            reason_str = (
+                str(failure.get("reason") or "Execution failed").strip()
+                or "Execution failed"
+            )
             return {
                 "execution_id": cmd.execution_id,
                 "execution_state": "FAILED",
                 "failure": failure,
+                "ok": False,
+                "text": f"Execution FAILED: {reason_str}",
             }
 
     # --------------------------------------------------

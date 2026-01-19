@@ -12,6 +12,7 @@ import { defaultStrings } from "./strings";
 import { useAutoScroll } from "./hooks";
 import { useSpeechSynthesis } from "../../hooks/useSpeechSynthesis";
 import { Header } from "../Header";
+import { CommandPreviewModal } from "./CommandPreviewModal";
 import "./CeoChatbox.css";
 
 type CeoConsoleApi = ReturnType<typeof createCeoConsoleApi>;
@@ -348,6 +349,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
   });
 
   const abortRef = useRef<AbortController | null>(null);
+  const previewAbortRef = useRef<AbortController | null>(null);
 
   // Text-to-Speech hook with configured language
   const { speak, cancel: cancelSpeech, speaking, supported: ttsSupported } = useSpeechSynthesis(voiceLang);
@@ -373,6 +375,8 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
   const stopCurrent = useCallback(() => {
     abortRef.current?.abort();
     abortRef.current = null;
+    previewAbortRef.current?.abort();
+    previewAbortRef.current = null;
     setBusy("idle");
   }, []);
 
@@ -392,6 +396,10 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
   const mergedHeaders = useMemo(() => {
     return {
       "Content-Type": "application/json",
+      // Backend CEO detection relies on this header for browser requests.
+      // Keep it defaulted here so CEO-only endpoints (e.g. /api/notion-ops/toggle)
+      // work even if caller didn't pass custom headers.
+      "X-Initiator": "ceo_chat",
       ...(headers ?? {}),
     } as Record<string, string>;
   }, [headers]);
@@ -413,6 +421,52 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       }
     },
     [mergedHeaders]
+  );
+
+  // ------------------------------
+  // PREVIEW (no approvals)
+  // ------------------------------
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [previewData, setPreviewData] = useState<any>(null);
+  const [previewTitle, setPreviewTitle] = useState<string>("Preview");
+
+  const handlePreviewProposal = useCallback(
+    async (proposal: ProposedCmd, label?: string) => {
+      if (previewLoading) return;
+
+      setPreviewOpen(true);
+      setPreviewTitle(label ? `Preview: ${label}` : "Preview");
+      setPreviewLoading(true);
+      setPreviewError(null);
+      setPreviewData(null);
+
+      const controller = new AbortController();
+      previewAbortRef.current = controller;
+
+      try {
+        const proposalWithSession = {
+          ...proposal,
+          metadata: {
+            ...(proposal.metadata || {}),
+            session_id: sessionId,
+            source: "ceo_dashboard",
+          },
+        };
+
+        const previewUrl = resolveUrl(executeRawUrl, "/api/execute/preview");
+        const json = await postJson(previewUrl, proposalWithSession, controller.signal);
+        setPreviewData(json);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        setPreviewError(msg);
+      } finally {
+        previewAbortRef.current = null;
+        setPreviewLoading(false);
+      }
+    },
+    [executeRawUrl, postJson, previewLoading, resolveUrl, sessionId]
   );
 
   // ------------------------------
@@ -975,6 +1029,19 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
 
   return (
     <section className={`ceoChatbox ${className ?? ""}`.trim()}>
+      <CommandPreviewModal
+        open={previewOpen}
+        title={previewTitle}
+        loading={previewLoading}
+        error={previewError}
+        data={previewData}
+        onClose={() => {
+          previewAbortRef.current?.abort();
+          previewAbortRef.current = null;
+          setPreviewOpen(false);
+        }}
+      />
+
       <Header
         title={ui.headerTitle}
         subtitle={ui.headerSubtitle}
@@ -1066,6 +1133,20 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
                                   <span style={{ fontWeight: 600 }}>{label}</span>
 
                                   <div style={{ display: "flex", gap: 8, marginLeft: "auto", flexWrap: "wrap" }}>
+                                    <button
+                                      className="govButton"
+                                      onClick={() => void handlePreviewProposal(p, label)}
+                                      disabled={
+                                        busy === "submitting" ||
+                                        busy === "streaming" ||
+                                        notionLoading ||
+                                        previewLoading
+                                      }
+                                      title="Preview the exact payload (no approvals)"
+                                    >
+                                      Preview
+                                    </button>
+
                                     <button
                                       className="govButton"
                                       onClick={() => void handleApproveProposal(p)}

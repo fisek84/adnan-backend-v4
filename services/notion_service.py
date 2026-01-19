@@ -241,6 +241,95 @@ class NotionService:
                 logger.warning("NotionService client close failed", exc_info=True)
 
     # ----------------------------
+    # preflight (enterprise)
+    # ----------------------------
+    async def preflight_can_write(self) -> Dict[str, Any]:
+        """Best-effort readiness check used before arming Notion Ops.
+
+        Goals:
+        - validate API key works (users/me)
+        - validate DB ids are accessible
+        - validate minimal expected properties exist (Name title)
+
+        Returns:
+          {"ok": True, ...} or {"ok": False, "reason": ..., "detail": ...}
+        """
+        # 1) Auth check
+        try:
+            me = await self._safe_request("GET", f"{self.NOTION_BASE_URL}/users/me")
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "ok": False,
+                "reason": "notion_auth_failed",
+                "detail": f"{type(exc).__name__}: {exc}",
+            }
+
+        # 2) Schema checks
+        missing: Dict[str, Any] = {}
+        for db_key, db_id in (
+            ("goals", self.goals_db_id),
+            ("tasks", self.tasks_db_id),
+            ("projects", self.projects_db_id),
+        ):
+            db_id = (db_id or "").strip()
+            if not db_id:
+                missing[db_key] = {"reason": "missing_db_id"}
+                continue
+
+            try:
+                schema = await self._get_database_schema(db_id)
+            except Exception as exc:  # noqa: BLE001
+                missing[db_key] = {
+                    "reason": "schema_fetch_failed",
+                    "detail": f"{type(exc).__name__}: {exc}",
+                }
+                continue
+
+            props = schema.get("properties") if isinstance(schema, dict) else None
+            if not isinstance(props, dict) or not props:
+                missing[db_key] = {"reason": "schema_missing_properties"}
+                continue
+
+            # Minimal expectation: there is at least one title property.
+            # (Notion allows renaming the title property; do not hardcode "Name".)
+            title_props = [
+                k
+                for k, v in props.items()
+                if isinstance(k, str)
+                and isinstance(v, dict)
+                and (v.get("type") == "title")
+            ]
+            if not title_props:
+                missing[db_key] = {
+                    "reason": "missing_title_property",
+                    "required_type": "title",
+                }
+
+        if missing:
+            return {
+                "ok": False,
+                "reason": "notion_schema_not_ready",
+                "missing": missing,
+                "me": {
+                    "id": me.get("id") if isinstance(me, dict) else None,
+                    "name": me.get("name") if isinstance(me, dict) else None,
+                },
+            }
+
+        return {
+            "ok": True,
+            "me": {
+                "id": me.get("id") if isinstance(me, dict) else None,
+                "name": me.get("name") if isinstance(me, dict) else None,
+            },
+            "db_ids": {
+                "goals": self.goals_db_id,
+                "tasks": self.tasks_db_id,
+                "projects": self.projects_db_id,
+            },
+        }
+
+    # ----------------------------
     # http wrapper
     # ----------------------------
     async def _safe_request(
@@ -316,6 +405,51 @@ class NotionService:
         t = p.get("type")
         return (t or "").strip() if isinstance(t, str) else ""
 
+    async def _resolve_option_name(
+        self, *, db_id: str, prop_name: str, desired: str
+    ) -> str:
+        """Resolve select/status option name in a case-insensitive way.
+
+        Notion option names are case-sensitive; prompts aren't. This makes execution
+        deterministic and reduces "sometimes it works" behavior.
+        """
+        desired = (desired or "").strip()
+        if not desired:
+            return desired
+
+        schema = await self._get_database_schema(db_id)
+        props = schema.get("properties") if isinstance(schema, dict) else None
+        if not isinstance(props, dict):
+            return desired
+
+        p = props.get(prop_name)
+        if not isinstance(p, dict):
+            return desired
+
+        p_type = p.get("type")
+        p_type = p_type.strip() if isinstance(p_type, str) else ""
+
+        options: List[Dict[str, Any]] = []
+        if p_type == "select":
+            sel = p.get("select")
+            if isinstance(sel, dict) and isinstance(sel.get("options"), list):
+                options = [o for o in sel.get("options") if isinstance(o, dict)]
+        elif p_type == "status":
+            st = p.get("status")
+            if isinstance(st, dict) and isinstance(st.get("options"), list):
+                options = [o for o in st.get("options") if isinstance(o, dict)]
+
+        if not options:
+            return desired
+
+        by_lower = {}
+        for o in options:
+            name = o.get("name")
+            if isinstance(name, str) and name.strip():
+                by_lower[name.strip().lower()] = name.strip()
+
+        return by_lower.get(desired.lower(), desired)
+
     # ----------------------------
     # property_specs -> Notion API properties
     # ----------------------------
@@ -372,16 +506,22 @@ class NotionService:
 
             if stype == "select":
                 name = _ensure_str(spec.get("name") or spec.get("value") or "")
-                out[pn] = self._select_prop(name)
+                resolved = await self._resolve_option_name(
+                    db_id=db_id, prop_name=pn, desired=name
+                )
+                out[pn] = self._select_prop(resolved)
                 continue
 
             if stype == "status":
                 name = _ensure_str(spec.get("name") or spec.get("value") or "")
                 actual = await self._resolve_property_type(db_id=db_id, prop_name=pn)
+                resolved = await self._resolve_option_name(
+                    db_id=db_id, prop_name=pn, desired=name
+                )
                 if actual == "select":
-                    out[pn] = self._select_prop(name)
+                    out[pn] = self._select_prop(resolved)
                 else:
-                    out[pn] = self._status_prop(name)
+                    out[pn] = self._status_prop(resolved)
                 continue
 
             if stype == "date":

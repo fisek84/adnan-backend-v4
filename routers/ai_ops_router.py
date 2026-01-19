@@ -55,7 +55,35 @@ def _require_ceo_token_if_enforced(request: Request) -> None:
         raise HTTPException(status_code=403, detail="CEO token required")
 
 
+def _is_ceo_request(request: Request) -> bool:
+    """
+    Check if the request is from a CEO user.
+    CEO users are identified by:
+    1. Valid X-CEO-Token header (if CEO_TOKEN_ENFORCEMENT is enabled)
+    2. X-Initiator == "ceo_chat" or similar CEO indicators
+    """
+    # If enforcement is enabled, check for valid token
+    if _ceo_token_enforcement_enabled():
+        expected = (os.getenv("CEO_APPROVAL_TOKEN", "") or "").strip()
+        provided = (request.headers.get("X-CEO-Token") or "").strip()
+        if expected and provided == expected:
+            return True
+
+    # Check for CEO indicators in request (for non-enforced mode)
+    initiator = (request.headers.get("X-Initiator") or "").strip().lower()
+    if initiator in ("ceo_chat", "ceo_dashboard", "ceo"):
+        return True
+
+    return False
+
+
 def _guard_write(request: Request) -> None:
+    # CEO users bypass OPS_SAFE_MODE restrictions
+    if _is_ceo_request(request):
+        _require_ceo_token_if_enforced(request)
+        return
+
+    # Non-CEO users must pass all checks
     if _ops_safe_mode_enabled():
         raise HTTPException(
             status_code=403, detail="OPS_SAFE_MODE enabled (writes blocked)"

@@ -271,6 +271,7 @@ function buildPayload(endpointUrl: string, req: CeoCommandRequest): any {
 
   // CHANGED: default initiator to chat (prevents dashboard-mode defaults if caller forgot to set it)
   const initiator = (req as any)?.initiator || "ceo_chat";
+  const session_id = (req as any)?.session_id ?? null;
 
   // /api/chat shape (AgentRouter / canon)
   if (isChatEndpoint(endpointUrl)) {
@@ -283,8 +284,12 @@ function buildPayload(endpointUrl: string, req: CeoCommandRequest): any {
     return {
       message: text,
       preferred_agent_id: preferred,
+      // Important for Notion Ops ARMED gate: backend extracts session_id from either
+      // payload.session_id or payload.metadata.session_id.
+      session_id,
       metadata: {
         initiator,
+        session_id,
         source: "ceoChatbox",
         context_hint: (req as any)?.context_hint ?? null,
         smart_context: (req as any)?.smart_context ?? null,
@@ -299,7 +304,7 @@ function buildPayload(endpointUrl: string, req: CeoCommandRequest): any {
     message: text,
     prompt: text,
     initiator,
-    session_id: (req as any)?.session_id ?? null,
+    session_id,
     context_hint: (req as any)?.context_hint ?? null,
     smart_context: (req as any)?.smart_context ?? null,
   };

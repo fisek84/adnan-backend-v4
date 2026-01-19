@@ -294,6 +294,32 @@ async def toggle_notion_ops(
     # Import state management
     from services.notion_ops_state import set_armed
 
+    # Enterprise safety (optional): when arming, validate Notion is configured and reachable.
+    # Default is OFF to preserve local/dev ergonomics and existing tests.
+    # Enable by setting NOTION_OPS_PREFLIGHT_REQUIRED=true.
+    if bool(payload.armed) is True and _env_true(
+        "NOTION_OPS_PREFLIGHT_REQUIRED", "false"
+    ):
+        from services.notion_service import get_or_init_notion_service
+
+        notion = get_or_init_notion_service()
+        if notion is None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Cannot ARM Notion Ops: Notion is not configured. "
+                    "Set NOTION_API_KEY (or NOTION_TOKEN) and NOTION_GOALS_DB_ID, "
+                    "NOTION_TASKS_DB_ID, NOTION_PROJECTS_DB_ID."
+                ),
+            )
+
+        pre = await notion.preflight_can_write()
+        if not isinstance(pre, dict) or not pre.get("ok"):
+            raise HTTPException(
+                status_code=503,
+                detail=f"Cannot ARM Notion Ops: Notion preflight failed: {pre}",
+            )
+
     # Toggle the state
     session_id = payload.session_id.strip()
     armed = bool(payload.armed)
