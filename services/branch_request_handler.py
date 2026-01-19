@@ -39,6 +39,17 @@ I18N_LABELS = {
     },
 }
 
+# Regex patterns for title extraction
+# Pattern to remove count information that appears before the actual title
+# E.g., "1 cilj + 5 taskova Povećanje prihoda" -> "Povećanje prihoda"
+TITLE_COUNT_PATTERN = (
+    r'^\d+\s*'                           # Number at start (e.g., "1 ")
+    r'(cilj|ciljeva|goal|goals)\s*'      # Goal keyword
+    r'[\+\-]*\s*'                        # Optional + or - separator
+    r'\d*\s*'                            # Optional second number
+    r'(task|taskova|tasks|zadatak|zadataka)?\s*'  # Optional task keyword
+)
+
 
 class BranchRequestHandler:
     """
@@ -129,8 +140,8 @@ class BranchRequestHandler:
                     title = title[len(prefix):].strip()
             
             # Remove count patterns at the beginning (before title)
-            # E.g., "1 cilj + 5 taskova Povećanje" -> "Povećanje"
-            title = re.sub(r'^\d+\s*(cilj|ciljeva|goal|goals)\s*[\+\-]*\s*\d*\s*(task|taskova|tasks|zadatak|zadataka)?\s*', '', title, flags=re.IGNORECASE)
+            # E.g., "1 cilj + 5 taskova Povećanje prihoda" -> "Povećanje prihoda"
+            title = re.sub(TITLE_COUNT_PATTERN, '', title, flags=re.IGNORECASE)
             
             # Remove trailing count patterns
             title = re.sub(r'\s+sa\s+\d+.*$', '', title, flags=re.IGNORECASE)
