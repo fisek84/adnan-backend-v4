@@ -308,6 +308,77 @@ class TestNotionServiceOperations(unittest.IsolatedAsyncioTestCase):
             )
 
     # ============================================================
+    # PEOPLE / ASSIGNEE TESTS
+    # ============================================================
+
+    async def test_create_page_people_property_specs_resolve_users(self):
+        """People specs should resolve to Notion user IDs and be sent as people[]."""
+
+        captured_payloads = []
+
+        async def fake_safe_request(method, url, payload=None, params=None):
+            # Users listing for people resolution
+            if method == "GET" and url.endswith("/users"):
+                return {
+                    "results": [
+                        {
+                            "id": "user-123",
+                            "name": "Adnan X",
+                            "person": {"email": "adnan@example.com"},
+                        }
+                    ]
+                }
+
+            # Schema reads (ignored/minimal)
+            if method == "GET" and "/databases/" in url:
+                return {"properties": {}}
+
+            # Page create: capture payload
+            if method == "POST" and url.endswith("/pages"):
+                captured_payloads.append(payload or {})
+                return {
+                    "id": "page-id-with-people",
+                    "url": "https://notion.so/page-id-with-people",
+                }
+
+            return {}
+
+        with patch.object(
+            self.service, "_safe_request", new_callable=AsyncMock
+        ) as mock_request:
+            mock_request.side_effect = fake_safe_request
+
+            command = AICommand(
+                command="notion_write",
+                intent="create_page",
+                params={
+                    "db_key": "tasks",
+                    "property_specs": {
+                        "Name": {"type": "title", "text": "Task with assignee"},
+                        "AI Agent": {
+                            "type": "people",
+                            "names": ["Adnan X", "adnan@example.com"],
+                        },
+                    },
+                },
+                approval_id="approval-people-1",
+                execution_id="exec-people-1",
+                read_only=False,
+            )
+
+            result = await self.service.execute(command)
+            self.assertTrue(result["ok"], msg=str(result))
+            self.assertTrue(captured_payloads, "No payload captured for POST /pages")
+
+            properties = captured_payloads[0].get("properties") or {}
+            self.assertIn("AI Agent", properties)
+            people_prop = properties["AI Agent"]
+            self.assertIsInstance(people_prop, dict)
+            people_list = people_prop.get("people")
+            self.assertIsInstance(people_list, list)
+            self.assertIn({"id": "user-123"}, people_list)
+
+    # ============================================================
     # UPDATE PAGE TESTS
     # ============================================================
 

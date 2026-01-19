@@ -262,6 +262,39 @@ class TestOperationBuilding:
         goal_op_id = operations[0]["op_id"]
         assert f"${goal_op_id}" in project_op["payload"]["primary_goal_id"]
 
+    def test_build_operations_with_shared_assignee_people_specs(self):
+        """Shared assignees in properties should produce people specs on all entities."""
+        branch_request = {
+            "main_title": "Ownership Setup",
+            "counts": {"goals": 1, "child_goals": 1, "projects": 1, "tasks": 1},
+            "properties": {"assignees": ["owner@example.com"]},
+        }
+
+        operations = BranchRequestHandler.build_branch_operations(branch_request)
+
+        # Expect 1 goal + 1 child_goal + 1 project + 1 task
+        assert len(operations) == 4
+
+        # Helper to collect all people specs
+        def _collect_people_specs(ops):
+            cols = []
+            for op in ops:
+                payload = op.get("payload") or {}
+                ps = payload.get("property_specs")
+                if isinstance(ps, dict):
+                    for spec in ps.values():
+                        if (
+                            isinstance(spec, dict)
+                            and spec.get("type") == "people"
+                            and "names" in spec
+                        ):
+                            cols.append(spec["names"])
+            return cols
+
+        people_lists = _collect_people_specs(operations)
+        # At least one people spec should carry the shared assignee
+        assert any("owner@example.com" in names for names in people_lists)
+
 
 class TestEndToEndProcessing:
     """Test end-to-end branch request processing."""

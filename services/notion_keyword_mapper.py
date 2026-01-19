@@ -118,6 +118,8 @@ class NotionKeywordMapper:
         "name": "Name",
         "parent_goal": "Parent Goal",
         "child_goals": "Child Goals",
+        "assigned_to": "Assigned To",
+        "handled_by": "Handled By",
     }
 
     # ============================================================

@@ -219,6 +219,13 @@ class NotionService:
             (os.getenv("NOTION_DB_SCHEMA_TTL_SECONDS") or "600").strip() or "600"
         )
 
+        # Users cache for people resolution
+        self._users_cache: Dict[str, Any] = {}
+        self._users_cache_fetched_at: float = 0.0
+        self._users_cache_ttl_seconds = int(
+            (os.getenv("NOTION_USERS_CACHE_TTL_SECONDS") or "600").strip() or "600"
+        )
+
     # ----------------------------
     # lifecycle
     # ----------------------------
@@ -390,6 +397,92 @@ class NotionService:
             fetched_at=now, schema=schema
         )
         return schema
+
+    async def _get_users_cache(self) -> Dict[str, Dict[str, str]]:
+        """Fetch and cache Notion users for people resolution.
+
+        Returns mapping:
+          {"by_email": {lower(email): id}, "by_name": {lower(name): id}}
+        """
+        now = time.time()
+        if self._users_cache and (now - self._users_cache_fetched_at) <= float(
+            self._users_cache_ttl_seconds
+        ):
+            by_email = self._users_cache.get("by_email")
+            by_name = self._users_cache.get("by_name")
+            if isinstance(by_email, dict) and isinstance(by_name, dict):
+                return self._users_cache  # type: ignore[return-value]
+
+        url = f"{self.NOTION_BASE_URL}/users"
+        try:
+            data = await self._safe_request("GET", url)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("NotionService users fetch failed: %s", exc)
+            self._users_cache = {"by_email": {}, "by_name": {}}
+            self._users_cache_fetched_at = now
+            return self._users_cache  # type: ignore[return-value]
+
+        results = data.get("results") if isinstance(data, dict) else None
+        by_email: Dict[str, str] = {}
+        by_name: Dict[str, str] = {}
+        if isinstance(results, list):
+            for u in results:
+                if not isinstance(u, dict):
+                    continue
+                uid = _ensure_str(u.get("id"))
+                if not uid:
+                    continue
+                name = _ensure_str(u.get("name"))
+                person = u.get("person") if isinstance(u.get("person"), dict) else None
+                email = ""
+                if isinstance(person, dict):
+                    email = _ensure_str(person.get("email"))
+
+                if email:
+                    by_email[email.lower()] = uid
+                if name:
+                    by_name[name.lower()] = uid
+
+        self._users_cache = {"by_email": by_email, "by_name": by_name}
+        self._users_cache_fetched_at = now
+        return self._users_cache  # type: ignore[return-value]
+
+    async def _resolve_people_ids_best_effort(self, inputs: List[str]) -> List[str]:
+        """Resolve a list of emails/names to Notion user IDs (best-effort)."""
+        if not inputs:
+            return []
+
+        cache = await self._get_users_cache()
+        by_email = cache.get("by_email") or {}
+        by_name = cache.get("by_name") or {}
+        ids: List[str] = []
+
+        for raw in inputs:
+            token = _ensure_str(raw)
+            if not token:
+                continue
+
+            key = token.lower()
+            uid = None
+
+            # Email match (direct or last token)
+            if "@" in token:
+                email_token = token.strip().lower()
+                uid = by_email.get(email_token)
+                if uid is None:
+                    parts = token.split()
+                    if parts and "@" in parts[-1]:
+                        cand = parts[-1].lower()
+                        uid = by_email.get(cand)
+
+            # Fallback by name
+            if uid is None:
+                uid = by_name.get(key)
+
+            if uid and uid not in ids:
+                ids.append(uid)
+
+        return ids
 
     async def get_fields_schema(self, db_key: str) -> Dict[str, Any]:
         """Return a UI-friendly schema for a DB key.
@@ -657,6 +750,7 @@ class NotionService:
         *,
         db_id: str,
         property_specs: Dict[str, Any],
+        warnings: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """
         Robust rule:
@@ -710,6 +804,43 @@ class NotionService:
             if stype == "date":
                 date_str = _ensure_str(spec.get("start") or spec.get("value") or "")
                 out[pn] = self._date_prop(date_str)
+                continue
+
+            if stype == "people":
+                # Supported forms:
+                #  a) {"type": "people", "ids": [..]}
+                #  b) {"type": "people", "emails": [..]}
+                #  c) {"type": "people", "names": [..]}
+                #  d) {"type": "people", "value": "email or name"}
+                ids: List[str] = []
+
+                raw_ids = spec.get("ids")
+                if isinstance(raw_ids, list):
+                    ids = [_ensure_str(x) for x in raw_ids if _ensure_str(x)]
+
+                if not ids:
+                    tokens: List[str] = []
+                    for key in ("emails", "names"):
+                        raw_list = spec.get(key)
+                        if isinstance(raw_list, list):
+                            tokens.extend(
+                                [_ensure_str(x) for x in raw_list if _ensure_str(x)]
+                            )
+
+                    if not tokens:
+                        raw_value = spec.get("value") or spec.get("name") or ""
+                        s_val = _ensure_str(raw_value)
+                        if s_val:
+                            tokens = [t.strip() for t in s_val.split(",") if t.strip()]
+
+                    if tokens:
+                        ids = await self._resolve_people_ids_best_effort(tokens)
+                        if not ids and warnings is not None:
+                            for tok in tokens:
+                                warnings.append(f"people_not_resolved:{tok}")
+
+                if ids:
+                    out[pn] = {"people": [{"id": pid} for pid in ids]}
                 continue
 
             # Unknown types ignored by design (safety)
@@ -1240,6 +1371,11 @@ class NotionService:
         if status:
             property_specs["Status"] = {"type": "status", "name": status}
 
+        # Allow explicit property_specs to augment/override defaults (e.g., people)
+        extra_specs = params.get("property_specs")
+        if isinstance(extra_specs, dict) and extra_specs:
+            property_specs.update(extra_specs)
+
         wrapper_patch = params.get("wrapper_patch")
         if isinstance(wrapper_patch, dict) and wrapper_patch:
             await self._apply_wrapper_patch_to_property_specs(
@@ -1314,6 +1450,11 @@ class NotionService:
         if status:
             property_specs["Status"] = {"type": "status", "name": status}
 
+        # Allow explicit property_specs to augment/override defaults (e.g., people)
+        extra_specs = params.get("property_specs")
+        if isinstance(extra_specs, dict) and extra_specs:
+            property_specs.update(extra_specs)
+
         wrapper_patch = params.get("wrapper_patch")
         if isinstance(wrapper_patch, dict) and wrapper_patch:
             await self._apply_wrapper_patch_to_property_specs(
@@ -1322,15 +1463,17 @@ class NotionService:
                 wrapper_patch=wrapper_patch,
             )
 
+        # Collect warnings from property_specs resolution and relation linking
+        warnings: List[str] = []
+
         # Build Notion properties
         notion_properties = await self._build_properties_from_property_specs(
-            db_id=db_id, property_specs=property_specs
+            db_id=db_id, property_specs=property_specs, warnings=warnings
         )
 
         # Handle relations after page creation
         goal_id = _ensure_str(params.get("goal_id"))
         project_id = _ensure_str(params.get("project_id"))
-        warnings: List[str] = []
 
         payload = {"parent": {"database_id": db_id}, "properties": notion_properties}
         url = f"{self.NOTION_BASE_URL}/pages"
@@ -1416,6 +1559,11 @@ class NotionService:
         if status:
             property_specs["Status"] = {"type": "status", "name": status}
 
+        # Allow explicit property_specs to augment/override defaults (e.g., people)
+        extra_specs = params.get("property_specs")
+        if isinstance(extra_specs, dict) and extra_specs:
+            property_specs.update(extra_specs)
+
         wrapper_patch = params.get("wrapper_patch")
         if isinstance(wrapper_patch, dict) and wrapper_patch:
             await self._apply_wrapper_patch_to_property_specs(
@@ -1424,14 +1572,16 @@ class NotionService:
                 wrapper_patch=wrapper_patch,
             )
 
+        # Collect warnings from property_specs resolution and relation linking
+        warnings: List[str] = []
+
         # Build Notion properties
         notion_properties = await self._build_properties_from_property_specs(
-            db_id=db_id, property_specs=property_specs
+            db_id=db_id, property_specs=property_specs, warnings=warnings
         )
 
         # Handle relations after page creation
         primary_goal_id = _ensure_str(params.get("primary_goal_id"))
-        warnings: List[str] = []
 
         payload = {"parent": {"database_id": db_id}, "properties": notion_properties}
         url = f"{self.NOTION_BASE_URL}/pages"

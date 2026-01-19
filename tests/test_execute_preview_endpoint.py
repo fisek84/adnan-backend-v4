@@ -378,3 +378,83 @@ def test_execute_preview_wrapper_kreiraj_cilj_i_task_lezi_batch_rows():
     ]
     assert goal_rows, rows
     assert task_rows, rows
+
+
+def test_execute_preview_wrapper_goal_with_task_assignee_builds_people_spec():
+    app = _get_app()
+    client = TestClient(app)
+
+    payload = {
+        "command": "ceo.command.propose",
+        "intent": "ceo.command.propose",
+        "params": {
+            "prompt": (
+                'Kreiraj novi cilj pod nazivom "Test cilj sa timom" sa rokom do 23.02.2026. Project owner je owner@example.com.\n'
+                "Zadaci povezani s ovim ciljem:\n"
+                '1. "Analiza tržišta" - due date: 20.01.2026, status: active, priority: low, assignee: adnan@example.com.\n'
+            )
+        },
+    }
+
+    r = client.post(
+        "/api/execute/preview",
+        headers={"X-Initiator": "ceo_chat"},
+        json=payload,
+    )
+    assert r.status_code == 200
+    body = r.json()
+
+    notion = body.get("notion")
+    assert isinstance(notion, dict)
+    assert notion.get("type") == "batch_preview"
+
+    rows = notion.get("rows")
+    assert isinstance(rows, list)
+
+    goal_rows = [
+        x for x in rows if isinstance(x, dict) and x.get("intent") == "create_goal"
+    ]
+    task_rows = [
+        x for x in rows if isinstance(x, dict) and x.get("intent") == "create_task"
+    ]
+    assert goal_rows and task_rows, rows
+
+    # At least one goal row should carry a people spec (Assigned To) derived from goal owner
+    has_goal_people = False
+    for row in goal_rows:
+        specs = row.get("property_specs")
+        if not isinstance(specs, dict):
+            continue
+        for spec in specs.values():
+            if (
+                isinstance(spec, dict)
+                and spec.get("type") == "people"
+                and "names" in spec
+                and "owner@example.com" in spec.get("names", [])
+            ):
+                has_goal_people = True
+                break
+        if has_goal_people:
+            break
+
+    # At least one task row should carry a people spec (AI Agent) derived from assignee
+    has_task_people = False
+    for row in task_rows:
+        specs = row.get("property_specs")
+        if not isinstance(specs, dict):
+            continue
+        # We don't hardcode column name, but expect one people-type spec with names including the assignee
+        for spec in specs.values():
+            if (
+                isinstance(spec, dict)
+                and spec.get("type") == "people"
+                and "names" in spec
+                and "adnan@example.com" in spec.get("names", [])
+            ):
+                has_task_people = True
+                break
+        if has_task_people:
+            break
+
+    assert has_goal_people, goal_rows
+    assert has_task_people, task_rows

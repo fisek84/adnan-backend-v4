@@ -12,6 +12,7 @@ class ParsedGoalTaskBatch:
     goal_title: str
     goal_deadline: Optional[str]
     tasks: list[dict[str, Any]]
+    goal_assignees: Optional[list[str]] = None
 
 
 _DATE_DMY = re.compile(r"\b(\d{1,2})\.(\d{1,2})\.(\d{4})\b")
@@ -90,6 +91,48 @@ def _extract_goal_deadline(prompt: str) -> Optional[str]:
         return _to_iso_date(m.group(1) or "")
 
     return None
+
+
+def _extract_goal_assignees(prompt: str) -> Optional[list[str]]:
+    """Extract owner/assignee people hints for the goal from the main prompt.
+
+    Supports phrases like:
+      - "owner cilja je adnan@example.com"
+      - "assignee for this goal: adnan@example.com, sara@example.com"
+    """
+    s = (prompt or "").strip()
+    if not s:
+        return None
+
+    m = re.search(
+        r"(?i)\b(assignee|assigned\s+to|owner|project\s+owner|goal\s+owner|nositelj|nosilac|dodijeljen|dodijeljena|odgovoran|odgovorna|responsible|lead|zaduzen|zadužena)\b\s*[:\-\u2013\u2014]?\s*([^\n\r]+)",
+        s,
+    )
+    if not m:
+        return None
+
+    assignee_raw = (m.group(2) or "").strip()
+    if not assignee_raw:
+        return None
+
+    parts = re.split(r"\s+i\s+|\s+and\s+|[,/&]", assignee_raw)
+    assignees: list[str] = []
+    for p in parts:
+        if not p or not p.strip():
+            continue
+        token = p.strip()
+        # Prefer explicit email-like patterns inside the token
+        # Match email-like pattern but do not include trailing punctuation
+        m_email = re.search(r"[\w\.-]+@[\w\.-]+", token)
+        if m_email:
+            val = re.sub(r"[\.,;:]+$", "", m_email.group(0))
+        else:
+            val = re.sub(r"[\.,;:]+$", "", token)
+        val = val.strip()
+        if val:
+            assignees.append(val)
+
+    return assignees or None
 
 
 def _iter_task_lines(prompt: str) -> list[str]:
@@ -215,6 +258,41 @@ def _parse_task_line(line: str) -> Optional[dict[str, Any]]:
     if m_pri:
         priority = (m_pri.group(1) or "").strip().strip(",;")
 
+    # Assignee / owner (people hints)
+    assignee_raw: Optional[str] = None
+    m_assign = re.search(
+        r"(?i)\b(assignee|assigned\s+to|owner|task\s+owner|project\s+owner|nositelj|nosilac|dodijeljen|dodijeljena|odgovoran|odgovorna|responsible|lead|zaduzen|zaduena)\b\s*[:\-\u2013\u2014]?\s*([^,;]+)",
+        ln,
+    )
+    if m_assign:
+        assignee_raw = (m_assign.group(2) or "").strip()
+
+    assignees: list[str] = []
+    if assignee_raw:
+        parts = re.split(r"\s+i\s+|\s+and\s+|[,/&]", assignee_raw)
+        # Strip common trailing punctuation so emails/names are clean
+        assignees = [
+            re.sub(r"[\.,;:]+$", "", p.strip()) for p in parts if p and p.strip()
+        ]
+
+    # Relation hints (goal/project by title)
+    goal_title_hint: Optional[str] = None
+    project_title_hint: Optional[str] = None
+
+    m_goal = re.search(
+        r"(?i)(?:povezan|povezi|povezi|link(?:aj)?|connect|attach)?\s*(?:sa|s|with)?\s*(?:ciljem|cilj|goal)\s*[:\-\u2013\u2014]?\s*([^,;]+)",
+        ln,
+    )
+    if m_goal:
+        goal_title_hint = (m_goal.group(1) or "").strip()
+
+    m_project = re.search(
+        r"(?i)(?:povezan|povezi|povezi|link(?:aj)?|connect|attach)?\s*(?:sa|s|with)?\s*(?:projektom|projekat|projekt|project)\s*[:\-\u2013\u2014]?\s*([^,;]+)",
+        ln,
+    )
+    if m_project:
+        project_title_hint = (m_project.group(1) or "").strip()
+
     out: dict[str, Any] = {"title": title}
     if due:
         out["deadline"] = due
@@ -222,6 +300,12 @@ def _parse_task_line(line: str) -> Optional[dict[str, Any]]:
         out["status"] = status
     if priority:
         out["priority"] = priority
+    if assignees:
+        out["assignees"] = assignees
+    if goal_title_hint:
+        out["goal_title"] = goal_title_hint
+    if project_title_hint:
+        out["project_title"] = project_title_hint
 
     return out
 
@@ -261,6 +345,7 @@ def parse_goal_with_explicit_tasks(prompt: str) -> Optional[ParsedGoalTaskBatch]
         return None
 
     goal_deadline = _extract_goal_deadline(s)
+    goal_assignees = _extract_goal_assignees(s)
 
     tasks: list[dict[str, Any]] = []
     for ln in task_lines:
@@ -272,18 +357,49 @@ def parse_goal_with_explicit_tasks(prompt: str) -> Optional[ParsedGoalTaskBatch]
         return None
 
     return ParsedGoalTaskBatch(
-        goal_title=goal_title, goal_deadline=goal_deadline, tasks=tasks
+        goal_title=goal_title,
+        goal_deadline=goal_deadline,
+        tasks=tasks,
+        goal_assignees=goal_assignees,
     )
 
 
 def build_batch_operations_from_parsed(
     parsed: ParsedGoalTaskBatch,
 ) -> list[dict[str, Any]]:
+    from services.notion_keyword_mapper import (  # noqa: PLC0415
+        get_notion_field_name,
+        translate_payload,
+    )
+
+    def _normalized_payload(raw: dict[str, Any]) -> dict[str, Any]:
+        base = dict(raw) if isinstance(raw, dict) else {}
+        try:
+            translated = translate_payload(base)
+        except Exception:
+            translated = base
+
+        # Backward-compatible alias: ensure "deadline" when due_date exists
+        if "due_date" in translated and "deadline" not in translated:
+            translated["deadline"] = translated["due_date"]
+        return translated
+
     goal_op_id = f"goal_{uuid4().hex[:8]}"
 
     goal_payload: dict[str, Any] = {"title": parsed.goal_title}
     if parsed.goal_deadline:
         goal_payload["deadline"] = parsed.goal_deadline
+
+    # Attach goal-level assignees as people specs if present
+    if parsed.goal_assignees:
+        field_name = get_notion_field_name("assigned_to")
+        ps = goal_payload.get("property_specs") or {}
+        if not isinstance(ps, dict):
+            ps = {}
+        ps[field_name] = {"type": "people", "names": list(parsed.goal_assignees)}
+        goal_payload["property_specs"] = ps
+
+    goal_payload = _normalized_payload(goal_payload)
 
     ops: list[dict[str, Any]] = [
         {
@@ -297,6 +413,21 @@ def build_batch_operations_from_parsed(
         op_id = f"task_{uuid4().hex[:8]}"
         payload = dict(t)
         payload["goal_id"] = f"${goal_op_id}"
+
+        # Attach assignees as people spec for tasks
+        assignees = payload.pop("assignees", None)
+        if assignees:
+            field_name = get_notion_field_name("ai_agent")
+            prop_specs = payload.get("property_specs") or {}
+            if not isinstance(prop_specs, dict):
+                prop_specs = {}
+            prop_specs[field_name] = {
+                "type": "people",
+                "names": assignees,
+            }
+            payload["property_specs"] = prop_specs
+
+        payload = _normalized_payload(payload)
         ops.append({"op_id": op_id, "intent": "create_task", "payload": payload})
 
     return ops

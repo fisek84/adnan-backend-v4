@@ -270,6 +270,23 @@ class BranchRequestHandler:
         if deadline_match:
             properties["deadline"] = deadline_match.group(1)
 
+        # Owner/assignee patterns (people hints for all created entities)
+        assignee_raw: Optional[str] = None
+        m_assign = re.search(
+            r"(?i)\b(assignee|assigned\s+to|owner|project\s+owner|goal\s+owner|nositelj|nosilac|dodijeljen|dodijeljena|odgovoran|odgovorna|responsible|lead|zaduzen|zadužena)\b\s*[:\-\u2013\u2014]?\s*([^,;\n\r]+)",
+            text,
+        )
+        if m_assign:
+            assignee_raw = (m_assign.group(2) or "").strip()
+
+        if assignee_raw:
+            parts = re.split(r"\s+i\s+|\s+and\s+|[,/&]", assignee_raw)
+            assignees = [
+                re.sub(r"[\.,;:]+$", "", p.strip()) for p in parts if p and p.strip()
+            ]
+            if assignees:
+                properties["assignees"] = assignees
+
         return properties
 
     @staticmethod
@@ -333,6 +350,50 @@ class BranchRequestHandler:
         counts = branch_request.get("counts", {})
         properties = branch_request.get("properties", {})
 
+        # Extract any shared assignees from properties; use them to build people specs
+        shared_assignees = []
+        if isinstance(properties, dict):
+            raw_assignees = properties.get("assignees")
+            if isinstance(raw_assignees, list):
+                shared_assignees = [
+                    str(x).strip() for x in raw_assignees if str(x).strip()
+                ]
+
+        def _attach_people_specs(
+            payload: Dict[str, Any], *, entity_type: str
+        ) -> Dict[str, Any]:
+            """Attach people property_specs based on shared_assignees.
+
+            - goals/child_goals -> Assigned To
+            - projects -> Handled By
+            - tasks -> AI Agent
+            """
+            if not shared_assignees:
+                return payload
+
+            from services.notion_keyword_mapper import (  # noqa: PLC0415
+                get_notion_field_name,
+            )
+
+            field_name: Optional[str] = None
+            et = (entity_type or "").lower()
+            if et in {"goal", "child_goal"}:
+                field_name = get_notion_field_name("assigned_to")
+            elif et == "project":
+                field_name = get_notion_field_name("handled_by")
+            elif et == "task":
+                field_name = get_notion_field_name("ai_agent")
+
+            if not field_name:
+                return payload
+
+            ps = payload.get("property_specs") or {}
+            if not isinstance(ps, dict):
+                ps = {}
+            ps[field_name] = {"type": "people", "names": list(shared_assignees)}
+            payload["property_specs"] = ps
+            return payload
+
         # Detect language for proper labels
         lang = BranchRequestHandler._detect_language(main_title)
 
@@ -353,6 +414,7 @@ class BranchRequestHandler:
                     else f"{main_title} - {BranchRequestHandler._get_label('goal_prefix', lang)} {i+1}",
                     **properties,
                 }
+                goal_payload = _attach_people_specs(goal_payload, entity_type="goal")
 
                 operations.append(
                     {
@@ -376,6 +438,9 @@ class BranchRequestHandler:
                     "parent_goal_id": f"${parent_goal_id}",  # Reference to parent
                     **properties,
                 }
+                child_payload = _attach_people_specs(
+                    child_payload, entity_type="child_goal"
+                )
 
                 operations.append(
                     {
@@ -404,6 +469,10 @@ class BranchRequestHandler:
                 if goal_ids:
                     project_payload["primary_goal_id"] = f"${goal_ids[0]}"
 
+                project_payload = _attach_people_specs(
+                    project_payload, entity_type="project"
+                )
+
                 operations.append(
                     {
                         "op_id": op_id,
@@ -431,6 +500,8 @@ class BranchRequestHandler:
                 # Link to project if available
                 if project_ids:
                     task_payload["project_id"] = f"${project_ids[0]}"
+
+                task_payload = _attach_people_specs(task_payload, entity_type="task")
 
                 operations.append(
                     {
