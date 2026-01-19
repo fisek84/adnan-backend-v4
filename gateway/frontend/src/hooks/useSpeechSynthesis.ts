@@ -76,11 +76,19 @@ export const useSpeechSynthesis = (
       // Try to respect selected voice (male/female/etc.),
       // but always fall back gracefully.
       if (voices.length > 0) {
-        const langPrefix = lang.slice(0, 2).toLowerCase();
+        const langLower = lang.toLowerCase();
+        let prefixes = [langLower.slice(0, 2)];
+        // Bosanski / Croatian / Serbian cluster: prefer any ex-Yu voice
+        if (langLower.startsWith("bs") || langLower.startsWith("hr") || langLower.startsWith("sr")) {
+          prefixes = ["bs", "hr", "sr", "sh"];
+        }
         const byName = selectedVoiceName
           ? voices.find((v) => v.name === selectedVoiceName)
           : undefined;
-        const byLang = voices.find((v) => v.lang?.toLowerCase().startsWith(langPrefix));
+        const byLang = voices.find((v) => {
+          const vlang = v.lang?.toLowerCase() || "";
+          return prefixes.some((p) => vlang.startsWith(p));
+        });
         utterance.voice = byName ?? byLang ?? voices[0];
       }
 

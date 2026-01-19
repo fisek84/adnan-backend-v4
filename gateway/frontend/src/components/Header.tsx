@@ -123,6 +123,16 @@ export const Header: React.FC<HeaderProps> = ({
             )}
           </button>
 
+          {autoSendOnVoiceFinal && (
+            <div
+              className="ceoHeaderFullVoice"
+              title="Full voice mode: auto-send & auto-speak"
+            >
+              <span className="ceoHeaderFullVoiceDot" />
+              <span className="ceoHeaderFullVoiceText">Full voice</span>
+            </div>
+          )}
+
           {/* Discreet settings menu (language, voice) */}
           {(onLanguageChange || (ttsVoices && ttsVoices.length > 0 && onTtsVoiceChange)) && (
             <div className="ceoHeaderSettingsContainer">
@@ -195,7 +205,7 @@ export const Header: React.FC<HeaderProps> = ({
                         onChange={(e) => onLanguageChange(e.target.value)}
                       >
                         <option value="en-US">English</option>
-                        <option value="bs-BA">Bosanski</option>
+                        <option value="bs-BA">Bosanski / Hrvatski</option>
                       </select>
                     </label>
                   )}

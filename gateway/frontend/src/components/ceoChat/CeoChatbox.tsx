@@ -571,8 +571,15 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
 
   const ttsVoiceOptions = useMemo(() => {
     if (!voices || voices.length === 0) return [] as { value: string; label: string }[];
-    const langPrefix = currentVoiceLang.slice(0, 2).toLowerCase();
-    const filtered = voices.filter((v) => v.lang?.toLowerCase().startsWith(langPrefix));
+    const langLower = currentVoiceLang.toLowerCase();
+    let prefixes = [langLower.slice(0, 2)];
+    if (langLower.startsWith("bs") || langLower.startsWith("hr") || langLower.startsWith("sr")) {
+      prefixes = ["bs", "hr", "sr", "sh"];
+    }
+    const filtered = voices.filter((v) => {
+      const vlang = v.lang?.toLowerCase() || "";
+      return prefixes.some((p) => vlang.startsWith(p));
+    });
     const base = filtered.length > 0 ? filtered : voices;
     return base.map((v) => ({
       value: v.name,
@@ -762,7 +769,10 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
     if (!ok) return;
 
     const rec = new Rec();
-    rec.lang = currentVoiceLang;
+    const langLower = currentVoiceLang.toLowerCase();
+    // For Bosnian UI, prefer a broadly supported recognition locale if bs-BA is missing.
+    const sttLang = langLower.startsWith("bs") ? "hr-HR" : currentVoiceLang;
+    rec.lang = sttLang;
     rec.interimResults = true;
     rec.continuous = false;
 
@@ -1649,15 +1659,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
 
       <footer className="ceoComposer">
         {/* NOTION OPS STATUS & ACTIVATION */}
-        <div
-          style={{
-            display: "flex",
-            gap: 12,
-            alignItems: "center",
-            padding: "8px 0",
-            borderTop: "1px solid rgba(255,255,255,0.08)",
-          }}
-        >
+        <div className="ceoFooterRow ceoFooterRow-top">
           <div style={{ display: "flex", alignItems: "center", gap: 8, flex: 1 }}>
             <span style={{ fontWeight: 600, opacity: 0.9 }}>Notion Ops:</span>
             <span
@@ -1754,17 +1756,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         </div>
 
         {/* NOTION READ PANEL */}
-        <div
-          style={{
-            display: "flex",
-            gap: 8,
-            flexWrap: "wrap",
-            alignItems: "center",
-            padding: "8px 0 10px 0",
-            borderTop: "1px solid rgba(255,255,255,0.08)",
-            marginTop: 8,
-          }}
-        >
+        <div className="ceoFooterRow ceoFooterRow-search">
           <div style={{ fontWeight: 600, opacity: 0.9 }}>{(ui as any).searchNotionLabel ?? "Search Notion"}</div>
 
           <input
@@ -1772,15 +1764,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
             onChange={(e) => setNotionQuery(e.target.value)}
             placeholder={(ui as any).searchQueryPlaceholder ?? 'Document title (e.g. "Outreach SOP")…'}
             disabled={notionLoading || busy === "submitting" || busy === "streaming"}
-            style={{
-              padding: "8px 10px",
-              borderRadius: 10,
-              border: "1px solid rgba(255,255,255,0.12)",
-              background: "transparent",
-              color: "inherit",
-              flex: "1 1 320px",
-              minWidth: 240,
-            }}
+            className="ceoFooterInput"
           />
 
           <button
