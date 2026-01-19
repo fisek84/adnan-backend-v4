@@ -43,6 +43,7 @@ type CeoChatboxProps = {
   autoSendOnVoiceFinal?: boolean; // default false
   enableTTS?: boolean; // default true - enable Text-to-Speech
   autoSpeak?: boolean; // default false - automatically speak system responses
+  voiceLang?: string; // default 'en-US' - language for both STT and TTS
 };
 
 type BusyState = "idle" | "submitting" | "streaming" | "error";
@@ -298,6 +299,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
   autoSendOnVoiceFinal = false,
   enableTTS = true,
   autoSpeak = false,
+  voiceLang = 'en-US',
 }) => {
   const ui = useMemo(() => ({ ...defaultStrings, ...(strings ?? {}) }), [strings]);
 
@@ -321,8 +323,8 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
 
   const abortRef = useRef<AbortController | null>(null);
 
-  // Text-to-Speech hook
-  const { speak, cancel: cancelSpeech, speaking, supported: ttsSupported } = useSpeechSynthesis();
+  // Text-to-Speech hook with configured language
+  const { speak, cancel: cancelSpeech, speaking, supported: ttsSupported } = useSpeechSynthesis(voiceLang);
 
   const { viewportRef, isPinnedToBottom, scrollToBottom } = useAutoScroll();
 
@@ -404,7 +406,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
     if (!ok) return;
 
     const rec = new Rec();
-    rec.lang = "bs-BA";
+    rec.lang = voiceLang;
     rec.interimResults = true;
     rec.continuous = false;
 
@@ -447,7 +449,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       }
       recognitionRef.current = null;
     };
-  }, [enableVoice, autoSendOnVoiceFinal]);
+  }, [enableVoice, autoSendOnVoiceFinal, voiceLang]);
 
   const toggleVoice = useCallback(() => {
     if (!enableVoice) return;
@@ -955,16 +957,6 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
                           onClick={() => speak(String(it.content))}
                           disabled={speaking}
                           title="Speak this message"
-                          style={{
-                            marginLeft: '8px',
-                            padding: '2px 6px',
-                            fontSize: '10px',
-                            border: '1px solid var(--ceo-border)',
-                            background: 'rgba(255,255,255,0.04)',
-                            color: 'var(--ceo-text)',
-                            borderRadius: '6px',
-                            cursor: 'pointer',
-                          }}
                         >
                           🔊
                         </button>

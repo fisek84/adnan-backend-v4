@@ -7,7 +7,7 @@ interface UseSpeechSynthesisReturn {
   supported: boolean;
 }
 
-export const useSpeechSynthesis = (): UseSpeechSynthesisReturn => {
+export const useSpeechSynthesis = (lang: string = 'en-US'): UseSpeechSynthesisReturn => {
   const [speaking, setSpeaking] = useState(false);
   const [supported, setSupported] = useState(false);
   const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
@@ -15,18 +15,6 @@ export const useSpeechSynthesis = (): UseSpeechSynthesisReturn => {
   useEffect(() => {
     const isSupported = 'speechSynthesis' in window;
     setSupported(isSupported);
-
-    if (!isSupported) return;
-
-    const handleEnd = () => setSpeaking(false);
-    const handleStart = () => setSpeaking(true);
-
-    return () => {
-      if (utteranceRef.current) {
-        utteranceRef.current.removeEventListener('end', handleEnd);
-        utteranceRef.current.removeEventListener('start', handleStart);
-      }
-    };
   }, []);
 
   const speak = useCallback((text: string) => {
@@ -39,7 +27,7 @@ export const useSpeechSynthesis = (): UseSpeechSynthesisReturn => {
     utterance.rate = 1.0;
     utterance.pitch = 1.0;
     utterance.volume = 1.0;
-    utterance.lang = 'en-US';
+    utterance.lang = lang;
 
     utterance.onstart = () => setSpeaking(true);
     utterance.onend = () => setSpeaking(false);
@@ -47,7 +35,7 @@ export const useSpeechSynthesis = (): UseSpeechSynthesisReturn => {
 
     utteranceRef.current = utterance;
     window.speechSynthesis.speak(utterance);
-  }, [supported]);
+  }, [supported, lang]);
 
   const cancel = useCallback(() => {
     if (!supported) return;
