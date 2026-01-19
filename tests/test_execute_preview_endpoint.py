@@ -66,3 +66,46 @@ def test_execute_preview_notion_write_shape():
     assert props_preview["Status"] == {"status": {"name": "Active"}}
     assert props_preview["Priority"] == {"select": {"name": "Low"}}
     assert props_preview["Deadline"] == {"date": {"start": "2030-01-01"}}
+
+
+def test_execute_preview_unwraps_ai_command_envelope():
+    app = _get_app()
+    client = TestClient(app)
+
+    # This mimics the problematic CEO Console proposal where the top-level intent is "notion_write",
+    # but the real executable intent is nested under params.ai_command.
+    payload = {
+        "command": "notion_write",
+        "intent": "notion_write",
+        "params": {
+            "ai_command": {
+                "command": "notion_write",
+                "intent": "create_page",
+                "params": {
+                    "db_key": "goals",
+                    "property_specs": {
+                        "Name": {"type": "title", "text": "Envelope Goal"},
+                        "Status": {"type": "status", "name": "Active"},
+                    },
+                },
+            }
+        },
+    }
+
+    r = client.post(
+        "/api/execute/preview",
+        headers={"X-Initiator": "ceo_chat"},
+        json=payload,
+    )
+    assert r.status_code == 200
+    body = r.json()
+
+    cmd = body.get("command")
+    assert isinstance(cmd, dict)
+    assert cmd.get("command") == "notion_write"
+    assert cmd.get("intent") == "create_page"
+
+    notion = body.get("notion")
+    assert isinstance(notion, dict)
+    assert notion.get("db_key") == "goals"
+    assert isinstance(notion.get("properties_preview"), dict)

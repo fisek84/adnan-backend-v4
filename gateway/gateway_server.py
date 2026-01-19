@@ -1246,6 +1246,35 @@ def _normalize_execute_raw_payload_dict(body: Dict[str, Any]) -> ExecuteRawInput
         if isinstance(payload0, dict):
             params = dict(payload0)
 
+    # Compatibility: some proposals wrap the real executable command under params.ai_command.
+    # Example (observed from CEO Console proposals):
+    #   { command: "notion_write", intent: "notion_write", params: { ai_command: { command:"notion_write", intent:"create_page", params:{...} } } }
+    # If we don't unwrap, the orchestrator will attempt to execute intent="notion_write" and NotionService will reject it.
+    if isinstance(params, dict):
+        ac = params.get("ai_command")
+        if isinstance(ac, dict):
+            ac_cmd = ac.get("command")
+            ac_intent = ac.get("intent")
+            ac_params = ac.get("params")
+            ac_args = ac.get("args")
+
+            # Unwrap only when ai_command looks like an actual command envelope.
+            if (
+                isinstance(ac_cmd, str)
+                and ac_cmd.strip()
+                and (isinstance(ac_params, dict) or isinstance(ac_args, dict))
+            ):
+                cmd = ac_cmd.strip()
+                if isinstance(ac_intent, str) and ac_intent.strip():
+                    intent = ac_intent.strip()
+                else:
+                    intent = cmd
+
+                if isinstance(ac_params, dict):
+                    params = dict(ac_params)
+                elif isinstance(ac_args, dict):
+                    params = dict(ac_args)
+
     if intent == PROPOSAL_WRAPPER_INTENT and "prompt" not in params:
         args = body.get("args")
         if isinstance(args, dict):
@@ -1276,6 +1305,14 @@ def _normalize_execute_raw_payload_dict(body: Dict[str, Any]) -> ExecuteRawInput
     metadata = body.get("metadata")
     if not isinstance(metadata, dict):
         metadata = {}
+
+    # Merge envelope metadata if present.
+    if isinstance(body.get("params"), dict):
+        ac0 = body["params"].get("ai_command")
+        if isinstance(ac0, dict) and isinstance(ac0.get("metadata"), dict):
+            merged_md = dict(ac0.get("metadata") or {})
+            merged_md.update(metadata)
+            metadata = merged_md
 
     payload_summary = body.get("payload_summary")
     if isinstance(payload_summary, dict):
