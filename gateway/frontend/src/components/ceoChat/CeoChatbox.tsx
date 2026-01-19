@@ -48,6 +48,10 @@ type CeoChatboxProps = {
 
 type BusyState = "idle" | "submitting" | "streaming" | "error";
 
+// Notion Ops activation/deactivation commands
+const NOTION_OPS_ACTIVATE_CMD = "notion ops aktiviraj";
+const NOTION_OPS_DEACTIVATE_CMD = "notion ops ugasi";
+
 const makeSystemProcessingItem = (requestId?: string): ChatMessageItem => ({
   id: uid(),
   kind: "message",
@@ -336,9 +340,11 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
   
   // Notion ops armed state - restore from sessionStorage
   const [notionOpsArmed, setNotionOpsArmed] = useState<boolean>(() => {
-    if (typeof sessionStorage === 'undefined') return false;
-    const stored = sessionStorage.getItem('notion_ops_armed');
-    return stored === 'true';
+    if (typeof sessionStorage !== 'undefined') {
+      const stored = sessionStorage.getItem('notion_ops_armed');
+      return stored === 'true';
+    }
+    return false;
   });
 
   const abortRef = useRef<AbortController | null>(null);
@@ -1186,11 +1192,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
           <button
             className="ceoHeaderButton"
             onClick={() => {
-              if (notionOpsArmed) {
-                setDraft("notion ops ugasi");
-              } else {
-                setDraft("notion ops aktiviraj");
-              }
+              setDraft(notionOpsArmed ? NOTION_OPS_DEACTIVATE_CMD : NOTION_OPS_ACTIVATE_CMD);
             }}
             disabled={busy === "submitting" || busy === "streaming"}
             title={notionOpsArmed ? "Deactivate Notion Ops" : "Activate Notion Ops"}

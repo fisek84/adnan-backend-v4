@@ -788,8 +788,8 @@ class COOTranslationService:
                 cleaned,
             ).strip()
 
-        # Extract quoted title if present
-        quoted_title_match = re.match(r"^['\"]([^'\"]+)['\"]", cleaned)
+        // Extract quoted title if present (allow empty quotes for robustness)
+        quoted_title_match = re.match(r"^['\"]([^'\"]*)['\"]", cleaned)
         if quoted_title_match:
             derived_title = quoted_title_match.group(1).strip()
         else:
