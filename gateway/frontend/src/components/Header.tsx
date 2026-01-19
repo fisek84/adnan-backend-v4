@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useTheme } from '../contexts/ThemeContext';
 
 interface HeaderProps {
@@ -12,6 +12,24 @@ interface HeaderProps {
   onJumpToLatest?: () => void;
   showJump?: boolean;
   disabled?: boolean;
+  // Language + voice controls for TTS/STT
+  language?: string;
+  onLanguageChange?: (lang: string) => void;
+  ttsVoices?: { value: string; label: string }[];
+  selectedTtsVoiceId?: string;
+  onTtsVoiceChange?: (id: string) => void;
+  enableVoice?: boolean;
+  onEnableVoiceChange?: (value: boolean) => void;
+  enableTTS?: boolean;
+  onEnableTTSChange?: (value: boolean) => void;
+  autoSpeak?: boolean;
+  onAutoSpeakChange?: (value: boolean) => void;
+  autoSendOnVoiceFinal?: boolean;
+  onAutoSendOnVoiceFinalChange?: (value: boolean) => void;
+  speechRate?: number;
+  onSpeechRateChange?: (value: number) => void;
+  speechPitch?: number;
+  onSpeechPitchChange?: (value: number) => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -25,8 +43,26 @@ export const Header: React.FC<HeaderProps> = ({
   onJumpToLatest,
   showJump = false,
   disabled = false,
+  language,
+  onLanguageChange,
+  ttsVoices,
+  selectedTtsVoiceId,
+  onTtsVoiceChange,
+  enableVoice,
+  onEnableVoiceChange,
+  enableTTS,
+  onEnableTTSChange,
+  autoSpeak,
+  onAutoSpeakChange,
+  autoSendOnVoiceFinal,
+  onAutoSendOnVoiceFinalChange,
+  speechRate,
+  onSpeechRateChange,
+  speechPitch,
+  onSpeechPitchChange,
 }) => {
   const { theme, toggleTheme } = useTheme();
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   return (
     <header className="ceoHeader">
@@ -86,6 +122,133 @@ export const Header: React.FC<HeaderProps> = ({
               </svg>
             )}
           </button>
+
+          {/* Discreet settings menu (language, voice) */}
+          {(onLanguageChange || (ttsVoices && ttsVoices.length > 0 && onTtsVoiceChange)) && (
+            <div className="ceoHeaderSettingsContainer">
+              <button
+                className="ceoHeaderButton"
+                type="button"
+                onClick={() => setSettingsOpen((o) => !o)}
+                aria-haspopup="true"
+                aria-expanded={settingsOpen}
+                aria-label="Open voice and language settings"
+              >
+                <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="3" />
+                  <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 008.4 19a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06A1.65 1.65 0 004 15.4a1.65 1.65 0 00-1.51-1H2a2 2 0 010-4h.09A1.65 1.65 0 004 8.6a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06A1.65 1.65 0 008.6 4a1.65 1.65 0 001-1.51V2a2 2 0 014 0v.09A1.65 1.65 0 0015.4 4a1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06A1.65 1.65 0 0019 8.6a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09A1.65 1.65 0 0019.4 15z" />
+                </svg>
+              </button>
+
+              {settingsOpen && (
+                <div className="ceoHeaderSettingsPanel">
+                  {onEnableVoiceChange !== undefined && (
+                    <label className="ceoHeaderSettingsRow">
+                      <span>Voice input</span>
+                      <input
+                        type="checkbox"
+                        checked={enableVoice !== false}
+                        onChange={(e) => onEnableVoiceChange(e.target.checked)}
+                      />
+                    </label>
+                  )}
+
+                  {onEnableTTSChange !== undefined && (
+                    <label className="ceoHeaderSettingsRow">
+                      <span>Text-to-Speech</span>
+                      <input
+                        type="checkbox"
+                        checked={enableTTS !== false}
+                        onChange={(e) => onEnableTTSChange(e.target.checked)}
+                      />
+                    </label>
+                  )}
+
+                  {onAutoSpeakChange !== undefined && (
+                    <label className="ceoHeaderSettingsRow">
+                      <span>Auto-read replies</span>
+                      <input
+                        type="checkbox"
+                        checked={autoSpeak === true}
+                        onChange={(e) => onAutoSpeakChange(e.target.checked)}
+                      />
+                    </label>
+                  )}
+
+                  {onAutoSendOnVoiceFinalChange !== undefined && (
+                    <label className="ceoHeaderSettingsRow">
+                      <span>Auto-send on voice</span>
+                      <input
+                        type="checkbox"
+                        checked={autoSendOnVoiceFinal === true}
+                        onChange={(e) => onAutoSendOnVoiceFinalChange(e.target.checked)}
+                      />
+                    </label>
+                  )}
+
+                  {onLanguageChange && (
+                    <label className="ceoHeaderSettingsRow">
+                      <span>Jezik / Language</span>
+                      <select
+                        className="ceoHeaderSelect"
+                        value={language || 'en-US'}
+                        onChange={(e) => onLanguageChange(e.target.value)}
+                      >
+                        <option value="en-US">English</option>
+                        <option value="bs-BA">Bosanski</option>
+                      </select>
+                    </label>
+                  )}
+
+                  {ttsVoices && ttsVoices.length > 0 && onTtsVoiceChange && (
+                    <label className="ceoHeaderSettingsRow">
+                      <span>Glas / Voice</span>
+                      <select
+                        className="ceoHeaderSelect"
+                        value={selectedTtsVoiceId || ''}
+                        onChange={(e) => onTtsVoiceChange(e.target.value || '')}
+                      >
+                        <option value="">Default</option>
+                        {ttsVoices.map((v) => (
+                          <option key={v.value} value={v.value}>
+                            {v.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
+
+                  {onSpeechRateChange && speechRate !== undefined && (
+                    <label className="ceoHeaderSettingsRow">
+                      <span>Speech rate</span>
+                      <input
+                        type="range"
+                        min={0.6}
+                        max={1.8}
+                        step={0.05}
+                        value={speechRate}
+                        onChange={(e) => onSpeechRateChange(parseFloat(e.target.value))}
+                      />
+                    </label>
+                  )}
+
+                  {onSpeechPitchChange && speechPitch !== undefined && (
+                    <label className="ceoHeaderSettingsRow">
+                      <span>Pitch</span>
+                      <input
+                        type="range"
+                        min={0.6}
+                        max={1.6}
+                        step={0.05}
+                        value={speechPitch}
+                        onChange={(e) => onSpeechPitchChange(parseFloat(e.target.value))}
+                      />
+                    </label>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
 
           {showStop && onStopCurrent && (
             <button 

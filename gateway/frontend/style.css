@@ -96,7 +96,7 @@ p{ margin:0; }
   align-items:center;
   justify-content: space-between;
   padding: 16px 18px;
-  border-bottom: 1px solid rgba(255,255,255,.08);
+  border-bottom: 1px solid var(--border);
   background: rgba(0,0,0,.18);
   backdrop-filter: blur(10px);
 }
@@ -138,8 +138,8 @@ p{ margin:0; }
   padding: 6px 10px;
   border-radius: 999px;
   border: 1px solid var(--border);
-  background: rgba(255,255,255,.05);
-  color: rgba(255,255,255,.82);
+  background: var(--surface2);
+  color: var(--text);
   font-size: 11px;
   line-height: 1;
   white-space: nowrap;
@@ -188,8 +188,8 @@ p{ margin:0; }
 
 /* Card */
 .card{
-  border: 1px solid rgba(255,255,255,.10);
-  background: rgba(0,0,0,.18);
+  border: 1px solid var(--border);
+  background: var(--surface);
   border-radius: var(--radius);
   box-shadow: var(--shadow2);
   overflow: hidden;
@@ -199,8 +199,8 @@ p{ margin:0; }
   align-items:flex-start;
   justify-content: space-between;
   padding: 14px 16px;
-  border-bottom: 1px solid rgba(255,255,255,.07);
-  background: rgba(255,255,255,.02);
+  border-bottom: 1px solid var(--border2);
+  background: var(--surface2);
 }
 .card-header-compact{
   padding: 12px 14px;
@@ -269,9 +269,9 @@ p{ margin:0; }
   align-items:center;
   padding: 6px 10px;
   border-radius: 999px;
-  border: 1px solid rgba(255,255,255,.10);
-  background: rgba(0,0,0,.16);
-  color: rgba(255,255,255,.80);
+  border: 1px solid var(--border);
+  background: var(--surface2);
+  color: var(--text);
   font-size: 11px;
 }
 .pill-accent{
@@ -304,22 +304,22 @@ p{ margin:0; }
   z-index: 1;
   text-align:left;
   padding: 10px 10px;
-  color: rgba(255,255,255,.78);
-  background: rgba(0,0,0,.26);
-  border-bottom: 1px solid rgba(255,255,255,.08);
+  color: var(--muted);
+  background: var(--surface2);
+  border-bottom: 1px solid var(--border);
   font-weight: 800;
 }
 .data-table tbody td{
   padding: 9px 10px;
-  border-bottom: 1px solid rgba(255,255,255,.06);
-  color: rgba(255,255,255,.88);
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
   vertical-align: top;
 }
 .data-table tbody tr:hover td{
-  background: rgba(255,255,255,.03);
+  background: var(--surface2);
 }
 .placeholder-text{
-  color: rgba(255,255,255,.55);
+  color: var(--muted2);
   text-align: center;
   padding: 14px 10px !important;
 }

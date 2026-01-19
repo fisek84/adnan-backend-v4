@@ -44,7 +44,7 @@ type CeoChatboxProps = {
   autoSendOnVoiceFinal?: boolean; // default false
   enableTTS?: boolean; // default true - enable Text-to-Speech
   autoSpeak?: boolean; // default false - automatically speak system responses
-  voiceLang?: string; // default 'en-US' - language for both STT and TTS
+  voiceLang?: string; // default 'en-US' - initial language for both STT and TTS
 };
 
 type BusyState = "idle" | "submitting" | "streaming" | "error";
@@ -432,6 +432,82 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState<BusyState>("idle");
   const [lastError, setLastError] = useState<string | null>(null);
+
+  // Voice / TTS settings (with localStorage persistence)
+  const [currentVoiceLang, setCurrentVoiceLang] = useState<string>(() => {
+    if (typeof window === 'undefined') return voiceLang || 'en-US';
+    try {
+      const stored = localStorage.getItem('ceo_voice_lang');
+      if (stored) return stored;
+    } catch {
+      // ignore
+    }
+    return voiceLang || 'en-US';
+  });
+
+  const [voiceEnabled, setVoiceEnabled] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return enableVoice;
+    try {
+      const stored = localStorage.getItem('ceo_voice_enabled');
+      if (stored === 'true') return true;
+      if (stored === 'false') return false;
+    } catch {}
+    return enableVoice;
+  });
+
+  const [ttsEnabled, setTtsEnabled] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return enableTTS;
+    try {
+      const stored = localStorage.getItem('ceo_tts_enabled');
+      if (stored === 'true') return true;
+      if (stored === 'false') return false;
+    } catch {}
+    return enableTTS;
+  });
+
+  const [autoSpeakEnabled, setAutoSpeakEnabled] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return autoSpeak;
+    try {
+      const stored = localStorage.getItem('ceo_auto_speak');
+      if (stored === 'true') return true;
+      if (stored === 'false') return false;
+    } catch {}
+    return autoSpeak;
+  });
+
+  const [autoSendOnVoiceFinalEnabled, setAutoSendOnVoiceFinalEnabled] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return autoSendOnVoiceFinal;
+    try {
+      const stored = localStorage.getItem('ceo_auto_send_voice');
+      if (stored === 'true') return true;
+      if (stored === 'false') return false;
+    } catch {}
+    return autoSendOnVoiceFinal;
+  });
+
+  const [speechRate, setSpeechRate] = useState<number>(() => {
+    if (typeof window === 'undefined') return 1.0;
+    try {
+      const stored = localStorage.getItem('ceo_speech_rate');
+      if (stored) {
+        const v = parseFloat(stored);
+        if (!Number.isNaN(v) && v > 0.5 && v < 2.0) return v;
+      }
+    } catch {}
+    return 1.0;
+  });
+
+  const [speechPitch, setSpeechPitch] = useState<number>(() => {
+    if (typeof window === 'undefined') return 1.0;
+    try {
+      const stored = localStorage.getItem('ceo_speech_pitch');
+      if (stored) {
+        const v = parseFloat(stored);
+        if (!Number.isNaN(v) && v > 0.5 && v < 2.0) return v;
+      }
+    } catch {}
+    return 1.0;
+  });
   
   // Session ID for Notion ops tracking
   const [sessionId] = useState<string>(() => {
@@ -474,8 +550,35 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
     resizeComposer();
   }, [draft, resizeComposer]);
 
-  // Text-to-Speech hook with configured language
-  const { speak, cancel: cancelSpeech, speaking, supported: ttsSupported } = useSpeechSynthesis(voiceLang);
+  // Text-to-Speech hook with configured language (Bosanski / English)
+  const {
+    speak,
+    cancel: cancelSpeech,
+    speaking,
+    supported: ttsSupported,
+    voices,
+    selectedVoiceName,
+    selectVoiceByName,
+  } = useSpeechSynthesis(currentVoiceLang, { rate: speechRate, pitch: speechPitch });
+
+  const voiceLangOptions = useMemo(
+    () => [
+      { value: 'en-US', label: 'English' },
+      { value: 'bs-BA', label: 'Bosanski' },
+    ],
+    []
+  );
+
+  const ttsVoiceOptions = useMemo(() => {
+    if (!voices || voices.length === 0) return [] as { value: string; label: string }[];
+    const langPrefix = currentVoiceLang.slice(0, 2).toLowerCase();
+    const filtered = voices.filter((v) => v.lang?.toLowerCase().startsWith(langPrefix));
+    const base = filtered.length > 0 ? filtered : voices;
+    return base.map((v) => ({
+      value: v.name,
+      label: `${v.name}${v.lang ? ` (${v.lang})` : ''}`,
+    }));
+  }, [voices, currentVoiceLang]);
 
   const { viewportRef, isPinnedToBottom, scrollToBottom } = useAutoScroll();
 
@@ -650,7 +753,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
   const recognitionRef = useRef<any>(null);
 
   useEffect(() => {
-    if (!enableVoice) return;
+    if (!voiceEnabled) return;
 
     const Rec = window.SpeechRecognition || window.webkitSpeechRecognition;
     const ok = typeof Rec === "function";
@@ -659,7 +762,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
     if (!ok) return;
 
     const rec = new Rec();
-    rec.lang = voiceLang;
+    rec.lang = currentVoiceLang;
     rec.interimResults = true;
     rec.continuous = false;
 
@@ -676,8 +779,10 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       const combined = (finalText || interim || "").trim();
       if (combined) setDraft(combined);
 
-      if (autoSendOnVoiceFinal && finalText.trim()) {
-        // intentionally no auto-submit unless you wire it explicitly
+      // Auto-send behaves like ChatGPT voice: on final result,
+      // if the setting is enabled and there is some text, submit it.
+      if (autoSendOnVoiceFinalEnabled && finalText.trim()) {
+        void submit();
       }
     };
 
@@ -702,10 +807,13 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       }
       recognitionRef.current = null;
     };
-  }, [enableVoice, autoSendOnVoiceFinal, voiceLang]);
+    // NOTE: submit is stable (useCallback) but declared later; we intentionally
+    // avoid adding it to deps to keep TypeScript happy and rely on current closure.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [voiceEnabled, autoSendOnVoiceFinalEnabled, currentVoiceLang]);
 
   const toggleVoice = useCallback(() => {
-    if (!enableVoice) return;
+    if (!voiceEnabled) return;
     const rec = recognitionRef.current;
     if (!rec) return;
 
@@ -725,7 +833,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
     } catch {
       setListening(false);
     }
-  }, [enableVoice, listening]);
+  }, [voiceEnabled, listening]);
 
   // ------------------------------
   // APPROVAL FLOW HELPERS
@@ -1018,7 +1126,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
           updateItem(placeholderId, { content: acc.trim(), status: "final" });
           
           // Auto-speak if enabled
-          if (enableTTS && autoSpeak && acc.trim()) {
+          if (ttsEnabled && autoSpeakEnabled && acc.trim()) {
             speak(acc.trim());
           }
           
@@ -1045,7 +1153,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       updateItem(placeholderId, { content: sysText, status: "final" });
 
       // Auto-speak if enabled
-      if (enableTTS && autoSpeak && sysText) {
+      if (ttsEnabled && autoSpeakEnabled && sysText) {
         speak(sysText);
       }
 
@@ -1075,7 +1183,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       setBusy("idle");
       setLastError(null);
     },
-    [appendItem, updateItem, isPinnedToBottom, scrollToBottom, enableTTS, autoSpeak, speak]
+    [appendItem, updateItem, isPinnedToBottom, scrollToBottom, ttsEnabled, autoSpeakEnabled, speak]
   );
 
   // ------------------------------
@@ -1267,14 +1375,89 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       <Header
         title={ui.headerTitle}
         subtitle={ui.headerSubtitle}
-        onVoiceToggle={enableVoice && voiceSupported ? toggleVoice : undefined}
+        onVoiceToggle={voiceEnabled && voiceSupported ? toggleVoice : undefined}
         voiceListening={listening}
-        voiceSupported={enableVoice && voiceSupported}
+        voiceSupported={voiceEnabled && voiceSupported}
         onStopCurrent={stopCurrent}
         showStop={busy === "submitting" || busy === "streaming" || notionLoading}
         onJumpToLatest={jumpToLatest}
         showJump={!isPinnedToBottom}
         disabled={busy === "submitting" || busy === "streaming"}
+        language={currentVoiceLang}
+        onLanguageChange={(lang) => {
+          setCurrentVoiceLang(lang);
+          try {
+            if (typeof window !== 'undefined') {
+              localStorage.setItem('ceo_voice_lang', lang);
+            }
+          } catch {}
+        }}
+        ttsVoices={ttsVoiceOptions}
+        selectedTtsVoiceId={selectedVoiceName || ''}
+        onTtsVoiceChange={(id) => {
+          selectVoiceByName(id || null);
+          try {
+            if (typeof window !== 'undefined') {
+              localStorage.setItem('ceo_voice_name', id || '');
+            }
+          } catch {}
+        }}
+        enableVoice={voiceEnabled}
+        onEnableVoiceChange={(val) => {
+          setVoiceEnabled(val);
+          try {
+            if (typeof window !== 'undefined') {
+              localStorage.setItem('ceo_voice_enabled', val ? 'true' : 'false');
+            }
+          } catch {}
+        }}
+        enableTTS={ttsEnabled}
+        onEnableTTSChange={(val) => {
+          setTtsEnabled(val);
+          try {
+            if (typeof window !== 'undefined') {
+              localStorage.setItem('ceo_tts_enabled', val ? 'true' : 'false');
+            }
+          } catch {}
+        }}
+        autoSpeak={autoSpeakEnabled}
+        onAutoSpeakChange={(val) => {
+          setAutoSpeakEnabled(val);
+          try {
+            if (typeof window !== 'undefined') {
+              localStorage.setItem('ceo_auto_speak', val ? 'true' : 'false');
+            }
+          } catch {}
+        }}
+        autoSendOnVoiceFinal={autoSendOnVoiceFinalEnabled}
+        onAutoSendOnVoiceFinalChange={(val) => {
+          setAutoSendOnVoiceFinalEnabled(val);
+          try {
+            if (typeof window !== 'undefined') {
+              localStorage.setItem('ceo_auto_send_voice', val ? 'true' : 'false');
+            }
+          } catch {}
+        }}
+        speechRate={speechRate}
+        onSpeechRateChange={(val) => {
+          const clamped = Math.min(1.8, Math.max(0.6, val));
+          setSpeechRate(clamped);
+          try {
+            if (typeof window !== 'undefined') {
+              localStorage.setItem('ceo_speech_rate', String(clamped));
+            }
+          } catch {}
+        }}
+        speechPitch={speechPitch}
+        onSpeechPitchChange={(val) => {
+          const clamped = Math.min(1.6, Math.max(0.6, val));
+          setSpeechPitch(clamped);
+          try {
+            if (typeof window !== 'undefined') {
+              localStorage.setItem('ceo_speech_pitch', String(clamped));
+            }
+          } catch {}
+        }}
       />
 
       <div className="ceoViewport" ref={viewportRef}>
@@ -1307,7 +1490,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
                     <div className="ceoMeta">
                       <span className={dotCls} />
                       <span>{formatTime(it.createdAt)}</span>
-                      {enableTTS && ttsSupported && it.role === "system" && it.content && it.status === "final" && (
+                      {ttsEnabled && ttsSupported && it.role === "system" && it.content && it.status === "final" && (
                         <button
                           className="ceoMetaButton"
                           onClick={() => speak(String(it.content))}
@@ -1625,7 +1808,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
             rows={1}
           />
 
-          {enableVoice && voiceSupported ? (
+          {voiceEnabled && voiceSupported ? (
             <button
               className="ceoSendBtn"
               onClick={toggleVoice}
