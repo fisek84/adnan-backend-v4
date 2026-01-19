@@ -10,6 +10,8 @@ import type {
 import { createCeoConsoleApi } from "./api";
 import { defaultStrings } from "./strings";
 import { useAutoScroll } from "./hooks";
+import { useSpeechSynthesis } from "../../hooks/useSpeechSynthesis";
+import { Header } from "../Header";
 import "./CeoChatbox.css";
 
 type CeoConsoleApi = ReturnType<typeof createCeoConsoleApi>;
@@ -39,6 +41,9 @@ type CeoChatboxProps = {
   // Voice (client-side, no backend assumptions)
   enableVoice?: boolean; // default true
   autoSendOnVoiceFinal?: boolean; // default false
+  enableTTS?: boolean; // default true - enable Text-to-Speech
+  autoSpeak?: boolean; // default false - automatically speak system responses
+  voiceLang?: string; // default 'en-US' - language for both STT and TTS
 };
 
 type BusyState = "idle" | "submitting" | "streaming" | "error";
@@ -292,6 +297,9 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
   className,
   enableVoice = true,
   autoSendOnVoiceFinal = false,
+  enableTTS = true,
+  autoSpeak = false,
+  voiceLang = 'en-US',
 }) => {
   const ui = useMemo(() => ({ ...defaultStrings, ...(strings ?? {}) }), [strings]);
 
@@ -314,6 +322,9 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
   const [lastError, setLastError] = useState<string | null>(null);
 
   const abortRef = useRef<AbortController | null>(null);
+
+  // Text-to-Speech hook with configured language
+  const { speak, cancel: cancelSpeech, speaking, supported: ttsSupported } = useSpeechSynthesis(voiceLang);
 
   const { viewportRef, isPinnedToBottom, scrollToBottom } = useAutoScroll();
 
@@ -395,7 +406,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
     if (!ok) return;
 
     const rec = new Rec();
-    rec.lang = "bs-BA";
+    rec.lang = voiceLang;
     rec.interimResults = true;
     rec.continuous = false;
 
@@ -438,7 +449,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       }
       recognitionRef.current = null;
     };
-  }, [enableVoice, autoSendOnVoiceFinal]);
+  }, [enableVoice, autoSendOnVoiceFinal, voiceLang]);
 
   const toggleVoice = useCallback(() => {
     if (!enableVoice) return;
@@ -689,6 +700,12 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
           }
 
           updateItem(placeholderId, { content: acc.trim(), status: "final" });
+          
+          // Auto-speak if enabled
+          if (enableTTS && autoSpeak && acc.trim()) {
+            speak(acc.trim());
+          }
+          
           setBusy("idle");
           setLastError(null);
         } catch (e) {
@@ -710,6 +727,11 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         "";
 
       updateItem(placeholderId, { content: sysText, status: "final" });
+
+      // Auto-speak if enabled
+      if (enableTTS && autoSpeak && sysText) {
+        speak(sysText);
+      }
 
       const proposalsRaw = _extractProposedCommands(resp as any);
       const proposals = proposalsRaw.filter(isActionableProposal);
@@ -737,7 +759,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       setBusy("idle");
       setLastError(null);
     },
-    [appendItem, updateItem, isPinnedToBottom, scrollToBottom]
+    [appendItem, updateItem, isPinnedToBottom, scrollToBottom, enableTTS, autoSpeak, speak]
   );
 
   // ------------------------------
@@ -886,36 +908,18 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
 
   return (
     <section className={`ceoChatbox ${className ?? ""}`.trim()}>
-      <header className="ceoHeader">
-        <div className="ceoHeaderTitleRow">
-          <div className="ceoHeaderTitle">{ui.headerTitle}</div>
-          <div className="ceoHeaderActions">
-            {!isPinnedToBottom && (
-              <button className="ceoHeaderButton" onClick={jumpToLatest}>
-                {ui.jumpToLatestLabel}
-              </button>
-            )}
-
-            {enableVoice && voiceSupported ? (
-              <button
-                className="ceoHeaderButton"
-                onClick={toggleVoice}
-                disabled={busy === "submitting" || busy === "streaming"}
-                title={listening ? "Stop voice input" : "Start voice input"}
-              >
-                {listening ? "Voice: ON" : "Voice"}
-              </button>
-            ) : null}
-
-            {(busy === "submitting" || busy === "streaming" || notionLoading) && (
-              <button className="ceoHeaderButton" onClick={stopCurrent}>
-                Stop
-              </button>
-            )}
-          </div>
-        </div>
-        <div className="ceoHeaderSubtitle">{ui.headerSubtitle}</div>
-      </header>
+      <Header
+        title={ui.headerTitle}
+        subtitle={ui.headerSubtitle}
+        onVoiceToggle={enableVoice && voiceSupported ? toggleVoice : undefined}
+        voiceListening={listening}
+        voiceSupported={enableVoice && voiceSupported}
+        onStopCurrent={stopCurrent}
+        showStop={busy === "submitting" || busy === "streaming" || notionLoading}
+        onJumpToLatest={jumpToLatest}
+        showJump={!isPinnedToBottom}
+        disabled={busy === "submitting" || busy === "streaming"}
+      />
 
       <div className="ceoViewport" ref={viewportRef}>
         <div className="ceoList">
@@ -947,6 +951,16 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
                     <div className="ceoMeta">
                       <span className={dotCls} />
                       <span>{formatTime(it.createdAt)}</span>
+                      {enableTTS && ttsSupported && it.role === "system" && it.content && it.status === "final" && (
+                        <button
+                          className="ceoMetaButton"
+                          onClick={() => speak(String(it.content))}
+                          disabled={speaking}
+                          title="Speak this message"
+                        >
+                          🔊
+                        </button>
+                      )}
                     </div>
                   </div>
                 </div>
