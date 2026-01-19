@@ -591,6 +591,89 @@ class NotionService:
         res.setdefault("database_id", db_id)
         return res
 
+    @staticmethod
+    def _extract_page_title(page: Dict[str, Any], prop_name: str = "Name") -> str:
+        try:
+            props = page.get("properties")
+            if not isinstance(props, dict):
+                return ""
+            prop = props.get(prop_name)
+            if not isinstance(prop, dict):
+                return ""
+            title_arr = prop.get("title")
+            if not isinstance(title_arr, list):
+                return ""
+            parts = []
+            for t in title_arr:
+                if isinstance(t, dict):
+                    txt = t.get("plain_text")
+                    if isinstance(txt, str) and txt:
+                        parts.append(txt)
+            return "".join(parts).strip()
+        except Exception:
+            return ""
+
+    async def _resolve_page_id_by_title_best_effort(
+        self, *, db_key: str, title: str
+    ) -> Dict[str, Any]:
+        """Resolve a Notion page_id by human title (best-effort, safe).
+
+        Returns dict:
+          {"ok": bool, "page_id": str|None, "reason": str|None}
+        """
+        t = (title or "").strip()
+        if not t:
+            return {"ok": False, "page_id": None, "reason": "empty_title"}
+
+        # Query by contains, then pick exact (case-insensitive) if possible.
+        try:
+            res = await self.query_database(
+                db_key=db_key,
+                query={
+                    "page_size": 10,
+                    "filter": {"property": "Name", "title": {"contains": t}},
+                },
+            )
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "ok": False,
+                "page_id": None,
+                "reason": f"query_failed:{exc}",
+            }
+
+        items = res.get("results") if isinstance(res, dict) else None
+        if not isinstance(items, list) or not items:
+            return {"ok": False, "page_id": None, "reason": "not_found"}
+
+        normalized = t.casefold()
+        candidates = []
+        for p in items:
+            if not isinstance(p, dict):
+                continue
+            pid = _ensure_str(p.get("id"))
+            if not pid:
+                continue
+            name = self._extract_page_title(p, "Name")
+            candidates.append((pid, name))
+
+        # Prefer exact title match (case-insensitive)
+        exact = [
+            (pid, name) for (pid, name) in candidates if name.casefold() == normalized
+        ]
+        chosen_pool = exact if exact else candidates
+
+        if len(chosen_pool) == 1:
+            return {"ok": True, "page_id": chosen_pool[0][0], "reason": None}
+
+        # Ambiguous: multiple matches
+        names = [name for (_, name) in chosen_pool if name]
+        names_preview = ", ".join(names[:5])
+        return {
+            "ok": False,
+            "page_id": None,
+            "reason": f"ambiguous:{names_preview}" if names_preview else "ambiguous",
+        }
+
     async def execute(self, ai_command: Any) -> Dict[str, Any]:
         """
         Canonical executor entrypoint called by NotionOpsAgent / Orchestrator.
@@ -1030,6 +1113,7 @@ class NotionService:
         # Handle relations after page creation
         goal_id = _ensure_str(params.get("goal_id"))
         project_id = _ensure_str(params.get("project_id"))
+        warnings: List[str] = []
 
         payload = {"parent": {"database_id": db_id}, "properties": notion_properties}
         url = f"{self.NOTION_BASE_URL}/pages"
@@ -1037,6 +1121,20 @@ class NotionService:
 
         page_id = _ensure_str(res.get("id"))
         page_url = _ensure_str(res.get("url"))
+
+        # Best-effort: allow linking by title when ID wasn't provided.
+        if not goal_id:
+            goal_title = _ensure_str(params.get("goal_title") or "")
+            if goal_title:
+                rr = await self._resolve_page_id_by_title_best_effort(
+                    db_key="goals", title=goal_title
+                )
+                if rr.get("ok") is True and _ensure_str(rr.get("page_id")):
+                    goal_id = _ensure_str(rr.get("page_id"))
+                else:
+                    warnings.append(
+                        f"goal_link_not_resolved:{_ensure_str(rr.get('reason') or '')}"
+                    )
 
         # Update relations if provided
         if goal_id or project_id:
@@ -1059,6 +1157,7 @@ class NotionService:
                 "page_id": page_id or None,
                 "url": page_url or None,
                 "raw": res,
+                "warnings": warnings,
             },
             "metadata": metadata,
         }
@@ -1107,6 +1206,7 @@ class NotionService:
 
         # Handle relations after page creation
         primary_goal_id = _ensure_str(params.get("primary_goal_id"))
+        warnings: List[str] = []
 
         payload = {"parent": {"database_id": db_id}, "properties": notion_properties}
         url = f"{self.NOTION_BASE_URL}/pages"
@@ -1114,6 +1214,19 @@ class NotionService:
 
         page_id = _ensure_str(res.get("id"))
         page_url = _ensure_str(res.get("url"))
+
+        if not primary_goal_id:
+            goal_title = _ensure_str(params.get("primary_goal_title") or "")
+            if goal_title:
+                rr = await self._resolve_page_id_by_title_best_effort(
+                    db_key="goals", title=goal_title
+                )
+                if rr.get("ok") is True and _ensure_str(rr.get("page_id")):
+                    primary_goal_id = _ensure_str(rr.get("page_id"))
+                else:
+                    warnings.append(
+                        f"primary_goal_link_not_resolved:{_ensure_str(rr.get('reason') or '')}"
+                    )
 
         # Update relations if provided
         if primary_goal_id:
@@ -1135,6 +1248,7 @@ class NotionService:
                 "page_id": page_id or None,
                 "url": page_url or None,
                 "raw": res,
+                "warnings": warnings,
             },
             "metadata": metadata,
         }

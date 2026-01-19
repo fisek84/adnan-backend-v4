@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import re
+
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter
@@ -350,6 +352,43 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
 
         prompt = _extract_prompt(payload)
         session_id = _extract_session_id(payload)
+
+        # ------------------------------------------------------------
+        # READ SNAPSHOT INJECTION (CANON)
+        # The UI may send an empty snapshot; for dashboard/show requests
+        # we must hydrate from server-side read snapshot so the advisor
+        # can answer accurately (no Notion Ops arming required for reads).
+        # ------------------------------------------------------------
+        try:
+            t0 = (prompt or "").strip().lower()
+            wants_show = bool(
+                re.search(
+                    r"(?i)\b(pokazi|poka\u017ei|prika\u017ei|prikazi|izlistaj|show|list|what\s+goals|which\s+goals|which\s+tasks)\b",
+                    t0,
+                )
+                and re.search(
+                    r"(?i)\b(cilj\w*|goal\w*|task\w*|zadat\w*|zadac\w*|dashboard|stanje|status)\b",
+                    t0,
+                )
+            )
+
+            snap_in = getattr(payload, "snapshot", None)
+            has_snap = isinstance(snap_in, dict) and bool(snap_in)
+
+            if wants_show and not has_snap:
+                from services.system_read_executor import SystemReadExecutor  # noqa: PLC0415
+
+                sys_snap = SystemReadExecutor().snapshot()
+                ceo_snap = sys_snap.get("ceo_notion_snapshot")
+                if isinstance(ceo_snap, dict) and ceo_snap:
+                    payload.snapshot = ceo_snap
+                else:
+                    ks = sys_snap.get("knowledge_snapshot")
+                    if isinstance(ks, dict) and ks:
+                        payload.snapshot = ks
+        except Exception:
+            # Fail-soft: never break /api/chat because snapshot hydration failed.
+            pass
 
         # PHASE 6: Notion Ops ARMED Gate (activation/deactivation)
         if session_id and _is_activate(prompt):

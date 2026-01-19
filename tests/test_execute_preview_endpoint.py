@@ -175,3 +175,33 @@ def test_execute_preview_batch_request_rows():
     assert r1.get("db_key") == "tasks"
     # Relationship reference should be human-readable (from "$goal_1" -> "ref:goal_1")
     assert r1.get("Goal Ref") == "ref:goal_1"
+
+
+def test_execute_preview_wrapper_autodetect_intent_builds_table():
+    app = _get_app()
+    client = TestClient(app)
+
+    # Wrapper without explicit params.intent: should still produce a Notion preview
+    payload = {
+        "command": "ceo.command.propose",
+        "intent": "ceo.command.propose",
+        "params": {
+            "prompt": "Kreiraj task: Test Task 123",
+        },
+    }
+
+    r = client.post(
+        "/api/execute/preview",
+        headers={"X-Initiator": "ceo_chat"},
+        json=payload,
+    )
+    assert r.status_code == 200
+    body = r.json()
+
+    assert body.get("ok") is True
+    notion = body.get("notion")
+    assert isinstance(notion, dict)
+    assert notion.get("db_key") == "tasks"
+    pp = notion.get("properties_preview")
+    assert isinstance(pp, dict)
+    assert "Name" in pp

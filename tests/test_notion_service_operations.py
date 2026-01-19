@@ -178,6 +178,69 @@ class TestNotionServiceOperations(unittest.IsolatedAsyncioTestCase):
                 project_id="project-id-456",
             )
 
+    async def test_create_task_resolves_goal_by_title(self):
+        """If goal_id is missing but goal_title is provided, service should link by best-effort lookup."""
+        mock_create_response = {
+            "id": "task-page-id-999",
+            "url": "https://notion.so/task-page-id-999",
+        }
+
+        # Notion database query response for goals
+        mock_query_response = {
+            "results": [
+                {
+                    "id": "goal-page-id-xyz",
+                    "properties": {"Name": {"title": [{"plain_text": "ADNAN RAMBO"}]}},
+                }
+            ]
+        }
+
+        with patch.object(
+            self.service, "_safe_request", new_callable=AsyncMock
+        ) as mock_request, patch.object(
+            self.service, "_update_page_relations", new_callable=AsyncMock
+        ) as mock_update_relations:
+
+            async def fake_safe_request(method, url, payload=None, params=None):
+                # Schema reads
+                if method == "GET" and "/databases/" in url:
+                    return {"properties": {}}
+
+                # Create task page
+                if method == "POST" and url.endswith("/pages"):
+                    return mock_create_response
+
+                # Query goals DB
+                if method == "POST" and "/databases/" in url and url.endswith("/query"):
+                    if "test-goals-db-id" in url:
+                        return mock_query_response
+                    return {"results": []}
+
+                return {}
+
+            mock_request.side_effect = fake_safe_request
+
+            command = AICommand(
+                command="notion_write",
+                intent="create_task",
+                params={
+                    "title": "Task with goal title",
+                    "goal_title": "ADNAN RAMBO",
+                },
+                approval_id="approval-999",
+                execution_id="exec-999",
+                read_only=False,
+            )
+
+            result = await self.service.execute(command)
+            self.assertTrue(result["ok"], msg=str(result))
+
+            mock_update_relations.assert_called_once_with(
+                page_id="task-page-id-999",
+                goal_id="goal-page-id-xyz",
+                project_id="",
+            )
+
     # ============================================================
     # CREATE PROJECT TESTS
     # ============================================================

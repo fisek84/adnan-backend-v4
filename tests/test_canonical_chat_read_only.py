@@ -75,3 +75,40 @@ def test_chat_is_read_only_and_does_not_create_approvals():
     after_total = len(after)
 
     assert after_total == before_total
+
+
+def test_chat_show_goals_hydrates_snapshot_when_missing(monkeypatch):
+    app = _load_app()
+    client = TestClient(app)
+
+    # Ensure server-side snapshot hydration is used when client snapshot is empty.
+    from services.system_read_executor import SystemReadExecutor
+
+    def _fake_snapshot(self):
+        return {
+            "ceo_notion_snapshot": {
+                "dashboard": {
+                    "goals": [
+                        {"name": "Goal A", "status": "Active", "priority": "High"}
+                    ],
+                    "tasks": [],
+                }
+            }
+        }
+
+    monkeypatch.setattr(SystemReadExecutor, "snapshot", _fake_snapshot, raising=True)
+
+    payload = {
+        "message": "Pokaži koje ciljeve imamo",
+        "identity_pack": {"user_id": "test"},
+        "snapshot": {},
+    }
+
+    r = client.post("/api/chat", json=payload)
+    assert r.status_code == 200, r.text
+
+    body = r.json()
+    assert body["read_only"] is True
+    assert "GOALS (top 3)" in (body.get("text") or "")
+    assert "Goal A" in (body.get("text") or "")
+    assert "Vidim da je stanje prazno" not in (body.get("text") or "")

@@ -619,6 +619,43 @@ def _unwrap_proposal_wrapper_or_raise(
         ).strip()
         return t2 or t
 
+    def _extract_relation_title_from_prompt(
+        prompt_text: str, *, kind: str
+    ) -> Optional[str]:
+        """Best-effort extract of a relation target title from natural prompt.
+
+        Examples (bs/en):
+          - "povezi sa ciljem ADNAN RAMBO"
+          - "sa ciljem: ADNAN RAMBO"
+          - "with goal ADNAN RAMBO"
+          - "goal: ADNAN RAMBO"
+        """
+        s = (prompt_text or "").strip()
+        if not s:
+            return None
+
+        if kind == "goal":
+            token = r"(?:ciljem|cilj|goal)"
+        elif kind == "project":
+            token = r"(?:projektom|projekat|projekt|project)"
+        else:
+            return None
+
+        patterns = [
+            rf"(?i)\b(?:povezi|pove\u017ei|link(?:aj)?|connect|attach)\s+(?:sa|with)\s+{token}\s*[:\-–—]?\s*([^,;\n]+)",
+            rf"(?i)\b(?:sa|with)\s+{token}\s*[:\-–—]?\s*([^,;\n]+)",
+            rf"(?i)\b{token}\s*[:=]\s*([^,;\n]+)",
+        ]
+
+        for pat in patterns:
+            m = re.search(pat, s)
+            if not m:
+                continue
+            val = (m.group(1) or "").strip().strip("\"'")
+            if val:
+                return val
+        return None
+
     # Branch/batch requests: build operations list deterministically.
     try:
         if (hint_type or "").lower() in {"branch_request", "batch_request"} or (
@@ -656,18 +693,51 @@ def _unwrap_proposal_wrapper_or_raise(
     except Exception:
         pass
 
-    # Create intents with explicit hint: build minimal executable without LLM translation.
+    # If NotionOpsAgent didn't pass an explicit hint, try deterministic local detection.
+    if not (isinstance(hint_intent, str) and hint_intent.strip()):
+        try:
+            from services.notion_keyword_mapper import NotionKeywordMapper  # noqa: PLC0415
+
+            auto = NotionKeywordMapper.detect_intent(prompt.strip())
+            if isinstance(auto, str) and auto.strip():
+                hint_intent = auto.strip()
+        except Exception:
+            pass
+
+    # Create intents with explicit/detected hint: build minimal executable without LLM translation.
     try:
         if isinstance(hint_intent, str) and hint_intent.strip():
             hi = hint_intent.strip().lower()
             if hi in {"create_task", "create_goal", "create_project"}:
                 title = _strip_prefixes_for_title(prompt.strip())
                 if title:
+                    extra_params: Dict[str, Any] = {"title": title}
+
+                    # Preserve relation intent if user specified it by title.
+                    if hi == "create_task":
+                        goal_title = _extract_relation_title_from_prompt(
+                            prompt.strip(), kind="goal"
+                        )
+                        if goal_title:
+                            extra_params["goal_title"] = goal_title
+                        project_title = _extract_relation_title_from_prompt(
+                            prompt.strip(), kind="project"
+                        )
+                        if project_title:
+                            extra_params["project_title"] = project_title
+
+                    if hi == "create_project":
+                        goal_title = _extract_relation_title_from_prompt(
+                            prompt.strip(), kind="goal"
+                        )
+                        if goal_title:
+                            extra_params["primary_goal_title"] = goal_title
+
                     ai_command = AICommand(
                         command="notion_write",
                         intent=hi,
                         read_only=False,
-                        params={"title": title},
+                        params=extra_params,
                         initiator=initiator,
                         validated=True,
                         metadata={

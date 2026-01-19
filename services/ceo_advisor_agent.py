@@ -143,6 +143,34 @@ def _needs_structured_snapshot_answer(user_text: str) -> bool:
     return any(k in t for k in keywords)
 
 
+def _is_show_request(user_text: str) -> bool:
+    t = (user_text or "").strip().lower()
+    if not t:
+        return False
+    show = bool(
+        re.search(
+            r"(?i)\b(pokazi|poka\u017ei|prika\u017ei|prikazi|izlistaj|show|list|pogledaj|procitaj|read)\b",
+            t,
+        )
+    )
+    target = bool(re.search(r"(?i)\b(cilj\w*|goal\w*|task\w*|zadat\w*|zadac\w*)\b", t))
+    return show and target
+
+
+def _show_target(user_text: str) -> str:
+    """Returns: 'goals' | 'tasks' | 'both'."""
+    t = (user_text or "").strip().lower()
+    wants_goals = bool(re.search(r"(?i)\b(cilj\w*|goal\w*)\b", t))
+    wants_tasks = bool(re.search(r"(?i)\b(task\w*|zadat\w*|zadac\w*)\b", t))
+    if wants_goals and wants_tasks:
+        return "both"
+    if wants_goals:
+        return "goals"
+    if wants_tasks:
+        return "tasks"
+    return "both"
+
+
 def _extract_goals_tasks(snapshot_payload: Dict[str, Any]) -> Tuple[Any, Any]:
     dashboard = (
         snapshot_payload.get("dashboard") if isinstance(snapshot_payload, dict) else {}
@@ -537,6 +565,74 @@ async def create_ceo_advisor_agent(
 
     propose_only = _is_propose_only_request(base_text)
     wants_notion = _wants_notion_task_or_goal(base_text)
+
+    # Deterministic: for show/list requests, never rely on LLM.
+    if structured_mode and _is_show_request(base_text):
+        tgt = _show_target(base_text)
+        # If snapshot service is present but unavailable, surface that explicitly.
+        if (
+            isinstance(snapshot_payload, dict)
+            and snapshot_payload.get("available") is False
+        ):
+            err = str(snapshot_payload.get("error") or "snapshot_unavailable").strip()
+            return AgentOutput(
+                text=(
+                    "Ne mogu učitati Notion read snapshot (read-only). "
+                    f"Detalj: {err}\n\n"
+                    "Pokušaj: 'refresh snapshot' ili provjeri Notion konfiguraciju (DB IDs/token)."
+                ),
+                proposed_commands=[
+                    ProposedCommand(
+                        command="refresh_snapshot",
+                        args={"source": "ceo_dashboard"},
+                        reason="Snapshot nije dostupan ili nije konfigurisan.",
+                        requires_approval=True,
+                        risk="LOW",
+                        dry_run=True,
+                    )
+                ],
+                agent_id="ceo_advisor",
+                read_only=True,
+                trace={},
+            )
+
+        if (tgt in {"goals", "both"} and goals) or (tgt in {"tasks", "both"} and tasks):
+            if tgt == "goals":
+                text_out = _render_snapshot_summary(goals, [])
+            elif tgt == "tasks":
+                text_out = _render_snapshot_summary([], tasks)
+            else:
+                text_out = _render_snapshot_summary(goals, tasks)
+
+            return AgentOutput(
+                text=text_out,
+                proposed_commands=[],
+                agent_id="ceo_advisor",
+                read_only=True,
+                trace={},
+            )
+
+        # No data: give a precise read-path message instead of generic coaching.
+        return AgentOutput(
+            text=(
+                "Trenutni snapshot nema učitane ciljeve/taskove. "
+                "Ovo je READ problem (nije blokada Notion Ops).\n\n"
+                "Predlog: pokreni refresh snapshot ili koristi 'Search Notion' panel da potvrdiš da DB sadrži stavke."
+            ),
+            proposed_commands=[
+                ProposedCommand(
+                    command="refresh_snapshot",
+                    args={"source": "ceo_dashboard"},
+                    reason="Snapshot je prazan ili nedostaje.",
+                    requires_approval=True,
+                    risk="LOW",
+                    dry_run=True,
+                )
+            ],
+            agent_id="ceo_advisor",
+            read_only=True,
+            trace={},
+        )
 
     # Continue processing normally...
     if structured_mode and not goals and not tasks:
