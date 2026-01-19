@@ -3,8 +3,6 @@
 
 from __future__ import annotations
 
-import asyncio
-from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter
@@ -18,7 +16,10 @@ from dependencies import get_memory_read_only_service
 from models.canon import PROPOSAL_WRAPPER_INTENT
 
 # PHASE 6: Import shared Notion Ops state management
-from services.notion_ops_state import set_armed as _set_armed_shared, get_state as _get_state_shared
+from services.notion_ops_state import (
+    set_armed as _set_armed_shared,
+    get_state as _get_state_shared,
+)
 
 # Commands that are NOT considered "structured/actionable proposals" for fallback detection.
 _NON_ACTIONABLE_PROPOSALS = {"refresh_snapshot"}

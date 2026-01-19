@@ -30,15 +30,17 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-async def set_armed(session_id: str, armed: bool, *, prompt: str = "") -> Dict[str, Any]:
+async def set_armed(
+    session_id: str, armed: bool, *, prompt: str = ""
+) -> Dict[str, Any]:
     """
     Set session state to armed/unarmed.
-    
+
     Args:
         session_id: The session identifier
         armed: True to arm, False to disarm
         prompt: Optional prompt that triggered the state change
-        
+
     Returns:
         Dict containing the updated session state
     """
@@ -55,10 +57,10 @@ async def set_armed(session_id: str, armed: bool, *, prompt: str = "") -> Dict[s
 async def get_state(session_id: str) -> Dict[str, Any]:
     """
     Get the current armed state for a session.
-    
+
     Args:
         session_id: The session identifier
-        
+
     Returns:
         Dict containing session state (armed, armed_at, etc.)
         Returns default state with armed=False if session doesn't exist
@@ -78,10 +80,10 @@ async def get_state(session_id: str) -> Dict[str, Any]:
 async def is_armed(session_id: str) -> bool:
     """
     Quick check if a session is armed.
-    
+
     Args:
         session_id: The session identifier
-        
+
     Returns:
         True if armed, False otherwise
     """
