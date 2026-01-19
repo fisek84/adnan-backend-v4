@@ -635,7 +635,15 @@ async def create_ceo_advisor_agent(
         )
 
     # Continue processing normally...
-    if structured_mode and not goals and not tasks:
+    # Only treat as "prazno" when snapshot itself is missing or explicitly empty,
+    # and there are truly no goals or tasks parsed out.
+    if (
+        structured_mode
+        and not goals
+        and not tasks
+        and not snapshot_payload.get("goals")
+        and not snapshot_payload.get("tasks")
+    ):
         return AgentOutput(
             text=(  # Ovo je deo za prazno stanje
                 "Vidim da je stanje prazno (nema ciljeva ni taskova u snapshot-u). To nije blokada — krenimo od brzog okvira.\n\n"

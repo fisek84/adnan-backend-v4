@@ -576,15 +576,29 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
     if (langLower.startsWith("bs") || langLower.startsWith("hr") || langLower.startsWith("sr")) {
       prefixes = ["bs", "hr", "sr", "sh"];
     }
-    const filtered = voices.filter((v) => {
-      const vlang = v.lang?.toLowerCase() || "";
+
+    // First, collect voices that best match the current language (recommended),
+    // then append all remaining voices so the user can pick English / British,
+    // male/female variants even when using Bosnian UI.
+    const tagged = voices.map((v, index) => ({ voice: v, index }));
+    const primary = tagged.filter(({ voice }) => {
+      const vlang = voice.lang?.toLowerCase() || "";
       return prefixes.some((p) => vlang.startsWith(p));
     });
-    const base = filtered.length > 0 ? filtered : voices;
-    return base.map((v) => ({
-      value: v.name,
-      label: `${v.name}${v.lang ? ` (${v.lang})` : ''}`,
-    }));
+    const primarySet = new Set(primary.map((x) => x.index));
+    const others = tagged.filter((x) => !primarySet.has(x.index));
+    const ordered = [...primary, ...others];
+
+    return ordered.map(({ voice, index }) => {
+      const vlang = voice.lang?.toLowerCase() || "";
+      const isPrimary = prefixes.some((p) => vlang.startsWith(p));
+      const baseName = voice.name || `Voice ${index + 1}`;
+      const labelCore = `${baseName}${voice.lang ? ` (${voice.lang})` : ''}`;
+      return {
+        value: voice.name || `voice-${index}`,
+        label: isPrimary ? `⭐ ${labelCore}` : labelCore,
+      };
+    });
   }, [voices, currentVoiceLang]);
 
   const { viewportRef, isPinnedToBottom, scrollToBottom } = useAutoScroll();
@@ -707,6 +721,86 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
     return { ...(proposal as any), params } as any;
   }, []);
 
+  // Shared helper for sending a chat message from arbitrary text.
+  // Used both by the manual composer (submit) and voice auto-send.
+  const sendChatFromText = async (rawText: string) => {
+    const trimmed = rawText.trim();
+    if (!trimmed) return;
+    if (busy === "submitting" || busy === "streaming") return;
+
+    setBusy("submitting");
+    setLastError(null);
+
+    const clientRequestId = uid();
+
+    const ceoItem: ChatMessageItem = {
+      id: uid(),
+      kind: "message",
+      role: "ceo",
+      content: trimmed,
+      status: "delivered",
+      createdAt: now(),
+      requestId: clientRequestId,
+    };
+
+    appendItem(ceoItem);
+    setDraft("");
+
+    const placeholder = makeSystemProcessingItem(clientRequestId);
+    appendItem(placeholder);
+
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    try {
+      const req: any = {
+        message: trimmed,
+        text: trimmed,
+        input_text: trimmed,
+
+        initiator: "ceo_chat",
+        session_id: sessionId,  // Also include at top level for compatibility
+        source: "ceo_dashboard",
+        preferred_agent_id: "ceo_advisor",
+        
+        // CRITICAL: metadata with session_id per test protocol
+        metadata: {
+          session_id: sessionId,
+          initiator: "ceo_chat",
+        },
+        
+        context_hint: {
+          preferred_agent_id: "ceo_advisor",
+        },
+      };
+
+      const resp = await api.sendCommand(req, controller.signal);
+      
+      // Check if Notion ops state changed (per test: resp.notion_ops.armed)
+      const notionOps = (resp as any)?.raw?.notion_ops || (resp as any)?.notion_ops;
+      if (notionOps && typeof notionOps.armed === 'boolean') {
+        setNotionOpsArmed(notionOps.armed);
+        
+        // Store armed state in sessionStorage for persistence
+        if (typeof sessionStorage !== 'undefined') {
+          sessionStorage.setItem('notion_ops_armed', notionOps.armed ? 'true' : 'false');
+        }
+      }
+
+      abortRef.current = null;
+      await flushResponseToUi(placeholder.id, resp);
+
+      setBusy("idle");
+      setLastError(null);
+    } catch (e) {
+      abortRef.current = null;
+      const msg = e instanceof Error ? e.message : String(e);
+      updateItem(placeholder.id, { status: "error", content: "" });
+      setBusy(isAbortError(e) ? "idle" : "error");
+      setLastError(isAbortError(e) ? null : msg);
+    }
+  };
+
   const handlePreviewProposal = useCallback(
     async (proposal: ProposedCmd, label?: string) => {
       if (previewLoading) return;
@@ -792,7 +886,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       // Auto-send behaves like ChatGPT voice: on final result,
       // if the setting is enabled and there is some text, submit it.
       if (autoSendOnVoiceFinalEnabled && finalText.trim()) {
-        void submit();
+        void sendChatFromText(finalText);
       }
     };
 
@@ -1264,82 +1358,8 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
   // SUBMIT CHAT
   // ------------------------------
   const submit = useCallback(async () => {
-    const trimmed = draft.trim();
-    if (!trimmed) return;
-    if (busy === "submitting" || busy === "streaming") return;
-
-    setBusy("submitting");
-    setLastError(null);
-
-    const clientRequestId = uid();
-
-    const ceoItem: ChatMessageItem = {
-      id: uid(),
-      kind: "message",
-      role: "ceo",
-      content: trimmed,
-      status: "delivered",
-      createdAt: now(),
-      requestId: clientRequestId,
-    };
-
-    appendItem(ceoItem);
-    setDraft("");
-
-    const placeholder = makeSystemProcessingItem(clientRequestId);
-    appendItem(placeholder);
-
-    const controller = new AbortController();
-    abortRef.current = controller;
-
-    try {
-      const req: any = {
-        message: trimmed,
-        text: trimmed,
-        input_text: trimmed,
-
-        initiator: "ceo_chat",
-        session_id: sessionId,  // Also include at top level for compatibility
-        source: "ceo_dashboard",
-        preferred_agent_id: "ceo_advisor",
-        
-        // CRITICAL: metadata with session_id per test protocol
-        metadata: {
-          session_id: sessionId,
-          initiator: "ceo_chat",
-        },
-        
-        context_hint: {
-          preferred_agent_id: "ceo_advisor",
-        },
-      };
-
-      const resp = await api.sendCommand(req, controller.signal);
-      
-      // Check if Notion ops state changed (per test: resp.notion_ops.armed)
-      const notionOps = (resp as any)?.raw?.notion_ops || (resp as any)?.notion_ops;
-      if (notionOps && typeof notionOps.armed === 'boolean') {
-        setNotionOpsArmed(notionOps.armed);
-        
-        // Store armed state in sessionStorage for persistence
-        if (typeof sessionStorage !== 'undefined') {
-          sessionStorage.setItem('notion_ops_armed', notionOps.armed ? 'true' : 'false');
-        }
-      }
-
-      abortRef.current = null;
-      await flushResponseToUi(placeholder.id, resp);
-
-      setBusy("idle");
-      setLastError(null);
-    } catch (e) {
-      abortRef.current = null;
-      const msg = e instanceof Error ? e.message : String(e);
-      updateItem(placeholder.id, { status: "error", content: "" });
-      setBusy(isAbortError(e) ? "idle" : "error");
-      setLastError(isAbortError(e) ? null : msg);
-    }
-  }, [api, appendItem, busy, draft, flushResponseToUi, sessionId, updateItem]);
+    await sendChatFromText(draft);
+  }, [draft, sendChatFromText]);
 
   const onKeyDown = useCallback(
     (ev: React.KeyboardEvent<HTMLTextAreaElement>) => {

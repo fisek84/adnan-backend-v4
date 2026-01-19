@@ -204,8 +204,10 @@ export const Header: React.FC<HeaderProps> = ({
                         value={language || 'en-US'}
                         onChange={(e) => onLanguageChange(e.target.value)}
                       >
-                        <option value="en-US">English</option>
-                        <option value="bs-BA">Bosanski / Hrvatski</option>
+                        <option value="en-US">English (US)</option>
+                        <option value="en-GB">English (UK)</option>
+                        <option value="bs-BA">Bosanski</option>
+                        <option value="hr-HR">Hrvatski</option>
                       </select>
                     </label>
                   )}
