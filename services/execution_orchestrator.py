@@ -133,6 +133,26 @@ class ExecutionOrchestrator:
         self.registry.register(cmd)
 
         try:
+            # Safety net: meta next_step should never hit Notion executor.
+            if (
+                cmd.intent == "ceo_console.next_step"
+                or cmd.command == "ceo_console.next_step"
+            ):
+                cmd.read_only = True
+                cmd.execution_state = "COMPLETED"
+                res = {
+                    "ok": True,
+                    "execution_state": "COMPLETED",
+                    "read_only": True,
+                    "result": {"message": "next_step_noop"},
+                }
+                self.registry.complete(cmd.execution_id, res)
+                return {
+                    "execution_id": cmd.execution_id,
+                    "execution_state": "COMPLETED",
+                    "result": res,
+                }
+
             # ---------- WORKFLOW ----------
             if self._is_goal_task_workflow(cmd):
                 result = await self._execute_goal_task_workflow(cmd)

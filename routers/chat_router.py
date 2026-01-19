@@ -137,29 +137,43 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         t = (text or "").strip().lower()
         if not t:
             return False
-        return any(
-            k in t
-            for k in [
-                "create",
-                "kreiraj",
-                "napravi",
-                "dodaj",
-                "update",
-                "azuriraj",
-                "izmijeni",
-                "promijeni",
-                "delete",
-                "obrisi",
-                "ukloni",
-                "task",
-                "zadatak",
-                "goal",
-                "cilj",
-                "notion",
-                "db:",
-                "database",
-            ]
+        # IMPORTANT:
+        # - /api/chat is canonical read-only.
+        # - We only want to enforce the ARMED gate when the user is asking for
+        #   an actual write operation (create/update/delete/archive), not when
+        #   they mention concepts like "goal/cilj/task" in advisory questions.
+        write_verbs = (
+            "create",
+            "kreiraj",
+            "napravi",
+            "dodaj",
+            "update",
+            "azuriraj",
+            "ažuriraj",
+            "izmijeni",
+            "izmeni",
+            "promijeni",
+            "promeni",
+            "delete",
+            "obrisi",
+            "obriši",
+            "ukloni",
+            "archive",
+            "arhiviraj",
         )
+
+        explicit_targeting = (
+            "db:",
+            "database:",
+            "database id",
+            "database_id",
+            "page_id",
+        )
+
+        if any(k in t for k in explicit_targeting):
+            return True
+
+        return any(k in t for k in write_verbs)
 
     def _build_contract_noop_wrapper(prompt: str, *, reason: str) -> ProposedCommand:
         safe_prompt = (prompt or "").strip() or "noop"

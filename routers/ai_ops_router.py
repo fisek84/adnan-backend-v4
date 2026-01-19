@@ -392,6 +392,103 @@ def set_ai_ops_services(*, orchestrator: ExecutionOrchestrator, approvals: Any) 
 router = APIRouter(prefix="/ai-ops", tags=["AI Ops"])
 
 
+def _extract_notion_links_from_execution_result(
+    execution_result: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Best-effort extraction of Notion URLs from execution results.
+
+    Supports:
+      - single create/update/delete results where url lives under result.result.url
+      - batch_request where per-op url lives under result.result.operations[].result.result.url
+
+    Returns:
+      {"type": "single"|"batch", "links": [{op_id?, intent?, url, page_id?}, ...], "by_op_id": {...}}
+    """
+    out: Dict[str, Any] = {"type": None, "links": [], "by_op_id": {}}
+    if not isinstance(execution_result, dict):
+        return out
+
+    wrapper = execution_result.get("result")
+    if not isinstance(wrapper, dict):
+        wrapper = {}
+
+    payload = wrapper.get("result")
+    if not isinstance(payload, dict):
+        payload = {}
+
+    intent = payload.get("intent")
+    intent = intent if isinstance(intent, str) else ""
+
+    # Batch: payload.operations[]
+    if intent in {"batch_request", "batch", "branch_request"}:
+        ops = payload.get("operations")
+        if isinstance(ops, list) and ops:
+            out["type"] = "batch"
+            for op in ops:
+                if not isinstance(op, dict):
+                    continue
+
+                op_id = op.get("op_id")
+                op_id = (
+                    op_id.strip() if isinstance(op_id, str) and op_id.strip() else None
+                )
+
+                op_intent = op.get("intent")
+                op_intent = (
+                    op_intent.strip()
+                    if isinstance(op_intent, str) and op_intent.strip()
+                    else None
+                )
+
+                page_id = op.get("page_id")
+                page_id = (
+                    page_id.strip()
+                    if isinstance(page_id, str) and page_id.strip()
+                    else None
+                )
+
+                # sub result nesting: op.result.result.url
+                url = None
+                sub = op.get("result")
+                if isinstance(sub, dict):
+                    sub_payload = sub.get("result")
+                    if isinstance(sub_payload, dict):
+                        u = sub_payload.get("url") or sub_payload.get("notion_url")
+                        if isinstance(u, str) and u.strip():
+                            url = u.strip()
+                        if not page_id:
+                            pid = sub_payload.get("page_id") or sub_payload.get("id")
+                            if isinstance(pid, str) and pid.strip():
+                                page_id = pid.strip()
+
+                if isinstance(url, str) and url.strip():
+                    rec = {
+                        "url": url,
+                        "page_id": page_id,
+                        "op_id": op_id,
+                        "intent": op_intent,
+                    }
+                    out["links"].append(rec)
+                    if op_id:
+                        out["by_op_id"][op_id] = url
+
+            return out
+
+    # Single: payload.url
+    url = payload.get("url") or payload.get("notion_url")
+    if isinstance(url, str) and url.strip():
+        out["type"] = "single"
+        page_id = payload.get("page_id") or payload.get("id")
+        page_id = (
+            page_id.strip() if isinstance(page_id, str) and page_id.strip() else None
+        )
+        out["links"].append(
+            {"url": url.strip(), "page_id": page_id, "intent": intent or None}
+        )
+
+    return out
+
+
 @router.post("/cron/run")
 def cron_run(request: Request) -> Dict[str, Any]:
     _guard_write(request)
@@ -573,6 +670,58 @@ async def approve(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[st
     if isinstance(execution_result, dict):
         execution_result.setdefault("approval", approval)
         execution_result.setdefault("read_only", False)
+
+        # Best-effort: surface Notion URLs (single + batch) for UI.
+        try:
+            links = _extract_notion_links_from_execution_result(execution_result)
+            if isinstance(links, dict):
+                by_op = (
+                    links.get("by_op_id")
+                    if isinstance(links.get("by_op_id"), dict)
+                    else {}
+                )
+                lst = links.get("links") if isinstance(links.get("links"), list) else []
+
+                if by_op:
+                    execution_result.setdefault("notion_urls_by_op_id", by_op)
+                if lst:
+                    execution_result.setdefault("notion_urls", lst)
+
+                # If backend didn't already provide a user-facing message, provide one.
+                existing_text = execution_result.get("text")
+                if (
+                    not isinstance(existing_text, str) or not existing_text.strip()
+                ) and lst:
+                    lines = []
+                    state = execution_result.get("execution_state")
+                    if isinstance(state, str) and state.strip():
+                        lines.append(f"Execution: {state.strip()}")
+                    else:
+                        lines.append("Execution completed")
+
+                    lines.append("")
+                    lines.append("Created in Notion:")
+                    for rec in lst:
+                        if not isinstance(rec, dict):
+                            continue
+                        u = rec.get("url")
+                        if not isinstance(u, str) or not u.strip():
+                            continue
+                        oid = rec.get("op_id")
+                        it = rec.get("intent")
+                        label = None
+                        if isinstance(oid, str) and oid.strip():
+                            label = oid.strip()
+                        if isinstance(it, str) and it.strip():
+                            label = f"{label} ({it.strip()})" if label else it.strip()
+                        if label:
+                            lines.append(f"- {label}: {u.strip()}")
+                        else:
+                            lines.append(f"- {u.strip()}")
+
+                    execution_result["text"] = "\n".join(lines).strip()
+        except Exception:
+            pass
 
         _cache_execution_result(
             approval_id=approval_id,

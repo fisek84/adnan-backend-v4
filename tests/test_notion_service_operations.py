@@ -395,6 +395,108 @@ class TestNotionServiceOperations(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("Unsupported intent", str(context.exception))
 
+    # ============================================================
+    # BATCH / DELETE (ENTERPRISE)
+    # ============================================================
+
+    async def test_delete_page_archives(self):
+        """Test that delete_page archives a page via PATCH."""
+        mock_response = {
+            "id": "page-id-123",
+            "url": "https://notion.so/page-id-123",
+            "archived": True,
+        }
+
+        with patch.object(
+            self.service, "_safe_request", new_callable=AsyncMock
+        ) as mock_request:
+            mock_request.return_value = mock_response
+
+            command = AICommand(
+                command="notion_write",
+                intent="delete_page",
+                params={"page_id": "page-id-123"},
+                approval_id="approval-123",
+                execution_id="exec-123",
+                read_only=False,
+            )
+
+            result = await self.service.execute(command)
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["result"]["intent"], "delete_page")
+            mock_request.assert_called_once()
+
+    async def test_batch_request_runs_operations_and_resolves_refs(self):
+        """Test batch_request executes multiple ops and resolves $op_id references."""
+        # Simulate create_goal then create_task that references the created goal
+        create_goal_res = {
+            "id": "goal-page-id-1",
+            "url": "https://notion.so/goal-page-id-1",
+        }
+        create_task_res = {
+            "id": "task-page-id-1",
+            "url": "https://notion.so/task-page-id-1",
+        }
+
+        with patch.object(
+            self.service, "_safe_request", new_callable=AsyncMock
+        ) as mock_request, patch.object(
+            self.service, "_update_page_relations", new_callable=AsyncMock
+        ) as mock_update_relations:
+            created = {"count": 0}
+
+            async def fake_safe_request(method, url, payload=None, params=None):
+                # DB schema reads
+                if method == "GET" and "/databases/" in url:
+                    return {"properties": {}}
+
+                # Page creates
+                if method == "POST" and url.endswith("/pages"):
+                    created["count"] += 1
+                    return create_goal_res if created["count"] == 1 else create_task_res
+
+                return {}
+
+            mock_request.side_effect = fake_safe_request
+
+            command = AICommand(
+                command="notion_write",
+                intent="batch_request",
+                params={
+                    "operations": [
+                        {
+                            "op_id": "goal_1",
+                            "intent": "create_goal",
+                            "payload": {"title": "Goal A"},
+                        },
+                        {
+                            "op_id": "task_1",
+                            "intent": "create_task",
+                            "payload": {"title": "Task A", "goal_id": "$goal_1"},
+                        },
+                    ]
+                },
+                approval_id="approval-batch",
+                execution_id="exec-batch",
+                read_only=False,
+            )
+
+            result = await self.service.execute(command)
+            self.assertTrue(result["ok"], msg=str(result))
+
+            # Expect both ops ok
+            ops = result.get("result", {}).get("operations", [])
+            self.assertEqual(len(ops), 2)
+            self.assertTrue(ops[0]["ok"])
+            self.assertTrue(ops[1]["ok"])
+
+            # Task relations should be updated with resolved goal page id
+            mock_update_relations.assert_called_once_with(
+                page_id="task-page-id-1",
+                goal_id="goal-page-id-1",
+                project_id="",
+            )
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

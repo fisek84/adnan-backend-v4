@@ -7,7 +7,6 @@ from models.agent_contract import AgentInput, AgentOutput, ProposedCommand
 from services.agent_router.openai_assistant_executor import OpenAIAssistantExecutor
 
 # PHASE 6: Import shared Notion Ops state management
-from services.notion_ops_state import get_state
 
 
 # -----------------------------------
@@ -538,22 +537,6 @@ async def create_ceo_advisor_agent(
 
     propose_only = _is_propose_only_request(base_text)
     wants_notion = _wants_notion_task_or_goal(base_text)
-
-    # Check session state before proceeding with the action
-    session_id = getattr(agent_input, "session_id", None)
-    if session_id:
-        state = await get_state(session_id)
-        armed = state.get("armed", False)
-
-        if not armed:
-            # Block any write operation if Notion Ops is not armed
-            return AgentOutput(
-                text="Notion Ops nije aktivan. Želiš aktivirati? (napiši: 'notion ops aktiviraj' / 'notion ops uključi')",
-                proposed_commands=[],
-                agent_id="ceo_advisor",
-                read_only=True,
-                trace={},
-            )
 
     # Continue processing normally...
     if structured_mode and not goals and not tasks:

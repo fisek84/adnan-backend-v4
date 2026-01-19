@@ -175,6 +175,113 @@ function renderTextWithNotionLink(text: string): React.ReactNode {
   );
 }
 
+type NotionLinkItem = {
+  label: string;
+  url: string;
+};
+
+function extractRefMapFromApproveResponse(res: any): Record<string, string> {
+  const candidates = [
+    res?.ref_map,
+    res?.result?.ref_map,
+    res?.result?.result?.ref_map,
+    res?.raw?.ref_map,
+  ];
+
+  for (const c of candidates) {
+    if (!c || typeof c !== "object" || Array.isArray(c)) continue;
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(c)) {
+      if (typeof k !== "string") continue;
+      const val = typeof v === "string" ? v.trim() : "";
+      if (!val) continue;
+      out[k] = val;
+    }
+    return out;
+  }
+
+  return {};
+}
+
+function extractNotionLinksFromApproveResponse(res: any): NotionLinkItem[] {
+  const out: NotionLinkItem[] = [];
+
+  const list = res?.notion_urls;
+  if (Array.isArray(list)) {
+    for (const rec of list) {
+      if (!rec || typeof rec !== "object") continue;
+      const url = typeof rec.url === "string" ? rec.url.trim() : "";
+      if (!url) continue;
+
+      const opId = typeof rec.op_id === "string" ? rec.op_id.trim() : "";
+      const intent = typeof rec.intent === "string" ? rec.intent.trim() : "";
+
+      const label = opId && intent ? `${opId} (${intent})` : opId || intent || "Notion";
+      out.push({ label, url });
+    }
+  }
+
+  const byOp = res?.notion_urls_by_op_id;
+  if (byOp && typeof byOp === "object" && !Array.isArray(byOp)) {
+    const keys = Object.keys(byOp).sort();
+    for (const k of keys) {
+      const url = typeof byOp[k] === "string" ? String(byOp[k]).trim() : "";
+      if (!url) continue;
+      out.push({ label: k, url });
+    }
+  }
+
+  // De-dupe by url
+  const seen = new Set<string>();
+  return out.filter((x) => {
+    const u = x.url;
+    if (seen.has(u)) return false;
+    seen.add(u);
+    return true;
+  });
+}
+
+function NotionLinksPanel({ items }: { items: NotionLinkItem[] }) {
+  if (!items.length) return null;
+
+  return (
+    <div style={{ marginTop: 10 }}>
+      <div style={{ fontWeight: 700, marginBottom: 6 }}>Created in Notion</div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {items.map((it) => (
+          <div key={it.url} style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <span style={{ opacity: 0.85 }}>{it.label}:</span>
+            <a href={it.url} target="_blank" rel="noreferrer">
+              {it.url}
+            </a>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function RefMapPanel({ refMap }: { refMap: Record<string, string> }) {
+  const keys = Object.keys(refMap || {}).sort();
+  if (!keys.length) return null;
+
+  return (
+    <div style={{ marginTop: 10 }}>
+      <div style={{ fontWeight: 700, marginBottom: 6 }}>Reference map</div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {keys.map((k) => (
+          <div key={k} style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <span style={{ opacity: 0.85 }}>{k}:</span>
+            <span style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace" }}>
+              {refMap[k]}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 /**
  * IMPORTANT UX RULE (CANON):
  * Do NOT show "fallback proposals" (the ones that just echo a prompt / ceo.command.propose, dry_run).
@@ -432,6 +539,48 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
   const [previewData, setPreviewData] = useState<any>(null);
   const [previewTitle, setPreviewTitle] = useState<string>("Preview");
 
+  const [previewProposal, setPreviewProposal] = useState<ProposedCmd | null>(null);
+  const [previewProposalLabel, setPreviewProposalLabel] = useState<string | undefined>(undefined);
+  const [previewProposalKey, setPreviewProposalKey] = useState<string | null>(null);
+  const [proposalPatches, setProposalPatches] = useState<Record<string, Record<string, any>>>({});
+
+  const stableStringify = useCallback((value: any): string => {
+    const seen = new WeakSet<object>();
+    const norm = (v: any): any => {
+      if (v === null || v === undefined) return v;
+      if (typeof v !== "object") return v;
+      if (seen.has(v)) return "[Circular]";
+      seen.add(v);
+      if (Array.isArray(v)) return v.map(norm);
+      const out: any = {};
+      for (const k of Object.keys(v).sort()) out[k] = norm(v[k]);
+      return out;
+    };
+    try {
+      return JSON.stringify(norm(value));
+    } catch {
+      return String(value);
+    }
+  }, []);
+
+  const getProposalKey = useCallback(
+    (proposal: ProposedCmd, _label?: string): string => {
+      const intent = (proposal as any)?.intent ?? (proposal as any)?.command ?? "";
+      const prompt = (proposal as any)?.params?.prompt ?? (proposal as any)?.metadata?.prompt ?? "";
+      const aiIntent = (proposal as any)?.params?.ai_command?.intent ?? "";
+      return stableStringify({ intent, prompt, ai_intent: aiIntent });
+    },
+    [stableStringify]
+  );
+
+  const applyPatchToProposal = useCallback((proposal: ProposedCmd, patch: Record<string, any> | undefined): ProposedCmd => {
+    if (!patch || typeof patch !== "object" || Object.keys(patch).length === 0) return proposal;
+    const paramsIn = (proposal as any)?.params;
+    const params = paramsIn && typeof paramsIn === "object" ? { ...paramsIn } : {};
+    for (const [k, v] of Object.entries(patch)) params[k] = v;
+    return { ...(proposal as any), params } as any;
+  }, []);
+
   const handlePreviewProposal = useCallback(
     async (proposal: ProposedCmd, label?: string) => {
       if (previewLoading) return;
@@ -441,6 +590,11 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       setPreviewLoading(true);
       setPreviewError(null);
       setPreviewData(null);
+
+      setPreviewProposal(proposal);
+      setPreviewProposalLabel(label);
+      const key = getProposalKey(proposal, label);
+      setPreviewProposalKey(key);
 
       const controller = new AbortController();
       previewAbortRef.current = controller;
@@ -455,8 +609,11 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
           },
         };
 
+        const patch = proposalPatches[key];
+        const patched = applyPatchToProposal(proposalWithSession, patch);
+
         const previewUrl = resolveUrl(executeRawUrl, "/api/execute/preview");
-        const json = await postJson(previewUrl, proposalWithSession, controller.signal);
+        const json = await postJson(previewUrl, patched, controller.signal);
         setPreviewData(json);
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
@@ -466,7 +623,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         setPreviewLoading(false);
       }
     },
-    [executeRawUrl, postJson, previewLoading, resolveUrl, sessionId]
+    [applyPatchToProposal, executeRawUrl, getProposalKey, postJson, previewLoading, proposalPatches, resolveUrl, sessionId]
   );
 
   // ------------------------------
@@ -591,9 +748,13 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
             source: "ceo_dashboard",
           },
         };
+
+        const key = getProposalKey(proposal);
+        const patch = proposalPatches[key];
+        const patched = applyPatchToProposal(proposalWithSession, patch);
         
         const execUrl = resolveUrl(executeRawUrl, "/api/execute/raw");
-        const execJson = await postJson(execUrl, proposalWithSession, controller.signal);
+        const execJson = await postJson(execUrl, patched, controller.signal);
 
         const approvalId: string | null =
           typeof execJson?.approval_id === "string" && execJson.approval_id ? execJson.approval_id : null;
@@ -662,6 +823,26 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
           (approveJson?.execution_state ? `Execution: ${approveJson.execution_state}` : "Approved.");
 
         updateItem(placeholder.id, { content: msg, status: "final" });
+
+        const notionLinks = extractNotionLinksFromApproveResponse(approveJson);
+        const refMap = extractRefMapFromApproveResponse(approveJson);
+
+        if (notionLinks.length > 0 || Object.keys(refMap).length > 0) {
+          appendItem({
+            id: uid(),
+            kind: "governance",
+            createdAt: now(),
+            state: (approveJson?.execution_state as any) || "EXECUTED",
+            title: "Execution result",
+            summary: msg,
+            reasons: [],
+            approvalRequestId: approvalId,
+            requestId: approvalId,
+            notionLinks,
+            refMap,
+          } as GovernanceEventItem);
+        }
+
         abortRef.current = null;
         setBusy("idle");
         setLastError(null);
@@ -768,6 +949,25 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
 
         updateItem(placeholder.id, { content: msg, status: "final" });
 
+        const notionLinks = extractNotionLinksFromApproveResponse(approveJson);
+        const refMap = extractRefMapFromApproveResponse(approveJson);
+
+        if (notionLinks.length > 0 || Object.keys(refMap).length > 0) {
+          appendItem({
+            id: uid(),
+            kind: "governance",
+            createdAt: now(),
+            state: (approveJson?.execution_state as any) || "EXECUTED",
+            title: "Execution result",
+            summary: msg,
+            reasons: [],
+            approvalRequestId: approvalId,
+            requestId: approvalId,
+            notionLinks,
+            refMap,
+          } as GovernanceEventItem);
+        }
+
         abortRef.current = null;
         setBusy("idle");
         setLastError(null);
@@ -779,7 +979,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         setLastError(isAbortError(e) ? null : msg);
       }
     },
-    [appendItem, busy, effectiveApproveUrl, executeRawUrl, postJson, resolveUrl, sessionId, updateItem]
+    [appendItem, applyPatchToProposal, busy, effectiveApproveUrl, executeRawUrl, getProposalKey, postJson, proposalPatches, resolveUrl, sessionId, updateItem]
   );
 
   // ------------------------------
@@ -1035,6 +1235,12 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         loading={previewLoading}
         error={previewError}
         data={previewData}
+        onApplyPatch={(patch) => {
+          if (!previewProposalKey) return;
+          const merged = { ...(proposalPatches[previewProposalKey] || {}), ...(patch || {}) };
+          setProposalPatches((prev) => ({ ...prev, [previewProposalKey]: merged }));
+          if (previewProposal) void handlePreviewProposal(applyPatchToProposal(previewProposal, merged), previewProposalLabel);
+        }}
         onClose={() => {
           previewAbortRef.current?.abort();
           previewAbortRef.current = null;
@@ -1109,6 +1315,8 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
 
             const proposedCommands: ProposedCmd[] = ((it as any)?.proposedCommands as ProposedCmd[]) ?? [];
             const hasApprovalId = Boolean((it as any)?.approvalRequestId);
+            const notionLinks: NotionLinkItem[] = ((it as any)?.notionLinks as NotionLinkItem[]) ?? [];
+            const refMap: Record<string, string> = ((it as any)?.refMap as Record<string, string>) ?? {};
 
             return (
               <div className="ceoRow left" key={it.id}>
@@ -1120,6 +1328,9 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
 
                   <div className="govBody">
                     {it.summary ? <div className="govSummary">{it.summary}</div> : null}
+
+                    {notionLinks.length > 0 ? <NotionLinksPanel items={notionLinks} /> : null}
+                    {Object.keys(refMap).length > 0 ? <RefMapPanel refMap={refMap} /> : null}
 
                     {proposedCommands.length > 0 ? (
                       <div style={{ marginTop: 10 }}>

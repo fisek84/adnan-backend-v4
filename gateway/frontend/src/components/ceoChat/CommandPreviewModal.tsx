@@ -1,5 +1,5 @@
 // gateway/frontend/src/components/ceoChat/CommandPreviewModal.tsx
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 
 type Props = {
   open: boolean;
@@ -7,6 +7,7 @@ type Props = {
   loading?: boolean;
   error?: string | null;
   data?: any;
+  onApplyPatch?: (patch: Record<string, any>) => void;
   onClose: () => void;
 };
 
@@ -21,13 +22,22 @@ function clampJson(obj: any, maxLen = 16000): string {
   return s.slice(0, maxLen) + "\n...(truncated)...";
 }
 
-export const CommandPreviewModal: React.FC<Props> = ({ open, title, loading, error, data, onClose }) => {
+export const CommandPreviewModal: React.FC<Props> = ({ open, title, loading, error, data, onApplyPatch, onClose }) => {
   const header = (title || "Preview") as string;
 
   const notion = data?.notion;
   const command = data?.command;
+  const notionRows: any[] | null = Array.isArray((notion as any)?.rows) ? ((notion as any).rows as any[]) : null;
 
   const [showRaw, setShowRaw] = useState(false);
+  const [showAllFields, setShowAllFields] = useState(false);
+  const [patchLocal, setPatchLocal] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    if (!open) return;
+    setPatchLocal({});
+    setShowAllFields(false);
+  }, [open, data]);
 
   const propertiesPreview: Record<string, any> | null =
     notion && typeof notion === "object" && notion.properties_preview && typeof notion.properties_preview === "object"
@@ -39,8 +49,91 @@ export const CommandPreviewModal: React.FC<Props> = ({ open, title, loading, err
       ? (notion.property_specs as Record<string, any>)
       : null;
 
+  const review = data?.review && typeof data.review === "object" ? data.review : null;
+  const reviewSchema: Record<string, any> | null =
+    review?.fields_schema && typeof review.fields_schema === "object" ? (review.fields_schema as Record<string, any>) : null;
+  const reviewMissing: string[] = Array.isArray(review?.missing_fields)
+    ? (review.missing_fields as any[]).filter((x) => typeof x === "string")
+    : [];
+
+  // Only support patching fields that backend can currently apply reliably.
+  const supportedPatchFields = ["Status", "Priority", "Deadline", "Due Date", "Description"];
+
+  const editableFields = useMemo(() => {
+    const schemaKeys = Object.keys(reviewSchema || {}).filter((k) => supportedPatchFields.includes(k));
+    if (!schemaKeys.length) return [];
+
+    const preferred = supportedPatchFields.filter((k) => schemaKeys.includes(k));
+    const base = reviewMissing.filter((k) => schemaKeys.includes(k));
+    const picked = base.length ? base : preferred;
+    return showAllFields ? schemaKeys : picked.length ? picked : schemaKeys;
+  }, [reviewSchema, reviewMissing, showAllFields]);
+
+  function fieldOptions(fieldKey: string): string[] {
+    const fs: any = (reviewSchema as any)?.[fieldKey] ?? {};
+    const opts = Array.isArray(fs?.options) ? fs.options.filter((x: any) => typeof x === "string") : [];
+    return opts;
+  }
+
+  function currentValueForField(fieldKey: string): string {
+    if (typeof patchLocal?.[fieldKey] === "string") return patchLocal[fieldKey];
+    if (propertiesPreview) {
+      const pv = propertiesPreview[fieldKey];
+      if (pv?.select?.name) return String(pv.select.name);
+      if (pv?.status?.name) return String(pv.status.name);
+      if (pv?.date?.start) return String(pv.date.start);
+      if (Array.isArray(pv?.rich_text)) return renderNotionValue(pv);
+    }
+    if (propertySpecs) {
+      const sp = propertySpecs[fieldKey];
+      if (sp?.name) return String(sp.name);
+      if (sp?.start) return String(sp.start);
+      if (sp?.text) return String(sp.text);
+    }
+    return "";
+  }
+
   const columns = useMemo(() => {
-    const keys = Object.keys(propertiesPreview || propertySpecs || {});
+    // Batch preview columns: union of per-row columns.
+    if (notionRows && notionRows.length > 0) {
+      const colSet = new Set<string>();
+      colSet.add("op_id");
+      colSet.add("intent");
+      colSet.add("db_key");
+
+      for (const r of notionRows) {
+        const pp = r?.properties_preview && typeof r.properties_preview === "object" ? r.properties_preview : null;
+        const ps = r?.property_specs && typeof r.property_specs === "object" ? r.property_specs : null;
+        const src = pp || ps || {};
+        for (const k of Object.keys(src)) colSet.add(k);
+      }
+
+      const keys = Array.from(colSet);
+      const preferred = [
+        "op_id",
+        "intent",
+        "db_key",
+        "Goal Ref",
+        "Project Ref",
+        "Parent Goal Ref",
+        "Name",
+        "Title",
+        "Status",
+        "Priority",
+        "Owner",
+        "Deadline",
+        "Due Date",
+        "Project",
+        "Goal",
+        "Description",
+      ];
+      const ordered: string[] = [];
+      for (const p of preferred) if (keys.includes(p)) ordered.push(p);
+      for (const k of keys) if (!ordered.includes(k)) ordered.push(k);
+      return ordered;
+    }
+
+    const keys = Object.keys(propertiesPreview || propertySpecs || reviewSchema || {});
     // Prefer a Notion-ish order
     const preferred = [
       "Name",
@@ -58,7 +151,7 @@ export const CommandPreviewModal: React.FC<Props> = ({ open, title, loading, err
     for (const p of preferred) if (keys.includes(p)) ordered.push(p);
     for (const k of keys) if (!ordered.includes(k)) ordered.push(k);
     return ordered;
-  }, [propertiesPreview, propertySpecs]);
+  }, [propertiesPreview, propertySpecs, reviewSchema, notionRows]);
 
   function renderNotionValue(v: any): string {
     if (!v || typeof v !== "object") return "";
@@ -264,33 +357,195 @@ export const CommandPreviewModal: React.FC<Props> = ({ open, title, loading, err
                         </tr>
                       </thead>
                       <tbody>
-                        <tr>
-                          {columns.map((c) => {
-                            const v = (propertiesPreview || ({} as any))?.[c];
-                            const display = propertiesPreview ? renderNotionValue(v) : clampJson(propertySpecs?.[c] ?? null, 2000);
-                            return (
-                              <td
-                                key={c}
-                                style={{
-                                  padding: "10px 12px",
-                                  borderBottom: "1px solid rgba(255,255,255,0.06)",
-                                  color: "rgba(255,255,255,0.90)",
-                                  verticalAlign: "top",
-                                  maxWidth: 320,
-                                  whiteSpace: "pre-wrap",
-                                  wordBreak: "break-word",
-                                }}
-                              >
-                                {display || "—"}
-                              </td>
-                            );
-                          })}
-                        </tr>
+                        {notionRows && notionRows.length > 0 ? (
+                          notionRows.map((r, ridx) => (
+                            <tr key={r?.op_id || ridx}>
+                              {columns.map((c) => {
+                                const isMeta = c === "op_id" || c === "intent" || c === "db_key";
+                                const pp = r?.properties_preview && typeof r.properties_preview === "object" ? r.properties_preview : null;
+                                const ps = r?.property_specs && typeof r.property_specs === "object" ? r.property_specs : null;
+
+                                const v = pp ? pp?.[c] : null;
+                                const display = isMeta
+                                  ? String(r?.[c] ?? "")
+                                  : pp
+                                    ? renderNotionValue(v)
+                                    : ps
+                                      ? clampJson(ps?.[c] ?? null, 2000)
+                                      : "";
+
+                                return (
+                                  <td
+                                    key={`${ridx}_${c}`}
+                                    style={{
+                                      padding: "10px 12px",
+                                      borderBottom: "1px solid rgba(255,255,255,0.06)",
+                                      color: "rgba(255,255,255,0.90)",
+                                      verticalAlign: "top",
+                                      maxWidth: 320,
+                                      whiteSpace: "pre-wrap",
+                                      wordBreak: "break-word",
+                                    }}
+                                  >
+                                    {display || "—"}
+                                  </td>
+                                );
+                              })}
+                            </tr>
+                          ))
+                        ) : (
+                          <tr>
+                            {columns.map((c) => {
+                              const v = (propertiesPreview || ({} as any))?.[c];
+                              const display = propertiesPreview
+                                ? renderNotionValue(v)
+                                : propertySpecs
+                                  ? clampJson(propertySpecs?.[c] ?? null, 2000)
+                                  : currentValueForField(c);
+                              return (
+                                <td
+                                  key={c}
+                                  style={{
+                                    padding: "10px 12px",
+                                    borderBottom: "1px solid rgba(255,255,255,0.06)",
+                                    color: "rgba(255,255,255,0.90)",
+                                    verticalAlign: "top",
+                                    maxWidth: 320,
+                                    whiteSpace: "pre-wrap",
+                                    wordBreak: "break-word",
+                                  }}
+                                >
+                                  {display || "—"}
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        )}
                       </tbody>
                     </table>
                   </div>
                 )}
               </div>
+
+              {reviewSchema && editableFields.length > 0 ? (
+                <div
+                  style={{
+                    marginBottom: 14,
+                    borderRadius: 14,
+                    border: "1px solid rgba(255,255,255,0.08)",
+                    background: "rgba(255,255,255,0.03)",
+                    padding: 12,
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, justifyContent: "space-between" }}>
+                    <div>
+                      <div style={{ fontWeight: 700, fontSize: 13 }}>Complete fields</div>
+                      <div style={{ fontSize: 12, opacity: 0.75 }}>
+                        These values will be applied to the proposal before approval.
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => setShowAllFields((p) => !p)}
+                      style={{
+                        padding: "8px 10px",
+                        borderRadius: 10,
+                        border: "1px solid rgba(255,255,255,0.12)",
+                        background: "rgba(255,255,255,0.06)",
+                        color: "rgba(255,255,255,0.92)",
+                        cursor: "pointer",
+                      }}
+                      title="Show more fields"
+                      disabled={loading}
+                    >
+                      {showAllFields ? "Hide extra" : "Show all"}
+                    </button>
+                  </div>
+
+                  <div style={{ height: 10 }} />
+
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                    {editableFields.map((fieldKey) => {
+                      const opts = fieldOptions(fieldKey);
+                      const val = currentValueForField(fieldKey);
+                      const missing = reviewMissing.includes(fieldKey);
+
+                      return (
+                        <div key={fieldKey} style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                          <div style={{ fontSize: 12, color: "rgba(255,255,255,0.78)" }}>
+                            {fieldKey} {missing ? <span style={{ opacity: 0.7 }}>*</span> : null}
+                          </div>
+                          {opts.length > 0 ? (
+                            <select
+                              value={val}
+                              onChange={(e) => setPatchLocal((p) => ({ ...p, [fieldKey]: e.target.value }))}
+                              style={{
+                                border: "1px solid rgba(255,255,255,0.12)",
+                                background: "rgba(255,255,255,0.02)",
+                                color: "rgba(255,255,255,0.92)",
+                                borderRadius: 12,
+                                padding: "10px 10px",
+                                fontSize: 13,
+                                outline: "none",
+                              }}
+                            >
+                              <option value="" disabled>
+                                Select...
+                              </option>
+                              {opts.map((o) => (
+                                <option key={o} value={o} style={{ color: "#000" }}>
+                                  {o}
+                                </option>
+                              ))}
+                            </select>
+                          ) : (
+                            <input
+                              value={val}
+                              onChange={(e) => setPatchLocal((p) => ({ ...p, [fieldKey]: e.target.value }))}
+                              style={{
+                                border: "1px solid rgba(255,255,255,0.12)",
+                                background: "rgba(255,255,255,0.02)",
+                                color: "rgba(255,255,255,0.92)",
+                                borderRadius: 12,
+                                padding: "10px 10px",
+                                fontSize: 13,
+                                outline: "none",
+                              }}
+                            />
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  <div style={{ height: 12 }} />
+                  <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                    <button
+                      onClick={() => {
+                        const out: Record<string, any> = {};
+                        for (const k of supportedPatchFields) {
+                          const v = patchLocal?.[k];
+                          if (typeof v === "string" && v.trim()) out[k] = v.trim();
+                        }
+                        if (Object.keys(out).length === 0) return;
+                        if (!onApplyPatch) return;
+                        onApplyPatch(out);
+                      }}
+                      style={{
+                        padding: "8px 10px",
+                        borderRadius: 10,
+                        border: "1px solid rgba(255,255,255,0.12)",
+                        background: "rgba(59,130,246,0.20)",
+                        color: "rgba(255,255,255,0.92)",
+                        cursor: "pointer",
+                      }}
+                      title="Apply these values to proposal and refresh preview"
+                      disabled={loading || !onApplyPatch}
+                    >
+                      Update preview
+                    </button>
+                  </div>
+                </div>
+              ) : null}
 
               {showRaw
                 ? rawBlocks.map((b, i) => (

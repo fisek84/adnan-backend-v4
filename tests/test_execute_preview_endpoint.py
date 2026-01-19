@@ -109,3 +109,69 @@ def test_execute_preview_unwraps_ai_command_envelope():
     assert isinstance(notion, dict)
     assert notion.get("db_key") == "goals"
     assert isinstance(notion.get("properties_preview"), dict)
+
+
+def test_execute_preview_batch_request_rows():
+    app = _get_app()
+    client = TestClient(app)
+
+    payload = {
+        "command": "notion_write",
+        "intent": "batch_request",
+        "params": {
+            "operations": [
+                {
+                    "op_id": "goal_1",
+                    "intent": "create_goal",
+                    "payload": {
+                        "title": "Batch Goal",
+                        "priority": "High",
+                        "status": "Active",
+                        "deadline": "2030-02-02",
+                    },
+                },
+                {
+                    "op_id": "task_1",
+                    "intent": "create_task",
+                    "payload": {
+                        "title": "Task 1: Batch Goal",
+                        "priority": "Low",
+                        "goal_id": "$goal_1",
+                    },
+                },
+            ]
+        },
+    }
+
+    r = client.post(
+        "/api/execute/preview",
+        headers={"X-Initiator": "ceo_chat"},
+        json=payload,
+    )
+    assert r.status_code == 200
+    body = r.json()
+
+    assert body.get("ok") is True
+    assert body.get("read_only") is True
+
+    notion = body.get("notion")
+    assert isinstance(notion, dict)
+    assert notion.get("type") == "batch_preview"
+
+    rows = notion.get("rows")
+    assert isinstance(rows, list)
+    assert len(rows) >= 2
+
+    r0 = rows[0]
+    assert r0.get("op_id") == "goal_1"
+    assert r0.get("intent") == "create_goal"
+    assert r0.get("db_key") == "goals"
+    assert isinstance(r0.get("properties_preview"), dict)
+    assert "Name" in r0["properties_preview"]
+
+    r1 = rows[1]
+    assert r1.get("op_id") == "task_1"
+    assert r1.get("intent") == "create_task"
+    assert r1.get("db_key") == "tasks"
+    # Relationship reference should be human-readable (from "$goal_1" -> "ref:goal_1")
+    assert r1.get("Goal Ref") == "ref:goal_1"

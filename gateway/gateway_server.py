@@ -464,7 +464,8 @@ def _apply_wrapper_patch_to_ai_command(
 
     if getattr(ai_command, "command", None) != "notion_write":
         return
-    if getattr(ai_command, "intent", None) != "create_page":
+    intent = getattr(ai_command, "intent", None)
+    if intent not in {"create_page", "create_goal", "create_task", "create_project"}:
         return
 
     params = getattr(ai_command, "params", None)
@@ -472,6 +473,7 @@ def _apply_wrapper_patch_to_ai_command(
         params = {}
         ai_command.params = params
 
+    # For create_page we patch property_specs; for create_goal/task/project we patch params fields.
     property_specs = params.get("property_specs")
     if not isinstance(property_specs, dict):
         property_specs = {}
@@ -491,32 +493,50 @@ def _apply_wrapper_patch_to_ai_command(
         raw = wrapper_patch.get("Status")
         if isinstance(raw, str) and raw.strip():
             name = COOTranslationService._normalize_status(raw)
-            property_specs["Status"] = {"type": status_type, "name": name}
+            if intent == "create_page":
+                property_specs["Status"] = {"type": status_type, "name": name}
+            else:
+                params["status"] = name
 
     if "Priority" in wrapper_patch:
         raw = wrapper_patch.get("Priority")
         if isinstance(raw, str) and raw.strip():
             name = COOTranslationService._normalize_priority(raw)
-            property_specs["Priority"] = {"type": "select", "name": name}
+            if intent == "create_page":
+                property_specs["Priority"] = {"type": "select", "name": name}
+            else:
+                params["priority"] = name
 
     if "Deadline" in wrapper_patch:
         raw = wrapper_patch.get("Deadline")
         if isinstance(raw, str) and raw.strip():
             iso = COOTranslationService._try_parse_date_to_iso(raw)
             if iso:
-                property_specs["Deadline"] = {"type": "date", "start": iso}
+                if intent == "create_page":
+                    property_specs["Deadline"] = {"type": "date", "start": iso}
+                else:
+                    params["deadline"] = iso
 
     if "Due Date" in wrapper_patch:
         raw = wrapper_patch.get("Due Date")
         if isinstance(raw, str) and raw.strip():
             iso = COOTranslationService._try_parse_date_to_iso(raw)
             if iso:
-                property_specs["Due Date"] = {"type": "date", "start": iso}
+                if intent == "create_page":
+                    property_specs["Due Date"] = {"type": "date", "start": iso}
+                else:
+                    params["deadline"] = iso
 
     if "Description" in wrapper_patch:
         raw = wrapper_patch.get("Description")
         if isinstance(raw, str) and raw.strip():
-            property_specs["Description"] = {"type": "rich_text", "text": raw.strip()}
+            if intent == "create_page":
+                property_specs["Description"] = {
+                    "type": "rich_text",
+                    "text": raw.strip(),
+                }
+            else:
+                params["description"] = raw.strip()
 
     params["property_specs"] = property_specs
     ai_command.params = params
@@ -572,6 +592,101 @@ def _unwrap_proposal_wrapper_or_raise(
             status_code=400,
             detail="ceo.command.propose cannot enter execution. Missing prompt for unwrap/translation (expected params.prompt or metadata.wrapper.prompt).",
         )
+
+    # ============================================================
+    # ENTERPRISE FAST-PATH: deterministic intent hints from NotionOpsAgent
+    # ============================================================
+    hint_intent: Optional[str] = None
+    hint_type: Optional[str] = None
+    if isinstance(params, dict):
+        p_intent = params.get("intent") or params.get("intent_hint")
+        if isinstance(p_intent, str) and p_intent.strip():
+            hint_intent = p_intent.strip()
+        p_type = params.get("type")
+        if isinstance(p_type, str) and p_type.strip():
+            hint_type = p_type.strip()
+
+    def _strip_prefixes_for_title(s: str) -> str:
+        t = (s or "").strip()
+        if not t:
+            return t
+        t2 = re.sub(r"^(task|zadatak)\s*[:\-–—]\s*", "", t, flags=re.IGNORECASE).strip()
+        t2 = re.sub(
+            r"^(kreiraj|napravi|create)\s+(task|zadatak|project|projekat|projekt|goal|cilj)\w*\s*(?:u\s+notionu)?\s*[:\-–—,;]?\s*",
+            "",
+            t2,
+            flags=re.IGNORECASE,
+        ).strip()
+        return t2 or t
+
+    # Branch/batch requests: build operations list deterministically.
+    try:
+        if (hint_type or "").lower() in {"branch_request", "batch_request"} or (
+            isinstance(hint_intent, str)
+            and hint_intent.strip().lower()
+            in {"batch_request", "batch", "branch_request"}
+        ):
+            from services.branch_request_handler import BranchRequestHandler  # noqa: PLC0415
+
+            br = BranchRequestHandler.process_branch_request(prompt.strip())
+            ops = br.get("operations") if isinstance(br, dict) else None
+            if isinstance(ops, list) and ops:
+                ai_command = AICommand(
+                    command="notion_write",
+                    intent="batch_request",
+                    read_only=False,
+                    params={"operations": ops, "source_prompt": prompt.strip()},
+                    initiator=initiator,
+                    validated=True,
+                    metadata={
+                        **(metadata if isinstance(metadata, dict) else {}),
+                        "canon": "execute_raw_unwrap_batch_fast_path",
+                        "endpoint": "/api/execute/raw",
+                        "wrapper": {
+                            "prompt": prompt.strip(),
+                            "wrapper_patch": wrapper_patch,
+                        },
+                    },
+                )
+
+                if isinstance(wrapper_patch, dict) and wrapper_patch:
+                    _apply_wrapper_patch_to_ai_command(ai_command, wrapper_patch)
+
+                return ai_command
+    except Exception:
+        pass
+
+    # Create intents with explicit hint: build minimal executable without LLM translation.
+    try:
+        if isinstance(hint_intent, str) and hint_intent.strip():
+            hi = hint_intent.strip().lower()
+            if hi in {"create_task", "create_goal", "create_project"}:
+                title = _strip_prefixes_for_title(prompt.strip())
+                if title:
+                    ai_command = AICommand(
+                        command="notion_write",
+                        intent=hi,
+                        read_only=False,
+                        params={"title": title},
+                        initiator=initiator,
+                        validated=True,
+                        metadata={
+                            **(metadata if isinstance(metadata, dict) else {}),
+                            "canon": "execute_raw_unwrap_intent_hint_fast_path",
+                            "endpoint": "/api/execute/raw",
+                            "wrapper": {
+                                "prompt": prompt.strip(),
+                                "wrapper_patch": wrapper_patch,
+                            },
+                        },
+                    )
+
+                    if isinstance(wrapper_patch, dict) and wrapper_patch:
+                        _apply_wrapper_patch_to_ai_command(ai_command, wrapper_patch)
+
+                    return ai_command
+    except Exception:
+        pass
 
     # require translation service to exist (booted)
     _, trans, _, _, _ = _require_boot_services()
@@ -957,7 +1072,7 @@ def _preprocess_ceo_nl_input(
             return ", ".join(parts)
 
     cleaned = re.sub(
-        r"^(kreiraj|napravi|create)\s+cilj[a]?(?:\s+u\s+notionu)?\s*[:\-]?\s*",
+        r"^(kreiraj|napravi|create)\s+cilj[a]?(?:\s+u\s+notionu)?\s*[:\-–—,;]?\s*",
         "",
         text,
         flags=re.IGNORECASE,
@@ -1496,6 +1611,33 @@ async def execute_raw_command(payload: Dict[str, Any] = Body(...)):
         metadata=normalized.metadata if isinstance(normalized.metadata, dict) else {},
     )
 
+    # CRITICAL: wrapper unwrapping may yield a meta-command (next_step).
+    # Hard-block those *after* unwrap so they never enter approval/execution.
+    if (getattr(ai_command, "intent", None) in _HARD_READ_ONLY_INTENTS) or (
+        getattr(ai_command, "command", None) in _HARD_READ_ONLY_INTENTS
+    ):
+        execution_id = _ensure_execution_id(ai_command)
+        return {
+            "status": "COMPLETED",
+            "execution_state": "COMPLETED",
+            "read_only": True,
+            "execution_id": execution_id,
+            "approval_id": None,
+            "text": "Need more information before executing. Please answer the CEO Console questions, then retry.",
+            "command": getattr(ai_command, "command", None),
+            "intent": getattr(ai_command, "intent", None),
+            "params": getattr(ai_command, "params", None)
+            if isinstance(getattr(ai_command, "params", None), dict)
+            else {},
+            "proposed_commands": [],
+            "trace": {
+                "canon": "execute_raw_hard_block_after_unwrap",
+                "endpoint": "/api/execute/raw",
+                "hard_block_intent": getattr(ai_command, "intent", None),
+                "hard_block_command": getattr(ai_command, "command", None),
+            },
+        }
+
     execution_id = _ensure_execution_id(ai_command)
 
     approval_state = get_approval_state()
@@ -1612,24 +1754,232 @@ async def execute_preview_command(
     )
 
     notion_block = None
+    review_block = None
+
+    # If this came from a proposal wrapper, we can deterministically provide a review schema
+    # so UI can fill missing Status/Priority/Deadline/etc before approval.
     try:
-        if getattr(ai_command, "command", None) == "notion_write" and getattr(
-            ai_command, "intent", None
-        ) in {"create_page", "update_page"}:
+        from services.review_contract import detect_write_create_review_contract  # noqa: PLC0415
+
+        prompt = None
+        md0 = getattr(ai_command, "metadata", None)
+        if isinstance(md0, dict):
+            w0 = md0.get("wrapper")
+            if isinstance(w0, dict):
+                p0 = w0.get("prompt")
+                if isinstance(p0, str) and p0.strip():
+                    prompt = p0.strip()
+
+        if isinstance(prompt, str) and prompt.strip():
+            ok, intent_type, missing_fields, fields_schema = (
+                detect_write_create_review_contract(prompt)
+            )
+            if ok and isinstance(fields_schema, dict) and fields_schema:
+                review_block = {
+                    "type": "command_review",
+                    "mode": "fill_missing" if missing_fields else "approve",
+                    "title": "Complete fields before approval",
+                    "summary": "Add or confirm Notion field values (Status/Priority/Deadline/etc).",
+                    "missing_fields": missing_fields,
+                    "fields_schema": fields_schema,
+                }
+    except Exception:
+        review_block = None
+
+    try:
+        if getattr(ai_command, "command", None) == "notion_write":
+            intent = getattr(ai_command, "intent", None)
             params = getattr(ai_command, "params", None)
             params = params if isinstance(params, dict) else {}
-            db_key = params.get("db_key")
-            property_specs = params.get("property_specs")
 
-            if isinstance(property_specs, dict) and property_specs:
-                notion_block = {
-                    "db_key": db_key,
-                    "property_specs": property_specs,
-                    "properties_preview": _notion_properties_preview_from_property_specs(
-                        property_specs
-                    ),
-                    "note": "Preview does not hit Notion. Final execution may still normalize select/status types based on DB schema.",
-                }
+            def _build_property_specs_from_payload(
+                payload: Dict[str, Any],
+            ) -> Dict[str, Any]:
+                payload = payload if isinstance(payload, dict) else {}
+                title = _ensure_str(
+                    payload.get("title") or payload.get("name") or payload.get("Name")
+                ).strip()
+                description = _ensure_str(
+                    payload.get("description") or payload.get("Description")
+                ).strip()
+                deadline = _ensure_str(
+                    payload.get("deadline")
+                    or payload.get("due_date")
+                    or payload.get("Deadline")
+                    or payload.get("Due Date")
+                ).strip()
+                priority = _ensure_str(
+                    payload.get("priority") or payload.get("Priority")
+                ).strip()
+                status = _ensure_str(
+                    payload.get("status") or payload.get("Status")
+                ).strip()
+
+                ps: Dict[str, Any] = {}
+                if title:
+                    ps["Name"] = {"type": "title", "text": title}
+                if description:
+                    ps["Description"] = {"type": "rich_text", "text": description}
+                if deadline:
+                    ps["Deadline"] = {"type": "date", "start": deadline}
+                if priority:
+                    ps["Priority"] = {"type": "select", "name": priority}
+                if status:
+                    ps["Status"] = {"type": "status", "name": status}
+
+                extra_specs = payload.get("property_specs")
+                if isinstance(extra_specs, dict) and extra_specs:
+                    # Let explicit specs override derived ones.
+                    ps.update(extra_specs)
+                return ps
+
+            # create_page/update_page carry property_specs directly.
+            if intent in {"create_page", "update_page"}:
+                db_key = params.get("db_key")
+                property_specs = params.get("property_specs")
+                if isinstance(property_specs, dict) and property_specs:
+                    notion_block = {
+                        "db_key": db_key,
+                        "property_specs": property_specs,
+                        "properties_preview": _notion_properties_preview_from_property_specs(
+                            property_specs
+                        ),
+                        "note": "Preview does not hit Notion. Final execution may still normalize select/status types based on DB schema.",
+                    }
+
+            # create_goal/create_task/create_project derive property_specs at execution time.
+            elif intent in {"create_goal", "create_task", "create_project"}:
+                db_key = (
+                    "goals"
+                    if intent == "create_goal"
+                    else "tasks"
+                    if intent == "create_task"
+                    else "projects"
+                )
+
+                title = _ensure_str(params.get("title")).strip()
+                description = _ensure_str(params.get("description")).strip()
+                deadline = _ensure_str(params.get("deadline")).strip()
+                priority = _ensure_str(params.get("priority")).strip()
+                status = _ensure_str(params.get("status")).strip()
+
+                property_specs: Dict[str, Any] = {}
+                if title:
+                    property_specs["Name"] = {"type": "title", "text": title}
+                if description:
+                    property_specs["Description"] = {
+                        "type": "rich_text",
+                        "text": description,
+                    }
+                if deadline:
+                    property_specs["Deadline"] = {"type": "date", "start": deadline}
+                if priority:
+                    property_specs["Priority"] = {"type": "select", "name": priority}
+                if status:
+                    property_specs["Status"] = {"type": "status", "name": status}
+
+                if property_specs:
+                    notion_block = {
+                        "db_key": db_key,
+                        "property_specs": property_specs,
+                        "properties_preview": _notion_properties_preview_from_property_specs(
+                            property_specs
+                        ),
+                        "note": "Preview does not hit Notion. create_goal/create_task/create_project derive properties at execution time; this mirrors that mapping.",
+                    }
+
+            # batch_request: preview each operation as a table row
+            elif intent in {"batch_request", "batch", "branch_request"}:
+                ops = params.get("operations")
+                if isinstance(ops, list) and ops:
+                    rows: List[Dict[str, Any]] = []
+
+                    def _format_ref(v: Any) -> Optional[str]:
+                        if v is None:
+                            return None
+                        if isinstance(v, str):
+                            s = v.strip()
+                            if not s:
+                                return None
+                            # Convention used by BranchRequestHandler: "$op_id" references.
+                            if s.startswith("$") and len(s) > 1:
+                                return f"ref:{s[1:]}"
+                            return s
+                        # Keep non-string refs readable (numbers, dicts)
+                        try:
+                            return str(v)
+                        except Exception:
+                            return None
+
+                    for idx, op in enumerate(ops):
+                        if not isinstance(op, dict):
+                            continue
+                        op_id = op.get("op_id")
+                        op_intent = (
+                            _ensure_str(op.get("intent") or "").strip() or "unknown"
+                        )
+                        payload = op.get("payload")
+                        payload = payload if isinstance(payload, dict) else {}
+
+                        db_key = payload.get("db_key")
+                        if not isinstance(db_key, str) or not db_key.strip():
+                            db_key = (
+                                "goals"
+                                if op_intent == "create_goal"
+                                else "tasks"
+                                if op_intent == "create_task"
+                                else "projects"
+                                if op_intent == "create_project"
+                                else None
+                            )
+
+                        # Try to build a Notion-like properties preview for create intents.
+                        ps: Dict[str, Any] = {}
+                        if op_intent in {
+                            "create_goal",
+                            "create_task",
+                            "create_project",
+                        }:
+                            ps = _build_property_specs_from_payload(payload)
+                        elif op_intent in {"create_page", "update_page"}:
+                            sp0 = payload.get("property_specs") or payload.get(
+                                "properties"
+                            )
+                            if isinstance(sp0, dict) and sp0:
+                                ps = dict(sp0)
+
+                        row: Dict[str, Any] = {
+                            "op_index": idx,
+                            "op_id": op_id,
+                            "intent": op_intent,
+                            "db_key": db_key,
+                        }
+
+                        # Relationship hints (pre-execution): show readable refs even before Notion IDs exist.
+                        goal_ref = _format_ref(
+                            payload.get("goal_id") or payload.get("primary_goal_id")
+                        )
+                        project_ref = _format_ref(payload.get("project_id"))
+                        parent_goal_ref = _format_ref(payload.get("parent_goal_id"))
+                        if goal_ref:
+                            row["Goal Ref"] = goal_ref
+                        if project_ref:
+                            row["Project Ref"] = project_ref
+                        if parent_goal_ref:
+                            row["Parent Goal Ref"] = parent_goal_ref
+
+                        if ps:
+                            row["property_specs"] = ps
+                            row["properties_preview"] = (
+                                _notion_properties_preview_from_property_specs(ps)
+                            )
+                        rows.append(row)
+
+                    notion_block = {
+                        "type": "batch_preview",
+                        "rows": rows,
+                        "note": "Preview does not hit Notion. Final execution may still normalize select/status types based on DB schema.",
+                    }
     except Exception:
         notion_block = None
 
@@ -1638,6 +1988,7 @@ async def execute_preview_command(
         "read_only": True,
         "command": cmd_dump,
         "notion": notion_block,
+        "review": review_block,
         "trace": {
             "canon": "execute_preview",
             "endpoint": "/api/execute/preview",
@@ -1757,6 +2108,30 @@ async def execute_proposal(payload: ProposalExecuteInput):
         read_only=False,
         metadata=merged_md,
     )
+
+    # Same post-unwrapping hard-block as /api/execute/raw.
+    if (getattr(ai_command, "intent", None) in _HARD_READ_ONLY_INTENTS) or (
+        getattr(ai_command, "command", None) in _HARD_READ_ONLY_INTENTS
+    ):
+        execution_id = _ensure_execution_id(ai_command)
+        return {
+            "status": "COMPLETED",
+            "execution_state": "COMPLETED",
+            "read_only": True,
+            "execution_id": execution_id,
+            "approval_id": None,
+            "text": "Need more information before executing. Please answer the questions, then retry.",
+            "command": getattr(ai_command, "command", None),
+            "intent": getattr(ai_command, "intent", None),
+            "params": getattr(ai_command, "params", None)
+            if isinstance(getattr(ai_command, "params", None), dict)
+            else {},
+            "proposed_commands": [],
+            "trace": {
+                "canon": "proposals_execute_hard_block_after_unwrap",
+                "endpoint": "/api/proposals/execute",
+            },
+        }
 
     md = getattr(ai_command, "metadata", None)
     if not isinstance(md, dict):

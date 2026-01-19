@@ -58,6 +58,10 @@ export type GovernanceEventItem = {
   reasons?: string[];
   approvalRequestId?: string;
 
+  // optional execution artifacts
+  notionLinks?: Array<{ label: string; url: string }>;
+  refMap?: Record<string, string>;
+
   // allow governance cards to carry proposals for UI actions
   proposedCommands?: ProposedCommand[];
 

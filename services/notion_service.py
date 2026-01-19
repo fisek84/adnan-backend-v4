@@ -10,6 +10,8 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
+from models.ai_command import AICommand
+
 logger = logging.getLogger(__name__)
 
 
@@ -672,7 +674,199 @@ class NotionService:
                 metadata=metadata,
             )
 
+        # Enterprise: batch/branch requests (grouped operations)
+        if intent in {"batch_request", "batch", "branch_request"}:
+            return await self._execute_batch_request(
+                params=params,
+                execution_id=execution_id,
+                approval_id=approval_id,
+                metadata=metadata,
+            )
+
+        # Enterprise: delete = archive (Notion has no hard delete)
+        if intent == "delete_page":
+            return await self._execute_delete_page(
+                params=params,
+                execution_id=execution_id,
+                approval_id=approval_id,
+                metadata=metadata,
+            )
+
         raise RuntimeError(f"Unsupported intent: {intent or '(empty)'}")
+
+    async def _execute_batch_request(
+        self,
+        *,
+        params: Dict[str, Any],
+        execution_id: str,
+        approval_id: str,
+        metadata: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Execute a batch of Notion operations under a single approval.
+
+        Supported input shapes:
+          - {"operations": [{"op_id": "...", "intent": "create_task", "payload": {...}}, ...]}
+          - {"operations": [{"intent": "update_page", "params": {...}}, ...]}
+
+        Reference resolution:
+          - Any string value equal to "$<op_id>" or starting with "$<op_id>" is replaced
+            with the created Notion page_id from a previous operation.
+        """
+
+        operations = params.get("operations")
+        if not isinstance(operations, list) or not operations:
+            raise RuntimeError("batch_request requires operations[]")
+
+        ref_map: Dict[str, str] = {}
+        results: List[Dict[str, Any]] = []
+
+        def _resolve_refs(v: Any) -> Any:
+            if isinstance(v, str) and v.startswith("$") and len(v) > 1:
+                key = v[1:]
+                return ref_map.get(key, v)
+            if isinstance(v, list):
+                return [_resolve_refs(x) for x in v]
+            if isinstance(v, dict):
+                return {k: _resolve_refs(x) for k, x in v.items()}
+            return v
+
+        for idx, op in enumerate(operations):
+            if not isinstance(op, dict):
+                results.append(
+                    {
+                        "index": idx,
+                        "ok": False,
+                        "reason": "invalid_operation_shape",
+                        "detail": "operation must be an object",
+                    }
+                )
+                continue
+
+            op_id = _ensure_str(op.get("op_id"))
+            op_intent = _ensure_str(op.get("intent"))
+
+            # payload or params
+            op_params = op.get("payload")
+            if not isinstance(op_params, dict):
+                op_params = op.get("params")
+            op_params = _ensure_dict(op_params)
+            op_params = _resolve_refs(op_params)
+
+            if not op_intent:
+                results.append(
+                    {
+                        "index": idx,
+                        "op_id": op_id or None,
+                        "ok": False,
+                        "reason": "missing_intent",
+                    }
+                )
+                continue
+
+            try:
+                sub_exec_id = f"{execution_id}:{idx}" if execution_id else ""
+                sub = AICommand(
+                    command="notion_write",
+                    intent=op_intent,
+                    params=op_params,
+                    approval_id=approval_id,
+                    execution_id=sub_exec_id,
+                    read_only=False,
+                    metadata={
+                        **(metadata or {}),
+                        "batch": True,
+                        "batch_index": idx,
+                        "batch_op_id": op_id or None,
+                    },
+                )
+                sub_res = await self.execute(sub)
+
+                # capture created ids for reference resolution
+                page_id = ""
+                if isinstance(sub_res, dict):
+                    r = sub_res.get("result")
+                    if isinstance(r, dict):
+                        page_id = _ensure_str(r.get("page_id") or r.get("id") or "")
+                if op_id and page_id:
+                    ref_map[op_id] = page_id
+
+                results.append(
+                    {
+                        "index": idx,
+                        "op_id": op_id or None,
+                        "intent": op_intent,
+                        "ok": True,
+                        "page_id": page_id or None,
+                        "result": sub_res,
+                    }
+                )
+            except Exception as exc:  # noqa: BLE001
+                results.append(
+                    {
+                        "index": idx,
+                        "op_id": op_id or None,
+                        "intent": op_intent,
+                        "ok": False,
+                        "reason": str(exc),
+                        "error_type": exc.__class__.__name__,
+                    }
+                )
+
+        ok_all = all(
+            (isinstance(r, dict) and r.get("ok") is True) for r in results
+        ) and bool(results)
+        return {
+            "ok": ok_all,
+            "execution_state": "COMPLETED" if ok_all else "FAILED",
+            "read_only": False,
+            "execution_id": execution_id or None,
+            "approval_id": approval_id or None,
+            "result": {
+                "intent": "batch_request",
+                "total": len(results),
+                "success": sum(
+                    1 for r in results if isinstance(r, dict) and r.get("ok") is True
+                ),
+                "failed": sum(
+                    1 for r in results if isinstance(r, dict) and r.get("ok") is False
+                ),
+                "operations": results,
+                "ref_map": ref_map,
+            },
+            "metadata": metadata,
+        }
+
+    async def _execute_delete_page(
+        self,
+        *,
+        params: Dict[str, Any],
+        execution_id: str,
+        approval_id: str,
+        metadata: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Archive a Notion page ("delete" in common language)."""
+        page_id = _ensure_str(params.get("page_id"))
+        if not page_id:
+            raise RuntimeError("delete_page requires page_id")
+
+        url = f"{self.NOTION_BASE_URL}/pages/{page_id}"
+        res = await self._safe_request("PATCH", url, payload={"archived": True})
+
+        page_url = _ensure_str(res.get("url"))
+        return {
+            "ok": True,
+            "execution_state": "COMPLETED",
+            "read_only": False,
+            "execution_id": execution_id or None,
+            "approval_id": approval_id or None,
+            "result": {
+                "intent": "delete_page",
+                "page_id": page_id,
+                "url": page_url or None,
+                "raw": res,
+            },
+            "metadata": metadata,
+        }
 
     async def _execute_create_page(
         self,
