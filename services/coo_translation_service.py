@@ -703,12 +703,20 @@ class COOTranslationService:
             or self._extract_field_value(raw, "title")
         )
 
-        status_raw = self._extract_field_value(raw, "status")
-        priority_raw = self._extract_field_value(
-            raw, "prioritet"
-        ) or self._extract_field_value(raw, "priority")
+        # Support Bosnian instrumental case (-om suffix)
+        status_raw = (
+            self._extract_field_value(raw, "statusom")
+            or self._extract_field_value(raw, "status")
+        )
+        priority_raw = (
+            self._extract_field_value(raw, "prioritetom")
+            or self._extract_field_value(raw, "prioritet")
+            or self._extract_field_value(raw, "priority")
+        )
         due_raw = (
-            self._extract_field_value(raw, "due")
+            self._extract_field_value(raw, "deadline-om")
+            or self._extract_field_value(raw, "rokom")
+            or self._extract_field_value(raw, "due")
             or self._extract_field_value(raw, "rok")
             or self._extract_field_value(raw, "deadline")
         )
@@ -748,9 +756,13 @@ class COOTranslationService:
                 "naziv",
                 "ime",
                 "title",
+                "statusom",
                 "status",
+                "prioritetom",
                 "prioritet",
                 "priority",
+                "deadline-om",
+                "rokom",
                 "due",
                 "rok",
                 "deadline",
@@ -776,7 +788,15 @@ class COOTranslationService:
                 cleaned,
             ).strip()
 
-        derived_title = cleaned.strip(" ,.-")
+        // Extract quoted title if present (allow empty quotes for robustness)
+        quoted_title_match = re.match(r"^['\"]([^'\"]*)['\"]", cleaned)
+        if quoted_title_match:
+            derived_title = quoted_title_match.group(1).strip()
+        else:
+            # Stop at Bosnian connecting words: sa, i, and, with
+            title_parts = re.split(r"(?i)\b(sa|with|i|and)\b", cleaned, maxsplit=1)
+            derived_title = title_parts[0].strip(" ,.-") if title_parts else cleaned.strip(" ,.-")
+        
         title = (title_explicit or derived_title or "").strip(" ,.-")
 
         return _ParsedFields(
@@ -833,8 +853,11 @@ class COOTranslationService:
           - Key: 2026-02-15
           - Key: 01.10.2026
           - Key: some text
+          - Key: 'quoted value'
+          - Key: "quoted value"
         Stops at newline, comma, semicolon, or next known keyword boundary.
         DOES NOT stop at '.' to allow dd.mm.yyyy.
+        Handles quoted values properly.
         """
         if not text or not key:
             return None
@@ -847,6 +870,11 @@ class COOTranslationService:
         if not tail:
             return None
 
+        # Check if value is quoted (single or double quotes)
+        quoted_match = re.match(r"^['\"]([^'\"]*)['\"]", tail)
+        if quoted_match:
+            return quoted_match.group(1).strip()
+
         # If value starts with a date, capture it first (full token).
         m_iso = re.match(r"^(\d{4}-\d{2}-\d{2})", tail)
         if m_iso:
@@ -856,8 +884,9 @@ class COOTranslationService:
         if m_dot:
             return m_dot.group(1).rstrip(".")
 
+        # Extended stop regex to include Bosnian instrumental case forms
         stop_re = re.compile(
-            r"(?i)([\n\r,;])|(\b(prioritet|priority|due|rok|deadline|opis|description|desc|status|name|naziv|ime|title|kreiraj|napravi|dodaj|create|plan|dan|task|tasks|zadatak|zadaci|podcilj|subgoal|goal|goal_id|subgoal_id)\b)"
+            r"(?i)([\n\r,;])|(\b(statusom|prioritetom|deadline-om|rokom|prioritet|priority|due|rok|deadline|opis|description|desc|status|name|naziv|ime|title|kreiraj|napravi|dodaj|create|plan|dan|task|tasks|zadatak|zadaci|podcilj|subgoal|goal|goal_id|subgoal_id)\b)"
         )
 
         stop = stop_re.search(tail)

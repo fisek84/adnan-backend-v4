@@ -48,6 +48,10 @@ type CeoChatboxProps = {
 
 type BusyState = "idle" | "submitting" | "streaming" | "error";
 
+// Notion Ops activation/deactivation commands
+const NOTION_OPS_ACTIVATE_CMD = "notion ops aktiviraj";
+const NOTION_OPS_DEACTIVATE_CMD = "notion ops ugasi";
+
 const makeSystemProcessingItem = (requestId?: string): ChatMessageItem => ({
   id: uid(),
   kind: "message",
@@ -320,6 +324,28 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState<BusyState>("idle");
   const [lastError, setLastError] = useState<string | null>(null);
+  
+  // Session ID for Notion ops tracking
+  const [sessionId] = useState<string>(() => {
+    // Try to restore from sessionStorage, or create new
+    const stored = typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('ceo_chat_session_id') : null;
+    if (stored) return stored;
+    
+    const newId = `session_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+    if (typeof sessionStorage !== 'undefined') {
+      sessionStorage.setItem('ceo_chat_session_id', newId);
+    }
+    return newId;
+  });
+  
+  // Notion ops armed state - restore from sessionStorage
+  const [notionOpsArmed, setNotionOpsArmed] = useState<boolean>(() => {
+    if (typeof sessionStorage !== 'undefined') {
+      const stored = sessionStorage.getItem('notion_ops_armed');
+      return stored === 'true';
+    }
+    return false;
+  });
 
   const abortRef = useRef<AbortController | null>(null);
 
@@ -502,8 +528,18 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       abortRef.current = controller;
 
       try {
+        // Ensure metadata includes session_id
+        const proposalWithSession = {
+          ...proposal,
+          metadata: {
+            ...(proposal.metadata || {}),
+            session_id: sessionId,
+            source: "ceo_dashboard",
+          },
+        };
+        
         const execUrl = resolveUrl(executeRawUrl, "/api/execute/raw");
-        const execJson = await postJson(execUrl, proposal, controller.signal);
+        const execJson = await postJson(execUrl, proposalWithSession, controller.signal);
 
         const approvalId: string | null =
           typeof execJson?.approval_id === "string" && execJson.approval_id ? execJson.approval_id : null;
@@ -545,7 +581,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         setLastError(isAbortError(e) ? null : msg);
       }
     },
-    [appendItem, busy, executeRawUrl, handleOpenApprovals, postJson, resolveUrl, updateItem]
+    [appendItem, busy, executeRawUrl, handleOpenApprovals, postJson, resolveUrl, sessionId, updateItem]
   );
 
   /**
@@ -641,8 +677,18 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       abortRef.current = controller;
 
       try {
+        // Ensure metadata includes session_id
+        const proposalWithSession = {
+          ...proposal,
+          metadata: {
+            ...(proposal.metadata || {}),
+            session_id: sessionId,
+            source: "ceo_dashboard",
+          },
+        };
+        
         const execUrl = resolveUrl(executeRawUrl, "/api/execute/raw");
-        const execJson = await postJson(execUrl, proposal, controller.signal);
+        const execJson = await postJson(execUrl, proposalWithSession, controller.signal);
 
         const approvalId: string | null =
           typeof execJson?.approval_id === "string" && execJson.approval_id ? execJson.approval_id : null;
@@ -679,7 +725,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         setLastError(isAbortError(e) ? null : msg);
       }
     },
-    [appendItem, busy, effectiveApproveUrl, executeRawUrl, postJson, resolveUrl, updateItem]
+    [appendItem, busy, effectiveApproveUrl, executeRawUrl, postJson, resolveUrl, sessionId, updateItem]
   );
 
   // ------------------------------
@@ -862,15 +908,36 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       const req: any = {
         message: trimmed,
         text: trimmed,
+        input_text: trimmed,
 
         initiator: "ceo_chat",
+        session_id: sessionId,  // Also include at top level for compatibility
+        source: "ceo_dashboard",
         preferred_agent_id: "ceo_advisor",
+        
+        // CRITICAL: metadata with session_id per test protocol
+        metadata: {
+          session_id: sessionId,
+          initiator: "ceo_chat",
+        },
+        
         context_hint: {
           preferred_agent_id: "ceo_advisor",
         },
       };
 
       const resp = await api.sendCommand(req, controller.signal);
+      
+      // Check if Notion ops state changed (per test: resp.notion_ops.armed)
+      const notionOps = (resp as any)?.raw?.notion_ops || (resp as any)?.notion_ops;
+      if (notionOps && typeof notionOps.armed === 'boolean') {
+        setNotionOpsArmed(notionOps.armed);
+        
+        // Store armed state in sessionStorage for persistence
+        if (typeof sessionStorage !== 'undefined') {
+          sessionStorage.setItem('notion_ops_armed', notionOps.armed ? 'true' : 'false');
+        }
+      }
 
       abortRef.current = null;
       await flushResponseToUi(placeholder.id, resp);
@@ -884,7 +951,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       setBusy(isAbortError(e) ? "idle" : "error");
       setLastError(isAbortError(e) ? null : msg);
     }
-  }, [api, appendItem, busy, draft, flushResponseToUi, updateItem]);
+  }, [api, appendItem, busy, draft, flushResponseToUi, sessionId, updateItem]);
 
   const onKeyDown = useCallback(
     (ev: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -1090,6 +1157,54 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       </div>
 
       <footer className="ceoComposer">
+        {/* NOTION OPS STATUS & ACTIVATION */}
+        <div
+          style={{
+            display: "flex",
+            gap: 12,
+            alignItems: "center",
+            padding: "8px 0",
+            borderTop: "1px solid rgba(255,255,255,0.08)",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flex: 1 }}>
+            <span style={{ fontWeight: 600, opacity: 0.9 }}>Notion Ops:</span>
+            <span
+              style={{
+                padding: "4px 10px",
+                borderRadius: 12,
+                fontSize: "0.85em",
+                fontWeight: 600,
+                background: notionOpsArmed ? "rgba(34, 197, 94, 0.2)" : "rgba(239, 68, 68, 0.2)",
+                color: notionOpsArmed ? "#22c55e" : "#ef4444",
+                border: `1px solid ${notionOpsArmed ? "rgba(34, 197, 94, 0.3)" : "rgba(239, 68, 68, 0.3)"}`,
+              }}
+            >
+              {notionOpsArmed ? "✓ ARMED" : "✗ NOT ARMED"}
+            </span>
+            {!notionOpsArmed && (
+              <span style={{ fontSize: "0.85em", opacity: 0.7 }}>
+                (Write operations blocked)
+              </span>
+            )}
+          </div>
+          
+          <button
+            className="ceoHeaderButton"
+            onClick={() => {
+              setDraft(notionOpsArmed ? NOTION_OPS_DEACTIVATE_CMD : NOTION_OPS_ACTIVATE_CMD);
+            }}
+            disabled={busy === "submitting" || busy === "streaming"}
+            title={notionOpsArmed ? "Deactivate Notion Ops" : "Activate Notion Ops"}
+            style={{
+              background: notionOpsArmed ? "rgba(239, 68, 68, 0.15)" : "rgba(34, 197, 94, 0.15)",
+              border: `1px solid ${notionOpsArmed ? "rgba(239, 68, 68, 0.3)" : "rgba(34, 197, 94, 0.3)"}`,
+            }}
+          >
+            {notionOpsArmed ? "🔒 Deactivate" : "🔓 Activate"}
+          </button>
+        </div>
+
         {/* NOTION READ PANEL */}
         <div
           style={{
