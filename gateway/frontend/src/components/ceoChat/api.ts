@@ -281,6 +281,12 @@ function buildPayload(endpointUrl: string, req: CeoCommandRequest): any {
       (typeof ctx.agent_id === "string" && ctx.agent_id.trim()) ||
       "ceo_advisor";
 
+    const uiOutputLang =
+      (req as any)?.output_lang ||
+      (ctx as any)?.ui_output_lang ||
+      (req as any)?.metadata?.ui_output_lang ||
+      null;
+
     return {
       message: text,
       preferred_agent_id: preferred,
@@ -293,6 +299,7 @@ function buildPayload(endpointUrl: string, req: CeoCommandRequest): any {
         source: "ceoChatbox",
         context_hint: (req as any)?.context_hint ?? null,
         smart_context: (req as any)?.smart_context ?? null,
+        ui_output_lang: uiOutputLang,
       },
     };
   }
