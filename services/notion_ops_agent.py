@@ -121,7 +121,7 @@ def create_notion_ops_agent() -> NotionOpsAgent:
 async def notion_ops_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> AgentOutput:
     """
     Router-callable adapter with enhanced bilingual support.
-    
+
     Now supports:
     - Bosnian and English keyword recognition
     - Branch/batch request processing
@@ -143,10 +143,10 @@ async def notion_ops_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> Agen
     if msg:
         # Detect if this is a branch request
         is_branch = BranchRequestHandler.parse_branch_request(msg) is not None
-        
+
         # Detect intent from keywords (supports both languages)
         intent = NotionKeywordMapper.detect_intent(msg)
-        
+
         if is_branch:
             # Branch request - propose grouped operation
             proposed.append(
