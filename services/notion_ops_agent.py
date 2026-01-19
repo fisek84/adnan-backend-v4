@@ -120,8 +120,15 @@ def create_notion_ops_agent() -> NotionOpsAgent:
 # ============================================================
 async def notion_ops_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> AgentOutput:
     """
-    Router-callable adapter.
+    Router-callable adapter with enhanced bilingual support.
+    
+    Now supports:
+    - Bosnian and English keyword recognition
+    - Branch/batch request processing
+    - Automatic property name translation
     """
+    from services.notion_keyword_mapper import NotionKeywordMapper
+    from services.branch_request_handler import BranchRequestHandler
 
     msg = (getattr(agent_input, "message", None) or "").strip()
 
@@ -134,21 +141,64 @@ async def notion_ops_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> Agen
     proposed: List[ProposedCommand] = []
 
     if msg:
-        proposed.append(
-            ProposedCommand(
-                command="ceo.command.propose",
-                args={"prompt": msg},
-                reason="Notion write/workflow mora ići kroz approval/execution pipeline.",
-                requires_approval=True,
-                risk="HIGH",
-                dry_run=True,
+        # Detect if this is a branch request
+        is_branch = BranchRequestHandler.parse_branch_request(msg) is not None
+        
+        # Detect intent from keywords (supports both languages)
+        intent = NotionKeywordMapper.detect_intent(msg)
+        
+        if is_branch:
+            # Branch request - propose grouped operation
+            proposed.append(
+                ProposedCommand(
+                    command="ceo.command.propose",
+                    args={
+                        "prompt": msg,
+                        "type": "branch_request",
+                        "supports_bilingual": True,
+                    },
+                    reason="Grupni zahtjev za kreiranje povezanih ciljeva, zadataka i KPI-jeva. / Branch request for creating related goals, tasks, and KPIs.",
+                    requires_approval=True,
+                    risk="HIGH",
+                    dry_run=True,
+                )
             )
-        )
+        elif intent:
+            # Single intent detected
+            proposed.append(
+                ProposedCommand(
+                    command="ceo.command.propose",
+                    args={
+                        "prompt": msg,
+                        "intent": intent,
+                        "supports_bilingual": True,
+                    },
+                    reason=f"Notion write/workflow mora ići kroz approval/execution pipeline. Detected intent: {intent}",
+                    requires_approval=True,
+                    risk="HIGH",
+                    dry_run=True,
+                )
+            )
+        else:
+            # Generic proposal
+            proposed.append(
+                ProposedCommand(
+                    command="ceo.command.propose",
+                    args={
+                        "prompt": msg,
+                        "supports_bilingual": True,
+                    },
+                    reason="Notion write/workflow mora ići kroz approval/execution pipeline.",
+                    requires_approval=True,
+                    risk="HIGH",
+                    dry_run=True,
+                )
+            )
 
     text = (
-        "Notion Ops: vraćam prijedlog komande za approval."
+        "Notion Ops: vraćam prijedlog komande za approval. Podržavam Bosanski i Engleski jezik. / Notion Ops: returning command proposal for approval. Supporting Bosnian and English."
         if msg
-        else "Notion Ops: nedostaje prompt za prijedlog komande."
+        else "Notion Ops: nedostaje prompt za prijedlog komande. / Notion Ops: missing prompt for command proposal."
     )
 
     trace: Dict[str, Any] = {}
@@ -160,6 +210,8 @@ async def notion_ops_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> Agen
             "agent": "notion_ops",
             "mode": "proposal_only",
             "read_only": read_only,
+            "bilingual_support": True,
+            "supported_languages": ["bosnian", "english"],
         }
     )
 
@@ -173,7 +225,7 @@ async def notion_ops_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> Agen
             # Block any write operation if Notion Ops is not armed
             return JSONResponse(
                 content={
-                    "text": "Notion Ops nije aktivan. Želiš aktivirati? (napiši: 'notion ops aktiviraj' / 'notion ops uključi')",
+                    "text": "Notion Ops nije aktivan. Želiš aktivirati? (napiši: 'notion ops aktiviraj' / 'notion ops uključi') / Notion Ops is not armed. Want to activate? (write: 'notion ops activate' / 'notion ops enable')",
                     "proposed_commands": proposed,
                     "agent_id": "notion_ops",
                     "read_only": True,

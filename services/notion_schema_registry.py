@@ -1,11 +1,15 @@
 """
 NOTION SCHEMA REGISTRY — KANONSKI IZVOR ISTINE
+
+Enhanced with bilingual property support (Bosnian ↔ English)
 """
 
 from __future__ import annotations
 
 import os
 from typing import Any, Dict, List, Optional
+
+from services.notion_keyword_mapper import NotionKeywordMapper
 
 
 class NotionSchemaRegistry:
@@ -464,3 +468,74 @@ class NotionSchemaRegistry:
             "parent": {"database_id": db["db_id"]},
             "properties": notion_props,
         }
+
+    # ============================================================
+    # BILINGUAL SUPPORT (Bosnian ↔ English)
+    # ============================================================
+
+    @classmethod
+    def translate_properties_payload(
+        cls, payload: Dict[str, Any], db_key: str
+    ) -> Dict[str, Any]:
+        """
+        Translate property names from Bosnian to English for a given database.
+        
+        This enables users to submit requests in Bosnian and have them
+        automatically mapped to the correct Notion property names.
+        
+        Args:
+            payload: Dictionary with potentially Bosnian property names
+            db_key: Target database key (e.g., 'tasks', 'goals')
+            
+        Returns:
+            Payload with English Notion property names
+        """
+        db = cls.get_db(db_key)
+        db_props = db.get("properties") or {}
+        
+        translated = {}
+        
+        for key, value in payload.items():
+            # Try to translate the property name
+            notion_prop_name = NotionKeywordMapper.normalize_field_name(key)
+            
+            # Check if this property exists in the database schema
+            if notion_prop_name in db_props:
+                # Also translate value if needed
+                if isinstance(value, str):
+                    prop_type = db_props[notion_prop_name].get("type")
+                    if prop_type in ("status", "select"):
+                        # Try to translate status/priority values
+                        internal_key = NotionKeywordMapper.translate_property_name(key)
+                        if internal_key in ("status", "task_status"):
+                            value = NotionKeywordMapper.translate_status_value(value)
+                        elif internal_key == "priority":
+                            value = NotionKeywordMapper.translate_priority_value(value)
+                
+                translated[notion_prop_name] = value
+            else:
+                # Keep original if no mapping found
+                translated[key] = value
+        
+        return translated
+
+    @classmethod
+    def normalize_create_payload(
+        cls, payload: Dict[str, Any], db_key: str
+    ) -> Dict[str, Any]:
+        """
+        Normalize and translate a create payload for a database.
+        
+        Handles both Bosnian and English inputs, translating as needed.
+        
+        Args:
+            payload: Raw payload from user (potentially in Bosnian)
+            db_key: Target database key
+            
+        Returns:
+            Normalized payload ready for Notion API
+        """
+        # First translate Bosnian to English
+        translated = cls.translate_properties_payload(payload, db_key)
+        
+        return translated
