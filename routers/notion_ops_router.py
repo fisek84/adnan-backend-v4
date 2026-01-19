@@ -50,13 +50,13 @@ def _is_ceo_request(request: Request) -> bool:
         provided = (request.headers.get("X-CEO-Token") or "").strip()
         if expected and provided == expected:
             return True
-    
+
     # Check for CEO indicators in request (for non-enforced mode)
     # Headers that indicate CEO context
     initiator = (request.headers.get("X-Initiator") or "").strip().lower()
     if initiator in ("ceo_chat", "ceo_dashboard", "ceo"):
         return True
-    
+
     return False
 
 
@@ -86,7 +86,7 @@ def _guard_write(request: Request, command_type: str) -> None:
     - globalni blok (OPS_SAFE_MODE) - bypassed for CEO users
     - CEO token zaštitu - validated for CEO users
     - approval_flow granularnu kontrolu
-    
+
     CEO users bypass OPS_SAFE_MODE and approval_flow checks.
     """
     # CEO users bypass all restrictions
@@ -94,7 +94,7 @@ def _guard_write(request: Request, command_type: str) -> None:
         # Still validate token if enforcement is enabled
         _require_ceo_token_if_enforced(request)
         return
-    
+
     # Non-CEO users must pass all checks
     if _ops_safe_mode_enabled():
         raise HTTPException(
@@ -264,6 +264,7 @@ class BulkQueryPayload(BaseModel):
 
 class NotionOpsTogglePayload(BaseModel):
     """Payload for toggling Notion Ops armed state."""
+
     session_id: str = Field(..., min_length=1)
     armed: bool
 
@@ -272,32 +273,33 @@ class NotionOpsTogglePayload(BaseModel):
 # RUTE
 # -------------------------------
 @router.post("/toggle")
-async def toggle_notion_ops(request: Request, payload: NotionOpsTogglePayload) -> Dict[str, Any]:
+async def toggle_notion_ops(
+    request: Request, payload: NotionOpsTogglePayload
+) -> Dict[str, Any]:
     """
     Toggle Notion Ops ARMED/DISARMED state for a session.
-    
+
     This endpoint is CEO-only and bypasses all write guards.
     CEO users can directly control the Notion Ops state without requiring approvals.
     """
     # CEO-only endpoint - validate CEO credentials
     if not _is_ceo_request(request):
         raise HTTPException(
-            status_code=403,
-            detail="This endpoint is restricted to CEO users only"
+            status_code=403, detail="This endpoint is restricted to CEO users only"
         )
-    
+
     # Validate token if enforcement is enabled
     _require_ceo_token_if_enforced(request)
-    
+
     # Import state management
-    from services.notion_ops_state import set_armed, get_state
-    
+    from services.notion_ops_state import set_armed
+
     # Toggle the state
     session_id = payload.session_id.strip()
     armed = bool(payload.armed)
-    
+
     result = await set_armed(session_id, armed, prompt=f"CEO toggle via API: {armed}")
-    
+
     return {
         "ok": True,
         "session_id": session_id,

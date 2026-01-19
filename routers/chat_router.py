@@ -90,7 +90,7 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         """
         PHASE 6: Notion Ops ARMED Gate
         SSOT session state - delegates to shared state module.
-        
+
         Note: This function sets the state for ANY session_id.
         Access control should be handled by the caller (e.g., chat endpoint).
         CEO users can activate without restrictions.

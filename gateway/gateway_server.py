@@ -72,7 +72,34 @@ def _require_ceo_token_if_enforced(request: Request) -> None:
         raise HTTPException(status_code=403, detail="CEO token required")
 
 
+def _is_ceo_request(request: Request) -> bool:
+    """
+    Check if the request is from a CEO user.
+    CEO users are identified by:
+    1. Valid X-CEO-Token header (if CEO_TOKEN_ENFORCEMENT is enabled)
+    2. X-Initiator == "ceo_chat" or similar CEO indicators
+    """
+    # If enforcement is enabled, check for valid token
+    if _ceo_token_enforcement_enabled():
+        expected = (os.getenv("CEO_APPROVAL_TOKEN", "") or "").strip()
+        provided = (request.headers.get("X-CEO-Token") or "").strip()
+        if expected and provided == expected:
+            return True
+
+    # Check for CEO indicators in request (for non-enforced mode)
+    initiator = (request.headers.get("X-Initiator") or "").strip().lower()
+    if initiator in ("ceo_chat", "ceo_dashboard", "ceo"):
+        return True
+
+    return False
+
+
 def _guard_write_bulk(request: Request) -> None:
+    # CEO users bypass OPS_SAFE_MODE and approval checks
+    if _is_ceo_request(request):
+        _require_ceo_token_if_enforced(request)
+        return
+
     if _ops_safe_mode():
         raise HTTPException(
             status_code=403, detail="OPS_SAFE_MODE enabled (writes blocked)"
@@ -200,6 +227,7 @@ from routers.ai_ops_router import ai_ops_router
 from routers.alerting_router import router as alerting_router
 from routers.audit_router import router as audit_router
 from routers.metrics_router import router as metrics_router
+from routers.notion_ops_router import router as notion_ops_router
 
 import routers.ai_ops_router as ai_ops_router_module
 import routers.ai_router as ai_router_module
@@ -2452,6 +2480,7 @@ app.include_router(audit_router, prefix="/api")
 app.include_router(adnan_ai_router, prefix="/api")
 app.include_router(ai_router_module.router, prefix="/api")
 app.include_router(ai_ops_router, prefix="/api")
+app.include_router(notion_ops_router, prefix="/api")
 app.include_router(metrics_router, prefix="/api")
 app.include_router(alerting_router, prefix="/api")
 if _chat_router is not None:
