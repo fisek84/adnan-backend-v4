@@ -10,12 +10,34 @@ Supports both Bosnian and English input.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 from services.notion_keyword_mapper import NotionKeywordMapper
 
 logger = logging.getLogger(__name__)
+
+
+# Internationalization labels
+I18N_LABELS = {
+    "child_goal_prefix": {
+        "en": "Child Goal",
+        "bs": "Podcilj",
+    },
+    "goal_prefix": {
+        "en": "Goal",
+        "bs": "Cilj",
+    },
+    "task_prefix": {
+        "en": "Task",
+        "bs": "Zadatak",
+    },
+    "project_prefix": {
+        "en": "Project",
+        "bs": "Projekt",
+    },
+}
 
 
 class BranchRequestHandler:
@@ -45,8 +67,6 @@ class BranchRequestHandler:
         Returns:
             Structured branch request or None if not a branch request
         """
-        import re
-        
         if not prompt or not isinstance(prompt, str):
             return None
         
@@ -92,8 +112,6 @@ class BranchRequestHandler:
     @staticmethod
     def _extract_main_title(text: str) -> Optional[str]:
         """Extract the main title/topic from the request."""
-        import re
-        
         # Try to find quoted text first
         quoted = re.search(r"['\"]([^'\"]+)['\"]", text)
         if quoted:
@@ -129,8 +147,6 @@ class BranchRequestHandler:
     @staticmethod
     def _extract_entity_counts(text: str) -> Dict[str, int]:
         """Extract counts for different entity types."""
-        import re
-        
         counts = {}
         text_lower = text.lower()
         
@@ -203,8 +219,6 @@ class BranchRequestHandler:
     @staticmethod
     def _extract_properties(text: str) -> Dict[str, Any]:
         """Extract additional properties from the request."""
-        import re
-        
         properties = {}
         text_lower = text.lower()
         
@@ -246,6 +260,42 @@ class BranchRequestHandler:
         return properties
     
     @staticmethod
+    def _detect_language(text: str) -> str:
+        """
+        Detect if the request is in Bosnian or English.
+        
+        Args:
+            text: Request text
+            
+        Returns:
+            'bs' for Bosnian, 'en' for English
+        """
+        text_lower = text.lower()
+        
+        # Bosnian indicators
+        bosnian_keywords = ["cilj", "zadatak", "projekt", "prioritet", "kreiraj", "napravi"]
+        english_keywords = ["goal", "task", "project", "priority", "create", "make"]
+        
+        bosnian_count = sum(1 for keyword in bosnian_keywords if keyword in text_lower)
+        english_count = sum(1 for keyword in english_keywords if keyword in text_lower)
+        
+        return "bs" if bosnian_count > english_count else "en"
+    
+    @staticmethod
+    def _get_label(label_key: str, lang: str = "en") -> str:
+        """
+        Get a localized label.
+        
+        Args:
+            label_key: Key in I18N_LABELS
+            lang: Language code ('en' or 'bs')
+            
+        Returns:
+            Localized label
+        """
+        return I18N_LABELS.get(label_key, {}).get(lang, I18N_LABELS.get(label_key, {}).get("en", ""))
+    
+    @staticmethod
     def build_branch_operations(
         branch_request: Dict[str, Any]
     ) -> List[Dict[str, Any]]:
@@ -263,6 +313,9 @@ class BranchRequestHandler:
         counts = branch_request.get("counts", {})
         properties = branch_request.get("properties", {})
         
+        # Detect language for proper labels
+        lang = BranchRequestHandler._detect_language(main_title)
+        
         # Track IDs for linking
         goal_ids = []
         project_ids = []
@@ -275,7 +328,7 @@ class BranchRequestHandler:
                 goal_ids.append(op_id)
                 
                 goal_payload = {
-                    "title": main_title if num_goals == 1 else f"{main_title} - Goal {i+1}",
+                    "title": main_title if num_goals == 1 else f"{main_title} - {BranchRequestHandler._get_label('goal_prefix', lang)} {i+1}",
                     **properties,
                 }
                 
@@ -295,7 +348,7 @@ class BranchRequestHandler:
                 op_id = f"child_goal_{uuid4().hex[:8]}"
                 
                 child_payload = {
-                    "title": f"{main_title} - Podcilj {i+1}",
+                    "title": f"{main_title} - {BranchRequestHandler._get_label('child_goal_prefix', lang)} {i+1}",
                     "parent_goal_id": f"${parent_goal_id}",  # Reference to parent
                     **properties,
                 }
@@ -315,7 +368,7 @@ class BranchRequestHandler:
                 project_ids.append(op_id)
                 
                 project_payload = {
-                    "title": main_title if num_projects == 1 else f"{main_title} - Project {i+1}",
+                    "title": main_title if num_projects == 1 else f"{main_title} - {BranchRequestHandler._get_label('project_prefix', lang)} {i+1}",
                     **properties,
                 }
                 
@@ -337,7 +390,7 @@ class BranchRequestHandler:
                 op_id = f"task_{uuid4().hex[:8]}"
                 
                 task_payload = {
-                    "title": f"Task {i+1}: {main_title}",
+                    "title": f"{BranchRequestHandler._get_label('task_prefix', lang)} {i+1}: {main_title}",
                     **properties,
                 }
                 

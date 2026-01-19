@@ -6,7 +6,12 @@ property name translation and request parsing.
 """
 
 import pytest
-from services.notion_keyword_mapper import NotionKeywordMapper, translate_to_english, translate_payload
+
+from services.notion_keyword_mapper import (
+    NotionKeywordMapper,
+    translate_to_english,
+    translate_payload,
+)
 
 
 class TestPropertyNameTranslation:

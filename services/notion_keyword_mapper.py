@@ -8,6 +8,7 @@ requests in both languages seamlessly.
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional
 
 
@@ -321,8 +322,6 @@ class NotionKeywordMapper:
         Returns:
             Intent identifier or None if not detected
         """
-        import re
-        
         text_lower = text.lower()
         
         # Check batch_request first as it's more specific
