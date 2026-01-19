@@ -14,7 +14,6 @@ import os
 import unittest
 from unittest.mock import patch
 
-import pytest
 from fastapi.testclient import TestClient
 
 
@@ -263,30 +262,32 @@ class TestCEONotionOpsActivation(unittest.TestCase):
         asyncio.run(run_test())
 
 
-@pytest.mark.asyncio
-async def test_async_state_management():
+def test_async_state_management():
     """Test async state management functions."""
-    from services.notion_ops_state import set_armed, get_state, is_armed
+    async def run_test():
+        from services.notion_ops_state import set_armed, get_state, is_armed
+        
+        session_id = "test_async_session"
+        
+        # Test activation
+        result = await set_armed(session_id, True, prompt="async test")
+        assert result["armed"] is True
+        assert result["armed_at"] is not None
+        
+        # Test get_state
+        state = await get_state(session_id)
+        assert state["armed"] is True
+        
+        # Test is_armed
+        armed = await is_armed(session_id)
+        assert armed is True
+        
+        # Test deactivation
+        result = await set_armed(session_id, False, prompt="async test")
+        assert result["armed"] is False
+        assert result["armed_at"] is None
     
-    session_id = "test_async_session"
-    
-    # Test activation
-    result = await set_armed(session_id, True, prompt="async test")
-    assert result["armed"] is True
-    assert result["armed_at"] is not None
-    
-    # Test get_state
-    state = await get_state(session_id)
-    assert state["armed"] is True
-    
-    # Test is_armed
-    armed = await is_armed(session_id)
-    assert armed is True
-    
-    # Test deactivation
-    result = await set_armed(session_id, False, prompt="async test")
-    assert result["armed"] is False
-    assert result["armed_at"] is None
+    asyncio.run(run_test())
 
 
 if __name__ == "__main__":
