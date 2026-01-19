@@ -80,14 +80,7 @@ class TestCEODetection(unittest.TestCase):
     
     def test_is_ceo_request_helper(self):
         """Test the _is_ceo_request helper function."""
-        from fastapi import Request
-        
         # Import the function (we'll test it in isolation)
-        import sys
-        sys.path.insert(0, '/home/runner/work/adnan-backend-v4/adnan-backend-v4')
-        
-        # We can't easily test Request objects without full app,
-        # but we can verify the logic exists
         from routers.notion_ops_router import _is_ceo_request, _env_true
         
         # Test env_true helper

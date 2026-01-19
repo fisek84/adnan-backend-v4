@@ -22,7 +22,7 @@ def _load_app():
     try:
         from gateway.gateway_server import app
         return app
-    except Exception:
+    except (ImportError, ModuleNotFoundError):
         from main import app
         return app
 
