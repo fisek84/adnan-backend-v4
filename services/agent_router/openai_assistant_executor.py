@@ -1238,17 +1238,19 @@ class OpenAIAssistantExecutor:
             err_repr = repr(exc)[:2000]
 
             if isinstance(exc, ReadOnlyToolCallAttempt):
-                summary = "CEO advisory je pokuÄąË‡ao tool poziv u read-only modu (blokirano)."
+                summary = (
+                    "CEO advisory je pokušao tool poziv u read-only modu (blokirano)."
+                )
                 text_out = (
-                    "CEO advisory je pokuÄąË‡ao tool poziv u read-only modu, ÄąË‡to je zabranjeno.\n"
+                    "CEO advisory je pokušao tool poziv u read-only modu, što je zabranjeno.\n"
                     "Provjeri Assistant instrukcije i konfiguraciju; read-only path mora biti bez tool poziva."
                 )
             else:
                 summary = (
-                    f"CEO advisory nije mogao zavrÄąË‡iti (internal error: {err_type})."
+                    f"CEO advisory nije mogao završiti (internal error: {err_type})."
                 )
                 text_out = (
-                    f"CEO advisory nije mogao zavrÄąË‡iti (internal error: {err_type})."
+                    f"CEO advisory nije mogao završiti (internal error: {err_type})."
                 )
 
             if os.getenv("DEBUG_CEO_ADVISOR_ERRORS") == "1":

@@ -440,9 +440,32 @@ def _extract_wrapper_patch_from_params(params: Dict[str, Any]) -> Dict[str, Any]
     if not isinstance(params, dict) or not params:
         return {}
 
+    # Wrapper params often contain routing hints (intent/type/etc). We only want
+    # user-fillable Notion field values.
+    reserved = {
+        "prompt",
+        "intent",
+        "intent_hint",
+        "type",
+        "command",
+        "ai_command",
+        "metadata",
+        "session_id",
+        "source",
+        "db_key",
+        "database",
+        "operations",
+    }
+
     patch: Dict[str, Any] = {}
     for k, v in params.items():
-        if k == "prompt":
+        if not isinstance(k, str) or not k.strip():
+            continue
+        if k in reserved:
+            continue
+        if v is None:
+            continue
+        if isinstance(v, str) and not v.strip():
             continue
         patch[k] = v
     return patch
@@ -672,7 +695,11 @@ def _unwrap_proposal_wrapper_or_raise(
                     command="notion_write",
                     intent="batch_request",
                     read_only=False,
-                    params={"operations": ops, "source_prompt": prompt.strip()},
+                    params={
+                        "operations": ops,
+                        "source_prompt": prompt.strip(),
+                        "wrapper_patch": dict(wrapper_patch) if wrapper_patch else None,
+                    },
                     initiator=initiator,
                     validated=True,
                     metadata={
@@ -689,6 +716,59 @@ def _unwrap_proposal_wrapper_or_raise(
                 if isinstance(wrapper_patch, dict) and wrapper_patch:
                     _apply_wrapper_patch_to_ai_command(ai_command, wrapper_patch)
 
+                # Ensure downstream executor can apply schema-backed patches.
+                try:
+                    if isinstance(ai_command.params, dict) and wrapper_patch:
+                        ai_command.params["wrapper_patch"] = dict(wrapper_patch)
+                except Exception:
+                    pass
+
+                return ai_command
+    except Exception:
+        pass
+
+    # Explicit goal + numbered task list (enterprise UX): convert to batch_request.
+    try:
+        from services.goal_task_batch_parser import (  # noqa: PLC0415
+            build_batch_operations_from_parsed,
+            parse_goal_with_explicit_tasks,
+        )
+
+        parsed = parse_goal_with_explicit_tasks(prompt.strip())
+        if parsed:
+            ops = build_batch_operations_from_parsed(parsed)
+            if ops:
+                ai_command = AICommand(
+                    command="notion_write",
+                    intent="batch_request",
+                    read_only=False,
+                    params={
+                        "operations": ops,
+                        "source_prompt": prompt.strip(),
+                        "wrapper_patch": dict(wrapper_patch) if wrapper_patch else None,
+                    },
+                    initiator=initiator,
+                    validated=True,
+                    metadata={
+                        **(metadata if isinstance(metadata, dict) else {}),
+                        "canon": "execute_raw_unwrap_explicit_goal_task_batch",
+                        "endpoint": "/api/execute/raw",
+                        "wrapper": {
+                            "prompt": prompt.strip(),
+                            "wrapper_patch": wrapper_patch,
+                        },
+                    },
+                )
+
+                if isinstance(wrapper_patch, dict) and wrapper_patch:
+                    _apply_wrapper_patch_to_ai_command(ai_command, wrapper_patch)
+
+                try:
+                    if isinstance(ai_command.params, dict) and wrapper_patch:
+                        ai_command.params["wrapper_patch"] = dict(wrapper_patch)
+                except Exception:
+                    pass
+
                 return ai_command
     except Exception:
         pass
@@ -703,6 +783,15 @@ def _unwrap_proposal_wrapper_or_raise(
                 hint_intent = auto.strip()
         except Exception:
             pass
+
+    # If this looks like a batch/branch request, force batch_request so we do NOT enter create_goal/create_task fast-path.
+    try:
+        from services.notion_keyword_mapper import NotionKeywordMapper  # noqa: PLC0415
+
+        if NotionKeywordMapper.is_batch_request(prompt.strip()):
+            hint_intent = "batch_request"
+    except Exception:
+        pass
 
     # Create intents with explicit/detected hint: build minimal executable without LLM translation.
     try:
@@ -754,6 +843,12 @@ def _unwrap_proposal_wrapper_or_raise(
                     if isinstance(wrapper_patch, dict) and wrapper_patch:
                         _apply_wrapper_patch_to_ai_command(ai_command, wrapper_patch)
 
+                    try:
+                        if isinstance(ai_command.params, dict) and wrapper_patch:
+                            ai_command.params["wrapper_patch"] = dict(wrapper_patch)
+                    except Exception:
+                        pass
+
                     return ai_command
     except Exception:
         pass
@@ -796,6 +891,14 @@ def _unwrap_proposal_wrapper_or_raise(
             and getattr(ai_command, "intent", None) not in _HARD_READ_ONLY_INTENTS
         ):
             _apply_wrapper_patch_to_ai_command(ai_command, wrapper_patch)
+
+        # Pass through for schema-backed patching during execution (NotionService).
+        if getattr(ai_command, "command", None) == "notion_write":
+            p0 = getattr(ai_command, "params", None)
+            if not isinstance(p0, dict):
+                p0 = {}
+            p0["wrapper_patch"] = dict(wrapper_patch)
+            ai_command.params = p0
 
     ai_command.initiator = initiator
     ai_command.read_only = False
@@ -1855,6 +1958,155 @@ async def execute_preview_command(
                 }
     except Exception:
         review_block = None
+
+    # Enterprise UX: always try to provide DB schema for table preview.
+    async def _fallback_fields_schema(db_key: str) -> Dict[str, Any]:
+        k = (db_key or "").strip().lower()
+        base: Dict[str, Any] = {
+            "Name": {"type": "title"},
+            "Status": {"type": "status"},
+            "Priority": {"type": "select"},
+            "Deadline": {"type": "date"},
+            "Due Date": {"type": "date"},
+            "Description": {"type": "rich_text"},
+        }
+        if k in {"tasks", "task"}:
+            base.setdefault("Goal", {"type": "relation"})
+            base.setdefault("Project", {"type": "relation"})
+            base.setdefault("Owner", {"type": "people"})
+        if k in {"projects", "project"}:
+            base.setdefault("Primary Goal", {"type": "relation"})
+        return base
+
+    async def _best_effort_fields_schema(db_key: str) -> Tuple[Dict[str, Any], str]:
+        db_key = (db_key or "").strip()
+        if not db_key:
+            return {}, "none"
+        try:
+            from services.notion_service import get_or_init_notion_service  # noqa: PLC0415
+
+            svc = get_or_init_notion_service()
+            if svc is not None:
+                schema = await svc.get_fields_schema(db_key)
+                if isinstance(schema, dict) and schema:
+                    return schema, "notion"
+        except Exception:
+            pass
+
+        fb = await _fallback_fields_schema(db_key)
+        return (fb if isinstance(fb, dict) else {}), "fallback"
+
+    # Determine DB keys involved so we can attach schema even if notion_block is empty.
+    db_keys: List[str] = []
+    try:
+        if getattr(ai_command, "command", None) == "notion_write":
+            intent0 = getattr(ai_command, "intent", None)
+            params0 = getattr(ai_command, "params", None)
+            params0 = params0 if isinstance(params0, dict) else {}
+
+            if intent0 in {"create_goal"}:
+                db_keys = ["goals"]
+            elif intent0 in {"create_task"}:
+                db_keys = ["tasks"]
+            elif intent0 in {"create_project"}:
+                db_keys = ["projects"]
+            elif intent0 in {"create_page", "update_page"}:
+                dk = params0.get("db_key")
+                if isinstance(dk, str) and dk.strip():
+                    db_keys = [dk.strip()]
+            elif intent0 in {"batch_request", "batch", "branch_request"}:
+                ops0 = params0.get("operations")
+                if isinstance(ops0, list):
+                    for op in ops0:
+                        if not isinstance(op, dict):
+                            continue
+                        payload0 = op.get("payload")
+                        payload0 = payload0 if isinstance(payload0, dict) else {}
+                        dk = payload0.get("db_key")
+                        if isinstance(dk, str) and dk.strip():
+                            db_keys.append(dk.strip())
+                        else:
+                            oi = (op.get("intent") or "").strip().lower()
+                            if oi == "create_goal":
+                                db_keys.append("goals")
+                            elif oi == "create_task":
+                                db_keys.append("tasks")
+                            elif oi == "create_project":
+                                db_keys.append("projects")
+    except Exception:
+        db_keys = []
+
+    # If we couldn't infer db keys from the translated command, infer from wrapper prompt.
+    if not db_keys:
+        try:
+            prompt0 = None
+            md0 = getattr(ai_command, "metadata", None)
+            if isinstance(md0, dict):
+                w0 = md0.get("wrapper")
+                if isinstance(w0, dict):
+                    p0 = w0.get("prompt")
+                    if isinstance(p0, str) and p0.strip():
+                        prompt0 = p0.strip()
+
+            if isinstance(prompt0, str) and prompt0:
+                from services.notion_keyword_mapper import NotionKeywordMapper  # noqa: PLC0415
+
+                auto_intent = NotionKeywordMapper.detect_intent(prompt0)
+                ai = (auto_intent or "").strip().lower()
+                if ai == "create_goal":
+                    db_keys = ["goals"]
+                elif ai == "create_task":
+                    db_keys = ["tasks"]
+                elif ai == "create_project":
+                    db_keys = ["projects"]
+
+                # Heuristic: if prompt mentions both goal and task, attach both schemas.
+                if not db_keys:
+                    p_low = prompt0.lower()
+                    has_goal = bool(re.search(r"\b(cilj\w*|goal\w*)\b", p_low))
+                    has_task = bool(re.search(r"\b(zadat\w*|task\w*)\b", p_low))
+                    if has_goal and has_task:
+                        db_keys = ["goals", "tasks"]
+        except Exception:
+            pass
+
+    # Normalize + de-dupe
+    db_keys = [k for k in [str(x).strip() for x in db_keys] if k]
+    db_keys = list(dict.fromkeys(db_keys))
+
+    # Attach schema to review block (single union) and keep per-db map for debugging.
+    try:
+        if db_keys:
+            union_schema: Dict[str, Any] = {}
+            by_db: Dict[str, Any] = {}
+            sources: Dict[str, str] = {}
+            for dk in db_keys:
+                sch, src = await _best_effort_fields_schema(dk)
+                if isinstance(sch, dict) and sch:
+                    by_db[dk] = sch
+                    sources[dk] = src
+                    for k, v in sch.items():
+                        if k not in union_schema:
+                            union_schema[k] = v
+
+            if union_schema:
+                if not isinstance(review_block, dict):
+                    review_block = {
+                        "type": "command_review",
+                        "mode": "approve",
+                        "title": "Notion schema",
+                        "summary": "Notion database schema (best-effort) for preview/fill-missing.",
+                        "missing_fields": [],
+                        "fields_schema": union_schema,
+                    }
+                else:
+                    fs0 = review_block.get("fields_schema")
+                    if not isinstance(fs0, dict) or not fs0:
+                        review_block["fields_schema"] = union_schema
+                review_block["fields_schema_by_db_key"] = by_db
+                review_block["schema_source_by_db_key"] = sources
+    except Exception:
+        pass
 
     try:
         if getattr(ai_command, "command", None) == "notion_write":

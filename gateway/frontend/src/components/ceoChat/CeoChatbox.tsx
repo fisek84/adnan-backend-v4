@@ -457,6 +457,22 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
 
   const abortRef = useRef<AbortController | null>(null);
   const previewAbortRef = useRef<AbortController | null>(null);
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
+
+  const resizeComposer = useCallback(() => {
+    const el = composerRef.current;
+    if (!el) return;
+    // Reset first so scrollHeight recomputes correctly
+    el.style.height = "0px";
+    const max = 180;
+    const next = Math.min(el.scrollHeight || 0, max);
+    el.style.height = `${Math.max(next, 24)}px`;
+    el.style.overflowY = (el.scrollHeight || 0) > max ? "auto" : "hidden";
+  }, []);
+
+  useEffect(() => {
+    resizeComposer();
+  }, [draft, resizeComposer]);
 
   // Text-to-Speech hook with configured language
   const { speak, cancel: cancelSpeech, speaking, supported: ttsSupported } = useSpeechSynthesis(voiceLang);
@@ -1598,9 +1614,12 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         <div className="ceoComposerInner">
           <textarea
             className="ceoTextarea"
+            ref={composerRef}
             value={draft}
             placeholder={ui.inputPlaceholder}
-            onChange={(e) => setDraft(e.target.value)}
+            onChange={(e) => {
+              setDraft(e.target.value);
+            }}
             onKeyDown={onKeyDown}
             disabled={busy === "submitting" || busy === "streaming"}
             rows={1}

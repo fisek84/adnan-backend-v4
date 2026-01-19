@@ -177,6 +177,14 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
 
         return any(k in t for k in write_verbs)
 
+    def _armed_write_ack(prompt: str, *, has_actionable: bool) -> str:
+        if has_actionable:
+            return "Notion Ops je spreman. Pregledaj prijedlog i odobri izvršenje."
+        # write intent but no structured proposal
+        return (
+            "Zahtjev izgleda kao write, ali treba dodatno preciziranje prije izvršenja."
+        )
+
     def _build_contract_noop_wrapper(prompt: str, *, reason: str) -> ProposedCommand:
         safe_prompt = (prompt or "").strip() or "noop"
         pc = ProposedCommand(
@@ -508,9 +516,13 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 "session_id_present": bool(session_id),
             }
 
+            text_out = out.text
+            if _looks_like_write_intent(prompt):
+                text_out = _armed_write_ack(prompt, has_actionable=True)
+
             return JSONResponse(
                 content={
-                    "text": out.text,
+                    "text": text_out,
                     "proposed_commands": pcs_out,
                     "agent_id": out.agent_id,
                     "read_only": True,
@@ -550,9 +562,13 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             "fallback": True,
         }
 
+        text_out = out.text
+        if _looks_like_write_intent(prompt):
+            text_out = _armed_write_ack(prompt, has_actionable=False)
+
         return JSONResponse(
             content={
-                "text": out.text,
+                "text": text_out,
                 "proposed_commands": [fb],
                 "agent_id": out.agent_id,
                 "read_only": True,

@@ -205,3 +205,176 @@ def test_execute_preview_wrapper_autodetect_intent_builds_table():
     pp = notion.get("properties_preview")
     assert isinstance(pp, dict)
     assert "Name" in pp
+
+
+def test_execute_preview_wrapper_goal_with_explicit_task_list_builds_batch_rows():
+    app = _get_app()
+    client = TestClient(app)
+
+    payload = {
+        "command": "ceo.command.propose",
+        "intent": "ceo.command.propose",
+        "params": {
+            "prompt": (
+                'Kreiraj novi cilj pod nazivom "Povećanje prodaje za 20% u Q1 2026." sa rokom do 23.02.2026.\n'
+                "Zadaci povezani s ovim ciljem:\n"
+                '1. "Analiza tržišta" - due date: 20.01.2026, status: active, priority: low, povezan sa ciljem.\n'
+                '2. "Razviti strategiju marketinga" - due date: 20.01.2026, status: active, priority: low, povezan sa ciljem.\n'
+            )
+        },
+    }
+
+    r = client.post(
+        "/api/execute/preview",
+        headers={"X-Initiator": "ceo_chat"},
+        json=payload,
+    )
+    assert r.status_code == 200
+    body = r.json()
+
+    notion = body.get("notion")
+    assert isinstance(notion, dict)
+    assert notion.get("type") == "batch_preview"
+
+    rows = notion.get("rows")
+    assert isinstance(rows, list)
+    assert len(rows) >= 3
+
+    goal_rows = [
+        x for x in rows if isinstance(x, dict) and x.get("intent") == "create_goal"
+    ]
+    task_rows = [
+        x for x in rows if isinstance(x, dict) and x.get("intent") == "create_task"
+    ]
+    assert goal_rows, rows
+    assert task_rows, rows
+
+    # Tasks should reference the created goal by op_id.
+    assert any(
+        isinstance(x.get("Goal Ref"), str)
+        and x.get("Goal Ref", "").startswith("ref:goal_")
+        for x in task_rows
+    )
+
+
+def test_execute_preview_wrapper_goal_with_task_colon_list_builds_batch_rows():
+    app = _get_app()
+    client = TestClient(app)
+
+    payload = {
+        "command": "ceo.command.propose",
+        "intent": "ceo.command.propose",
+        "params": {
+            "prompt": (
+                'Kreiraj novi cilj pod nazivom "Povećanje prodaje za 20% u Q1 2026." sa rokom do 23.02.2026.\n'
+                "Task 1: Analiza tržišta - due date: 20.01.2026, status: active, priority: low.\n"
+                "Task 2: Razviti strategiju marketinga - due date: 20.01.2026, status: active, priority: low.\n"
+                "Task 3: Implementacija novih prodajnih taktika - due date: 20.01.2026, status: active, priority: low.\n"
+            )
+        },
+    }
+
+    r = client.post(
+        "/api/execute/preview",
+        headers={"X-Initiator": "ceo_chat"},
+        json=payload,
+    )
+    assert r.status_code == 200
+    body = r.json()
+
+    notion = body.get("notion")
+    assert isinstance(notion, dict)
+    assert notion.get("type") == "batch_preview"
+
+    rows = notion.get("rows")
+    assert isinstance(rows, list)
+    assert len(rows) >= 4
+
+    goal_rows = [
+        x for x in rows if isinstance(x, dict) and x.get("intent") == "create_goal"
+    ]
+    task_rows = [
+        x for x in rows if isinstance(x, dict) and x.get("intent") == "create_task"
+    ]
+    assert goal_rows, rows
+    assert task_rows, rows
+
+
+def test_execute_preview_wrapper_goal_with_single_task_segment_builds_batch_rows():
+    app = _get_app()
+    client = TestClient(app)
+
+    payload = {
+        "command": "ceo.command.propose",
+        "intent": "ceo.command.propose",
+        "params": {
+            "prompt": (
+                "Kreiraj novi cilj pod nazivom Povećanje prodaje za 20% u Q1 2026 sa rokom do 23.02.2026. "
+                "Task: Analiza tržišta, due date: 20.01.2026, status: active, priority: low, povezan sa ciljem."
+            )
+        },
+    }
+
+    r = client.post(
+        "/api/execute/preview",
+        headers={"X-Initiator": "ceo_chat"},
+        json=payload,
+    )
+    assert r.status_code == 200
+    body = r.json()
+
+    notion = body.get("notion")
+    assert isinstance(notion, dict)
+    assert notion.get("type") == "batch_preview"
+
+    rows = notion.get("rows")
+    assert isinstance(rows, list)
+    assert len(rows) >= 2
+
+    goal_rows = [
+        x for x in rows if isinstance(x, dict) and x.get("intent") == "create_goal"
+    ]
+    task_rows = [
+        x for x in rows if isinstance(x, dict) and x.get("intent") == "create_task"
+    ]
+    assert goal_rows, rows
+    assert task_rows, rows
+
+
+def test_execute_preview_wrapper_kreiraj_cilj_i_task_lezi_batch_rows():
+    app = _get_app()
+    client = TestClient(app)
+
+    payload = {
+        "command": "ceo.command.propose",
+        "intent": "ceo.command.propose",
+        "params": {
+            "prompt": "Kreiraj cilj: ADNAN X, I TASK LEZI",
+            "intent": "create_goal",
+        },
+    }
+
+    r = client.post(
+        "/api/execute/preview",
+        headers={"X-Initiator": "ceo_chat"},
+        json=payload,
+    )
+    assert r.status_code == 200
+    body = r.json()
+
+    notion = body.get("notion")
+    assert isinstance(notion, dict)
+    assert notion.get("type") == "batch_preview"
+
+    rows = notion.get("rows")
+    assert isinstance(rows, list)
+    assert len(rows) >= 2
+
+    goal_rows = [
+        x for x in rows if isinstance(x, dict) and x.get("intent") == "create_goal"
+    ]
+    task_rows = [
+        x for x in rows if isinstance(x, dict) and x.get("intent") == "create_task"
+    ]
+    assert goal_rows, rows
+    assert task_rows, rows

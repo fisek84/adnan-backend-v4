@@ -52,25 +52,64 @@ export const CommandPreviewModal: React.FC<Props> = ({ open, title, loading, err
   const review = data?.review && typeof data.review === "object" ? data.review : null;
   const reviewSchema: Record<string, any> | null =
     review?.fields_schema && typeof review.fields_schema === "object" ? (review.fields_schema as Record<string, any>) : null;
+  const reviewSchemaByDb: Record<string, any> | null =
+    review?.fields_schema_by_db_key && typeof review.fields_schema_by_db_key === "object"
+      ? (review.fields_schema_by_db_key as Record<string, any>)
+      : null;
+  const effectiveReviewSchema = useMemo(() => {
+    if (reviewSchema && Object.keys(reviewSchema).length) return reviewSchema;
+    if (!reviewSchemaByDb) return null;
+    const union: Record<string, any> = {};
+    for (const v of Object.values(reviewSchemaByDb)) {
+      if (!v || typeof v !== "object") continue;
+      for (const [k, val] of Object.entries(v as Record<string, any>)) {
+        if (!(k in union)) union[k] = val;
+      }
+    }
+    return Object.keys(union).length ? union : null;
+  }, [reviewSchema, reviewSchemaByDb]);
   const reviewMissing: string[] = Array.isArray(review?.missing_fields)
     ? (review.missing_fields as any[]).filter((x) => typeof x === "string")
     : [];
 
-  // Only support patching fields that backend can currently apply reliably.
-  const supportedPatchFields = ["Status", "Priority", "Deadline", "Due Date", "Description"];
+  const editableTypes = new Set([
+    "title",
+    "rich_text",
+    "select",
+    "status",
+    "date",
+    "number",
+    "checkbox",
+    "multi_select",
+  ]);
+
+  // Backend applies schema-backed patches at execution time; keep UI conservative for types needing IDs.
+  const supportedPatchFields = useMemo(() => {
+    const schema = effectiveReviewSchema || {};
+    const keys = Object.keys(schema).filter((k) => {
+      const t = (schema as any)?.[k]?.type;
+      return typeof t === "string" && editableTypes.has(t);
+    });
+
+    // Prefer common enterprise fields near the top.
+    const preferredOrder = ["Name", "Title", "Status", "Priority", "Deadline", "Due Date", "Description"];
+    const preferred = preferredOrder.filter((k) => keys.includes(k));
+    const rest = keys.filter((k) => !preferred.includes(k)).sort();
+    return [...preferred, ...rest];
+  }, [effectiveReviewSchema]);
 
   const editableFields = useMemo(() => {
-    const schemaKeys = Object.keys(reviewSchema || {}).filter((k) => supportedPatchFields.includes(k));
+    const schemaKeys = Object.keys(effectiveReviewSchema || {}).filter((k) => supportedPatchFields.includes(k));
     if (!schemaKeys.length) return [];
 
     const preferred = supportedPatchFields.filter((k) => schemaKeys.includes(k));
     const base = reviewMissing.filter((k) => schemaKeys.includes(k));
     const picked = base.length ? base : preferred;
     return showAllFields ? schemaKeys : picked.length ? picked : schemaKeys;
-  }, [reviewSchema, reviewMissing, showAllFields]);
+  }, [effectiveReviewSchema, reviewMissing, showAllFields]);
 
   function fieldOptions(fieldKey: string): string[] {
-    const fs: any = (reviewSchema as any)?.[fieldKey] ?? {};
+    const fs: any = (effectiveReviewSchema as any)?.[fieldKey] ?? {};
     const opts = Array.isArray(fs?.options) ? fs.options.filter((x: any) => typeof x === "string") : [];
     return opts;
   }
@@ -82,6 +121,15 @@ export const CommandPreviewModal: React.FC<Props> = ({ open, title, loading, err
       if (pv?.select?.name) return String(pv.select.name);
       if (pv?.status?.name) return String(pv.status.name);
       if (pv?.date?.start) return String(pv.date.start);
+      if (typeof pv?.number === "number") return String(pv.number);
+      if (typeof pv?.checkbox === "boolean") return pv.checkbox ? "true" : "false";
+      if (Array.isArray(pv?.multi_select)) {
+        const names = pv.multi_select
+          .map((o: any) => (o && typeof o === "object" ? o.name : null))
+          .filter((x: any) => typeof x === "string" && x.trim());
+        if (names.length) return names.join(", ");
+      }
+      if (Array.isArray(pv?.title)) return renderNotionValue(pv);
       if (Array.isArray(pv?.rich_text)) return renderNotionValue(pv);
     }
     if (propertySpecs) {
@@ -89,6 +137,12 @@ export const CommandPreviewModal: React.FC<Props> = ({ open, title, loading, err
       if (sp?.name) return String(sp.name);
       if (sp?.start) return String(sp.start);
       if (sp?.text) return String(sp.text);
+      if (typeof sp?.number === "number") return String(sp.number);
+      if (typeof sp?.checkbox === "boolean") return sp.checkbox ? "true" : "false";
+      if (Array.isArray(sp?.names)) {
+        const names = (sp.names as any[]).filter((x) => typeof x === "string" && x.trim());
+        if (names.length) return names.join(", ");
+      }
     }
     return "";
   }
@@ -107,6 +161,9 @@ export const CommandPreviewModal: React.FC<Props> = ({ open, title, loading, err
         const src = pp || ps || {};
         for (const k of Object.keys(src)) colSet.add(k);
       }
+
+      // If backend provided schema-only (no values yet), still show full table.
+      for (const k of Object.keys(effectiveReviewSchema || {})) colSet.add(k);
 
       const keys = Array.from(colSet);
       const preferred = [
@@ -133,7 +190,7 @@ export const CommandPreviewModal: React.FC<Props> = ({ open, title, loading, err
       return ordered;
     }
 
-    const keys = Object.keys(propertiesPreview || propertySpecs || reviewSchema || {});
+    const keys = Object.keys(propertiesPreview || propertySpecs || effectiveReviewSchema || {});
     // Prefer a Notion-ish order
     const preferred = [
       "Name",
@@ -151,7 +208,17 @@ export const CommandPreviewModal: React.FC<Props> = ({ open, title, loading, err
     for (const p of preferred) if (keys.includes(p)) ordered.push(p);
     for (const k of keys) if (!ordered.includes(k)) ordered.push(k);
     return ordered;
-  }, [propertiesPreview, propertySpecs, reviewSchema, notionRows]);
+  }, [propertiesPreview, propertySpecs, effectiveReviewSchema, notionRows]);
+
+  function schemaHintForField(fieldKey: string): string {
+    const fs: any = (effectiveReviewSchema as any)?.[fieldKey];
+    if (!fs || typeof fs !== "object") return "";
+    const t = typeof fs.type === "string" ? fs.type : "";
+    if (!t) return "";
+    const opts = Array.isArray(fs.options) ? fs.options.filter((x: any) => typeof x === "string") : [];
+    if ((t === "select" || t === "status") && opts.length) return `${t} (${opts.length} options)`;
+    return t;
+  }
 
   function renderNotionValue(v: any): string {
     if (!v || typeof v !== "object") return "";
@@ -372,7 +439,7 @@ export const CommandPreviewModal: React.FC<Props> = ({ open, title, loading, err
                                     ? renderNotionValue(v)
                                     : ps
                                       ? clampJson(ps?.[c] ?? null, 2000)
-                                      : "";
+                                      : schemaHintForField(c);
 
                                 return (
                                   <td
@@ -401,7 +468,7 @@ export const CommandPreviewModal: React.FC<Props> = ({ open, title, loading, err
                                 ? renderNotionValue(v)
                                 : propertySpecs
                                   ? clampJson(propertySpecs?.[c] ?? null, 2000)
-                                  : currentValueForField(c);
+                                  : currentValueForField(c) || schemaHintForField(c);
                               return (
                                 <td
                                   key={c}

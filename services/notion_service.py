@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -389,6 +390,186 @@ class NotionService:
             fetched_at=now, schema=schema
         )
         return schema
+
+    async def get_fields_schema(self, db_key: str) -> Dict[str, Any]:
+        """Return a UI-friendly schema for a DB key.
+
+        Output shape:
+          { "Name": {"type": "title"}, "Status": {"type": "status", "options": [...]}, ... }
+
+        This is best-effort:
+          - uses cached schema when possible
+          - may perform a read-only Notion API call
+          - raises RuntimeError if db_key cannot be resolved
+        """
+        db_id = self._resolve_db_id(db_key)
+        schema = await self._get_database_schema(db_id)
+        props = schema.get("properties") if isinstance(schema, dict) else None
+        if not isinstance(props, dict):
+            return {}
+
+        out: Dict[str, Any] = {}
+        for name, p in props.items():
+            if not isinstance(name, str) or not name.strip():
+                continue
+            if not isinstance(p, dict):
+                continue
+
+            p_type = p.get("type")
+            p_type = p_type.strip() if isinstance(p_type, str) else ""
+            if not p_type:
+                continue
+
+            rec: Dict[str, Any] = {"type": p_type}
+
+            if p_type == "select":
+                sel = p.get("select")
+                if isinstance(sel, dict) and isinstance(sel.get("options"), list):
+                    opts = [o for o in sel.get("options") if isinstance(o, dict)]
+                    names = [
+                        o.get("name") for o in opts if isinstance(o.get("name"), str)
+                    ]
+                    rec["options"] = [n for n in names if n.strip()]
+
+            if p_type == "status":
+                st = p.get("status")
+                if isinstance(st, dict) and isinstance(st.get("options"), list):
+                    opts = [o for o in st.get("options") if isinstance(o, dict)]
+                    names = [
+                        o.get("name") for o in opts if isinstance(o.get("name"), str)
+                    ]
+                    rec["options"] = [n for n in names if n.strip()]
+
+            if p_type == "relation":
+                rel = p.get("relation")
+                if isinstance(rel, dict) and isinstance(rel.get("database_id"), str):
+                    rec["relation_db_id"] = rel.get("database_id")
+
+            out[name.strip()] = rec
+
+        return out
+
+    async def _apply_wrapper_patch_to_property_specs(
+        self,
+        *,
+        db_key: str,
+        property_specs: Dict[str, Any],
+        wrapper_patch: Dict[str, Any],
+    ) -> None:
+        """Apply user-provided field overrides using DB schema.
+
+        This enables CEO Console "fill missing" to patch more than the legacy
+        Status/Priority/Deadline set, while remaining schema-driven.
+
+        Only properties present in the DB schema are applied.
+        Relation/people are intentionally ignored (they require IDs).
+        """
+        if not isinstance(property_specs, dict):
+            return
+        if not isinstance(wrapper_patch, dict) or not wrapper_patch:
+            return
+
+        schema = await self.get_fields_schema(db_key)
+        if not isinstance(schema, dict) or not schema:
+            return
+
+        def _as_str(v: Any) -> str:
+            if v is None:
+                return ""
+            if isinstance(v, str):
+                return v.strip()
+            try:
+                return str(v).strip()
+            except Exception:
+                return ""
+
+        def _looks_like_iso_date(s: str) -> bool:
+            return bool(s and re.fullmatch(r"\d{4}-\d{2}-\d{2}", s))
+
+        for field_name, raw in wrapper_patch.items():
+            if not isinstance(field_name, str) or not field_name.strip():
+                continue
+            fname = field_name.strip()
+            if fname not in schema:
+                continue
+
+            st = schema.get(fname)
+            st = st if isinstance(st, dict) else {}
+            p_type = st.get("type")
+            p_type = p_type.strip() if isinstance(p_type, str) else ""
+            if not p_type:
+                continue
+
+            # Intentionally ignore types requiring IDs.
+            if p_type in {"people", "relation", "created_by", "last_edited_by"}:
+                continue
+
+            if p_type == "title":
+                s = _as_str(raw)
+                if s:
+                    property_specs[fname] = {"type": "title", "text": s}
+                continue
+
+            if p_type in {"rich_text", "text"}:
+                s = _as_str(raw)
+                if s:
+                    property_specs[fname] = {"type": "rich_text", "text": s}
+                continue
+
+            if p_type in {"select", "status"}:
+                s = _as_str(raw)
+                if s:
+                    property_specs[fname] = {"type": p_type, "name": s}
+                continue
+
+            if p_type == "multi_select":
+                if isinstance(raw, list):
+                    names = [_as_str(x) for x in raw if _as_str(x)]
+                else:
+                    s = _as_str(raw)
+                    names = [x.strip() for x in s.split(",") if x.strip()] if s else []
+                if names:
+                    property_specs[fname] = {"type": "multi_select", "names": names}
+                continue
+
+            if p_type == "date":
+                s = _as_str(raw)
+                if not s:
+                    continue
+                iso = ""
+                try:
+                    from services.coo_translation_service import (  # noqa: PLC0415
+                        COOTranslationService,
+                    )
+
+                    iso = COOTranslationService._try_parse_date_to_iso(s) or ""
+                except Exception:
+                    iso = ""
+                if not iso and _looks_like_iso_date(s):
+                    iso = s
+                if iso:
+                    property_specs[fname] = {"type": "date", "start": iso}
+                continue
+
+            if p_type == "number":
+                try:
+                    n = float(raw)
+                    property_specs[fname] = {"type": "number", "number": n}
+                except Exception:
+                    pass
+                continue
+
+            if p_type == "checkbox":
+                v = raw
+                if isinstance(v, str):
+                    sv = v.strip().lower()
+                    if sv in {"true", "yes", "da", "1"}:
+                        v = True
+                    elif sv in {"false", "no", "ne", "0"}:
+                        v = False
+                if isinstance(v, bool):
+                    property_specs[fname] = {"type": "checkbox", "checkbox": v}
+                continue
 
     async def _resolve_property_type(self, *, db_id: str, prop_name: str) -> str:
         prop_name = (prop_name or "").strip()
@@ -800,6 +981,9 @@ class NotionService:
         if not isinstance(operations, list) or not operations:
             raise RuntimeError("batch_request requires operations[]")
 
+        wrapper_patch = params.get("wrapper_patch")
+        wrapper_patch = wrapper_patch if isinstance(wrapper_patch, dict) else None
+
         ref_map: Dict[str, str] = {}
         results: List[Dict[str, Any]] = []
 
@@ -834,6 +1018,14 @@ class NotionService:
                 op_params = op.get("params")
             op_params = _ensure_dict(op_params)
             op_params = _resolve_refs(op_params)
+
+            # Propagate wrapper_patch to sub-operations so create_* can apply schema-backed fills.
+            if (
+                wrapper_patch
+                and isinstance(op_params, dict)
+                and "wrapper_patch" not in op_params
+            ):
+                op_params["wrapper_patch"] = wrapper_patch
 
             if not op_intent:
                 results.append(
@@ -965,6 +1157,8 @@ class NotionService:
 
         db_id = self._resolve_db_id(db_key)
 
+        wrapper_patch = params.get("wrapper_patch")
+
         properties = params.get("properties")
         if isinstance(properties, dict) and properties:
             notion_properties = properties
@@ -972,6 +1166,13 @@ class NotionService:
             property_specs = params.get("property_specs")
             if not isinstance(property_specs, dict) or not property_specs:
                 raise RuntimeError("create_page requires db_key and properties")
+
+            if isinstance(wrapper_patch, dict) and wrapper_patch:
+                await self._apply_wrapper_patch_to_property_specs(
+                    db_key=db_key,
+                    property_specs=property_specs,
+                    wrapper_patch=wrapper_patch,
+                )
             notion_properties = await self._build_properties_from_property_specs(
                 db_id=db_id, property_specs=property_specs
             )
@@ -1039,6 +1240,14 @@ class NotionService:
         if status:
             property_specs["Status"] = {"type": "status", "name": status}
 
+        wrapper_patch = params.get("wrapper_patch")
+        if isinstance(wrapper_patch, dict) and wrapper_patch:
+            await self._apply_wrapper_patch_to_property_specs(
+                db_key=db_key,
+                property_specs=property_specs,
+                wrapper_patch=wrapper_patch,
+            )
+
         # Build Notion properties
         notion_properties = await self._build_properties_from_property_specs(
             db_id=db_id, property_specs=property_specs
@@ -1104,6 +1313,14 @@ class NotionService:
         status = _ensure_str(params.get("status"))
         if status:
             property_specs["Status"] = {"type": "status", "name": status}
+
+        wrapper_patch = params.get("wrapper_patch")
+        if isinstance(wrapper_patch, dict) and wrapper_patch:
+            await self._apply_wrapper_patch_to_property_specs(
+                db_key=db_key,
+                property_specs=property_specs,
+                wrapper_patch=wrapper_patch,
+            )
 
         # Build Notion properties
         notion_properties = await self._build_properties_from_property_specs(
@@ -1198,6 +1415,14 @@ class NotionService:
         status = _ensure_str(params.get("status"))
         if status:
             property_specs["Status"] = {"type": "status", "name": status}
+
+        wrapper_patch = params.get("wrapper_patch")
+        if isinstance(wrapper_patch, dict) and wrapper_patch:
+            await self._apply_wrapper_patch_to_property_specs(
+                db_key=db_key,
+                property_specs=property_specs,
+                wrapper_patch=wrapper_patch,
+            )
 
         # Build Notion properties
         notion_properties = await self._build_properties_from_property_specs(
