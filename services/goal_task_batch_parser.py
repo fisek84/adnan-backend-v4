@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 from uuid import uuid4
 
 
@@ -11,7 +11,7 @@ from uuid import uuid4
 class ParsedGoalTaskBatch:
     goal_title: str
     goal_deadline: Optional[str]
-    tasks: List[Dict[str, Any]]
+    tasks: list[dict[str, Any]]
 
 
 _DATE_DMY = re.compile(r"\b(\d{1,2})\.(\d{1,2})\.(\d{4})\b")
@@ -43,9 +43,7 @@ def _extract_goal_title(prompt: str) -> Optional[str]:
             return t
 
     # Also accept unquoted: pod nazivom X / named X
-    m2 = re.search(
-        r"(?is)\b(?:pod\s+nazivom|named)\s+([^\n\r\.\:]+)", s
-    )
+    m2 = re.search(r"(?is)\b(?:pod\s+nazivom|named)\s+([^\n\r\.\:]+)", s)
     if m2:
         t = (m2.group(1) or "").strip()
         if t:
@@ -84,15 +82,18 @@ def _extract_goal_deadline(prompt: str) -> Optional[str]:
         return None
 
     # Patterns: "rok do 23.02.2026" / "sa rokom do 23.02.2026" / "deadline 23.02.2026"
-    m = re.search(r"(?is)\b(?:rok\s+do|sa\s+rokom\s+do|deadline)\s*:?\s*(\d{1,2}\.\d{1,2}\.\d{4})", s)
+    m = re.search(
+        r"(?is)\b(?:rok\s+do|sa\s+rokom\s+do|deadline)\s*:?\s*(\d{1,2}\.\d{1,2}\.\d{4})",
+        s,
+    )
     if m:
         return _to_iso_date(m.group(1) or "")
 
     return None
 
 
-def _iter_task_lines(prompt: str) -> List[str]:
-    s = (prompt or "")
+def _iter_task_lines(prompt: str) -> list[str]:
+    s = prompt or ""
     if not s.strip():
         return []
 
@@ -116,7 +117,7 @@ def _iter_task_lines(prompt: str) -> List[str]:
     text = s[idx:] if idx is not None else s
 
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-    out: List[str] = []
+    out: list[str] = []
     for ln in lines:
         if re.match(r"^\s*\d+\s*[\.)-]\s+", ln):
             out.append(ln)
@@ -170,7 +171,7 @@ def _iter_task_lines(prompt: str) -> List[str]:
     return out
 
 
-def _parse_task_line(line: str) -> Optional[Dict[str, Any]]:
+def _parse_task_line(line: str) -> Optional[dict[str, Any]]:
     if not line or not isinstance(line, str):
         return None
 
@@ -198,7 +199,9 @@ def _parse_task_line(line: str) -> Optional[Dict[str, Any]]:
         return None
 
     due = None
-    m_due = re.search(r"(?i)\b(?:due\s*date|rok|deadline)\s*:?\s*(\d{1,2}\.\d{1,2}\.\d{4})", ln)
+    m_due = re.search(
+        r"(?i)\b(?:due\s*date|rok|deadline)\s*:?\s*(\d{1,2}\.\d{1,2}\.\d{4})", ln
+    )
     if m_due:
         due = _to_iso_date(m_due.group(1) or "")
 
@@ -212,7 +215,7 @@ def _parse_task_line(line: str) -> Optional[Dict[str, Any]]:
     if m_pri:
         priority = (m_pri.group(1) or "").strip().strip(",;")
 
-    out: Dict[str, Any] = {"title": title}
+    out: dict[str, Any] = {"title": title}
     if due:
         out["deadline"] = due
     if status:
@@ -259,7 +262,7 @@ def parse_goal_with_explicit_tasks(prompt: str) -> Optional[ParsedGoalTaskBatch]
 
     goal_deadline = _extract_goal_deadline(s)
 
-    tasks: List[Dict[str, Any]] = []
+    tasks: list[dict[str, Any]] = []
     for ln in task_lines:
         t = _parse_task_line(ln)
         if t:
@@ -268,17 +271,21 @@ def parse_goal_with_explicit_tasks(prompt: str) -> Optional[ParsedGoalTaskBatch]
     if not tasks:
         return None
 
-    return ParsedGoalTaskBatch(goal_title=goal_title, goal_deadline=goal_deadline, tasks=tasks)
+    return ParsedGoalTaskBatch(
+        goal_title=goal_title, goal_deadline=goal_deadline, tasks=tasks
+    )
 
 
-def build_batch_operations_from_parsed(parsed: ParsedGoalTaskBatch) -> List[Dict[str, Any]]:
+def build_batch_operations_from_parsed(
+    parsed: ParsedGoalTaskBatch,
+) -> list[dict[str, Any]]:
     goal_op_id = f"goal_{uuid4().hex[:8]}"
 
-    goal_payload: Dict[str, Any] = {"title": parsed.goal_title}
+    goal_payload: dict[str, Any] = {"title": parsed.goal_title}
     if parsed.goal_deadline:
         goal_payload["deadline"] = parsed.goal_deadline
 
-    ops: List[Dict[str, Any]] = [
+    ops: list[dict[str, Any]] = [
         {
             "op_id": goal_op_id,
             "intent": "create_goal",
