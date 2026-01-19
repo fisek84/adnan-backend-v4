@@ -52,7 +52,18 @@
         "query",
         "retrieve",
         "kpi",
-        "admin"
+        "admin",
+        "kreiraj",
+        "napravi",
+        "ažuriraj",
+        "azuriraj",
+        "baza",
+        "cilj",
+        "zadatak",
+        "projekt",
+        "grupni",
+        "batch",
+        "branch"
       ]
     },
     {
