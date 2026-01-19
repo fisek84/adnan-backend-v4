@@ -369,6 +369,94 @@ def _extract_deadline_from_text(text: str) -> Optional[str]:
     return None
 
 
+def _extract_inline_goal_fields_from_name(
+    name: str,
+) -> Tuple[str, Optional[str], Optional[str], Optional[str]]:
+    """Best-effort parser for inline goal specs in the title.
+
+    Example input:
+      "Finish this AI system faze 1, Status In progress, Priority High, Deadline 25.01.2026"
+
+    Returns: (clean_title, status, priority, deadline_iso)
+    where deadline_iso is YYYY-MM-DD or None.
+    """
+    s = str(name or "").strip()
+    if not s:
+        return "", None, None, None
+
+    # Normalize separators to make regex simpler
+    # We'll search for keywords and split title before the first keyword.
+    lower = s.lower()
+
+    # Keywords in both Bosnian and English
+    status_idx = None
+    for kw in (
+        " status ",
+        " status:",
+        " status,",
+        " status=",
+        " status ",
+        " status ",
+        " status ",
+        " status",
+        " status.",
+        " status ",
+    ):
+        idx = lower.find(kw)
+        if idx > 0:
+            status_idx = idx
+            break
+
+    # Fallback: look for common Bosnian/English tokens generically
+    if status_idx is None:
+        for kw in (
+            " status ",
+            " status:",
+            " status,",
+            " status=",
+            " status ",
+            " status",
+            " status.",
+        ):
+            idx = lower.find(kw)
+            if idx > 0:
+                status_idx = idx
+                break
+
+    # If we never see any keywords, bail out
+    if status_idx is None and all(
+        k not in lower for k in ("priority", "prioritet", "deadline", "rok")
+    ):
+        return s, None, None, None
+
+    # Title is everything before the first keyword occurrence
+    first_kw_pos = len(s)
+    for kw in ("status", "prioritet", "priority", "deadline", "rok"):
+        pos = lower.find(kw)
+        if pos != -1 and pos < first_kw_pos:
+            first_kw_pos = pos
+    title = s[:first_kw_pos].rstrip(" ,;-:") or s
+
+    # Extract status
+    status_match = re.search(
+        r"(?i)status\s*[:=]?\s*([^,;\n]+)",
+        s,
+    )
+    status_raw = (status_match.group(1) or "").strip() if status_match else None
+
+    # Extract priority
+    priority_match = re.search(
+        r"(?i)(priority|prioritet)\s*[:=]?\s*([^,;\n]+)",
+        s,
+    )
+    priority_raw = (priority_match.group(2) or "").strip() if priority_match else None
+
+    # Extract deadline from the whole string using existing helper
+    deadline_iso = _extract_deadline_from_text(s)
+
+    return title, status_raw, priority_raw, deadline_iso
+
+
 # -------------------------------
 # Translation: create_task/create_goal -> ai_command
 # -------------------------------
@@ -437,6 +525,24 @@ def _translate_create_goal_to_ai_command(
     date_iso = _normalize_date_iso(
         args.get("Deadline") or args.get("deadline") or args.get("Due date")
     )
+
+    # If the model packed everything into the Name field (e.g. including
+    # "Status In progress, Priority High, Deadline ..."), try to parse
+    # those hints out and clean up the title.
+    if ("Priority" not in args and "priority" not in args) or (
+        "Status" not in args and "status" not in args
+    ):
+        clean_title, st_raw, pr_raw, inline_deadline = (
+            _extract_inline_goal_fields_from_name(name)
+        )
+        if clean_title:
+            name = clean_title
+        if st_raw:
+            status = _normalize_status(st_raw)
+        if pr_raw:
+            priority = _normalize_priority(pr_raw)
+        if inline_deadline and not date_iso:
+            date_iso = inline_deadline
 
     property_specs: Dict[str, Any] = {
         "Name": {"type": "title", "text": name},

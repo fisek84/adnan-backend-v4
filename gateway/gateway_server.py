@@ -798,26 +798,58 @@ def _unwrap_proposal_wrapper_or_raise(
         if isinstance(hint_intent, str) and hint_intent.strip():
             hi = hint_intent.strip().lower()
             if hi in {"create_task", "create_goal", "create_project"}:
-                title = _strip_prefixes_for_title(prompt.strip())
+                raw_prompt = prompt.strip()
+                title = _strip_prefixes_for_title(raw_prompt)
                 if title:
                     extra_params: Dict[str, Any] = {"title": title}
+
+                    # Reuse branch/property NLP so CEO Console single-input
+                    # follows the same backend rules (status/priority/deadline, assignees).
+                    try:
+                        from services.branch_request_handler import (  # noqa: PLC0415
+                            BranchRequestHandler,
+                        )
+
+                        props = BranchRequestHandler._extract_properties(  # type: ignore[attr-defined]
+                            raw_prompt
+                        )
+                    except Exception:
+                        props = {}
+
+                    if isinstance(props, dict) and props:
+                        # Map extracted properties into fast-path params.
+                        prio = props.get("priority")
+                        if isinstance(prio, str) and prio.strip():
+                            extra_params.setdefault("priority", prio.strip())
+
+                        status = props.get("status")
+                        if isinstance(status, str) and status.strip():
+                            extra_params.setdefault("status", status.strip())
+
+                        deadline = props.get("deadline")
+                        if isinstance(deadline, str) and deadline.strip():
+                            extra_params.setdefault("deadline", deadline.strip())
+
+                        assignees = props.get("assignees")
+                        if isinstance(assignees, list) and assignees:
+                            extra_params.setdefault("assignees", assignees)
 
                     # Preserve relation intent if user specified it by title.
                     if hi == "create_task":
                         goal_title = _extract_relation_title_from_prompt(
-                            prompt.strip(), kind="goal"
+                            raw_prompt, kind="goal"
                         )
                         if goal_title:
                             extra_params["goal_title"] = goal_title
                         project_title = _extract_relation_title_from_prompt(
-                            prompt.strip(), kind="project"
+                            raw_prompt, kind="project"
                         )
                         if project_title:
                             extra_params["project_title"] = project_title
 
                     if hi == "create_project":
                         goal_title = _extract_relation_title_from_prompt(
-                            prompt.strip(), kind="goal"
+                            raw_prompt, kind="goal"
                         )
                         if goal_title:
                             extra_params["primary_goal_title"] = goal_title
@@ -834,7 +866,7 @@ def _unwrap_proposal_wrapper_or_raise(
                             "canon": "execute_raw_unwrap_intent_hint_fast_path",
                             "endpoint": "/api/execute/raw",
                             "wrapper": {
-                                "prompt": prompt.strip(),
+                                "prompt": raw_prompt,
                                 "wrapper_patch": wrapper_patch,
                             },
                         },

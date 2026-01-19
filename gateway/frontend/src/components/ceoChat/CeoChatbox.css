@@ -410,6 +410,10 @@
   border-top: 1px solid var(--ceo-border);
 }
 
+:root.light .ceoComposer {
+  background: linear-gradient(to top, rgba(248,250,252,0.98), rgba(248,250,252,0.86));
+}
+
 .ceoComposerInner {
   display: flex;
   gap: 10px;
@@ -418,6 +422,10 @@
   border-radius: 14px;
   background: rgba(255,255,255,0.03);
   padding: 10px 10px;
+}
+
+:root.light .ceoComposerInner {
+  background: rgba(0,0,0,0.02);
 }
 
 .ceoTextarea {
@@ -437,6 +445,10 @@
   color: rgba(255,255,255,0.38);
 }
 
+:root.light .ceoTextarea::placeholder {
+  color: rgba(15,23,42,0.4);
+}
+
 .ceoComposerInner:focus-within {
   box-shadow: 0 0 0 3px var(--ceo-focus);
 }
@@ -450,6 +462,10 @@
   font-size: 12px;
   cursor: pointer;
   white-space: nowrap;
+}
+
+:root.light .ceoSendBtn {
+  background: rgba(0,0,0,0.04);
 }
 
 .ceoSendBtn:disabled {
