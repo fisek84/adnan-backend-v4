@@ -17,18 +17,11 @@ from dependencies import get_memory_read_only_service
 # Must match gateway_server.PROPOSAL_WRAPPER_INTENT
 from models.canon import PROPOSAL_WRAPPER_INTENT
 
+# PHASE 6: Import shared Notion Ops state management
+from services.notion_ops_state import set_armed as _set_armed_shared, get_state as _get_state_shared
+
 # Commands that are NOT considered "structured/actionable proposals" for fallback detection.
 _NON_ACTIONABLE_PROPOSALS = {"refresh_snapshot"}
-
-# ------------------------------
-# PHASE 6: Notion Ops Session SSOT
-# ------------------------------
-# NOTE:
-# - Per-session, in-memory (no new deps).
-# - Default armed=False.
-# - Keyed by session_id extracted from AgentInput (best-effort).
-_NOTION_OPS_SESSIONS: Dict[str, Dict[str, Any]] = {}
-_NOTION_OPS_LOCK = asyncio.Lock()
 
 # Activation keywords (exact per spec)
 _ACTIVATE_KEYWORDS = (
@@ -98,28 +91,16 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
     ) -> Dict[str, Any]:
         """
         PHASE 6: Notion Ops ARMED Gate
-        SSOT session state.
+        SSOT session state - delegates to shared state module.
         """
-        async with _NOTION_OPS_LOCK:
-            st = _NOTION_OPS_SESSIONS.get(session_id) or {}
-            st["armed"] = bool(armed)
-            st["armed_at"] = _now_iso() if armed else None
-            st["last_prompt_id"] = None
-            st["last_toggled_at"] = _now_iso()
-            _NOTION_OPS_SESSIONS[session_id] = st
-            return dict(st)
+        return await _set_armed_shared(session_id, armed, prompt=prompt)
 
     async def _get_state(session_id: str) -> Dict[str, Any]:
-        async with _NOTION_OPS_LOCK:
-            st = _NOTION_OPS_SESSIONS.get(session_id) or {
-                "armed": False,
-                "armed_at": None,
-            }
-            if "armed" not in st:
-                st["armed"] = False
-            if "armed_at" not in st:
-                st["armed_at"] = None
-            return dict(st)
+        """
+        PHASE 6: Notion Ops ARMED Gate
+        Gets session state - delegates to shared state module.
+        """
+        return await _get_state_shared(session_id)
 
     def _normalize_proposed_commands(raw: Any) -> List[ProposedCommand]:
         if raw is None:
