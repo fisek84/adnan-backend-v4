@@ -704,10 +704,9 @@ class COOTranslationService:
         )
 
         # Support Bosnian instrumental case (-om suffix)
-        status_raw = (
-            self._extract_field_value(raw, "statusom")
-            or self._extract_field_value(raw, "status")
-        )
+        status_raw = self._extract_field_value(
+            raw, "statusom"
+        ) or self._extract_field_value(raw, "status")
         priority_raw = (
             self._extract_field_value(raw, "prioritetom")
             or self._extract_field_value(raw, "prioritet")
@@ -788,15 +787,17 @@ class COOTranslationService:
                 cleaned,
             ).strip()
 
-        // Extract quoted title if present (allow empty quotes for robustness)
+        # Extract quoted title if present (allow empty quotes for robustness)
         quoted_title_match = re.match(r"^['\"]([^'\"]*)['\"]", cleaned)
         if quoted_title_match:
             derived_title = quoted_title_match.group(1).strip()
         else:
             # Stop at Bosnian connecting words: sa, i, and, with
             title_parts = re.split(r"(?i)\b(sa|with|i|and)\b", cleaned, maxsplit=1)
-            derived_title = title_parts[0].strip(" ,.-") if title_parts else cleaned.strip(" ,.-")
-        
+            derived_title = (
+                title_parts[0].strip(" ,.-") if title_parts else cleaned.strip(" ,.-")
+            )
+
         title = (title_explicit or derived_title or "").strip(" ,.-")
 
         return _ParsedFields(
