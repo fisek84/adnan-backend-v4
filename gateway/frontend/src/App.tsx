@@ -8,6 +8,9 @@ export default function App() {
         ceoCommandUrl="/api/chat"
         approveUrl="/api/ai-ops/approval/approve"
         executeRawUrl="/api/execute/raw"
+        enableVoice={true}
+        enableTTS={true}
+        autoSpeak={false}
       />
     </div>
   );

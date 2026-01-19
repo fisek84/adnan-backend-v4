@@ -1,6 +1,9 @@
 /* gateway/frontend/style.css */
-/* FULL FILE — direktno zamijeni sadržaj style.css ovim. */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
+/* Dark theme (default) */
 :root{
   --bg0:#070b12;
   --bg1:#0a1020;
@@ -19,10 +22,32 @@
   --green2: rgba(34,197,94,.18);
   --blue: rgba(59,130,246,1);
   --red: rgba(248,113,113,1);
-  --font: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji";
+  --font: 'Inter var', ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji";
 }
 
-* { box-sizing: border-box; }
+/* Light theme */
+:root.light {
+  --bg0:#f8fafc;
+  --bg1:#f1f5f9;
+  --surface: rgba(0,0,0,.04);
+  --surface2: rgba(0,0,0,.06);
+  --border: rgba(0,0,0,.10);
+  --border2: rgba(0,0,0,.14);
+  --text: rgba(0,0,0,.92);
+  --muted: rgba(0,0,0,.66);
+  --muted2: rgba(0,0,0,.52);
+  --shadow: 0 18px 50px rgba(0,0,0,.08);
+  --shadow2: 0 10px 26px rgba(0,0,0,.06);
+  --green: rgba(22,163,74,1);
+  --green2: rgba(34,197,94,.25);
+  --blue: rgba(37,99,235,1);
+  --red: rgba(220,38,38,1);
+}
+
+* { 
+  box-sizing: border-box; 
+  transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease;
+}
 html, body { height: 100%; }
 
 body{
@@ -32,6 +57,14 @@ body{
   background:
     radial-gradient(1200px 700px at 12% 10%, rgba(59,130,246,.14), transparent 55%),
     radial-gradient(900px 600px at 85% 0%, rgba(34,197,94,.10), transparent 55%),
+    linear-gradient(180deg, var(--bg0), var(--bg1));
+}
+
+/* Light theme background */
+:root.light body {
+  background:
+    radial-gradient(1200px 700px at 12% 10%, rgba(59,130,246,.08), transparent 55%),
+    radial-gradient(900px 600px at 85% 0%, rgba(34,197,94,.06), transparent 55%),
     linear-gradient(180deg, var(--bg0), var(--bg1));
 }
 

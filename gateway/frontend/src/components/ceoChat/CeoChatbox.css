@@ -21,7 +21,31 @@
   --ceo-badge-executed-tx: rgba(59, 130, 246, 0.92);
 
   --ceo-radius: 14px;
-  --ceo-font: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji";
+  --ceo-font: 'Inter var', ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji";
+}
+
+/* Light theme overrides */
+:root.light {
+  --ceo-bg: #f8fafc;
+  --ceo-surface: #ffffff;
+  --ceo-surface-2: #f1f5f9;
+  --ceo-border: rgba(0,0,0,0.10);
+  --ceo-text: rgba(0,0,0,0.92);
+  --ceo-muted: rgba(0,0,0,0.62);
+  --ceo-muted-2: rgba(0,0,0,0.46);
+  --ceo-focus: rgba(0,0,0,0.10);
+
+  --ceo-bubble-ceo: #e0f2fe;
+  --ceo-bubble-system: #f1f5f9;
+
+  --ceo-badge-blocked-bg: rgba(245, 158, 11, 0.18);
+  --ceo-badge-blocked-tx: rgba(120, 53, 15, 0.92);
+
+  --ceo-badge-approved-bg: rgba(34, 197, 94, 0.18);
+  --ceo-badge-approved-tx: rgba(22, 101, 52, 0.92);
+
+  --ceo-badge-executed-bg: rgba(59, 130, 246, 0.18);
+  --ceo-badge-executed-tx: rgba(30, 64, 175, 0.92);
 }
 
 .ceoChatbox {
@@ -41,6 +65,11 @@
   backdrop-filter: blur(10px);
   border-bottom: 1px solid var(--ceo-border);
   padding: 12px 14px;
+  transition: background-color 0.3s ease, border-color 0.3s ease;
+}
+
+:root.light .ceoHeader {
+  background: linear-gradient(to bottom, rgba(248,250,252,0.98), rgba(248,250,252,0.86));
 }
 
 .ceoHeaderTitleRow {
@@ -66,6 +95,7 @@
   display: flex;
   align-items: center;
   gap: 10px;
+  flex-wrap: wrap;
 }
 
 .ceoHeaderButton {
@@ -76,6 +106,36 @@
   padding: 6px 10px;
   font-size: 12px;
   cursor: pointer;
+  transition: all 0.2s ease;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+:root.light .ceoHeaderButton {
+  background: rgba(0,0,0,0.04);
+}
+
+.ceoHeaderButton:hover {
+  background: rgba(255,255,255,0.08);
+  transform: translateY(-1px);
+}
+
+:root.light .ceoHeaderButton:hover {
+  background: rgba(0,0,0,0.08);
+}
+
+.ceoHeaderButton.voice-active {
+  background: rgba(34, 197, 94, 0.14);
+  border-color: rgba(34, 197, 94, 0.35);
+  color: rgba(34, 197, 94, 0.92);
+}
+
+.ceoHeaderButton-stop {
+  background: rgba(239, 68, 68, 0.14);
+  border-color: rgba(239, 68, 68, 0.35);
+  color: rgba(239, 68, 68, 0.92);
 }
 
 .ceoHeaderButton:disabled {
@@ -314,4 +374,124 @@
   gap: 12px;
   color: var(--ceo-muted-2);
   font-size: 11px;
+}
+
+/* Mobile responsive styles */
+@media (max-width: 768px) {
+  .ceoHeaderTitleRow {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .ceoHeaderActions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+
+  .ceoViewport {
+    padding: 12px 10px 80px 10px;
+  }
+
+  .ceoBubble {
+    max-width: 95%;
+    font-size: 13px;
+  }
+
+  .govCard {
+    max-width: 100%;
+    padding: 10px;
+  }
+
+  .ceoComposer {
+    padding: 10px 12px;
+  }
+
+  .ceoTextarea {
+    font-size: 16px; /* Prevents zoom on iOS */
+  }
+
+  .govActions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .govButton {
+    width: 100%;
+    text-align: center;
+  }
+
+  .ceoHeaderButton {
+    padding: 8px;
+    font-size: 0;
+  }
+
+  .ceoHeaderButton svg {
+    margin: 0;
+  }
+}
+
+@media (max-width: 480px) {
+  .ceoHeader {
+    padding: 10px 12px;
+  }
+
+  .ceoHeaderTitle {
+    font-size: 13px;
+  }
+
+  .ceoHeaderSubtitle {
+    font-size: 11px;
+  }
+
+  .ceoViewport {
+    padding: 10px 8px 70px 8px;
+  }
+
+  .ceoBubble {
+    padding: 8px 10px;
+    font-size: 13px;
+  }
+
+  .ceoComposerInner {
+    gap: 8px;
+    padding: 8px;
+  }
+
+  .ceoSendBtn {
+    padding: 8px 10px;
+    font-size: 11px;
+  }
+}
+
+/* Smooth animations */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.ceoBubble, .govCard {
+  animation: fadeIn 0.3s ease-out;
+}
+
+/* Utility classes for Tailwind integration */
+.w-4 { width: 1rem; }
+.h-4 { height: 1rem; }
+.animate-pulse {
+  animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
 }
