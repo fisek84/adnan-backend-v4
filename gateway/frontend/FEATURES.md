@@ -8,7 +8,7 @@ This document describes the new features added to the Adnan AI frontend applicat
 - **Voice Input**: Click the microphone button in the header or composer to start voice recognition
 - **Real-time Transcription**: Voice is transcribed in real-time to the text input field
 - **Visual Feedback**: Active listening state is indicated with a pulsing microphone icon
-- **Language Support**: Configured for Bosnian (bs-BA) but can be easily changed
+- **Language Support**: Configurable via `voiceLang` prop (default: 'en-US')
 - **Browser Compatibility**: Works in Chrome, Edge, and Safari (with webkit prefix)
 
 ### 2. Voice Synthesis (Text-to-Speech)
@@ -79,6 +79,7 @@ This document describes the new features added to the Adnan AI frontend applicat
   enableVoice={true}        // Enable voice input
   enableTTS={true}          // Enable text-to-speech
   autoSpeak={false}         // Auto-speak system responses
+  voiceLang="en-US"         // Language for both STT and TTS (default: 'en-US')
 />
 ```
 
