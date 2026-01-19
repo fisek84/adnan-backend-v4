@@ -37,7 +37,34 @@ def _ceo_token_enforcement_enabled() -> bool:
     return _env_true("CEO_TOKEN_ENFORCEMENT", "false")
 
 
+def _is_ceo_request(request: Request) -> bool:
+    """
+    Check if the request is from a CEO user.
+    CEO users are identified by:
+    1. Valid X-CEO-Token header (if CEO_TOKEN_ENFORCEMENT is enabled)
+    2. metadata.initiator == "ceo_chat" or similar CEO indicators
+    """
+    # If enforcement is enabled, check for valid token
+    if _ceo_token_enforcement_enabled():
+        expected = (os.getenv("CEO_APPROVAL_TOKEN", "") or "").strip()
+        provided = (request.headers.get("X-CEO-Token") or "").strip()
+        if expected and provided == expected:
+            return True
+    
+    # Check for CEO indicators in request (for non-enforced mode)
+    # Headers that indicate CEO context
+    initiator = (request.headers.get("X-Initiator") or "").strip().lower()
+    if initiator in ("ceo_chat", "ceo_dashboard", "ceo"):
+        return True
+    
+    return False
+
+
 def _require_ceo_token_if_enforced(request: Request) -> None:
+    """
+    Require CEO token if enforcement is enabled.
+    This function now returns successfully for CEO requests.
+    """
     if not _ceo_token_enforcement_enabled():
         return
 
@@ -56,10 +83,19 @@ def _require_ceo_token_if_enforced(request: Request) -> None:
 def _guard_write(request: Request, command_type: str) -> None:
     """
     Kombinuje:
-    - globalni blok (OPS_SAFE_MODE)
-    - CEO token zaštitu
+    - globalni blok (OPS_SAFE_MODE) - bypassed for CEO users
+    - CEO token zaštitu - validated for CEO users
     - approval_flow granularnu kontrolu
+    
+    CEO users bypass OPS_SAFE_MODE and approval_flow checks.
     """
+    # CEO users bypass all restrictions
+    if _is_ceo_request(request):
+        # Still validate token if enforcement is enabled
+        _require_ceo_token_if_enforced(request)
+        return
+    
+    # Non-CEO users must pass all checks
     if _ops_safe_mode_enabled():
         raise HTTPException(
             status_code=403, detail="OPS_SAFE_MODE enabled (writes blocked)"
@@ -226,9 +262,51 @@ class BulkQueryPayload(BaseModel):
     queries: List[NotionQuerySpec] = Field(default_factory=list)
 
 
+class NotionOpsTogglePayload(BaseModel):
+    """Payload for toggling Notion Ops armed state."""
+    session_id: str = Field(..., min_length=1)
+    armed: bool
+
+
 # -------------------------------
 # RUTE
 # -------------------------------
+@router.post("/toggle")
+async def toggle_notion_ops(request: Request, payload: NotionOpsTogglePayload) -> Dict[str, Any]:
+    """
+    Toggle Notion Ops ARMED/DISARMED state for a session.
+    
+    This endpoint is CEO-only and bypasses all write guards.
+    CEO users can directly control the Notion Ops state without requiring approvals.
+    """
+    # CEO-only endpoint - validate CEO credentials
+    if not _is_ceo_request(request):
+        raise HTTPException(
+            status_code=403,
+            detail="This endpoint is restricted to CEO users only"
+        )
+    
+    # Validate token if enforcement is enabled
+    _require_ceo_token_if_enforced(request)
+    
+    # Import state management
+    from services.notion_ops_state import set_armed, get_state
+    
+    # Toggle the state
+    session_id = payload.session_id.strip()
+    armed = bool(payload.armed)
+    
+    result = await set_armed(session_id, armed, prompt=f"CEO toggle via API: {armed}")
+    
+    return {
+        "ok": True,
+        "session_id": session_id,
+        "armed": result.get("armed"),
+        "armed_at": result.get("armed_at"),
+        "last_toggled_at": result.get("last_toggled_at"),
+    }
+
+
 @router.get("/databases")
 def list_databases() -> Dict[str, Any]:
     """

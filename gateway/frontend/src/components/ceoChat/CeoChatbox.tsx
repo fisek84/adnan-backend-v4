@@ -1191,8 +1191,65 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
           
           <button
             className="ceoHeaderButton"
-            onClick={() => {
-              setDraft(notionOpsArmed ? NOTION_OPS_DEACTIVATE_CMD : NOTION_OPS_ACTIVATE_CMD);
+            onClick={async () => {
+              if (busy === "submitting" || busy === "streaming") return;
+              
+              try {
+                setBusy("submitting");
+                setLastError(null);
+                
+                const newArmedState = !notionOpsArmed;
+                const toggleUrl = resolveUrl(undefined, "/api/notion-ops/toggle");
+                
+                const res = await fetch(toggleUrl, {
+                  method: "POST",
+                  headers: mergedHeaders,
+                  body: JSON.stringify({
+                    session_id: sessionId,
+                    armed: newArmedState,
+                  }),
+                });
+                
+                if (!res.ok) {
+                  const errorText = await res.text().catch(() => "");
+                  throw new Error(`Toggle failed (${res.status}): ${errorText || res.statusText}`);
+                }
+                
+                const result = await res.json().catch(() => ({}));
+                
+                // Update local state
+                setNotionOpsArmed(result.armed ?? newArmedState);
+                
+                // Store in sessionStorage
+                if (typeof sessionStorage !== 'undefined') {
+                  sessionStorage.setItem('notion_ops_armed', result.armed ? 'true' : 'false');
+                }
+                
+                // Add confirmation message to chat
+                appendItem({
+                  id: uid(),
+                  kind: "message",
+                  role: "system",
+                  content: result.armed ? "✓ NOTION OPS: ARMED" : "✓ NOTION OPS: DISARMED",
+                  status: "final",
+                  createdAt: now(),
+                });
+                
+                setBusy("idle");
+              } catch (e) {
+                const msg = e instanceof Error ? e.message : String(e);
+                setLastError(msg);
+                setBusy("error");
+                
+                appendItem({
+                  id: uid(),
+                  kind: "message",
+                  role: "system",
+                  content: `Failed to toggle Notion Ops: ${msg}`,
+                  status: "error",
+                  createdAt: now(),
+                });
+              }
             }}
             disabled={busy === "submitting" || busy === "streaming"}
             title={notionOpsArmed ? "Deactivate Notion Ops" : "Activate Notion Ops"}
