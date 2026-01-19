@@ -112,3 +112,4 @@ tree.txt
 # =========================
 .data/
 .data/decision_outcomes.json
+test_bosnian_parsing.py
