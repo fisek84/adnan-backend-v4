@@ -168,12 +168,16 @@ class NotionKeywordMapper:
         ],
         "batch_request": [
             "grupni zahtjev",
-            "grupni zadatak",
             "grupni zahtjevi",
+            "grupni zadatak",
             "batch request",
             "branch request",
             "kreiraj grupu",
             "napravi grupu",
+            # Also detect patterns with counts
+            r"\d+\s*(cilj|ciljeva|goal|goals).*\d+\s*(task|taskova|zadatak|zadataka)",
+            r"cilj\s+sa\s+\d+",
+            r"goal\s+with\s+\d+",
         ],
     }
     
@@ -317,12 +321,25 @@ class NotionKeywordMapper:
         Returns:
             Intent identifier or None if not detected
         """
+        import re
+        
         text_lower = text.lower()
         
-        for intent, keywords in cls.INTENT_KEYWORDS.items():
+        # Check batch_request first as it's more specific
+        intent_order = ["batch_request", "create_goal", "create_task", "create_project"]
+        
+        for intent in intent_order:
+            keywords = cls.INTENT_KEYWORDS.get(intent, [])
             for keyword in keywords:
-                if keyword in text_lower:
-                    return intent
+                # Check if keyword is a regex pattern
+                if keyword.startswith(r"\d") or "\\" in keyword:
+                    # It's a regex pattern
+                    if re.search(keyword, text_lower):
+                        return intent
+                else:
+                    # It's a simple string
+                    if keyword in text_lower:
+                        return intent
         
         return None
     

@@ -94,28 +94,35 @@ class BranchRequestHandler:
         """Extract the main title/topic from the request."""
         import re
         
-        # Try to find quoted text
+        # Try to find quoted text first
         quoted = re.search(r"['\"]([^'\"]+)['\"]", text)
         if quoted:
             return quoted.group(1).strip()
         
-        # Try to find text after colon
+        # Try to find text after last colon (since there might be multiple)
         if ":" in text:
-            parts = text.split(":", 1)
-            if len(parts) == 2:
-                # Remove common prefixes
-                title = parts[1].strip()
-                for prefix in ["kreiraj", "napravi", "create", "make"]:
-                    if title.lower().startswith(prefix):
-                        title = title[len(prefix):].strip()
-                
-                # Remove trailing count patterns
-                title = re.sub(r'\s+sa\s+\d+.*$', '', title, flags=re.IGNORECASE)
-                title = re.sub(r'\s+with\s+\d+.*$', '', title, flags=re.IGNORECASE)
-                title = re.sub(r'\s+\+\s+\d+.*$', '', title)
-                
-                if title:
-                    return title.strip()
+            # Split by colon and take the last part
+            parts = text.split(":")
+            title = parts[-1].strip()
+            
+            # Remove common prefixes
+            for prefix in ["kreiraj", "napravi", "create", "make"]:
+                if title.lower().startswith(prefix):
+                    title = title[len(prefix):].strip()
+            
+            # Remove count patterns at the beginning (before title)
+            # E.g., "1 cilj + 5 taskova Povećanje" -> "Povećanje"
+            title = re.sub(r'^\d+\s*(cilj|ciljeva|goal|goals)\s*[\+\-]*\s*\d*\s*(task|taskova|tasks|zadatak|zadataka)?\s*', '', title, flags=re.IGNORECASE)
+            
+            # Remove trailing count patterns
+            title = re.sub(r'\s+sa\s+\d+.*$', '', title, flags=re.IGNORECASE)
+            title = re.sub(r'\s+with\s+\d+.*$', '', title, flags=re.IGNORECASE)
+            
+            # Remove leading "sa" or "with"
+            title = re.sub(r'^(sa|with)\s+', '', title, flags=re.IGNORECASE)
+            
+            if title and title.strip():
+                return title.strip()
         
         return None
     
