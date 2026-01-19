@@ -8,40 +8,8 @@ from datetime import datetime, timezone
 from models.agent_contract import AgentInput, AgentOutput, ProposedCommand
 from services.agent_router.openai_assistant_executor import OpenAIAssistantExecutor
 
-
-# ------------------------------
-# PHASE 6: Notion Ops Session SSOT
-# ------------------------------
-_NOTION_OPS_SESSIONS: Dict[str, Dict[str, Any]] = {}
-_NOTION_OPS_LOCK = asyncio.Lock()
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-async def _set_armed(session_id: str, armed: bool, *, prompt: str) -> Dict[str, Any]:
-    """
-    Set session state to armed/unarmed.
-    """
-    async with _NOTION_OPS_LOCK:
-        st = _NOTION_OPS_SESSIONS.get(session_id) or {}
-        st["armed"] = bool(armed)
-        st["armed_at"] = _now_iso() if armed else None
-        st["last_prompt_id"] = None
-        st["last_toggled_at"] = _now_iso()
-        _NOTION_OPS_SESSIONS[session_id] = st
-        return dict(st)
-
-
-async def _get_state(session_id: str) -> Dict[str, Any]:
-    async with _NOTION_OPS_LOCK:
-        st = _NOTION_OPS_SESSIONS.get(session_id) or {"armed": False, "armed_at": None}
-        if "armed" not in st:
-            st["armed"] = False
-        if "armed_at" not in st:
-            st["armed_at"] = None
-        return dict(st)
+# PHASE 6: Import shared Notion Ops state management
+from services.notion_ops_state import get_state
 
 
 # -----------------------------------
@@ -576,7 +544,7 @@ async def create_ceo_advisor_agent(
     # Check session state before proceeding with the action
     session_id = getattr(agent_input, "session_id", None)
     if session_id:
-        state = await _get_state(session_id)
+        state = await get_state(session_id)
         armed = state.get("armed", False)
 
         if not armed:
