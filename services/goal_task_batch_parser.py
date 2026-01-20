@@ -292,7 +292,17 @@ def _parse_task_line(line: str) -> Optional[dict[str, Any]]:
     if m_project:
         project_title_hint = (m_project.group(1) or "").strip()
 
-    out: dict[str, Any] = {"title": title}
+    # Strip inline property segments accidentally captured in the title (e.g. ", Status ...")
+    title_clean = title
+    if isinstance(title_clean, str):
+        tl = title_clean.lower()
+        if re.search(
+            r",\s*(status|priority|due\s*date|deadline|assignee|assigned\s+to|related\s+to)\b",
+            tl,
+        ):
+            title_clean = title_clean.split(",", 1)[0].strip()
+
+    out: dict[str, Any] = {"title": title_clean}
     if due:
         out["deadline"] = due
     if status:
@@ -358,7 +368,7 @@ def parse_goal_with_explicit_tasks(text: str) -> Optional[ParsedGoalTaskBatch]:
                     if isinstance(parsed, dict) and parsed.get("title"):
                         tasks.append(parsed)
                     else:
-                        tasks.append({"title": tail})
+                        tasks.append({"title": tail.split(",", 1)[0].strip()})
 
     if not tasks:
         return None
