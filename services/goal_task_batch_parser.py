@@ -11,6 +11,8 @@ class ParsedGoalTaskBatch:
     goal_title: str
     goal_deadline: Optional[str]
     tasks: list[dict[str, Any]]
+    goal_status: Optional[str] = None
+    goal_priority: Optional[str] = None
     goal_assignees: Optional[list[str]] = None
 
 
@@ -92,6 +94,52 @@ def _extract_goal_deadline(prompt: str) -> Optional[str]:
     return None
 
 
+def _extract_goal_status_priority(prompt: str) -> tuple[Optional[str], Optional[str]]:
+    s = (prompt or "").replace("\r\n", "\n").replace("\r", "\n")
+    lines = [ln.strip() for ln in s.split("\n") if ln.strip()]
+
+    goal_idx = 0
+    for i, ln in enumerate(lines):
+        if re.search(r"(?i)\b(kreiraj|create)\s+(cilj|goal)\b", ln):
+            goal_idx = i
+            break
+
+    # Only scan the "goal section" so task status/priority doesn't bleed into the goal.
+    end_idx = len(lines)
+    for j in range(goal_idx + 1, len(lines)):
+        ln = lines[j]
+        if re.search(r"(?i)\b(kreiraj|create)\s+(task|zadatak)\b", ln):
+            end_idx = j
+            break
+        if re.match(r"(?i)^\s*(?:task|zadatak)\s*\d*\s*[:\.)\-]", ln):
+            end_idx = j
+            break
+        if re.match(r"(?i)^\s*(zadaci|zadatci|tasks)\b", ln):
+            end_idx = j
+            break
+
+    goal_block = "\n".join(lines[goal_idx:end_idx]).strip()
+    if not goal_block and lines:
+        goal_block = lines[0]
+
+    status = None
+    m_status = re.search(
+        r"(?i)\bstatus\s*(?::|\-|\u2013|\u2014)?\s*([^\n,;]{2,40})", goal_block
+    )
+    if m_status:
+        status = (m_status.group(1) or "").strip().strip(",;")
+
+    priority = None
+    m_pri = re.search(
+        r"(?i)\bpriorit(?:y|et|i|iy)\s*(?::|\-|\u2013|\u2014)?\s*([^\n,;]{2,40})",
+        goal_block,
+    )
+    if m_pri:
+        priority = (m_pri.group(1) or "").strip().strip(",;")
+
+    return status, priority
+
+
 def _extract_goal_assignees(prompt: str) -> Optional[list[str]]:
     """Extract owner/assignee people hints for the goal from the main prompt.
 
@@ -104,7 +152,7 @@ def _extract_goal_assignees(prompt: str) -> Optional[list[str]]:
         return None
 
     m = re.search(
-        r"(?i)\b(assignee|assigned\s+to|owner|project\s+owner|goal\s+owner|nositelj|nosilac|dodijeljen|dodijeljena|odgovoran|odgovorna|responsible|lead|zaduzen|zadužena)\b\s*[:\-\u2013\u2014]?\s*([^\n\r]+)",
+        r"(?i)\b(assignee|assigned\s+to|owner|project\s+owner|goal\s+owner|nositelj|nosilac|dodijeljen|dodijeljena|odgovoran|odgovorna|responsible|lead|zaduzen|zadu\u017eena)\b\s*[:\-\u2013\u2014]?\s*([^\n\r]+)",
         s,
     )
     if not m:
@@ -170,7 +218,7 @@ def _iter_task_lines(prompt: str) -> list[str]:
     # Bullet list support (dash/bullet)
     if not out:
         for ln in lines:
-            if re.match(r"^\s*(?:[-•\u2022])\s+", ln):
+            if re.match(r"^\s*(?:[-\u2022])\s+", ln):
                 out.append(ln)
 
     if out:
@@ -225,7 +273,7 @@ def _parse_task_line(line: str) -> Optional[dict[str, Any]]:
         ln,
         flags=re.IGNORECASE,
     ).strip()
-    ln = re.sub(r"^\s*(?:[-•\u2022])\s+", "", ln).strip()
+    ln = re.sub(r"^\s*(?:[-\u2022])\s+", "", ln).strip()
     if not ln:
         return None
 
@@ -235,7 +283,9 @@ def _parse_task_line(line: str) -> Optional[dict[str, Any]]:
     if qm:
         title = (qm.group(1) or "").strip()
     else:
-        title = re.split(r"\s+-\s+|\s+—\s+|\s+–\s+", ln, maxsplit=1)[0].strip()
+        title = re.split(r"\s+-\s+|\s+\u2014\s+|\s+\u2013\s+", ln, maxsplit=1)[
+            0
+        ].strip()
 
     if not title:
         return None
@@ -260,7 +310,7 @@ def _parse_task_line(line: str) -> Optional[dict[str, Any]]:
     # Assignee / owner (people hints)
     assignee_raw: Optional[str] = None
     m_assign = re.search(
-        r"(?i)\b(assignee|assigned\s+to|owner|task\s+owner|project\s+owner|nositelj|nosilac|dodijeljen|dodijeljena|odgovoran|odgovorna|responsible|lead|zaduzen|zaduena)\b\s*[:\-\u2013\u2014]?\s*([^,;]+)",
+        r"(?i)\b(assignee|assigned\s+to|owner|task\s+owner|project\s+owner|nositelj|nosilac|dodijeljen|dodijeljena|odgovoran|odgovorna|responsible|lead|zaduzen|zadu\u017eena)\b\s*[:\-\u2013\u2014]?\s*([^,;]+)",
         ln,
     )
     if m_assign:
@@ -343,6 +393,7 @@ def parse_goal_with_explicit_tasks(text: str) -> Optional[ParsedGoalTaskBatch]:
         return None
 
     goal_deadline = _extract_goal_deadline(t)
+    goal_status, goal_priority = _extract_goal_status_priority(t)
     goal_assignees = _extract_goal_assignees(t)
 
     # Task lines -> structured dicts
@@ -376,6 +427,8 @@ def parse_goal_with_explicit_tasks(text: str) -> Optional[ParsedGoalTaskBatch]:
     return ParsedGoalTaskBatch(
         goal_title=goal_title,
         goal_deadline=goal_deadline,
+        goal_status=goal_status,
+        goal_priority=goal_priority,
         tasks=tasks,
         goal_assignees=goal_assignees,
     )
@@ -398,6 +451,10 @@ def build_batch_operations_from_parsed(
     if parsed.goal_deadline:
         goal_payload["deadline"] = parsed.goal_deadline
 
+    if parsed.goal_status:
+        goal_payload["status"] = parsed.goal_status
+    if parsed.goal_priority:
+        goal_payload["priority"] = parsed.goal_priority
     if parsed.goal_assignees:
         ps: dict[str, Any] = goal_payload.get("property_specs") or {}
         if not isinstance(ps, dict):
