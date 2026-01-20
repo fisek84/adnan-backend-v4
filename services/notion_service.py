@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import time
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -168,7 +169,7 @@ class _DbSchemaCacheEntry:
 # ============================================================
 class NotionService:
     """
-    NotionService â€” production-safe minimal SSOT wrapper.
+    NotionService Ă˘â‚¬â€ť production-safe minimal SSOT wrapper.
 
     Key contracts used by your repo:
       - constructed via NotionService(api_key, goals_db_id, tasks_db_id, projects_db_id)
@@ -199,6 +200,7 @@ class NotionService:
 
         self._api_key = api_key
         self._client: Optional[httpx.AsyncClient] = None
+        self._client_loop_id: Optional[int] = None
 
         # Canonical db map
         self.goals_db_id = (goals_db_id or "").strip()
@@ -213,6 +215,22 @@ class NotionService:
         if self.projects_db_id:
             self.db_ids["projects"] = self.projects_db_id
 
+        # Enterprise: auto-discover all configured Notion DBs from env.
+        # This allows notion_write/create_page to target ANY db_key that has
+        # NOTION_<KEY>_DB_ID / NOTION_<KEY>_DATABASE_ID set.
+        try:
+            for k, v in self._discover_all_db_keys_from_env().items():
+                if (
+                    isinstance(k, str)
+                    and isinstance(v, str)
+                    and k.strip()
+                    and v.strip()
+                ):
+                    self.db_ids.setdefault(k.strip().lower(), v.strip())
+        except Exception:
+            # Never break boot
+            pass
+
         # Schema cache (db_id -> schema)
         self._db_schema_cache: Dict[str, _DbSchemaCacheEntry] = {}
         self._db_schema_ttl_seconds = int(
@@ -226,10 +244,124 @@ class NotionService:
             (os.getenv("NOTION_USERS_CACHE_TTL_SECONDS") or "600").strip() or "600"
         )
 
+    @staticmethod
+    def _discover_all_db_keys_from_env() -> Dict[str, str]:
+        """Discover all Notion DB ids from env.
+
+        Supports:
+          - NOTION_<KEY>_DATABASE_ID
+          - NOTION_<KEY>_DB_ID
+          - NOTION_EXTRA_DATABASES_JSON='{"my_db":"<id>"}'
+        """
+        out: Dict[str, str] = {}
+
+        for name, value in os.environ.items():
+            if not isinstance(name, str) or not name.startswith("NOTION_"):
+                continue
+            if not isinstance(value, str) or not value.strip():
+                continue
+
+            if name.endswith("_DATABASE_ID"):
+                key = name[len("NOTION_") : -len("_DATABASE_ID")].lower()
+                out[key] = value.strip()
+            elif name.endswith("_DB_ID"):
+                key = name[len("NOTION_") : -len("_DB_ID")].lower()
+                out.setdefault(key, value.strip())
+
+        extra_json = (os.getenv("NOTION_EXTRA_DATABASES_JSON", "") or "").strip()
+        if extra_json:
+            try:
+                import json  # noqa: PLC0415
+
+                extra = json.loads(extra_json)
+                if isinstance(extra, dict):
+                    for k, v in extra.items():
+                        if isinstance(k, str) and isinstance(v, str) and v.strip():
+                            out[k.strip().lower()] = v.strip()
+            except Exception:
+                pass
+
+        return out
+
+    async def _filter_properties_payload_by_schema(
+        self,
+        *,
+        db_id: str,
+        properties: Dict[str, Any],
+        warnings: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Filter a raw Notion API properties payload so we never send computed/unknown fields."""
+        if not isinstance(properties, dict) or not properties:
+            return {}
+
+        schema = await self._get_database_schema(db_id)
+        props = schema.get("properties") if isinstance(schema, dict) else None
+        if not isinstance(props, dict) or not props:
+            # Fail-soft: if schema unavailable, preserve legacy behavior.
+            return properties
+
+        computed_types = {
+            "formula",
+            "rollup",
+            "created_time",
+            "last_edited_time",
+            "created_by",
+            "last_edited_by",
+            "unique_id",
+        }
+        valid_names = {k for k in props.keys() if isinstance(k, str) and k.strip()}
+        by_cf = {k.casefold(): k for k in valid_names}
+
+        out: Dict[str, Any] = {}
+        for raw_name, val in properties.items():
+            if not isinstance(raw_name, str) or not raw_name.strip():
+                continue
+
+            name = raw_name.strip()
+            if name not in valid_names and name.casefold() in by_cf:
+                name = by_cf[name.casefold()]
+
+            if name not in valid_names:
+                if warnings is not None:
+                    warnings.append(f"unknown_property:{raw_name.strip()}")
+                continue
+
+            p = props.get(name)
+            t = p.get("type") if isinstance(p, dict) else None
+            t = t.strip() if isinstance(t, str) else ""
+            if t in computed_types:
+                if warnings is not None:
+                    warnings.append(f"computed_field_ignored:{name}")
+                continue
+
+            out[name] = val
+
+        return out
+
     # ----------------------------
     # lifecycle
     # ----------------------------
     async def _get_client(self) -> httpx.AsyncClient:
+        # NOTE: approval execution can be invoked from different asyncio loops
+        # (e.g., background workers using asyncio.run). httpx AsyncClient is
+        # loop-bound in practice; reusing it across loops can raise
+        # "RuntimeError: Event loop is closed".
+        try:
+            loop_id = id(asyncio.get_running_loop())
+        except Exception:
+            loop_id = None
+
+        if self._client is not None and loop_id is not None:
+            if self._client_loop_id == loop_id:
+                return self._client
+            # loop changed: close old client and recreate
+            try:
+                await self._client.aclose()
+            except Exception:
+                logger.warning("NotionService client close failed", exc_info=True)
+            self._client = None
+            self._client_loop_id = None
+
         if self._client is not None:
             return self._client
 
@@ -239,11 +371,13 @@ class NotionService:
             "Content-Type": "application/json",
         }
         self._client = httpx.AsyncClient(headers=headers, timeout=30.0)
+        self._client_loop_id = loop_id
         return self._client
 
     async def aclose(self) -> None:
         c = self._client
         self._client = None
+        self._client_loop_id = None
         if c is not None:
             try:
                 await c.aclose()
@@ -548,6 +682,7 @@ class NotionService:
         db_key: str,
         property_specs: Dict[str, Any],
         wrapper_patch: Dict[str, Any],
+        warnings: Optional[List[str]] = None,
     ) -> None:
         """Apply user-provided field overrides using DB schema.
 
@@ -566,6 +701,54 @@ class NotionService:
         if not isinstance(schema, dict) or not schema:
             return
 
+        schema_names = [k for k in schema.keys() if isinstance(k, str) and k.strip()]
+        schema_by_cf = {k.casefold(): k for k in schema_names}
+        title_props = [
+            k for k in schema_names if (schema.get(k) or {}).get("type") == "title"
+        ]
+
+        def _resolve_schema_prop_name(raw_name: str) -> str:
+            cand = (raw_name or "").strip()
+            if not cand:
+                return ""
+            if cand in schema:
+                return cand
+
+            cf = cand.casefold()
+            if cf in schema_by_cf:
+                return schema_by_cf[cf]
+
+            internal = ""
+            try:
+                from services.notion_keyword_mapper import (  # noqa: PLC0415
+                    NotionKeywordMapper,
+                )
+
+                internal = NotionKeywordMapper.translate_property_name(cand)
+                km = NotionKeywordMapper.normalize_field_name(cand)
+                if isinstance(km, str) and km in schema:
+                    return km
+                if isinstance(km, str) and km.casefold() in schema_by_cf:
+                    return schema_by_cf[km.casefold()]
+            except Exception:
+                internal = ""
+
+            if internal in {"name", "title"} and title_props:
+                return title_props[0]
+
+            if internal == "due_date":
+                if "Due Date" in schema:
+                    return "Due Date"
+                if "Deadline" in schema:
+                    return "Deadline"
+            if internal == "deadline":
+                if "Deadline" in schema:
+                    return "Deadline"
+                if "Due Date" in schema:
+                    return "Due Date"
+
+            return ""
+
         def _as_str(v: Any) -> str:
             if v is None:
                 return ""
@@ -582,8 +765,11 @@ class NotionService:
         for field_name, raw in wrapper_patch.items():
             if not isinstance(field_name, str) or not field_name.strip():
                 continue
-            fname = field_name.strip()
-            if fname not in schema:
+
+            fname = _resolve_schema_prop_name(field_name)
+            if not fname:
+                if warnings is not None:
+                    warnings.append(f"wrapper_patch_unknown_field:{field_name.strip()}")
                 continue
 
             st = schema.get(fname)
@@ -593,8 +779,16 @@ class NotionService:
             if not p_type:
                 continue
 
-            # Intentionally ignore types requiring IDs.
-            if p_type in {"people", "relation", "created_by", "last_edited_by"}:
+            # Intentionally ignore types requiring IDs unless explicitly supported.
+            if p_type in {"created_by", "last_edited_by"}:
+                if warnings is not None:
+                    warnings.append(f"wrapper_patch_computed_field_ignored:{fname}")
+                continue
+
+            if p_type in {"people", "relation"}:
+                # Wrapper_patch does not have a safe way to resolve IDs.
+                if warnings is not None:
+                    warnings.append(f"wrapper_patch_requires_ids:{fname}")
                 continue
 
             if p_type == "title":
@@ -762,13 +956,104 @@ class NotionService:
         if not isinstance(property_specs, dict) or not property_specs:
             return out
 
+        # Use DB schema as SSOT for:
+        #  - property name normalization (case-insensitive + bilingual synonyms)
+        #  - blocking computed fields
+        schema = await self._get_database_schema(db_id)
+        props = schema.get("properties") if isinstance(schema, dict) else None
+        props = props if isinstance(props, dict) else {}
+
+        prop_types: Dict[str, str] = {}
+        for n, p in props.items():
+            if not isinstance(n, str) or not n.strip():
+                continue
+            if isinstance(p, dict) and isinstance(p.get("type"), str):
+                prop_types[n.strip()] = p.get("type").strip()
+
+        prop_by_cf = {k.casefold(): k for k in prop_types.keys()}
+        title_props = [k for k, t in prop_types.items() if t == "title"]
+        computed_types = {
+            "formula",
+            "rollup",
+            "created_time",
+            "last_edited_time",
+            "created_by",
+            "last_edited_by",
+            "unique_id",
+        }
+
+        schema_available = bool(prop_types)
+        if not schema_available:
+            # Fail-soft: if schema can't be fetched (or tests stub it out),
+            # do not drop fields. Preserve legacy behavior.
+            computed_types = set()
+
+        def _resolve_prop_name(raw_name: str) -> str:
+            cand = (raw_name or "").strip()
+            if not cand:
+                return ""
+            if not schema_available:
+                return cand
+            if cand in prop_types:
+                return cand
+            cf = cand.casefold()
+            if cf in prop_by_cf:
+                return prop_by_cf[cf]
+
+            internal = ""
+            try:
+                from services.notion_keyword_mapper import (  # noqa: PLC0415
+                    NotionKeywordMapper,
+                )
+
+                internal = NotionKeywordMapper.translate_property_name(cand)
+                km = NotionKeywordMapper.normalize_field_name(cand)
+                if isinstance(km, str) and km in prop_types:
+                    return km
+                if isinstance(km, str) and km.casefold() in prop_by_cf:
+                    return prop_by_cf[km.casefold()]
+            except Exception:
+                internal = ""
+
+            if internal in {"name", "title"} and title_props:
+                return title_props[0]
+
+            if internal == "due_date":
+                if "Due Date" in prop_types:
+                    return "Due Date"
+                if "Deadline" in prop_types:
+                    return "Deadline"
+            if internal == "deadline":
+                if "Deadline" in prop_types:
+                    return "Deadline"
+                if "Due Date" in prop_types:
+                    return "Due Date"
+
+            return ""
+
+        def _multi_select_prop(names: List[str]) -> Dict[str, Any]:
+            clean = [n.strip() for n in names if isinstance(n, str) and n.strip()]
+            return {"multi_select": [{"name": n} for n in clean]}
+
         for prop_name, spec in property_specs.items():
             if not isinstance(prop_name, str) or not prop_name.strip():
                 continue
             if not isinstance(spec, dict):
                 continue
 
-            pn = prop_name.strip()
+            resolved_name = _resolve_prop_name(prop_name)
+            if not resolved_name:
+                if warnings is not None:
+                    warnings.append(f"unknown_property:{prop_name.strip()}")
+                continue
+
+            live_type = prop_types.get(resolved_name, "")
+            if live_type in computed_types:
+                if warnings is not None:
+                    warnings.append(f"computed_field_ignored:{resolved_name}")
+                continue
+
+            pn = resolved_name
             stype = _ensure_str(spec.get("type")).lower()
 
             if stype == "title":
@@ -804,6 +1089,63 @@ class NotionService:
             if stype == "date":
                 date_str = _ensure_str(spec.get("start") or spec.get("value") or "")
                 out[pn] = self._date_prop(date_str)
+                continue
+
+            if stype == "number":
+                raw_n = spec.get("number")
+                if raw_n is None:
+                    raw_n = spec.get("value")
+                try:
+                    out[pn] = {"number": float(raw_n)}
+                except Exception:
+                    if warnings is not None:
+                        warnings.append(f"invalid_number:{pn}")
+                continue
+
+            if stype == "checkbox":
+                raw_v = spec.get("checkbox")
+                if raw_v is None:
+                    raw_v = spec.get("value")
+                v = raw_v
+                if isinstance(v, str):
+                    sv = v.strip().lower()
+                    if sv in {"true", "yes", "da", "1"}:
+                        v = True
+                    elif sv in {"false", "no", "ne", "0"}:
+                        v = False
+                if isinstance(v, bool):
+                    out[pn] = {"checkbox": v}
+                else:
+                    if warnings is not None:
+                        warnings.append(f"invalid_checkbox:{pn}")
+                continue
+
+            if stype == "multi_select":
+                raw_names = spec.get("names")
+                if isinstance(raw_names, list):
+                    out[pn] = _multi_select_prop([_ensure_str(x) for x in raw_names])
+                else:
+                    s_val = _ensure_str(spec.get("value") or "")
+                    names = (
+                        [x.strip() for x in s_val.split(",") if x.strip()]
+                        if s_val
+                        else []
+                    )
+                    out[pn] = _multi_select_prop(names)
+                continue
+
+            if stype == "relation":
+                ids: List[str] = []
+                raw_ids = spec.get("ids")
+                if isinstance(raw_ids, list):
+                    ids = [_ensure_str(x) for x in raw_ids if _ensure_str(x)]
+                else:
+                    raw_one = spec.get("id") or spec.get("value") or ""
+                    s_one = _ensure_str(raw_one)
+                    if s_one:
+                        ids = [x.strip() for x in s_one.split(",") if x.strip()]
+                if ids:
+                    out[pn] = self._relation_prop(ids)
                 continue
 
             if stype == "people":
@@ -843,7 +1185,9 @@ class NotionService:
                     out[pn] = {"people": [{"id": pid} for pid in ids]}
                 continue
 
-            # Unknown types ignored by design (safety)
+            # Unknown/unsupported spec types: never silent.
+            if warnings is not None:
+                warnings.append(f"unsupported_spec_type:{stype or '(empty)'}:{pn}")
             continue
 
         return out
@@ -1120,8 +1464,16 @@ class NotionService:
 
         def _resolve_refs(v: Any) -> Any:
             if isinstance(v, str) and v.startswith("$") and len(v) > 1:
-                key = v[1:]
-                return ref_map.get(key, v)
+                # Support "$op_id" as well as strings that start with "$op_id...".
+                m = re.match(r"^\$(?P<id>[A-Za-z0-9_\-]+)(?P<rest>.*)$", v)
+                if not m:
+                    return v
+                key = m.group("id")
+                rest = m.group("rest") or ""
+                resolved = ref_map.get(key)
+                if not resolved:
+                    return v
+                return f"{resolved}{rest}"
             if isinstance(v, list):
                 return [_resolve_refs(x) for x in v]
             if isinstance(v, dict):
@@ -1221,6 +1573,44 @@ class NotionService:
         ok_all = all(
             (isinstance(r, dict) and r.get("ok") is True) for r in results
         ) and bool(results)
+
+        # Build a compact, structured summary for UI/clients.
+        ops_summary: List[Dict[str, Any]] = []
+        for r in results:
+            if not isinstance(r, dict):
+                continue
+            sub = r.get("result") if isinstance(r.get("result"), dict) else {}
+            sub_res = sub.get("result") if isinstance(sub.get("result"), dict) else {}
+            op_params = None
+            try:
+                op_params = operations[int(r.get("index"))].get("params")
+                if not isinstance(op_params, dict):
+                    op_params = operations[int(r.get("index"))].get("payload")
+            except Exception:
+                op_params = None
+            op_params = op_params if isinstance(op_params, dict) else {}
+
+            warnings = None
+            if isinstance(sub_res.get("warnings"), list):
+                warnings = sub_res.get("warnings")
+
+            ops_summary.append(
+                {
+                    "index": r.get("index"),
+                    "op_id": r.get("op_id"),
+                    "action": r.get("intent"),
+                    "ok": r.get("ok"),
+                    "db_key": sub_res.get("db_key")
+                    or op_params.get("db_key")
+                    or op_params.get("database"),
+                    "page_id": sub_res.get("page_id")
+                    or sub_res.get("id")
+                    or r.get("page_id"),
+                    "url": sub_res.get("url"),
+                    "warnings": warnings,
+                    "reason": r.get("reason") if r.get("ok") is False else None,
+                }
+            )
         return {
             "ok": ok_all,
             "execution_state": "COMPLETED" if ok_all else "FAILED",
@@ -1237,6 +1627,7 @@ class NotionService:
                     1 for r in results if isinstance(r, dict) and r.get("ok") is False
                 ),
                 "operations": results,
+                "operations_summary": ops_summary,
                 "ref_map": ref_map,
             },
             "metadata": metadata,
@@ -1253,7 +1644,12 @@ class NotionService:
         """Archive a Notion page ("delete" in common language)."""
         page_id = _ensure_str(params.get("page_id"))
         if not page_id:
-            raise RuntimeError("delete_page requires page_id")
+            # Deterministic targeting fallback: page_id > stable ID property > error.
+            page_id = await self._resolve_page_id_for_write_targeting(params)
+        if not page_id:
+            raise RuntimeError(
+                "delete_page requires page_id (or db_key + stable_id_value + stable_id_property)"
+            )
 
         url = f"{self.NOTION_BASE_URL}/pages/{page_id}"
         res = await self._safe_request("PATCH", url, payload={"archived": True})
@@ -1290,9 +1686,13 @@ class NotionService:
 
         wrapper_patch = params.get("wrapper_patch")
 
+        warnings: List[str] = []
+
         properties = params.get("properties")
         if isinstance(properties, dict) and properties:
-            notion_properties = properties
+            notion_properties = await self._filter_properties_payload_by_schema(
+                db_id=db_id, properties=properties, warnings=warnings
+            )
         else:
             property_specs = params.get("property_specs")
             if not isinstance(property_specs, dict) or not property_specs:
@@ -1303,9 +1703,10 @@ class NotionService:
                     db_key=db_key,
                     property_specs=property_specs,
                     wrapper_patch=wrapper_patch,
+                    warnings=[],
                 )
             notion_properties = await self._build_properties_from_property_specs(
-                db_id=db_id, property_specs=property_specs
+                db_id=db_id, property_specs=property_specs, warnings=warnings
             )
             if not notion_properties:
                 raise RuntimeError("create_page requires db_key and properties")
@@ -1330,6 +1731,7 @@ class NotionService:
                 "page_id": page_id or None,
                 "url": page_url or None,
                 "raw": res,
+                "warnings": warnings,
             },
             "metadata": metadata,
         }
@@ -1377,16 +1779,19 @@ class NotionService:
             property_specs.update(extra_specs)
 
         wrapper_patch = params.get("wrapper_patch")
+
+        warnings: List[str] = []
         if isinstance(wrapper_patch, dict) and wrapper_patch:
             await self._apply_wrapper_patch_to_property_specs(
                 db_key=db_key,
                 property_specs=property_specs,
                 wrapper_patch=wrapper_patch,
+                warnings=[],
             )
 
         # Build Notion properties
         notion_properties = await self._build_properties_from_property_specs(
-            db_id=db_id, property_specs=property_specs
+            db_id=db_id, property_specs=property_specs, warnings=warnings
         )
 
         payload = {"parent": {"database_id": db_id}, "properties": notion_properties}
@@ -1409,6 +1814,7 @@ class NotionService:
                 "page_id": page_id or None,
                 "url": page_url or None,
                 "raw": res,
+                "warnings": warnings,
             },
             "metadata": metadata,
         }
@@ -1461,6 +1867,7 @@ class NotionService:
                 db_key=db_key,
                 property_specs=property_specs,
                 wrapper_patch=wrapper_patch,
+                warnings=[],
             )
 
         # Collect warnings from property_specs resolution and relation linking
@@ -1540,6 +1947,8 @@ class NotionService:
             raise RuntimeError("create_project requires title")
 
         # Build property specs
+        # Use a generic "Name" key; schema-driven normalization will map it to
+        # the actual title property (e.g., "Project Name") if needed.
         property_specs: Dict[str, Any] = {"Name": {"type": "title", "text": title}}
 
         # Optional fields
@@ -1565,15 +1974,16 @@ class NotionService:
             property_specs.update(extra_specs)
 
         wrapper_patch = params.get("wrapper_patch")
+
+        # Collect warnings from property_specs resolution and relation linking
+        warnings: List[str] = []
         if isinstance(wrapper_patch, dict) and wrapper_patch:
             await self._apply_wrapper_patch_to_property_specs(
                 db_key=db_key,
                 property_specs=property_specs,
                 wrapper_patch=wrapper_patch,
+                warnings=[],
             )
-
-        # Collect warnings from property_specs resolution and relation linking
-        warnings: List[str] = []
 
         # Build Notion properties
         notion_properties = await self._build_properties_from_property_specs(
@@ -1639,7 +2049,12 @@ class NotionService:
         """Update an existing page in Notion."""
         page_id = _ensure_str(params.get("page_id"))
         if not page_id:
-            raise RuntimeError("update_page requires page_id")
+            # Deterministic targeting fallback: page_id > stable ID property > error.
+            page_id = await self._resolve_page_id_for_write_targeting(params)
+        if not page_id:
+            raise RuntimeError(
+                "update_page requires page_id (or db_key + stable_id_value + stable_id_property)"
+            )
 
         # Build property specs from update params
         property_specs: Dict[str, Any] = {}
@@ -1670,11 +2085,28 @@ class NotionService:
         if db_key:
             db_id = self._resolve_db_id(db_key)
 
+        warnings: List[str] = []
+
+        wrapper_patch = params.get("wrapper_patch")
+        if isinstance(wrapper_patch, dict) and wrapper_patch and db_key:
+            await self._apply_wrapper_patch_to_property_specs(
+                db_key=db_key,
+                property_specs=property_specs,
+                wrapper_patch=wrapper_patch,
+                warnings=[],
+            )
+
         # Build Notion properties
-        notion_properties = {}
-        if property_specs and db_id:
+        notion_properties: Dict[str, Any] = {}
+
+        raw_props = params.get("properties")
+        if isinstance(raw_props, dict) and raw_props and db_id:
+            notion_properties = await self._filter_properties_payload_by_schema(
+                db_id=db_id, properties=raw_props, warnings=warnings
+            )
+        elif property_specs and db_id:
             notion_properties = await self._build_properties_from_property_specs(
-                db_id=db_id, property_specs=property_specs
+                db_id=db_id, property_specs=property_specs, warnings=warnings
             )
 
         # Update the page
@@ -1708,9 +2140,98 @@ class NotionService:
                 "page_id": page_id,
                 "url": page_url or None,
                 "raw": res,
+                "warnings": warnings,
             },
             "metadata": metadata,
         }
+
+    async def _resolve_page_id_for_write_targeting(self, params: Dict[str, Any]) -> str:
+        """Resolve page_id deterministically when not provided.
+
+        Rule order:
+          1) page_id
+          2) db_key + stable_id_property + stable_id_value
+          3) db_key=tasks + task_id (mapped to stable_id_property=Task ID)
+        """
+        page_id = _ensure_str(params.get("page_id"))
+        if page_id:
+            return page_id
+
+        db_key = _ensure_str(params.get("db_key"))
+        if not db_key:
+            return ""
+
+        stable_prop = _ensure_str(params.get("stable_id_property"))
+        stable_val = _ensure_str(
+            params.get("stable_id_value")
+            or params.get("stable_id")
+            or params.get("task_id")
+            or ""
+        )
+
+        lk = db_key.strip().lower()
+        if not stable_prop and lk in {"tasks", "task"} and stable_val:
+            stable_prop = "Task ID"
+
+        if not (stable_prop and stable_val):
+            return ""
+
+        db_id = self._resolve_db_id(db_key)
+        schema = await self._get_database_schema(db_id)
+        props = schema.get("properties") if isinstance(schema, dict) else None
+        props = props if isinstance(props, dict) else {}
+
+        # Case-insensitive stable_id_property match.
+        stable_prop_cf = stable_prop.casefold()
+        for k in list(props.keys()):
+            if isinstance(k, str) and k.casefold() == stable_prop_cf:
+                stable_prop = k
+                break
+
+        p = props.get(stable_prop)
+        p_type = p.get("type") if isinstance(p, dict) else None
+        p_type = p_type.strip() if isinstance(p_type, str) else ""
+        if not p_type:
+            raise RuntimeError(f"stable_id_property not found in schema: {stable_prop}")
+
+        filt: Dict[str, Any] = {"property": stable_prop}
+        if p_type == "rich_text":
+            filt["rich_text"] = {"equals": stable_val}
+        elif p_type == "title":
+            filt["title"] = {"equals": stable_val}
+        elif p_type == "number":
+            try:
+                filt["number"] = {"equals": float(stable_val)}
+            except Exception as exc:
+                raise RuntimeError(
+                    f"stable_id_value not a number: {stable_val}"
+                ) from exc
+        elif p_type == "select":
+            filt["select"] = {"equals": stable_val}
+        else:
+            raise RuntimeError(
+                f"stable_id_property type not supported for targeting: {stable_prop}:{p_type}"
+            )
+
+        res = await self.query_database(
+            db_key=db_key,
+            query={"page_size": 5, "filter": filt},
+        )
+        items = res.get("results") if isinstance(res, dict) else None
+        if not isinstance(items, list) or not items:
+            raise RuntimeError(
+                f"page not found by stable id: {stable_prop}={stable_val} (db_key={db_key})"
+            )
+
+        ids = [_ensure_str(p.get("id")) for p in items if isinstance(p, dict)]
+        ids = [x for x in ids if x]
+
+        if len(ids) == 1:
+            return ids[0]
+
+        raise RuntimeError(
+            f"ambiguous stable id match: {stable_prop}={stable_val} (matches={len(ids)})"
+        )
 
     async def _update_page_relations(
         self,

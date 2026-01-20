@@ -713,9 +713,6 @@ def _unwrap_proposal_wrapper_or_raise(
                     },
                 )
 
-                if isinstance(wrapper_patch, dict) and wrapper_patch:
-                    _apply_wrapper_patch_to_ai_command(ai_command, wrapper_patch)
-
                 # Ensure downstream executor can apply schema-backed patches.
                 try:
                     if isinstance(ai_command.params, dict) and wrapper_patch:
@@ -759,9 +756,6 @@ def _unwrap_proposal_wrapper_or_raise(
                         },
                     },
                 )
-
-                if isinstance(wrapper_patch, dict) and wrapper_patch:
-                    _apply_wrapper_patch_to_ai_command(ai_command, wrapper_patch)
 
                 try:
                     if isinstance(ai_command.params, dict) and wrapper_patch:
@@ -872,9 +866,6 @@ def _unwrap_proposal_wrapper_or_raise(
                         },
                     )
 
-                    if isinstance(wrapper_patch, dict) and wrapper_patch:
-                        _apply_wrapper_patch_to_ai_command(ai_command, wrapper_patch)
-
                     try:
                         if isinstance(ai_command.params, dict) and wrapper_patch:
                             ai_command.params["wrapper_patch"] = dict(wrapper_patch)
@@ -915,22 +906,17 @@ def _unwrap_proposal_wrapper_or_raise(
             metadata=metadata,
         )
 
-    # Apply UI fill_missing patch (Status/Priority/Deadline/...) to final AICommand
-    # Ignore if translate returned NOOP/next_step.
-    if isinstance(wrapper_patch, dict) and wrapper_patch:
-        if (
-            getattr(ai_command, "command", None) not in _HARD_READ_ONLY_INTENTS
-            and getattr(ai_command, "intent", None) not in _HARD_READ_ONLY_INTENTS
-        ):
-            _apply_wrapper_patch_to_ai_command(ai_command, wrapper_patch)
-
-        # Pass through for schema-backed patching during execution (NotionService).
-        if getattr(ai_command, "command", None) == "notion_write":
-            p0 = getattr(ai_command, "params", None)
-            if not isinstance(p0, dict):
-                p0 = {}
-            p0["wrapper_patch"] = dict(wrapper_patch)
-            ai_command.params = p0
+    # Pass wrapper_patch through so execution can apply schema-backed patching.
+    if (
+        isinstance(wrapper_patch, dict)
+        and wrapper_patch
+        and getattr(ai_command, "command", None) == "notion_write"
+    ):
+        p0 = getattr(ai_command, "params", None)
+        if not isinstance(p0, dict):
+            p0 = {}
+        p0["wrapper_patch"] = dict(wrapper_patch)
+        ai_command.params = p0
 
     ai_command.initiator = initiator
     ai_command.read_only = False

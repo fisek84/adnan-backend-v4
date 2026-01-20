@@ -4,6 +4,9 @@ Tests for NotionService operations (create_goal, create_task, create_project, up
 
 import unittest
 from unittest.mock import AsyncMock, patch
+
+import os
+
 from services.notion_service import NotionService
 from models.ai_command import AICommand
 
@@ -466,6 +469,110 @@ class TestNotionServiceOperations(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("requires page_id", str(context.exception))
 
+    async def test_update_page_stable_id_targeting_tasks(self):
+        """Update should resolve page_id via stable id when not provided."""
+
+        captured = {"queried": False, "patched_urls": []}
+
+        async def fake_safe_request(method, url, payload=None, params=None):
+            # Schema for db_id
+            if method == "GET" and "/databases/" in url:
+                return {
+                    "properties": {
+                        "Task ID": {"type": "rich_text"},
+                        "Status": {"type": "select", "select": {"options": []}},
+                    }
+                }
+
+            if method == "POST" and url.endswith("/query"):
+                captured["queried"] = True
+                return {"results": [{"id": "page-from-stable-id"}]}
+
+            if method == "PATCH" and "/pages/" in url:
+                captured["patched_urls"].append(url)
+                return {"id": "page-from-stable-id", "url": "https://notion.so/page"}
+
+            return {}
+
+        with patch.object(
+            self.service, "_safe_request", new_callable=AsyncMock
+        ) as mock_request:
+            mock_request.side_effect = fake_safe_request
+
+            cmd = AICommand(
+                command="notion_write",
+                intent="update_page",
+                params={
+                    "db_key": "tasks",
+                    "task_id": "T-001",
+                    "status": "Completed",
+                },
+                approval_id="approval-stable-1",
+                execution_id="exec-stable-1",
+                read_only=False,
+            )
+
+            res = await self.service.execute(cmd)
+
+            self.assertTrue(res["ok"], msg=str(res))
+            self.assertTrue(captured["queried"], "Expected DB query for stable id")
+            self.assertIn("page-from-stable-id", res["result"]["page_id"])
+
+    async def test_delete_page_stable_id_targeting_tasks(self):
+        """Delete should resolve page_id via stable id when not provided."""
+
+        async def fake_safe_request(method, url, payload=None, params=None):
+            if method == "GET" and "/databases/" in url:
+                return {"properties": {"Task ID": {"type": "rich_text"}}}
+
+            if method == "POST" and url.endswith("/query"):
+                return {"results": [{"id": "page-del-from-stable-id"}]}
+
+            if method == "PATCH" and "/pages/" in url:
+                return {
+                    "id": "page-del-from-stable-id",
+                    "url": "https://notion.so/page",
+                }
+
+            return {}
+
+        with patch.object(
+            self.service, "_safe_request", new_callable=AsyncMock
+        ) as mock_request:
+            mock_request.side_effect = fake_safe_request
+
+            cmd = AICommand(
+                command="notion_write",
+                intent="delete_page",
+                params={
+                    "db_key": "tasks",
+                    "task_id": "T-DELETE-1",
+                },
+                approval_id="approval-del-stable-1",
+                execution_id="exec-del-stable-1",
+                read_only=False,
+            )
+
+            res = await self.service.execute(cmd)
+            self.assertTrue(res["ok"], msg=str(res))
+            self.assertEqual(res["result"]["page_id"], "page-del-from-stable-id")
+
+    def test_resolve_db_id_from_env_discovery(self):
+        """NotionService should resolve arbitrary db_key from NOTION_*_DB_ID env."""
+        old = dict(os.environ)
+        try:
+            os.environ["NOTION_CUSTOMERS_DB_ID"] = "db-customers-123"
+            svc = NotionService(
+                api_key="k",
+                goals_db_id="g",
+                tasks_db_id="t",
+                projects_db_id="p",
+            )
+            self.assertEqual(svc._resolve_db_id("customers"), "db-customers-123")
+        finally:
+            os.environ.clear()
+            os.environ.update(old)
+
     # ============================================================
     # PROPERTY HELPER TESTS
     # ============================================================
@@ -572,6 +679,8 @@ class TestNotionServiceOperations(unittest.IsolatedAsyncioTestCase):
             "url": "https://notion.so/task-page-id-1",
         }
 
+        captured_payloads = []
+
         with patch.object(
             self.service, "_safe_request", new_callable=AsyncMock
         ) as mock_request, patch.object(
@@ -587,6 +696,7 @@ class TestNotionServiceOperations(unittest.IsolatedAsyncioTestCase):
                 # Page creates
                 if method == "POST" and url.endswith("/pages"):
                     created["count"] += 1
+                    captured_payloads.append(payload or {})
                     return create_goal_res if created["count"] == 1 else create_task_res
 
                 return {}
@@ -606,7 +716,11 @@ class TestNotionServiceOperations(unittest.IsolatedAsyncioTestCase):
                         {
                             "op_id": "task_1",
                             "intent": "create_task",
-                            "payload": {"title": "Task A", "goal_id": "$goal_1"},
+                            "payload": {
+                                "title": "Task A",
+                                "goal_id": "$goal_1",
+                                "description": "$goal_1 :: linked",
+                            },
                         },
                     ]
                 },
@@ -630,6 +744,17 @@ class TestNotionServiceOperations(unittest.IsolatedAsyncioTestCase):
                 goal_id="goal-page-id-1",
                 project_id="",
             )
+
+            # '$op_id' prefix replacement should also apply inside strings.
+            # Second payload corresponds to task creation.
+            self.assertGreaterEqual(len(captured_payloads), 2)
+            task_payload = captured_payloads[1]
+            props = task_payload.get("properties") or {}
+            desc = props.get("Description") or {}
+            rt = desc.get("rich_text") if isinstance(desc, dict) else None
+            self.assertIsInstance(rt, list)
+            content = rt[0].get("text", {}).get("content") if rt else ""
+            self.assertIn("goal-page-id-1", content)
 
 
 if __name__ == "__main__":
