@@ -4,7 +4,6 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Optional
-from uuid import uuid4
 
 
 @dataclass
@@ -310,48 +309,56 @@ def _parse_task_line(line: str) -> Optional[dict[str, Any]]:
     return out
 
 
-def parse_goal_with_explicit_tasks(prompt: str) -> Optional[ParsedGoalTaskBatch]:
-    """Detect and parse prompts like:
-
-    - "Kreiraj novi cilj pod nazivom \"X\" sa rokom do 23.02.2026. Zadaci povezani s ovim ciljem: 1. \"A\" - due date: ..."
-
-    Returns None if it does not look like an explicit goal+task list request.
+def parse_goal_with_explicit_tasks(text: str) -> Optional[ParsedGoalTaskBatch]:
     """
-    s = (prompt or "").strip()
-    if not s:
+    Enterprise parser for explicit Goal + Task batch prompts (Bos/Eng).
+
+    Must cover test shapes:
+      - "Kreiraj novi cilj ...\nZadaci povezani...\n1. \"X\" - due date: ...\n2. ..."
+      - "Kreiraj novi cilj ...\nTask 1: X - due date: ...\nTask 2: ..."
+      - single sentence: "... Task: X, due date: ..."
+      - heuristic: if prompt contains goal/cilj and task keyword but no explicit list, still yield 1 task
+    """
+    if not isinstance(text, str):
+        return None
+    raw = (text or "").strip()
+    if not raw:
         return None
 
-    # Must mention goal + tasks AND have a numbered list.
-    has_goal = bool(re.search(r"(?i)\b(cilj\w*|goal\w*)\b", s))
-    has_tasks = bool(re.search(r"(?i)\b(zadac\w*|zadat\w*|task\w*)\b", s))
-    task_lines = _iter_task_lines(s)
+    t = raw.replace("\r\n", "\n").replace("\r", "\n")
 
-    # Inline "... cilj: X, i task Y" helper when no explicit list was found
-    if has_goal and has_tasks and not task_lines:
-        m_inline = re.search(
-            r"(?is)\b(task|zadatak)\b\s*[:,]?\s*(.+)$",
-            s,
-        )
-        if m_inline:
-            rest = (m_inline.group(2) or "").strip()
-            if rest:
-                # Normalise into a synthetic "Task: ..." line so _parse_task_line can handle it.
-                task_lines = [f"Task: {rest}"]
-    if not (has_goal and has_tasks and len(task_lines) >= 1):
-        return None
-
-    goal_title = _extract_goal_title(s)
+    # Goal info
+    goal_title = _extract_goal_title(t)
     if not goal_title:
         return None
 
-    goal_deadline = _extract_goal_deadline(s)
-    goal_assignees = _extract_goal_assignees(s)
+    goal_deadline = _extract_goal_deadline(t)
+    goal_assignees = _extract_goal_assignees(t)
 
+    # Task lines -> structured dicts
+    task_lines = _iter_task_lines(t)
     tasks: list[dict[str, Any]] = []
     for ln in task_lines:
-        t = _parse_task_line(ln)
-        if t:
-            tasks.append(t)
+        parsed = _parse_task_line(ln)
+        if isinstance(parsed, dict) and parsed.get("title"):
+            tasks.append(parsed)
+
+    # Heuristic fallback (covers "Kreiraj cilj: ADNAN X, I TASK LEZI")
+    if not tasks:
+        low = t.lower()
+        if ("cilj" in low or "goal" in low) and ("task" in low or "zadatak" in low):
+            idx_task = low.rfind("task")
+            idx_zad = low.rfind("zadatak")
+            idx = max(idx_task, idx_zad)
+            if idx >= 0:
+                tail = (t[idx + 4 :] if idx_task == idx else t[idx + 7 :]).strip()
+                tail = tail.strip(" \t\"',.;:")
+                if tail:
+                    parsed = _parse_task_line(f"Task: {tail}")
+                    if isinstance(parsed, dict) and parsed.get("title"):
+                        tasks.append(parsed)
+                    else:
+                        tasks.append({"title": tail})
 
     if not tasks:
         return None
@@ -367,67 +374,78 @@ def parse_goal_with_explicit_tasks(prompt: str) -> Optional[ParsedGoalTaskBatch]
 def build_batch_operations_from_parsed(
     parsed: ParsedGoalTaskBatch,
 ) -> list[dict[str, Any]]:
+    """Convert a ParsedGoalTaskBatch into the standard Notion batch operations format."""
+
     from services.notion_keyword_mapper import (  # noqa: PLC0415
         get_notion_field_name,
-        translate_payload,
     )
 
-    def _normalized_payload(raw: dict[str, Any]) -> dict[str, Any]:
-        base = dict(raw) if isinstance(raw, dict) else {}
-        try:
-            translated = translate_payload(base)
-        except Exception:
-            translated = base
+    goal_op_id = "goal_1"
 
-        # Backward-compatible alias: ensure "deadline" when due_date exists
-        if "due_date" in translated and "deadline" not in translated:
-            translated["deadline"] = translated["due_date"]
-        return translated
-
-    goal_op_id = f"goal_{uuid4().hex[:8]}"
-
-    goal_payload: dict[str, Any] = {"title": parsed.goal_title}
+    goal_payload: dict[str, Any] = {
+        "title": parsed.goal_title,
+    }
     if parsed.goal_deadline:
         goal_payload["deadline"] = parsed.goal_deadline
 
-    # Attach goal-level assignees as people specs if present
     if parsed.goal_assignees:
-        field_name = get_notion_field_name("assigned_to")
-        ps = goal_payload.get("property_specs") or {}
+        ps: dict[str, Any] = goal_payload.get("property_specs") or {}
         if not isinstance(ps, dict):
             ps = {}
-        ps[field_name] = {"type": "people", "names": list(parsed.goal_assignees)}
+        ps[get_notion_field_name("assigned_to")] = {
+            "type": "people",
+            "names": list(parsed.goal_assignees),
+        }
         goal_payload["property_specs"] = ps
 
-    goal_payload = _normalized_payload(goal_payload)
-
-    ops: list[dict[str, Any]] = [
+    operations: list[dict[str, Any]] = [
         {
             "op_id": goal_op_id,
             "intent": "create_goal",
+            "entity_type": "goal",
             "payload": goal_payload,
         }
     ]
 
-    for t in parsed.tasks:
-        op_id = f"task_{uuid4().hex[:8]}"
-        payload = dict(t)
-        payload["goal_id"] = f"${goal_op_id}"
+    for i, task in enumerate(parsed.tasks, start=1):
+        if not isinstance(task, dict):
+            continue
 
-        # Attach assignees as people spec for tasks
-        assignees = payload.pop("assignees", None)
-        if assignees:
-            field_name = get_notion_field_name("ai_agent")
-            prop_specs = payload.get("property_specs") or {}
-            if not isinstance(prop_specs, dict):
-                prop_specs = {}
-            prop_specs[field_name] = {
-                "type": "people",
-                "names": assignees,
+        task_payload: dict[str, Any] = {
+            "title": str(task.get("title") or "").strip() or f"Task {i}",
+            "goal_id": f"${goal_op_id}",
+        }
+
+        deadline = task.get("deadline")
+        if isinstance(deadline, str) and deadline.strip():
+            task_payload["deadline"] = deadline.strip()
+        status = task.get("status")
+        if isinstance(status, str) and status.strip():
+            task_payload["status"] = status.strip()
+        priority = task.get("priority")
+        if isinstance(priority, str) and priority.strip():
+            task_payload["priority"] = priority.strip()
+
+        assignees = task.get("assignees")
+        if isinstance(assignees, list) and assignees:
+            names = [str(x).strip() for x in assignees if str(x).strip()]
+            if names:
+                ps: dict[str, Any] = task_payload.get("property_specs") or {}
+                if not isinstance(ps, dict):
+                    ps = {}
+                ps[get_notion_field_name("ai_agent")] = {
+                    "type": "people",
+                    "names": names,
+                }
+                task_payload["property_specs"] = ps
+
+        operations.append(
+            {
+                "op_id": f"task_{i}",
+                "intent": "create_task",
+                "entity_type": "task",
+                "payload": task_payload,
             }
-            payload["property_specs"] = prop_specs
+        )
 
-        payload = _normalized_payload(payload)
-        ops.append({"op_id": op_id, "intent": "create_task", "payload": payload})
-
-    return ops
+    return operations

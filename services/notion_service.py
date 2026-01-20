@@ -983,6 +983,42 @@ class NotionService:
         }
 
         schema_available = bool(prop_types)
+
+        # Enforce local schema-registry read_only hints (enterprise SSOT)
+        registry_read_only: set[str] = set()
+        try:
+            from services.notion_schema_registry import (  # noqa: PLC0415
+                NotionSchemaRegistry,
+            )
+
+            schema_dict = None
+            for _k, _v in NotionSchemaRegistry.__dict__.items():
+                if (
+                    isinstance(_v, dict)
+                    and "tasks" in _v
+                    and isinstance(_v.get("tasks"), dict)
+                ):
+                    schema_dict = _v
+                    break
+
+            if schema_dict and isinstance(db_id, str) and db_id.strip():
+                _dbid = db_id.strip()
+                for _db in schema_dict.values():
+                    if not isinstance(_db, dict):
+                        continue
+                    if str(_db.get("db_id") or "").strip() != _dbid:
+                        continue
+                    p0 = _db.get("properties") or {}
+                    if isinstance(p0, dict):
+                        for _pn, _meta in p0.items():
+                            if (
+                                isinstance(_meta, dict)
+                                and _meta.get("read_only") is True
+                            ):
+                                registry_read_only.add(str(_pn))
+                    break
+        except Exception:
+            registry_read_only = set()
         if not schema_available:
             # Fail-soft: if schema can't be fetched (or tests stub it out),
             # do not drop fields. Preserve legacy behavior.
@@ -1054,6 +1090,11 @@ class NotionService:
                 continue
 
             pn = resolved_name
+            if pn in registry_read_only:
+                if warnings is not None:
+                    warnings.append(f"read_only_field_ignored:{pn}")
+                continue
+
             stype = _ensure_str(spec.get("type")).lower()
 
             if stype == "title":

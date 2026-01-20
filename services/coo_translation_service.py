@@ -82,6 +82,62 @@ class COOTranslationService:
             return cmd
 
         # 3) Workflow (goal + tasks, including “Dan 1: ...” plan, KPI weekly summary)
+        # COO_TRANSLATE_BATCH_FASTPATH: goal+task batch -> notion_write intent=batch_request (single approval)
+        try:
+            from services.notion_keyword_mapper import NotionKeywordMapper  # noqa: PLC0415
+
+            if NotionKeywordMapper.is_batch_request(text):
+                import inspect
+                from services import goal_task_batch_parser as gtbp  # noqa: PLC0415
+                from models.ai_command import AICommand  # noqa: PLC0415
+
+                # Prefer parse_* that mentions goal+task/batch/enterprise; fallback to any parse_*.
+                parse_candidates = []
+                for n in dir(gtbp):
+                    fn = getattr(gtbp, n, None)
+                    if not callable(fn):
+                        continue
+                    nl = n.lower()
+                    if nl.startswith("parse") and (
+                        ("goal" in nl and "task" in nl)
+                        or ("batch" in nl)
+                        or ("enterprise" in nl)
+                    ):
+                        parse_candidates.append(fn)
+                if not parse_candidates:
+                    for n in dir(gtbp):
+                        fn = getattr(gtbp, n, None)
+                        if callable(fn) and n.lower().startswith("parse"):
+                            parse_candidates.append(fn)
+                if not parse_candidates:
+                    raise RuntimeError("goal_task_batch_parser has no parse_*")
+                parsed = parse_candidates[0](text)
+                ops = gtbp.build_batch_operations_from_parsed(parsed)
+                if ops:
+                    payload = {
+                        "command": "notion_write",
+                        "intent": "batch_request",
+                        "read_only": False,
+                        "validated": True,
+                        "initiator": (ctx.get("initiator") or "ceo")
+                        if isinstance(ctx, dict)
+                        else "ceo",
+                        "owner": "system",
+                        "params": {"operations": ops},
+                        "metadata": {
+                            "context_type": (ctx.get("context_type") or "ux")
+                            if isinstance(ctx, dict)
+                            else "ux",
+                            "source": source,
+                            "canon": "COO_TRANSLATE_BATCH_FASTPATH",
+                        },
+                    }
+                    sig = inspect.signature(AICommand)
+                    kwargs = {k: v for k, v in payload.items() if k in sig.parameters}
+                    return AICommand(**kwargs)
+        except Exception:
+            pass
+
         cmd = self._translate_goal_task_workflow(text, source=source, context=ctx)
         if cmd is not None:
             return cmd

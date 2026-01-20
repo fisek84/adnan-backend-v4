@@ -147,6 +147,11 @@ class NotionKeywordMapper:
             "novi cilj",
             "dodaj cilj",
             "create goal",
+            "kreiraj goal",
+            "napravi goal",
+            "dodaj goal",
+            "novi goal",
+            "create goal in notion",
         ],
         "create_task": [
             "kreiraj zadatak",
@@ -154,6 +159,11 @@ class NotionKeywordMapper:
             "novi zadatak",
             "dodaj zadatak",
             "create task",
+            "kreiraj task",
+            "napravi task",
+            "dodaj task",
+            "novi task",
+            "create task in notion",
         ],
         "create_project": [
             "kreiraj projekt",
@@ -161,6 +171,11 @@ class NotionKeywordMapper:
             "novi projekt",
             "dodaj projekt",
             "create project",
+            "kreiraj projekat",
+            "napravi projekat",
+            "dodaj projekat",
+            "novi projekat",
+            "create project in notion",
         ],
         "batch_request": [
             "grupni zahtjev",
@@ -320,6 +335,50 @@ class NotionKeywordMapper:
             Intent identifier or None if not detected
         """
         text_lower = text.lower()
+
+        # Hard override: batch/branch ako se u istom inputu traži i kreiranje CILJA i kreiranje ZADATKA
+        # (mora imati "goal/cilj" + indikator task segmenta; ne smije okinuti na "novi zadatak za cilj")
+        goal_create_hint = any(
+            k in text_lower
+            for k in (
+                "kreiraj cilj",
+                "napravi cilj",
+                "novi cilj",
+                "dodaj cilj",
+                "create goal",
+                "kreiraj goal",
+                "napravi goal",
+            )
+        )
+
+        excluded_task_for_goal = (
+            ("novi zadatak za cilj" in text_lower)
+            or ("new task for goal" in text_lower)
+            or (
+                re.search(r"\b(zadatak|task)\b\s+za\s+\b(cilj|goal)\b", text_lower)
+                is not None
+            )
+        )
+
+        task_word = re.search(r"\b(task|zadatak)\b", text_lower) is not None
+        tasks_section = ("zadaci povezani" in text_lower) or (
+            "tasks related" in text_lower
+        )
+        numbered_items = re.search(r"(?m)^\s*\d+\s*[.)-]", text_lower) is not None
+        task_label_lines = (
+            re.search(r"(?m)^\s*(task|zadatak)\s*\d+\s*[:\-]", text_lower) is not None
+        )
+        inline_task_colon = re.search(r"\b(task|zadatak)\s*:", text_lower) is not None
+
+        task_indicator = (
+            task_word
+            or tasks_section
+            or numbered_items
+            or task_label_lines
+            or inline_task_colon
+        )
+        if goal_create_hint and task_indicator and not excluded_task_for_goal:
+            return "batch_request"
 
         # Check batch_request first as it's more specific
         intent_order = ["batch_request", "create_goal", "create_task", "create_project"]

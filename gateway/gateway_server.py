@@ -2317,6 +2317,11 @@ async def execute_preview_command(
 
                     notion_block = {
                         "type": "batch_preview",
+                        "operations": (
+                            (cmd_dump.get("params", {}).get("operations") or [])
+                            if isinstance(cmd_dump, dict)
+                            else []
+                        ),
                         "rows": rows,
                         "note": "Preview does not hit Notion. Final execution may still normalize select/status types based on DB schema.",
                     }
