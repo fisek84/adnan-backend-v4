@@ -122,3 +122,20 @@ test_bosnian_parsing.py
 /_goals_db.json
 /_tasks_db.json
 /_projects_db.json
+
+# =========================
+# Local one-off scripts (do not commit)
+# =========================
+_fix_*.py
+_gen_*.py
+_sync_*.py
+_verify_*.ps1
+
+# keep these local unless explicitly needed
+scripts/export_notion_db_schema_snapshot.py
+scripts/sync_notion_schema_snapshot_data.py
+tests/identity_e2e_contract.ps1
+tests/test_execute_preview_ssot.py
+tests/test_identity_alignment_contract.py
+tests/test_notion_patch_validation.py
+tests/test_notion_property_specs_builder.py
