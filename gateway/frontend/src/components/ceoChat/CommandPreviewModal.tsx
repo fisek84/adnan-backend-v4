@@ -85,6 +85,7 @@ export const CommandPreviewModal: React.FC<Props> = ({ open, title, loading, err
     "number",
     "checkbox",
     "multi_select",
+    "people",
   ]);
 
   // Backend applies schema-backed patches at execution time; keep UI conservative for types needing IDs.

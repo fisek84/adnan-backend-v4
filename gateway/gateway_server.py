@@ -591,6 +591,65 @@ def _unwrap_proposal_wrapper_or_raise(
         params if isinstance(params, dict) else {}
     )
 
+    def _extract_prompt_kv_patch(prompt_text: str) -> Dict[str, Any]:
+        """Best-effort extraction of arbitrary Notion fields from the prompt.
+
+        Goal: let CEO type "Field: Value" pairs directly in the prompt (Level, Type,
+        Activity State, AI Agent, Assigned To, etc) and pass them downstream as
+        wrapper_patch so NotionService can apply them using live DB schema.
+
+        This parser is intentionally conservative:
+          - only captures explicit "Key: Value" segments
+          - special-cases Description/Opis to capture the full tail
+          - ignores any inline JSON after the prompt
+        """
+        if not isinstance(prompt_text, str) or not prompt_text.strip():
+            return {}
+
+        s = prompt_text.strip()
+        # Drop any appended JSON blob (often pasted for debugging)
+        if "{" in s:
+            s = s.split("{", 1)[0].strip()
+
+        s = s.replace("\r\n", "\n").replace("\r", "\n")
+
+        out: Dict[str, Any] = {}
+
+        # Capture Description/Opis as the full tail (can contain commas)
+        m_desc = re.search(r"(?is)\b(description|opis)\s*[:\-\u2013\u2014]\s*(.+)$", s)
+        if m_desc:
+            out["Description"] = (m_desc.group(2) or "").strip().strip(",;")
+            s = s[: m_desc.start()].strip()
+
+        # Normalize remaining text for splitting
+        s2 = re.sub(r"[\n\t]+", ", ", s)
+        s2 = re.sub(r"\s*,\s*", ", ", s2)
+        s2 = re.sub(r"\s+", " ", s2).strip()
+
+        # Split on commas/semicolons for key:value pairs
+        for seg in re.split(r"\s*[,;]\s*", s2):
+            if not seg:
+                continue
+            m = re.match(
+                r"^\s*([A-Za-z][A-Za-z0-9 _&/\-]{0,60})\s*[:\-\u2013\u2014]\s*(.+?)\s*$",
+                seg,
+            )
+            if not m:
+                continue
+            key = (m.group(1) or "").strip()
+            val = (m.group(2) or "").strip()
+            if not key or not val:
+                continue
+            # Avoid accidentally treating the leading command phrase as a field.
+            if re.search(
+                r"(?i)\b(kreiraj|napravi|create)\s+(cilj|goal|task|zadatak|project|projekat|projekt)\b",
+                key,
+            ):
+                continue
+            out[key] = val
+
+        return out
+
     # ? Robust prompt extraction: params.prompt OR metadata.prompt OR metadata.wrapper.prompt
     prompt: Optional[str] = None
     if isinstance(params, dict):
@@ -615,6 +674,18 @@ def _unwrap_proposal_wrapper_or_raise(
             status_code=400,
             detail="ceo.command.propose cannot enter execution. Missing prompt for unwrap/translation (expected params.prompt or metadata.wrapper.prompt).",
         )
+
+    # Merge prompt-derived patches with explicit UI patch.
+    # Explicit UI patch always wins.
+    try:
+        prompt_patch = _extract_prompt_kv_patch(prompt)
+        if isinstance(prompt_patch, dict) and prompt_patch:
+            merged_patch = dict(prompt_patch)
+            if isinstance(wrapper_patch, dict) and wrapper_patch:
+                merged_patch.update(wrapper_patch)
+            wrapper_patch = merged_patch
+    except Exception:
+        pass
 
     # ============================================================
     # ENTERPRISE FAST-PATH: deterministic intent hints from NotionOpsAgent
@@ -2330,6 +2401,35 @@ async def execute_preview_command(
             params = getattr(ai_command, "params", None)
             params = params if isinstance(params, dict) else {}
 
+            wrapper_patch0 = params.get("wrapper_patch")
+            wrapper_patch0 = (
+                wrapper_patch0 if isinstance(wrapper_patch0, dict) else None
+            )
+
+            async def _apply_patch_for_preview(
+                *, db_key: Optional[str], property_specs: Dict[str, Any]
+            ) -> None:
+                if not db_key or not isinstance(db_key, str) or not db_key.strip():
+                    return
+                if not wrapper_patch0 or not isinstance(property_specs, dict):
+                    return
+                try:
+                    from services.notion_service import (  # noqa: PLC0415
+                        get_or_init_notion_service,
+                    )
+
+                    svc = get_or_init_notion_service()
+                    if svc is None:
+                        return
+                    await svc._apply_wrapper_patch_to_property_specs(  # type: ignore[attr-defined]
+                        db_key=db_key.strip(),
+                        property_specs=property_specs,
+                        wrapper_patch=wrapper_patch0,
+                        warnings=[],
+                    )
+                except Exception:
+                    return
+
             def _build_property_specs_from_payload(
                 payload: Dict[str, Any],
             ) -> Dict[str, Any]:
@@ -2386,6 +2486,14 @@ async def execute_preview_command(
                 else:
                     property_specs = {}
 
+                # Apply wrapper_patch (prompt/UI fields) before previewing.
+                await _apply_patch_for_preview(
+                    db_key=db_key, property_specs=property_specs
+                )
+                property_specs = _sanitize_property_specs_for_preview(
+                    db_key=db_key, property_specs=property_specs
+                )
+
                 notion_block = {
                     "op_id": cmd_dump.get("op_id")
                     if isinstance(cmd_dump, dict)
@@ -2433,6 +2541,11 @@ async def execute_preview_command(
                 extra_specs = params.get("property_specs")
                 if isinstance(extra_specs, dict) and extra_specs:
                     property_specs.update(extra_specs)
+
+                # Apply wrapper_patch (prompt/UI fields) before previewing.
+                await _apply_patch_for_preview(
+                    db_key=db_key, property_specs=property_specs
+                )
 
                 property_specs = _sanitize_property_specs_for_preview(
                     db_key=db_key, property_specs=property_specs
@@ -2510,6 +2623,12 @@ async def execute_preview_command(
                             )
                             if isinstance(sp0, dict) and sp0:
                                 ps = dict(sp0)
+
+                        # Apply wrapper_patch to each operation preview (best-effort).
+                        if ps and isinstance(db_key, str) and db_key.strip():
+                            await _apply_patch_for_preview(
+                                db_key=db_key, property_specs=ps
+                            )
 
                         ps = _sanitize_property_specs_for_preview(
                             db_key=db_key, property_specs=ps

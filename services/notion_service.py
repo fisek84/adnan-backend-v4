@@ -785,10 +785,21 @@ class NotionService:
                     warnings.append(f"wrapper_patch_computed_field_ignored:{fname}")
                 continue
 
-            if p_type in {"people", "relation"}:
-                # Wrapper_patch does not have a safe way to resolve IDs.
+            if p_type == "relation":
+                # Wrapper_patch does not have a safe way to resolve relation IDs.
                 if warnings is not None:
                     warnings.append(f"wrapper_patch_requires_ids:{fname}")
+                continue
+
+            if p_type == "people":
+                # Accept comma-separated names/emails; execution will resolve to IDs best-effort.
+                if isinstance(raw, list):
+                    tokens = [_as_str(x) for x in raw if _as_str(x)]
+                else:
+                    s = _as_str(raw)
+                    tokens = [x.strip() for x in s.split(",") if x.strip()] if s else []
+                if tokens:
+                    property_specs[fname] = {"type": "people", "names": tokens}
                 continue
 
             if p_type == "title":
