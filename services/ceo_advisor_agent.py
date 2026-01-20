@@ -523,7 +523,7 @@ def _translate_create_goal_to_ai_command(
     )
 
     date_iso = _normalize_date_iso(
-        args.get("Deadline") or args.get("deadline") or args.get("Due date")
+        args.get("Deadline") or args.get("deadline") or args.get("Due Date")
     )
 
     # If the model packed everything into the Name field (e.g. including

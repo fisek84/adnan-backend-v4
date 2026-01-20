@@ -715,6 +715,8 @@ class COOTranslationService:
         due_raw = (
             self._extract_field_value(raw, "deadline-om")
             or self._extract_field_value(raw, "rokom")
+            or self._extract_field_value(raw, "due date")
+            or self._extract_field_value(raw, "duedate")
             or self._extract_field_value(raw, "due")
             or self._extract_field_value(raw, "rok")
             or self._extract_field_value(raw, "deadline")
@@ -762,6 +764,8 @@ class COOTranslationService:
                 "priority",
                 "deadline-om",
                 "rokom",
+                "due date",
+                "duedate",
                 "due",
                 "rok",
                 "deadline",
