@@ -1,5 +1,3 @@
-﻿import pytest
-
 from services.goal_task_batch_parser import (
     build_batch_operations_from_parsed,
     parse_goal_with_explicit_tasks,
