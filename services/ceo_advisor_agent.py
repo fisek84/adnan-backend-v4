@@ -4,6 +4,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from models.agent_contract import AgentInput, AgentOutput, ProposedCommand
+from models.canon import PROPOSAL_WRAPPER_INTENT
 from services.agent_router.openai_assistant_executor import OpenAIAssistantExecutor
 
 # PHASE 6: Import shared Notion Ops state management
@@ -572,6 +573,74 @@ def _wrap_as_proposed_command_with_ai_command(
     )
 
 
+def _wrap_as_proposal_wrapper(
+    *, prompt: str, intent_hint: Optional[str]
+) -> ProposedCommand:
+    params: Dict[str, Any] = {"prompt": (prompt or "").strip()}
+    if isinstance(intent_hint, str) and intent_hint.strip():
+        params["intent_hint"] = intent_hint.strip()
+
+    return ProposedCommand(
+        command=PROPOSAL_WRAPPER_INTENT,
+        intent=PROPOSAL_WRAPPER_INTENT,
+        args=params,
+        reason="Notion write intent ide kroz approval pipeline; predlažem komandu za preview/promotion.",
+        requires_approval=True,
+        risk="LOW",
+        dry_run=True,
+        scope="api_execute_raw",
+    )
+
+
+def _merge_base_prompt_with_args(base_prompt: str, args: Dict[str, Any]) -> str:
+    """Build a prompt that preserves the user's text but also carries structured fields.
+
+    This helps when the LLM returns structured args but the original text is sparse.
+    The gateway wrapper parser expects explicit `Key: Value` pairs.
+    """
+
+    base = (base_prompt or "").strip()
+    if not isinstance(args, dict) or not args:
+        return base
+
+    lines: List[str] = []
+    # Prefer canonical Notion field labels.
+    mapping = [
+        ("Name", "Name"),
+        ("title", "Name"),
+        ("name", "Name"),
+        ("Status", "Status"),
+        ("status", "Status"),
+        ("Priority", "Priority"),
+        ("priority", "Priority"),
+        ("Deadline", "Deadline"),
+        ("deadline", "Deadline"),
+        ("Due Date", "Due Date"),
+        ("due_date", "Due Date"),
+        ("Description", "Description"),
+        ("description", "Description"),
+    ]
+
+    for src, canon in mapping:
+        v = args.get(src)
+        if v is None:
+            continue
+        val = str(v).strip()
+        if not val:
+            continue
+        # Avoid duplicating if the base prompt already mentions the key.
+        if canon.lower() in base.lower():
+            continue
+        lines.append(f"{canon}: {val}")
+
+    if not lines:
+        return base
+
+    if not base:
+        return "\n".join(lines)
+    return base + "\n" + "\n".join(lines)
+
+
 def _to_proposed_commands(items: Any) -> List[ProposedCommand]:
     if not isinstance(items, list):
         return []
@@ -857,31 +926,36 @@ async def create_ceo_advisor_agent(
             )
             p0d = p0 if isinstance(p0, dict) else {}
 
-            ai_cmd = None
-            if first_cmd == "create_task":
-                ai_cmd = _translate_create_task_to_ai_command(p0d)
-            elif first_cmd == "create_goal":
-                ai_cmd = _translate_create_goal_to_ai_command(p0d)
+            # IMPORTANT: for CEO Console preview, we need to preserve the original prompt
+            # so gateway can extract arbitrary Notion properties (Field: Value) and let
+            # the user edit them before approval.
+            args0 = p0d.get("args") if isinstance(p0d, dict) else None
+            args0 = args0 if isinstance(args0, dict) else {}
 
-            if isinstance(ai_cmd, dict):
-                proposed = [
-                    _wrap_as_proposed_command_with_ai_command(
-                        ai_cmd,
-                        reason=f"Translated {first_cmd} -> notion_write/{ai_cmd.get('intent')} (args.ai_command) for approval-gated execution.",
-                        risk="LOW",
-                    )
-                ]
+            merged_prompt = _merge_base_prompt_with_args(base_text, args0)
+            intent_hint = "create_task" if first_cmd == "create_task" else "create_goal"
 
-    if wants_notion and not proposed:
-        ai_cmd = _deterministic_notion_ai_command_from_text(base_text)
-        if isinstance(ai_cmd, dict):
             proposed = [
-                _wrap_as_proposed_command_with_ai_command(
-                    ai_cmd,
-                    reason="Deterministic Notion proposal (approval-gated).",
-                    risk="LOW",
+                _wrap_as_proposal_wrapper(
+                    prompt=merged_prompt,
+                    intent_hint=intent_hint,
                 )
             ]
+
+    if wants_notion and not proposed:
+        # Deterministic fallback: still preserve prompt by emitting the canonical wrapper.
+        intent_hint = None
+        try:
+            if _wants_task(base_text):
+                intent_hint = "create_task"
+            elif _wants_goal(base_text):
+                intent_hint = "create_goal"
+        except Exception:
+            intent_hint = None
+
+        proposed = [
+            _wrap_as_proposal_wrapper(prompt=base_text, intent_hint=intent_hint)
+        ]
 
     if structured_mode and (not wants_notion) and not proposed:
         proposed.append(

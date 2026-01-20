@@ -657,6 +657,14 @@ def _unwrap_proposal_wrapper_or_raise(
         if isinstance(p0, str) and p0.strip():
             prompt = p0.strip()
 
+    # Legacy/compat: some callers nest wrapper prompt under params.ai_command.prompt
+    if prompt is None and isinstance(params, dict):
+        ac0 = params.get("ai_command")
+        if isinstance(ac0, dict):
+            p_ac = ac0.get("prompt")
+            if isinstance(p_ac, str) and p_ac.strip():
+                prompt = p_ac.strip()
+
     if prompt is None and isinstance(metadata, dict):
         p1 = metadata.get("prompt")
         if isinstance(p1, str) and p1.strip():
@@ -722,8 +730,22 @@ def _unwrap_proposal_wrapper_or_raise(
             r"(?i)(?:^|[,;]|\s{2,})\s*(status|priority|deadline|due\s+date|description)\b\s*(?:[:\-–—]|\s+)",
         )
         m = prop_pat.search(t2)
-        if m and m.start() > 0:
-            prop_start = m.start()
+        start1 = m.start() if (m and m.start() > 0) else None
+
+        # Generic: if the user included any explicit `Key: Value` pairs (Level/Type/Assigned To/etc)
+        # do not treat them as part of the title.
+        m2 = re.search(
+            r"(?i)(?:^|[,;]|\s{2,})\s*[A-Za-z][A-Za-z0-9 _&/\-]{0,60}\s*[:\-–—]\s*\S+",
+            t2,
+        )
+        start2 = m2.start() if (m2 and m2.start() > 0) else None
+
+        if start1 is not None and start2 is not None:
+            prop_start = min(start1, start2)
+        elif start1 is not None:
+            prop_start = start1
+        elif start2 is not None:
+            prop_start = start2
         if prop_start is not None:
             cut = t2[:prop_start].strip().rstrip(",;:-–—")
             return cut or t2
