@@ -126,6 +126,10 @@ class CEOAlignmentEngine:
         identity = identity_pack if isinstance(identity_pack, dict) else {}
         world = world_state_snapshot if isinstance(world_state_snapshot, dict) else {}
 
+        # Contract hashes (stable across runs for same inputs)
+        identity_sha256 = _sha256_hex(_stable_dumps(identity))
+        world_sha256 = _sha256_hex(_stable_dumps(world))
+
         # META inputs
         tw = (
             world.get("time_window")
@@ -179,6 +183,10 @@ class CEOAlignmentEngine:
         confidence_level = self._confidence(required_missing, world)
 
         alignment_snapshot: JsonDict = {
+            # Contract: evaluation succeeded (alignment status lives in strategic_alignment.*)
+            "ok": True,
+            "identity_hash": identity_sha256,
+            "world_hash": world_sha256,
             "snapshot_version": self.SNAPSHOT_VERSION,
             "generated_at": generated_at,
             "time_window": time_window,
@@ -190,12 +198,14 @@ class CEOAlignmentEngine:
             "executive_priorities": executive_priorities,
             "risk_register": risk_register,
             "ceo_action_required": ceo_action_required,
+            # Optional convenience mirror; canonical list stays under trace.required_inputs_missing.
+            "required_missing": list(required_missing),
             # Determinism trace (for A1 testing)
             "trace": {
                 "required_inputs_missing": required_missing,
                 "input_hash": {
-                    "identity_pack_sha256": _sha256_hex(_stable_dumps(identity)),
-                    "world_state_sha256": _sha256_hex(_stable_dumps(world)),
+                    "identity_pack_sha256": identity_sha256,
+                    "world_state_sha256": world_sha256,
                 },
                 "engine": {
                     "version": self.SNAPSHOT_VERSION,

@@ -58,6 +58,13 @@ def test_execute_preview_wrapper_applies_prompt_kv_patch_and_title_cutoff():
     assert wrapper_patch.get("Outcome") == "+10% MRR"
     assert wrapper_patch.get("Activity State") == "Active"
 
+    # Validation report is present (warn-only by default).
+    notion = body.get("notion") or {}
+    validation = notion.get("validation") or {}
+    assert isinstance(validation, dict)
+    assert validation.get("mode") in {"warn", "strict"}
+    assert "summary" in validation
+
 
 def test_execute_preview_wrapper_create_page_tasks_title_does_not_include_properties():
     app = _load_app()
@@ -117,3 +124,9 @@ def test_execute_preview_wrapper_create_page_tasks_title_does_not_include_proper
     assert wrapper_patch.get("Level") == "goal"
     assert wrapper_patch.get("Assigned To") == "Adnan"
     assert wrapper_patch.get("AI Agent") == "Adnan.Ai"
+
+    notion = body.get("notion") or {}
+    validation = notion.get("validation") or {}
+    assert isinstance(validation, dict)
+    assert validation.get("mode") in {"warn", "strict"}
+    assert "summary" in validation

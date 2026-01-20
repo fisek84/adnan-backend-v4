@@ -7,6 +7,7 @@ Enhanced with bilingual property support (Bosnian â†” English)
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from services.notion_keyword_mapper import NotionKeywordMapper
@@ -40,14 +41,146 @@ class NotionSchemaRegistry:
             "write_enabled": True,
             "properties": {
                 "Name": {"type": "title", "required": True},
-                "Status": {"type": "status", "required": True},
                 "Priority": {"type": "select", "required": False},
-                "Progress": {"type": "number", "required": False},
+                "Related Goal": {
+                    "type": "relation",
+                    "required": False,
+                    "notion_database_id": "2ad5873b-d84a-80e8-b4da-c703018212fe",
+                },
+                "Activity Lane": {
+                    "type": "rich_text",
+                    "required": False,
+                    "read_only": True,
+                },
+                "Completed At": {"type": "date", "required": False},
+                "Type": {"type": "select", "required": False},
+                "Auto Status": {"type": "select", "required": False},
                 "Description": {"type": "rich_text", "required": False},
-                "Parent Goal": {"type": "relation", "target": "goals"},
-                "Child Goals": {"type": "relation", "target": "goals"},
-                "Project": {"type": "relation", "target": "projects"},
+                "Progress  from Tasks": {
+                    "type": "number",
+                    "required": False,
+                    "read_only": True,
+                },
+                "Category": {"type": "select", "required": False},
+                "Parent State": {
+                    "type": "rich_text",
+                    "required": False,
+                    "read_only": True,
+                },
+                "Child Goals": {
+                    "type": "relation",
+                    "required": False,
+                    "notion_database_id": "2ac5873b-d84a-801f-956f-c30327b8ef94",
+                },
+                "Parent Progress (Rollup)": {
+                    "type": "number",
+                    "required": False,
+                    "read_only": True,
+                },
+                "Context State": {
+                    "type": "rich_text",
+                    "required": False,
+                    "read_only": True,
+                },
+                "Progress": {"type": "number", "required": False},
+                "Activity Progress %": {
+                    "type": "rich_text",
+                    "required": False,
+                    "read_only": True,
+                },
                 "Deadline": {"type": "date", "required": False},
+                "Assigned To": {"type": "multi_select", "required": False},
+                "Child Status List": {
+                    "type": "number",
+                    "required": False,
+                    "read_only": True,
+                },
+                "Completed Tasks": {
+                    "type": "number",
+                    "required": False,
+                    "read_only": True,
+                },
+                "Auto Status (Calc)": {
+                    "type": "rich_text",
+                    "required": False,
+                    "read_only": True,
+                },
+                "Progress &": {
+                    "type": "rich_text",
+                    "required": False,
+                    "read_only": True,
+                },
+                "Owner State": {"type": "select", "required": False},
+                "Status": {"type": "select", "required": False},
+                "Outcome State": {
+                    "type": "rich_text",
+                    "required": False,
+                    "read_only": True,
+                },
+                "Progress % from Tasks": {
+                    "type": "rich_text",
+                    "required": False,
+                    "read_only": True,
+                },
+                "Tasks DB": {
+                    "type": "relation",
+                    "required": False,
+                    "notion_database_id": "2ad5873b-d84a-80e8-b4da-c703018212fe",
+                },
+                "Outcome": {"type": "select", "required": False},
+                "Related back to \n👉 Goals DB — Central Goal System 1": {
+                    "type": "relation",
+                    "required": False,
+                    "notion_database_id": "2ac5873b-d84a-801f-956f-c30327b8ef94",
+                },
+                "Child State %": {
+                    "type": "rich_text",
+                    "required": False,
+                    "read_only": True,
+                },
+                "Level": {"type": "select", "required": False},
+                "Activity State (Auto)": {
+                    "type": "rich_text",
+                    "required": False,
+                    "read_only": True,
+                },
+                "Goal State (Auto)": {
+                    "type": "rich_text",
+                    "required": False,
+                    "read_only": True,
+                },
+                "Outcome Result": {
+                    "type": "rich_text",
+                    "required": False,
+                    "read_only": True,
+                },
+                "Auto-populate Completed Date": {
+                    "type": "rich_text",
+                    "required": False,
+                    "read_only": True,
+                },
+                "Task Progress List": {
+                    "type": "number",
+                    "required": False,
+                    "read_only": True,
+                },
+                "AI Agent": {"type": "select", "required": False},
+                "Related back to \n👉 Goals DB — Central Goal System": {
+                    "type": "relation",
+                    "required": False,
+                    "notion_database_id": "2ac5873b-d84a-801f-956f-c30327b8ef94",
+                },
+                "AI Summary DB": {
+                    "type": "relation",
+                    "required": False,
+                    "notion_database_id": "2b85873b-d84a-801e-b687-f0547d85da31",
+                },
+                "Activity State": {"type": "select", "required": False},
+                "Parent Goal": {
+                    "type": "relation",
+                    "required": False,
+                    "notion_database_id": "2ac5873b-d84a-801f-956f-c30327b8ef94",
+                },
             },
         },
         # =======================
@@ -431,6 +564,169 @@ class NotionSchemaRegistry:
             "properties": {},
         },
     }
+
+    # ============================================================
+    # SSOT SCHEMA MODEL (DB-specific, deterministic, offline)
+    # ============================================================
+
+    # Notion property types that are computed / read-only by design.
+    _READ_ONLY_NOTION_TYPES = {
+        "created_by",
+        "created_time",
+        "last_edited_by",
+        "last_edited_time",
+        "formula",
+        "rollup",
+        "unique_id",
+    }
+
+    # Notion property types that we know how to write via property_specs.
+    _WRITABLE_NOTION_TYPES = {
+        "title",
+        "rich_text",
+        "number",
+        "date",
+        "checkbox",
+        "select",
+        "status",
+        "multi_select",
+        "people",
+        "relation",
+        "url",
+        "email",
+        "phone_number",
+    }
+
+    @dataclass(frozen=True)
+    class PropertyModel:
+        name: str
+        notion_type: str
+        write_type: Optional[str]
+        read_only: bool
+        options: Optional[List[str]] = None
+        relation_database_id: Optional[str] = None
+
+        def to_validation_schema(self) -> Dict[str, Any]:
+            out: Dict[str, Any] = {"type": self.notion_type}
+            if self.options:
+                out["options"] = list(self.options)
+            return out
+
+    @classmethod
+    def get_property_models(
+        cls, db_key: str
+    ) -> Dict[str, "NotionSchemaRegistry.PropertyModel"]:
+        """Return an offline SSOT model for the given db_key.
+
+        This is designed for deterministic preview-time normalization/validation
+        without hitting the Notion API.
+
+        Data sources:
+        - Base registry: DATABASES[db_key]['properties'] (required/read_only hints)
+        - Local schema snapshots (if available): services/notion_schema_snapshot_data.py
+          (notion_type/options/relation_database_id)
+        """
+
+        k = (db_key or "").strip()
+        if not k:
+            return {}
+
+        db = cls.DATABASES.get(k)
+        if not isinstance(db, dict):
+            return {}
+
+        reg_props = db.get("properties")
+        reg_props = reg_props if isinstance(reg_props, dict) else {}
+
+        snap_props: Dict[str, Any] = {}
+        try:
+            from services.notion_schema_snapshot_data import (  # noqa: PLC0415
+                SCHEMA_SNAPSHOTS,
+            )
+
+            snap = SCHEMA_SNAPSHOTS.get(k)
+            if isinstance(snap, dict) and isinstance(snap.get("properties"), dict):
+                snap_props = snap.get("properties") or {}
+        except Exception:
+            snap_props = {}
+
+        # Union of schema property names (snapshot is authoritative when present).
+        names = set()
+        for pn in reg_props.keys():
+            if isinstance(pn, str) and pn.strip():
+                names.add(pn.strip())
+        for pn in snap_props.keys():
+            if isinstance(pn, str) and pn.strip():
+                names.add(pn.strip())
+
+        out: Dict[str, NotionSchemaRegistry.PropertyModel] = {}
+        for pn in sorted(names):
+            reg_meta = reg_props.get(pn)
+            reg_meta = reg_meta if isinstance(reg_meta, dict) else {}
+            snap_meta = snap_props.get(pn)
+            snap_meta = snap_meta if isinstance(snap_meta, dict) else {}
+
+            notion_type = (
+                snap_meta.get("notion_type")
+                or reg_meta.get("notion_type")
+                or reg_meta.get("type")
+                or ""
+            )
+            notion_type = notion_type.strip() if isinstance(notion_type, str) else ""
+
+            # Fall back: if registry had a legacy type but snapshot is missing.
+            if not notion_type:
+                continue
+
+            read_only = bool(
+                reg_meta.get("read_only") is True
+                or notion_type in cls._READ_ONLY_NOTION_TYPES
+            )
+
+            write_type: Optional[str] = None
+            if not read_only:
+                nt = notion_type
+                if nt == "text":
+                    nt = "rich_text"
+                if nt in cls._WRITABLE_NOTION_TYPES:
+                    write_type = nt
+
+            options0 = snap_meta.get("options")
+            if options0 is None:
+                options0 = reg_meta.get("options")
+            options: Optional[List[str]] = None
+            if isinstance(options0, list):
+                opts = [o for o in options0 if isinstance(o, str) and o.strip()]
+                if opts:
+                    options = opts
+
+            rel_db_id = snap_meta.get("relation_database_id")
+            if not isinstance(rel_db_id, str) or not rel_db_id.strip():
+                rel_db_id = reg_meta.get("relation_database_id") or reg_meta.get(
+                    "notion_database_id"
+                )
+            relation_database_id = (
+                rel_db_id.strip()
+                if isinstance(rel_db_id, str) and rel_db_id.strip()
+                else None
+            )
+
+            out[pn] = cls.PropertyModel(
+                name=pn,
+                notion_type=notion_type,
+                write_type=write_type,
+                read_only=read_only,
+                options=options,
+                relation_database_id=relation_database_id,
+            )
+
+        return out
+
+    @classmethod
+    def offline_validation_schema(cls, db_key: str) -> Dict[str, Any]:
+        """Schema format compatible with services/notion_patch_validation.py."""
+        models = cls.get_property_models(db_key)
+        return {k: v.to_validation_schema() for k, v in models.items()}
 
     # ============================================================
     # VALIDATION

@@ -98,7 +98,19 @@ class WorldStateEngine:
             asyncio.get_running_loop()
         except RuntimeError:
             # Nema running event loop → sigurno je koristiti asyncio.run
-            return asyncio.run(self.abuild_snapshot())
+            # Enterprise: close loop-local Notion client before loop teardown.
+            async def _run() -> JsonDict:
+                try:
+                    return await self.abuild_snapshot()
+                finally:
+                    try:
+                        notion = try_get_notion_service()
+                        if notion is not None:
+                            await notion.aclose_current_loop()
+                    except Exception:
+                        pass
+
+            return asyncio.run(_run())
 
         # Ima running event loop → ne smijemo zvati asyncio.run (to pravi warning)
         raise RuntimeError("Use await abuild_snapshot() inside event loop")
@@ -168,6 +180,15 @@ class WorldStateEngine:
                     },
                 },
             }
+
+            # Best-effort: operational diagnostics (does not affect determinism expectations).
+            try:
+                notion = try_get_notion_service()
+                if notion is not None and hasattr(notion, "client_stats"):
+                    snapshot.setdefault("trace", {})
+                    snapshot["trace"]["notion_client"] = notion.client_stats()
+            except Exception:
+                pass
 
             # enterprise locked: ready flags (success)
             snapshot["ready"] = True

@@ -363,21 +363,35 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
 
         # ------------------------------------------------------------
         # READ SNAPSHOT INJECTION (CANON)
-        # The UI may send an empty snapshot; for dashboard/show requests
-        # we must hydrate from server-side read snapshot so the advisor
-        # can answer accurately (no Notion Ops arming required for reads).
+        # The UI may send an empty snapshot; for dashboard/show *and* planning/advisory
+        # prompts that depend on goals/tasks/projects/KPIs context, we should hydrate
+        # from server-side read snapshot (no Notion Ops arming required for reads).
         # ------------------------------------------------------------
         try:
             t0 = (prompt or "").strip().lower()
+
+            wants_target = bool(
+                re.search(
+                    r"(?i)\b(cilj\w*|goal\w*|task\w*|zadat\w*|zadac\w*|kpi\w*|project\w*|projekat\w*)\b",
+                    t0,
+                )
+            )
+
             wants_show = bool(
                 re.search(
-                    r"(?i)\b(pokazi|poka\u017ei|prika\u017ei|prikazi|izlistaj|show|list|what\s+goals|which\s+goals|which\s+tasks)\b",
+                    r"(?i)\b(pokazi|poka\u017ei|prika\u017ei|prikazi|izlistaj|show|list|pogledaj|procitaj|read|what\s+goals|which\s+goals|which\s+tasks)\b",
                     t0,
                 )
-                and re.search(
-                    r"(?i)\b(cilj\w*|goal\w*|task\w*|zadat\w*|zadac\w*|dashboard|stanje|status)\b",
+                and wants_target
+            )
+
+            wants_plan = bool(
+                re.search(
+                    r"(?i)\b(predlo\u017ei|predlozi|predlag\w*|suggest|recommend|idej\w*)\b",
                     t0,
                 )
+                and wants_target
+                and ("notion" in t0 or "zapis" in t0 or "upis" in t0)
             )
 
             snap_in = getattr(payload, "snapshot", None)
@@ -394,6 +408,19 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                     ks = sys_snap.get("knowledge_snapshot")
                     if isinstance(ks, dict) and ks:
                         payload.snapshot = ks
+
+            # Planning: prefer cached knowledge snapshot (do not hit Notion live here).
+            if wants_plan and not has_snap and not wants_show:
+                try:
+                    from services.knowledge_snapshot_service import (  # noqa: PLC0415
+                        KnowledgeSnapshotService,
+                    )
+
+                    ks2 = KnowledgeSnapshotService.get_snapshot()
+                    if isinstance(ks2, dict) and ks2:
+                        payload.snapshot = ks2
+                except Exception:
+                    pass
         except Exception:
             # Fail-soft: never break /api/chat because snapshot hydration failed.
             pass

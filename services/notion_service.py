@@ -199,8 +199,9 @@ class NotionService:
             raise RuntimeError("NotionService requires api_key")
 
         self._api_key = api_key
-        self._client: Optional[httpx.AsyncClient] = None
-        self._client_loop_id: Optional[int] = None
+        # Enterprise: httpx AsyncClient is effectively tied to the event loop.
+        # Keep one client per running loop to avoid cross-loop reuse/close issues.
+        self._clients_by_loop: Dict[int, httpx.AsyncClient] = {}
 
         # Canonical db map
         self.goals_db_id = (goals_db_id or "").strip()
@@ -342,47 +343,76 @@ class NotionService:
     # lifecycle
     # ----------------------------
     async def _get_client(self) -> httpx.AsyncClient:
-        # NOTE: approval execution can be invoked from different asyncio loops
-        # (e.g., background workers using asyncio.run). httpx AsyncClient is
-        # loop-bound in practice; reusing it across loops can raise
-        # "RuntimeError: Event loop is closed".
         try:
             loop_id = id(asyncio.get_running_loop())
         except Exception:
-            loop_id = None
+            loop_id = 0
 
-        if self._client is not None and loop_id is not None:
-            if self._client_loop_id == loop_id:
-                return self._client
-            # loop changed: close old client and recreate
-            try:
-                await self._client.aclose()
-            except Exception:
-                logger.warning("NotionService client close failed", exc_info=True)
-            self._client = None
-            self._client_loop_id = None
-
-        if self._client is not None:
-            return self._client
+        c = self._clients_by_loop.get(loop_id)
+        if c is not None:
+            return c
 
         headers = {
             "Authorization": f"Bearer {self._api_key}",
             "Notion-Version": self.NOTION_VERSION,
             "Content-Type": "application/json",
         }
-        self._client = httpx.AsyncClient(headers=headers, timeout=30.0)
-        self._client_loop_id = loop_id
-        return self._client
+        c = httpx.AsyncClient(headers=headers, timeout=30.0)
+        self._clients_by_loop[loop_id] = c
+        return c
+
+    def client_stats(self) -> Dict[str, Any]:
+        """Lightweight diagnostics for observability/ops.
+
+        Returns a small dict safe to include in traces/logs.
+        """
+        try:
+            cur_loop_id = id(asyncio.get_running_loop())
+        except Exception:
+            cur_loop_id = None
+        return {
+            "clients_by_loop": len(self._clients_by_loop),
+            "current_loop_id": cur_loop_id,
+        }
+
+    async def aclose_current_loop(self) -> None:
+        """Close only the client bound to the current running event loop."""
+        try:
+            loop_id = id(asyncio.get_running_loop())
+        except Exception:
+            loop_id = 0
+
+        c = self._clients_by_loop.pop(loop_id, None)
+        if c is None:
+            return
+        try:
+            await c.aclose()
+        except Exception as exc:
+            msg = str(exc)
+            if isinstance(exc, RuntimeError) and "Event loop is closed" in msg:
+                logger.debug(
+                    "NotionService client close skipped (event loop closed)",
+                    exc_info=True,
+                )
+            else:
+                logger.warning("NotionService client close failed", exc_info=True)
 
     async def aclose(self) -> None:
-        c = self._client
-        self._client = None
-        self._client_loop_id = None
-        if c is not None:
+        # Best-effort: close all known clients; cross-loop close may fail during teardown.
+        clients = self._clients_by_loop
+        self._clients_by_loop = {}
+        for _, c in clients.items():
             try:
                 await c.aclose()
-            except Exception:
-                logger.warning("NotionService client close failed", exc_info=True)
+            except Exception as exc:
+                msg = str(exc)
+                if isinstance(exc, RuntimeError) and "Event loop is closed" in msg:
+                    logger.debug(
+                        "NotionService client close skipped (event loop closed)",
+                        exc_info=True,
+                    )
+                else:
+                    logger.warning("NotionService client close failed", exc_info=True)
 
     # ----------------------------
     # preflight (enterprise)
@@ -667,6 +697,15 @@ class NotionService:
                     ]
                     rec["options"] = [n for n in names if n.strip()]
 
+            if p_type == "multi_select":
+                ms = p.get("multi_select")
+                if isinstance(ms, dict) and isinstance(ms.get("options"), list):
+                    opts = [o for o in ms.get("options") if isinstance(o, dict)]
+                    names = [
+                        o.get("name") for o in opts if isinstance(o.get("name"), str)
+                    ]
+                    rec["options"] = [n for n in names if n.strip()]
+
             if p_type == "relation":
                 rel = p.get("relation")
                 if isinstance(rel, dict) and isinstance(rel.get("database_id"), str):
@@ -701,53 +740,19 @@ class NotionService:
         if not isinstance(schema, dict) or not schema:
             return
 
-        schema_names = [k for k in schema.keys() if isinstance(k, str) and k.strip()]
-        schema_by_cf = {k.casefold(): k for k in schema_names}
-        title_props = [
-            k for k in schema_names if (schema.get(k) or {}).get("type") == "title"
-        ]
+        try:
+            from services.notion_patch_validation import (  # noqa: PLC0415
+                SchemaNameResolver,
+            )
+
+            _resolver = SchemaNameResolver(schema)
+        except Exception:
+            _resolver = None
 
         def _resolve_schema_prop_name(raw_name: str) -> str:
-            cand = (raw_name or "").strip()
-            if not cand:
+            if _resolver is None:
                 return ""
-            if cand in schema:
-                return cand
-
-            cf = cand.casefold()
-            if cf in schema_by_cf:
-                return schema_by_cf[cf]
-
-            internal = ""
-            try:
-                from services.notion_keyword_mapper import (  # noqa: PLC0415
-                    NotionKeywordMapper,
-                )
-
-                internal = NotionKeywordMapper.translate_property_name(cand)
-                km = NotionKeywordMapper.normalize_field_name(cand)
-                if isinstance(km, str) and km in schema:
-                    return km
-                if isinstance(km, str) and km.casefold() in schema_by_cf:
-                    return schema_by_cf[km.casefold()]
-            except Exception:
-                internal = ""
-
-            if internal in {"name", "title"} and title_props:
-                return title_props[0]
-
-            if internal == "due_date":
-                if "Due Date" in schema:
-                    return "Due Date"
-                if "Deadline" in schema:
-                    return "Deadline"
-            if internal == "deadline":
-                if "Deadline" in schema:
-                    return "Deadline"
-                if "Due Date" in schema:
-                    return "Due Date"
-
-            return ""
+            return _resolver.resolve(raw_name)
 
         def _as_str(v: Any) -> str:
             if v is None:
@@ -817,6 +822,20 @@ class NotionService:
             if p_type in {"select", "status"}:
                 s = _as_str(raw)
                 if s:
+                    opts0 = st.get("options")
+                    opts = (
+                        [o for o in opts0 if isinstance(o, str) and o.strip()]
+                        if isinstance(opts0, list)
+                        else []
+                    )
+                    # Normalize option by case-insensitive match.
+                    if opts and s not in opts:
+                        cf = s.casefold()
+                        matches = [o for o in opts if o.casefold() == cf]
+                        if len(matches) == 1:
+                            s = matches[0]
+                        elif warnings is not None:
+                            warnings.append(f"wrapper_patch_invalid_option:{fname}:{s}")
                     property_specs[fname] = {"type": p_type, "name": s}
                 continue
 
@@ -827,6 +846,30 @@ class NotionService:
                     s = _as_str(raw)
                     names = [x.strip() for x in s.split(",") if x.strip()] if s else []
                 if names:
+                    opts0 = st.get("options")
+                    opts = (
+                        [o for o in opts0 if isinstance(o, str) and o.strip()]
+                        if isinstance(opts0, list)
+                        else []
+                    )
+                    if opts:
+                        normed: List[str] = []
+                        for n0 in names:
+                            if n0 in opts:
+                                normed.append(n0)
+                                continue
+                            cf = n0.casefold()
+                            matches = [o for o in opts if o.casefold() == cf]
+                            if len(matches) == 1:
+                                normed.append(matches[0])
+                            else:
+                                normed.append(n0)
+                                if warnings is not None:
+                                    warnings.append(
+                                        f"wrapper_patch_invalid_option:{fname}:{n0}"
+                                    )
+                        names = normed
+
                     property_specs[fname] = {"type": "multi_select", "names": names}
                 continue
 
@@ -1739,6 +1782,7 @@ class NotionService:
         wrapper_patch = params.get("wrapper_patch")
 
         warnings: List[str] = []
+        build_warnings: List[Dict[str, Any]] = []
 
         properties = params.get("properties")
         if isinstance(properties, dict) and properties:
@@ -1749,14 +1793,25 @@ class NotionService:
             property_specs = params.get("property_specs")
             if not isinstance(property_specs, dict) or not property_specs:
                 raise RuntimeError("create_page requires db_key and properties")
-
             if isinstance(wrapper_patch, dict) and wrapper_patch:
-                await self._apply_wrapper_patch_to_property_specs(
-                    db_key=db_key,
-                    property_specs=property_specs,
-                    wrapper_patch=wrapper_patch,
-                    warnings=[],
-                )
+                try:
+                    from services.notion_property_specs_builder import (  # noqa: PLC0415
+                        validate_and_build_property_specs,
+                    )
+
+                    built = validate_and_build_property_specs(
+                        db_key=db_key,
+                        property_specs_in=property_specs,
+                        wrapper_patch_in=wrapper_patch,
+                    )
+                    if isinstance(built.get("property_specs"), dict):
+                        property_specs = built.get("property_specs")
+                    if isinstance(built.get("warnings"), list):
+                        build_warnings = [
+                            w for w in built.get("warnings") if isinstance(w, dict)
+                        ]
+                except Exception:
+                    build_warnings = []
             notion_properties = await self._build_properties_from_property_specs(
                 db_id=db_id, property_specs=property_specs, warnings=warnings
             )
@@ -1784,6 +1839,7 @@ class NotionService:
                 "url": page_url or None,
                 "raw": res,
                 "warnings": warnings,
+                "build_warnings": build_warnings,
             },
             "metadata": metadata,
         }
@@ -1833,13 +1889,26 @@ class NotionService:
         wrapper_patch = params.get("wrapper_patch")
 
         warnings: List[str] = []
+        build_warnings: List[Dict[str, Any]] = []
         if isinstance(wrapper_patch, dict) and wrapper_patch:
-            await self._apply_wrapper_patch_to_property_specs(
-                db_key=db_key,
-                property_specs=property_specs,
-                wrapper_patch=wrapper_patch,
-                warnings=[],
-            )
+            try:
+                from services.notion_property_specs_builder import (  # noqa: PLC0415
+                    validate_and_build_property_specs,
+                )
+
+                built = validate_and_build_property_specs(
+                    db_key=db_key,
+                    property_specs_in=property_specs,
+                    wrapper_patch_in=wrapper_patch,
+                )
+                if isinstance(built.get("property_specs"), dict):
+                    property_specs = built.get("property_specs")
+                if isinstance(built.get("warnings"), list):
+                    build_warnings = [
+                        w for w in built.get("warnings") if isinstance(w, dict)
+                    ]
+            except Exception:
+                build_warnings = []
 
         # Build Notion properties
         notion_properties = await self._build_properties_from_property_specs(
@@ -1867,6 +1936,7 @@ class NotionService:
                 "url": page_url or None,
                 "raw": res,
                 "warnings": warnings,
+                "build_warnings": build_warnings,
             },
             "metadata": metadata,
         }
@@ -1914,13 +1984,26 @@ class NotionService:
             property_specs.update(extra_specs)
 
         wrapper_patch = params.get("wrapper_patch")
+        build_warnings: List[Dict[str, Any]] = []
         if isinstance(wrapper_patch, dict) and wrapper_patch:
-            await self._apply_wrapper_patch_to_property_specs(
-                db_key=db_key,
-                property_specs=property_specs,
-                wrapper_patch=wrapper_patch,
-                warnings=[],
-            )
+            try:
+                from services.notion_property_specs_builder import (  # noqa: PLC0415
+                    validate_and_build_property_specs,
+                )
+
+                built = validate_and_build_property_specs(
+                    db_key=db_key,
+                    property_specs_in=property_specs,
+                    wrapper_patch_in=wrapper_patch,
+                )
+                if isinstance(built.get("property_specs"), dict):
+                    property_specs = built.get("property_specs")
+                if isinstance(built.get("warnings"), list):
+                    build_warnings = [
+                        w for w in built.get("warnings") if isinstance(w, dict)
+                    ]
+            except Exception:
+                build_warnings = []
 
         # Collect warnings from property_specs resolution and relation linking
         warnings: List[str] = []
@@ -1977,6 +2060,7 @@ class NotionService:
                 "url": page_url or None,
                 "raw": res,
                 "warnings": warnings,
+                "build_warnings": build_warnings,
             },
             "metadata": metadata,
         }
@@ -2029,13 +2113,26 @@ class NotionService:
 
         # Collect warnings from property_specs resolution and relation linking
         warnings: List[str] = []
+        build_warnings: List[Dict[str, Any]] = []
         if isinstance(wrapper_patch, dict) and wrapper_patch:
-            await self._apply_wrapper_patch_to_property_specs(
-                db_key=db_key,
-                property_specs=property_specs,
-                wrapper_patch=wrapper_patch,
-                warnings=[],
-            )
+            try:
+                from services.notion_property_specs_builder import (  # noqa: PLC0415
+                    validate_and_build_property_specs,
+                )
+
+                built = validate_and_build_property_specs(
+                    db_key=db_key,
+                    property_specs_in=property_specs,
+                    wrapper_patch_in=wrapper_patch,
+                )
+                if isinstance(built.get("property_specs"), dict):
+                    property_specs = built.get("property_specs")
+                if isinstance(built.get("warnings"), list):
+                    build_warnings = [
+                        w for w in built.get("warnings") if isinstance(w, dict)
+                    ]
+            except Exception:
+                build_warnings = []
 
         # Build Notion properties
         notion_properties = await self._build_properties_from_property_specs(
@@ -2086,6 +2183,7 @@ class NotionService:
                 "url": page_url or None,
                 "raw": res,
                 "warnings": warnings,
+                "build_warnings": build_warnings,
             },
             "metadata": metadata,
         }
@@ -2140,13 +2238,26 @@ class NotionService:
         warnings: List[str] = []
 
         wrapper_patch = params.get("wrapper_patch")
+        build_warnings: List[Dict[str, Any]] = []
         if isinstance(wrapper_patch, dict) and wrapper_patch and db_key:
-            await self._apply_wrapper_patch_to_property_specs(
-                db_key=db_key,
-                property_specs=property_specs,
-                wrapper_patch=wrapper_patch,
-                warnings=[],
-            )
+            try:
+                from services.notion_property_specs_builder import (  # noqa: PLC0415
+                    validate_and_build_property_specs,
+                )
+
+                built = validate_and_build_property_specs(
+                    db_key=db_key,
+                    property_specs_in=property_specs,
+                    wrapper_patch_in=wrapper_patch,
+                )
+                if isinstance(built.get("property_specs"), dict):
+                    property_specs = built.get("property_specs")
+                if isinstance(built.get("warnings"), list):
+                    build_warnings = [
+                        w for w in built.get("warnings") if isinstance(w, dict)
+                    ]
+            except Exception:
+                build_warnings = []
 
         # Build Notion properties
         notion_properties: Dict[str, Any] = {}
@@ -2193,6 +2304,7 @@ class NotionService:
                 "url": page_url or None,
                 "raw": res,
                 "warnings": warnings,
+                "build_warnings": build_warnings,
             },
             "metadata": metadata,
         }

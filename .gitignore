@@ -113,3 +113,12 @@ tree.txt
 .data/
 .data/decision_outcomes.json
 test_bosnian_parsing.py
+
+# =========================
+# Local preview / schema exports (do not commit by default)
+# =========================
+/_payload.json
+/_preview.json
+/_goals_db.json
+/_tasks_db.json
+/_projects_db.json

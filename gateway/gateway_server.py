@@ -591,64 +591,13 @@ def _unwrap_proposal_wrapper_or_raise(
         params if isinstance(params, dict) else {}
     )
 
-    def _extract_prompt_kv_patch(prompt_text: str) -> Dict[str, Any]:
-        """Best-effort extraction of arbitrary Notion fields from the prompt.
-
-        Goal: let CEO type "Field: Value" pairs directly in the prompt (Level, Type,
-        Activity State, AI Agent, Assigned To, etc) and pass them downstream as
-        wrapper_patch so NotionService can apply them using live DB schema.
-
-        This parser is intentionally conservative:
-          - only captures explicit "Key: Value" segments
-          - special-cases Description/Opis to capture the full tail
-          - ignores any inline JSON after the prompt
-        """
-        if not isinstance(prompt_text, str) or not prompt_text.strip():
-            return {}
-
-        s = prompt_text.strip()
-        # Drop any appended JSON blob (often pasted for debugging)
-        if "{" in s:
-            s = s.split("{", 1)[0].strip()
-
-        s = s.replace("\r\n", "\n").replace("\r", "\n")
-
-        out: Dict[str, Any] = {}
-
-        # Capture Description/Opis as the full tail (can contain commas)
-        m_desc = re.search(r"(?is)\b(description|opis)\s*[:\-\u2013\u2014]\s*(.+)$", s)
-        if m_desc:
-            out["Description"] = (m_desc.group(2) or "").strip().strip(",;")
-            s = s[: m_desc.start()].strip()
-
-        # Normalize remaining text for splitting
-        s2 = re.sub(r"[\n\t]+", ", ", s)
-        s2 = re.sub(r"\s*,\s*", ", ", s2)
-        s2 = re.sub(r"\s+", " ", s2).strip()
-
-        # Split on commas/semicolons for key:value pairs
-        for seg in re.split(r"\s*[,;]\s*", s2):
-            if not seg:
-                continue
-            m = re.match(
-                r"^\s*([A-Za-z][A-Za-z0-9 _&/\-]{0,60})\s*[:\-\u2013\u2014]\s*(.+?)\s*$",
-                seg,
-            )
-            if not m:
-                continue
-            key = (m.group(1) or "").strip()
-            val = (m.group(2) or "").strip()
-            if not key or not val:
-                continue
-            # Avoid accidentally treating the leading command phrase as a field.
-            if re.search(
-                r"(?i)\b(kreiraj|napravi|create)\s+(cilj|goal|task|zadatak|project|projekat|projekt)\b",
-                key,
-            ):
-                continue
-            out[key] = val
-
-        return out
+    # SSOT: prompt normalization + patch extraction lives in one place.
+    from services.notion_write_intent_normalizer import (  # noqa: PLC0415
+        coerce_create_page_name_from_prompt,
+        normalize_prompt_for_property_parse,
+        normalize_wrapper_prompt_and_patch,
+        strip_prefixes_for_title,
+    )
 
     # ? Robust prompt extraction: params.prompt OR metadata.prompt OR metadata.wrapper.prompt
     prompt: Optional[str] = None
@@ -683,15 +632,12 @@ def _unwrap_proposal_wrapper_or_raise(
             detail="ceo.command.propose cannot enter execution. Missing prompt for unwrap/translation (expected params.prompt or metadata.wrapper.prompt).",
         )
 
-    # Merge prompt-derived patches with explicit UI patch.
-    # Explicit UI patch always wins.
+    # Merge prompt-derived patches with explicit UI patch (UI wins).
     try:
-        prompt_patch = _extract_prompt_kv_patch(prompt)
-        if isinstance(prompt_patch, dict) and prompt_patch:
-            merged_patch = dict(prompt_patch)
-            if isinstance(wrapper_patch, dict) and wrapper_patch:
-                merged_patch.update(wrapper_patch)
-            wrapper_patch = merged_patch
+        _title0, merged = normalize_wrapper_prompt_and_patch(
+            prompt=prompt, wrapper_patch=wrapper_patch
+        )
+        wrapper_patch = merged
     except Exception:
         pass
 
@@ -708,62 +654,7 @@ def _unwrap_proposal_wrapper_or_raise(
         if isinstance(p_type, str) and p_type.strip():
             hint_type = p_type.strip()
 
-    def _strip_prefixes_for_title(s: str) -> str:
-        t = (s or "").strip()
-        if not t:
-            return t
-
-        t2 = re.sub(r"^(task|zadatak)\s*[:\-–—]\s*", "", t, flags=re.IGNORECASE).strip()
-        t2 = re.sub(
-            r"^(kreiraj|napravi|create)\s+(task|zadatak|project|projekat|projekt|goal|cilj)\w*\s*(?:u\s+notionu)?\s*[:\-–—,;]?\s*",
-            "",
-            t2,
-            flags=re.IGNORECASE,
-        ).strip()
-
-        # Stop title at first recognized property segment.
-        # Examples:
-        #   "OVO, STATUS: Active" -> "OVO"
-        #   "OVO, Priority Low"  -> "OVO"
-        prop_start = None
-        prop_pat = re.compile(
-            r"(?i)(?:^|[,;]|\s{2,})\s*(status|priority|deadline|due\s+date|description)\b\s*(?:[:\-–—]|\s+)",
-        )
-        m = prop_pat.search(t2)
-        start1 = m.start() if (m and m.start() > 0) else None
-
-        # Generic: if the user included any explicit `Key: Value` pairs (Level/Type/Assigned To/etc)
-        # do not treat them as part of the title.
-        m2 = re.search(
-            r"(?i)(?:^|[,;]|\s{2,})\s*[A-Za-z][A-Za-z0-9 _&/\-]{0,60}\s*[:\-–—]\s*\S+",
-            t2,
-        )
-        start2 = m2.start() if (m2 and m2.start() > 0) else None
-
-        if start1 is not None and start2 is not None:
-            prop_start = min(start1, start2)
-        elif start1 is not None:
-            prop_start = start1
-        elif start2 is not None:
-            prop_start = start2
-        if prop_start is not None:
-            cut = t2[:prop_start].strip().rstrip(",;:-–—")
-            return cut or t2
-
-        return t2 or t
-
-    def _normalize_prompt_for_property_parse(s: str) -> str:
-        """Normalize prompt so property parsing works with multiline + loose separators."""
-        t = (s or "").strip()
-        if not t:
-            return t
-        # Treat newlines as separators (enterprise UX: multiline prompts)
-        t = re.sub(r"[\r\n]+", ", ", t)
-        # Normalize comma spacing
-        t = re.sub(r"\s*,\s*", ", ", t)
-        # Collapse multiple spaces
-        t = re.sub(r"\s+", " ", t).strip()
-        return t
+    # NOTE: strip_prefixes_for_title + normalize_prompt_for_property_parse now come from SSOT module.
 
     def _extract_relation_title_from_prompt(
         prompt_text: str, *, kind: str
@@ -809,6 +700,40 @@ def _unwrap_proposal_wrapper_or_raise(
             and hint_intent.strip().lower()
             in {"batch_request", "batch", "branch_request"}
         ):
+            # UI/enterprise path: allow explicit operations list.
+            ops_in = params.get("operations") if isinstance(params, dict) else None
+            if isinstance(ops_in, list) and ops_in:
+                ai_command = AICommand(
+                    command="notion_write",
+                    intent="batch_request",
+                    read_only=False,
+                    params={
+                        "operations": ops_in,
+                        "source_prompt": prompt.strip(),
+                        "wrapper_patch": dict(wrapper_patch) if wrapper_patch else None,
+                    },
+                    initiator=initiator,
+                    validated=True,
+                    metadata={
+                        **(metadata if isinstance(metadata, dict) else {}),
+                        "canon": "execute_raw_unwrap_batch_explicit_ops",
+                        "endpoint": "/api/execute/raw",
+                        "wrapper": {
+                            "prompt": prompt.strip(),
+                            "wrapper_patch": wrapper_patch,
+                        },
+                    },
+                )
+
+                # Ensure downstream executor can apply schema-backed patches.
+                try:
+                    if isinstance(ai_command.params, dict) and wrapper_patch:
+                        ai_command.params["wrapper_patch"] = dict(wrapper_patch)
+                except Exception:
+                    pass
+
+                return ai_command
+
             from services.branch_request_handler import BranchRequestHandler  # noqa: PLC0415
 
             br = BranchRequestHandler.process_branch_request(prompt.strip())
@@ -916,8 +841,8 @@ def _unwrap_proposal_wrapper_or_raise(
             hi = hint_intent.strip().lower()
             if hi in {"create_task", "create_goal", "create_project", "create_page"}:
                 raw_prompt = prompt.strip()
-                norm_prompt = _normalize_prompt_for_property_parse(raw_prompt)
-                title = _strip_prefixes_for_title(norm_prompt)
+                norm_prompt = normalize_prompt_for_property_parse(raw_prompt)
+                title = strip_prefixes_for_title(norm_prompt)
                 if title:
                     # create_page uses property_specs, while create_* uses structured params.
                     extra_params: Dict[str, Any]
@@ -1119,8 +1044,8 @@ def _unwrap_proposal_wrapper_or_raise(
             md[k] = v
     ai_command.metadata = md
 
-    # Safety net: if translation produced a polluted Name for create_page,
-    # derive a clean title from the wrapper prompt (stop at first Key: Value pair).
+    # Safety net (SSOT): if translation produced a polluted Name for create_page,
+    # rewrite it from wrapper prompt.
     try:
         if (
             getattr(ai_command, "command", None) == "notion_write"
@@ -1130,28 +1055,15 @@ def _unwrap_proposal_wrapper_or_raise(
         ):
             p0 = getattr(ai_command, "params", None)
             p0 = p0 if isinstance(p0, dict) else {}
-            ps = p0.get("property_specs")
-            ps = ps if isinstance(ps, dict) else {}
-            name_spec = ps.get("Name")
-            name_spec = name_spec if isinstance(name_spec, dict) else {}
-            name_text = name_spec.get("text")
-
-            if isinstance(name_text, str) and name_text.strip():
-                looks_like_kv = re.search(
-                    r"(?i)(?:^|[,;]|\s{2,})\s*[A-Za-z][A-Za-z0-9 _&/\-]{0,60}\s*[:\-–—]\s*\S+",
-                    name_text,
+            ps0 = p0.get("property_specs")
+            if isinstance(ps0, dict) and ps0:
+                ps1 = coerce_create_page_name_from_prompt(
+                    prompt=prompt.strip(), property_specs=ps0
                 )
-                if looks_like_kv:
-                    norm_prompt = _normalize_prompt_for_property_parse(prompt.strip())
-                    clean_title = _strip_prefixes_for_title(norm_prompt)
-                    if isinstance(clean_title, str) and clean_title.strip():
-                        ps = dict(ps)
-                        name_spec = dict(name_spec)
-                        name_spec["text"] = clean_title.strip()
-                        ps["Name"] = name_spec
-                        p0 = dict(p0)
-                        p0["property_specs"] = ps
-                        ai_command.params = p0
+                if ps1 is not ps0:
+                    p0 = dict(p0)
+                    p0["property_specs"] = ps1
+                    ai_command.params = p0
     except Exception:
         pass
 
@@ -2078,6 +1990,18 @@ def _sanitize_property_specs_for_preview(
     return out
 
 
+def _notion_patch_validation_mode() -> str:
+    """Global validation mode.
+
+    - warn (default): surface warnings, never blocks.
+    - strict: treat key validation issues as errors.
+    """
+
+    v = os.getenv("NOTION_PATCH_VALIDATION_MODE") or os.getenv("NOTION_VALIDATION_MODE")
+    v = (v or "").strip().lower()
+    return "strict" if v == "strict" else "warn"
+
+
 # ================================================================
 # /api/execute — EXECUTION PATH (NL INPUT)
 # ================================================================
@@ -2184,6 +2108,124 @@ async def execute_raw_command(payload: Dict[str, Any] = Body(...)):
         read_only=normalized.read_only,
         metadata=normalized.metadata if isinstance(normalized.metadata, dict) else {},
     )
+
+    # Strict-mode validation: block creation of executions that would be rejected later.
+    # Default is warn-only (no blocking) unless NOTION_PATCH_VALIDATION_MODE=strict.
+    try:
+        if (
+            _notion_patch_validation_mode() == "strict"
+            and getattr(ai_command, "command", None) == "notion_write"
+        ):
+            intent0 = getattr(ai_command, "intent", None)
+            params0 = getattr(ai_command, "params", None)
+            params0 = params0 if isinstance(params0, dict) else {}
+
+            db_key0: Optional[str] = None
+            if intent0 in {"create_goal"}:
+                db_key0 = "goals"
+            elif intent0 in {"create_task"}:
+                db_key0 = "tasks"
+            elif intent0 in {"create_project"}:
+                db_key0 = "projects"
+            elif intent0 in {"create_page", "update_page"}:
+                dk = params0.get("db_key")
+                if isinstance(dk, str) and dk.strip():
+                    db_key0 = dk.strip()
+
+            if db_key0:
+                wrapper_patch0 = params0.get("wrapper_patch")
+                wrapper_patch0 = (
+                    wrapper_patch0 if isinstance(wrapper_patch0, dict) else None
+                )
+
+                property_specs0: Dict[str, Any] = {}
+                if intent0 in {"create_page", "update_page"}:
+                    raw_specs0 = (
+                        params0.get("property_specs")
+                        or params0.get("properties")
+                        or params0.get("notion_properties")
+                    )
+                    if isinstance(raw_specs0, dict):
+                        property_specs0 = dict(raw_specs0)
+                else:
+                    # Mirror preview mapping for create_goal/create_task/create_project.
+                    title0 = _ensure_str(params0.get("title")).strip()
+                    desc0 = _ensure_str(params0.get("description")).strip()
+                    deadline0 = _ensure_str(params0.get("deadline")).strip()
+                    priority0 = _ensure_str(params0.get("priority")).strip()
+                    status0 = _ensure_str(params0.get("status")).strip()
+                    if title0:
+                        property_specs0["Name"] = {"type": "title", "text": title0}
+                    if desc0:
+                        property_specs0["Description"] = {
+                            "type": "rich_text",
+                            "text": desc0,
+                        }
+                    if deadline0:
+                        property_specs0["Deadline"] = {
+                            "type": "date",
+                            "start": deadline0,
+                        }
+                    if priority0:
+                        property_specs0["Priority"] = {
+                            "type": "select",
+                            "name": priority0,
+                        }
+                    if status0:
+                        property_specs0["Status"] = {"type": "status", "name": status0}
+                    extra0 = params0.get("property_specs")
+                    if isinstance(extra0, dict) and extra0:
+                        property_specs0.update(extra0)
+
+                try:
+                    from services.notion_service import get_or_init_notion_service  # noqa: PLC0415
+
+                    svc0 = get_or_init_notion_service()
+                    schema0 = (
+                        await svc0.get_fields_schema(db_key0)
+                        if svc0 is not None
+                        else {}
+                    )
+                except Exception:
+                    schema0 = {}
+
+                try:
+                    from services.notion_patch_validation import (  # noqa: PLC0415
+                        fallback_schema_for_db_key,
+                        validate_notion_payload,
+                    )
+
+                    if not isinstance(schema0, dict) or not schema0:
+                        schema0 = fallback_schema_for_db_key(db_key0)
+
+                    report0 = validate_notion_payload(
+                        db_key=db_key0,
+                        schema=schema0 if isinstance(schema0, dict) else {},
+                        wrapper_patch=wrapper_patch0,
+                        property_specs=property_specs0,
+                        mode="strict",
+                    )
+                    if (
+                        isinstance(report0, dict)
+                        and report0.get("can_approve") is False
+                    ):
+                        raise HTTPException(
+                            status_code=400,
+                            detail={
+                                "error": "validation_failed",
+                                "message": "Strict validation failed for Notion payload.",
+                                "validation": report0,
+                            },
+                        )
+                except HTTPException:
+                    raise
+                except Exception:
+                    # Do not fail hard on validator errors.
+                    pass
+    except HTTPException:
+        raise
+    except Exception:
+        pass
 
     # CRITICAL: wrapper unwrapping may yield a meta-command (next_step).
     # Hard-block those *after* unwrap so they never enter approval/execution.
@@ -2371,6 +2413,28 @@ async def execute_preview_command(
             "Due Date": {"type": "date"},
             "Description": {"type": "rich_text"},
         }
+        # Deterministic options when we don't have live Notion schema.
+        try:
+            from services.review_contract import (  # noqa: PLC0415
+                GOAL_STATUS_OPTIONS,
+                KPI_STATUS_OPTIONS,
+                PRIORITY_OPTIONS,
+                PROJECT_STATUS_OPTIONS,
+                TASK_STATUS_OPTIONS,
+            )
+
+            if "Priority" in base:
+                base["Priority"].setdefault("options", list(PRIORITY_OPTIONS))
+            if k in {"goals", "goal"}:
+                base["Status"].setdefault("options", list(GOAL_STATUS_OPTIONS))
+            elif k in {"tasks", "task"}:
+                base["Status"].setdefault("options", list(TASK_STATUS_OPTIONS))
+            elif k in {"projects", "project"}:
+                base["Status"].setdefault("options", list(PROJECT_STATUS_OPTIONS))
+            elif k in {"kpi", "kpis"}:
+                base["Status"].setdefault("options", list(KPI_STATUS_OPTIONS))
+        except Exception:
+            pass
         if k in {"tasks", "task"}:
             base.setdefault("Goal", {"type": "relation"})
             base.setdefault("Project", {"type": "relation"})
@@ -2520,29 +2584,91 @@ async def execute_preview_command(
                 wrapper_patch0 if isinstance(wrapper_patch0, dict) else None
             )
 
-            async def _apply_patch_for_preview(
-                *, db_key: Optional[str], property_specs: Dict[str, Any]
-            ) -> None:
-                if not db_key or not isinstance(db_key, str) or not db_key.strip():
-                    return
-                if not wrapper_patch0 or not isinstance(property_specs, dict):
-                    return
+            validation_mode = _notion_patch_validation_mode()
+
+            async def _best_effort_schema_for_db_key(
+                db_key: Optional[str],
+            ) -> Dict[str, Any]:
+                dk = (db_key or "").strip()
+                if not dk:
+                    return {}
+                # Prefer schema already attached to review block.
+                if isinstance(review_block, dict):
+                    by_db0 = review_block.get("fields_schema_by_db_key")
+                    if isinstance(by_db0, dict):
+                        sch0 = by_db0.get(dk)
+                        if isinstance(sch0, dict) and sch0:
+                            return sch0
+
+                # Fallback to offline SSOT schema (no Notion API calls).
                 try:
-                    from services.notion_service import (  # noqa: PLC0415
-                        get_or_init_notion_service,
+                    from services.notion_schema_registry import (  # noqa: PLC0415
+                        NotionSchemaRegistry,
                     )
 
-                    svc = get_or_init_notion_service()
-                    if svc is None:
-                        return
-                    await svc._apply_wrapper_patch_to_property_specs(  # type: ignore[attr-defined]
-                        db_key=db_key.strip(),
-                        property_specs=property_specs,
+                    return NotionSchemaRegistry.offline_validation_schema(dk)
+                except Exception:
+                    return {}
+
+            async def _validation_for_preview(
+                *, db_key: Optional[str], property_specs: Dict[str, Any]
+            ) -> Optional[Dict[str, Any]]:
+                dk = (db_key or "").strip()
+                if not dk:
+                    return None
+                try:
+                    from services.notion_patch_validation import (  # noqa: PLC0415
+                        validate_notion_payload,
+                    )
+
+                    schema0 = await _best_effort_schema_for_db_key(dk)
+                    return validate_notion_payload(
+                        db_key=dk,
+                        schema=schema0 if isinstance(schema0, dict) else {},
                         wrapper_patch=wrapper_patch0,
-                        warnings=[],
+                        property_specs=property_specs,
+                        mode=validation_mode,
                     )
                 except Exception:
-                    return
+                    return None
+
+            def _build_specs_for_preview(
+                *,
+                db_key: Optional[str],
+                property_specs: Dict[str, Any],
+            ) -> Dict[str, Any]:
+                dk = (db_key or "").strip()
+                if not dk:
+                    return {
+                        "property_specs": property_specs,
+                        "wrapper_patch_out": dict(wrapper_patch0)
+                        if isinstance(wrapper_patch0, dict)
+                        else {},
+                        "warnings": [],
+                        "validated": True,
+                    }
+
+                try:
+                    from services.notion_property_specs_builder import (  # noqa: PLC0415
+                        validate_and_build_property_specs,
+                    )
+
+                    return validate_and_build_property_specs(
+                        db_key=dk,
+                        property_specs_in=property_specs,
+                        wrapper_patch_in=wrapper_patch0
+                        if isinstance(wrapper_patch0, dict)
+                        else None,
+                    )
+                except Exception:
+                    return {
+                        "property_specs": property_specs,
+                        "wrapper_patch_out": dict(wrapper_patch0)
+                        if isinstance(wrapper_patch0, dict)
+                        else {},
+                        "warnings": [],
+                        "validated": True,
+                    }
 
             def _build_property_specs_from_payload(
                 payload: Dict[str, Any],
@@ -2600,12 +2726,14 @@ async def execute_preview_command(
                 else:
                     property_specs = {}
 
-                # Apply wrapper_patch (prompt/UI fields) before previewing.
-                await _apply_patch_for_preview(
+                built = _build_specs_for_preview(
                     db_key=db_key, property_specs=property_specs
                 )
                 property_specs = _sanitize_property_specs_for_preview(
-                    db_key=db_key, property_specs=property_specs
+                    db_key=db_key,
+                    property_specs=built.get("property_specs")
+                    if isinstance(built.get("property_specs"), dict)
+                    else {},
                 )
 
                 notion_block = {
@@ -2617,6 +2745,18 @@ async def execute_preview_command(
                     "property_specs": property_specs,
                     "properties_preview": _notion_properties_preview_from_property_specs(
                         property_specs
+                    ),
+                    "build": {
+                        "validated": bool(built.get("validated") is True),
+                        "warnings": built.get("warnings")
+                        if isinstance(built.get("warnings"), list)
+                        else [],
+                        "wrapper_patch_out": built.get("wrapper_patch_out")
+                        if isinstance(built.get("wrapper_patch_out"), dict)
+                        else {},
+                    },
+                    "validation": await _validation_for_preview(
+                        db_key=db_key, property_specs=property_specs
                     ),
                     "note": "Preview does not hit Notion. Final execution may still normalize select/status types based on DB schema.",
                 }
@@ -2656,13 +2796,15 @@ async def execute_preview_command(
                 if isinstance(extra_specs, dict) and extra_specs:
                     property_specs.update(extra_specs)
 
-                # Apply wrapper_patch (prompt/UI fields) before previewing.
-                await _apply_patch_for_preview(
+                built = _build_specs_for_preview(
                     db_key=db_key, property_specs=property_specs
                 )
 
                 property_specs = _sanitize_property_specs_for_preview(
-                    db_key=db_key, property_specs=property_specs
+                    db_key=db_key,
+                    property_specs=built.get("property_specs")
+                    if isinstance(built.get("property_specs"), dict)
+                    else {},
                 )
 
                 notion_block = {
@@ -2674,6 +2816,18 @@ async def execute_preview_command(
                     "property_specs": property_specs,
                     "properties_preview": _notion_properties_preview_from_property_specs(
                         property_specs
+                    ),
+                    "build": {
+                        "validated": bool(built.get("validated") is True),
+                        "warnings": built.get("warnings")
+                        if isinstance(built.get("warnings"), list)
+                        else [],
+                        "wrapper_patch_out": built.get("wrapper_patch_out")
+                        if isinstance(built.get("wrapper_patch_out"), dict)
+                        else {},
+                    },
+                    "validation": await _validation_for_preview(
+                        db_key=db_key, property_specs=property_specs
                     ),
                     "note": "Preview does not hit Notion. create_goal/create_task/create_project derive properties at execution time; this mirrors that mapping.",
                 }
@@ -2738,11 +2892,15 @@ async def execute_preview_command(
                             if isinstance(sp0, dict) and sp0:
                                 ps = dict(sp0)
 
-                        # Apply wrapper_patch to each operation preview (best-effort).
+                        built_row = None
                         if ps and isinstance(db_key, str) and db_key.strip():
-                            await _apply_patch_for_preview(
+                            built_row = _build_specs_for_preview(
                                 db_key=db_key, property_specs=ps
                             )
+                            if isinstance(built_row, dict) and isinstance(
+                                built_row.get("property_specs"), dict
+                            ):
+                                ps = built_row.get("property_specs")
 
                         ps = _sanitize_property_specs_for_preview(
                             db_key=db_key, property_specs=ps
@@ -2773,7 +2931,44 @@ async def execute_preview_command(
                             row["properties_preview"] = (
                                 _notion_properties_preview_from_property_specs(ps)
                             )
+                            if isinstance(built_row, dict):
+                                row["build"] = {
+                                    "validated": bool(
+                                        built_row.get("validated") is True
+                                    ),
+                                    "warnings": built_row.get("warnings")
+                                    if isinstance(built_row.get("warnings"), list)
+                                    else [],
+                                    "wrapper_patch_out": built_row.get(
+                                        "wrapper_patch_out"
+                                    )
+                                    if isinstance(
+                                        built_row.get("wrapper_patch_out"), dict
+                                    )
+                                    else {},
+                                }
+                            row["validation"] = await _validation_for_preview(
+                                db_key=db_key, property_specs=ps
+                            )
                         rows.append(row)
+
+                    # Summary for table UI.
+                    errors = 0
+                    warnings = 0
+                    for r0 in rows:
+                        v0 = r0.get("validation")
+                        if not isinstance(v0, dict):
+                            continue
+                        s0 = v0.get("summary")
+                        if isinstance(s0, dict):
+                            try:
+                                errors += int(s0.get("errors") or 0)
+                            except Exception:
+                                pass
+                            try:
+                                warnings += int(s0.get("warnings") or 0)
+                            except Exception:
+                                pass
 
                     notion_block = {
                         "type": "batch_preview",
@@ -2783,6 +2978,11 @@ async def execute_preview_command(
                             else []
                         ),
                         "rows": rows,
+                        "validation": {
+                            "mode": validation_mode,
+                            "summary": {"errors": errors, "warnings": warnings},
+                            "can_approve": errors == 0,
+                        },
                         "note": "Preview does not hit Notion. Final execution may still normalize select/status types based on DB schema.",
                     }
     except Exception:

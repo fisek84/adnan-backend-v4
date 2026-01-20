@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -44,6 +45,48 @@ def _wants_task(user_text: str) -> bool:
 def _wants_goal(user_text: str) -> bool:
     t = (user_text or "").lower()
     return "goal" in t or "cilj" in t
+
+
+def _llm_is_configured() -> bool:
+    # Enterprise: avoid hard dependency on OpenAI for basic advisory flows.
+    # If not configured, we must produce a useful deterministic response.
+    api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
+    return bool(api_key)
+
+
+def _is_empty_state_kickoff_prompt(user_text: str) -> bool:
+    t = (user_text or "").strip().lower()
+    if not t:
+        return False
+    # User is explicitly asking how to start from an empty state.
+    return bool(
+        re.search(
+            r"(?i)\b(prazn\w*\s+stanj\w*|nema\s+(cilj\w*|goal\w*|task\w*|zadat\w*)|kako\s+da\s+pocn\w*|kako\s+da\s+po\u010dn\w*)\b",
+            t,
+        )
+    )
+
+
+def _default_kickoff_text() -> str:
+    return (
+        "Nemam učitan Notion snapshot (ciljevi/taskovi) u ovom READ kontekstu. "
+        "To nije blokada — možemo krenuti odmah.\n\n"
+        "Odgovori kratko na ova 3 pitanja (da bih složio top 3 cilja i top 5 taskova):\n"
+        "1) Koji je glavni cilj za narednih 30 dana?\n"
+        "2) Koji KPI (broj) je najvažniji da pomjeriš?\n"
+        "3) Koliko sati sedmično realno imaš (npr. 5h / 10h / 20h)?\n\n"
+        "U međuvremenu, evo predloženog okvira (možemo ga odmah prilagoditi):\n\n"
+        "GOALS (top 3)\n"
+        "1) Definiši 30-dnevni fokus | draft | high\n"
+        "2) Postavi KPI target + baseline | draft | high\n"
+        "3) Uvedi weekly review ritam | draft | medium\n\n"
+        "TASKS (top 5)\n"
+        "1) Napiši 1-paragraf cilj + kriterij uspjeha | to do | high\n"
+        "2) Izaberi 1 KPI i upiši baseline | to do | high\n"
+        "3) Razbij cilj na 3 deliverable-a | to do | high\n"
+        "4) Zakazi weekly review (15 min) | to do | medium\n"
+        "5) Kreiraj prvu sedmičnu listu top 3 taskova | to do | medium\n"
+    )
 
 
 # -------------------------------
@@ -107,8 +150,19 @@ def _needs_structured_snapshot_answer(user_text: str) -> bool:
     if _is_propose_only_request(t):
         return False
 
-    # "prijedlog/predlog" = advisory (ne dashboard format)
-    if ("prijedlog" in t) or ("predlog" in t):
+    # Any "proposal/suggest" intent = advisory (not dashboard format).
+    # This prevents structured dashboard mode from triggering on phrases like
+    # "Možeš li predlagati ciljeve i taskove...".
+    if (
+        ("prijedlog" in t)
+        or ("predlog" in t)
+        or bool(
+            re.search(
+                r"(?i)\b(predlo\u017ei|predlozi|predlag\w*|suggest|recommend|idej\w*)\b",
+                t,
+            )
+        )
+    ):
         return False
 
     # If user is issuing an action (create/update/etc.), this is NOT dashboard mode.
@@ -729,6 +783,64 @@ def _deterministic_notion_ai_command_from_text(text: str) -> Optional[Dict[str, 
     return None
 
 
+def _snapshot_trace(
+    *,
+    raw_snapshot: Dict[str, Any],
+    snapshot_payload: Dict[str, Any],
+    goals: List[Dict[str, Any]],
+    tasks: List[Dict[str, Any]],
+    meta: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Small, stable diagnostic block for UI/ops.
+
+    Intentionally minimal: avoids leaking raw Notion data while still explaining
+    whether snapshot was present/hydrated and what it contained.
+    """
+
+    src = None
+    try:
+        src = snapshot_payload.get("source")
+    except Exception:
+        src = None
+
+    if not isinstance(src, str) or not src.strip():
+        src = str(meta.get("snapshot_source") or "").strip() or None
+
+    available = None
+    try:
+        available = snapshot_payload.get("available")
+    except Exception:
+        available = None
+
+    if available is None:
+        # If payload has content, treat it as available.
+        available = bool(snapshot_payload)
+
+    out: Dict[str, Any] = {
+        "present_in_request": bool(raw_snapshot),
+        "available": bool(available is True),
+        "source": src,
+        "goals_count": int(len(goals or [])),
+        "tasks_count": int(len(tasks or [])),
+    }
+
+    # Optional freshness fields (only if producer provides them)
+    for k in ("ttl_seconds", "age_seconds", "is_expired"):
+        v = snapshot_payload.get(k) if isinstance(snapshot_payload, dict) else None
+        if v is not None:
+            out[k] = v
+
+    # Presence-only (no content)
+    try:
+        dash = snapshot_payload.get("dashboard")
+        if isinstance(dash, dict):
+            out["has_dashboard"] = True
+    except Exception:
+        pass
+
+    return out
+
+
 # -------------------------------
 # Main agent entrypoint
 # -------------------------------
@@ -753,6 +865,14 @@ async def create_ceo_advisor_agent(
 
     # Inicijalizacija goals i tasks
     goals, tasks = _extract_goals_tasks(snapshot_payload)
+
+    snap_trace = _snapshot_trace(
+        raw_snapshot=raw_snapshot,
+        snapshot_payload=snapshot_payload,
+        goals=goals,
+        tasks=tasks,
+        meta=meta,
+    )
 
     structured_mode = _needs_structured_snapshot_answer(base_text)
 
@@ -786,7 +906,7 @@ async def create_ceo_advisor_agent(
                 ],
                 agent_id="ceo_advisor",
                 read_only=True,
-                trace={},
+                trace={"snapshot": snap_trace},
             )
 
         if (tgt in {"goals", "both"} and goals) or (tgt in {"tasks", "both"} and tasks):
@@ -802,7 +922,7 @@ async def create_ceo_advisor_agent(
                 proposed_commands=[],
                 agent_id="ceo_advisor",
                 read_only=True,
-                trace={},
+                trace={"snapshot": snap_trace},
             )
 
         # No data: give a precise read-path message instead of generic coaching.
@@ -824,29 +944,28 @@ async def create_ceo_advisor_agent(
             ],
             agent_id="ceo_advisor",
             read_only=True,
-            trace={},
+            trace={"snapshot": snap_trace},
         )
 
     # Continue processing normally...
-    # Only treat as "prazno" when snapshot itself is missing or explicitly empty,
-    # and there are truly no goals or tasks parsed out.
+    # If snapshot is empty and LLM isn't configured, return a deterministic
+    # kickoff response (tests/CI and offline deployments).
     if (
         structured_mode
         and not goals
         and not tasks
         and not snapshot_payload.get("goals")
         and not snapshot_payload.get("tasks")
+        and (_is_empty_state_kickoff_prompt(base_text) or not _llm_is_configured())
     ):
+        kickoff = _default_kickoff_text()
         return AgentOutput(
-            text=(  # Ovo je deo za prazno stanje
-                "Vidim da je stanje prazno (nema ciljeva ni taskova u snapshot-u). To nije blokada — krenimo od brzog okvira.\n\n"
-                "Krenimo: odgovori na 2-3 pitanja iznad, pa cu ti složiti top 3 cilja i top 5 taskova u istom formatu.\n"
-            ),
-            proposed_commands=[  # Predlog za akciju
+            text=kickoff,
+            proposed_commands=[
                 ProposedCommand(
                     command="refresh_snapshot",
                     args={"source": "ceo_dashboard"},
-                    reason="Snapshot je prazan ili nedostaje.",
+                    reason="Snapshot nije prisutan u requestu (offline/CI).",
                     requires_approval=True,
                     risk="LOW",
                     dry_run=True,
@@ -854,7 +973,11 @@ async def create_ceo_advisor_agent(
             ],
             agent_id="ceo_advisor",
             read_only=True,
-            trace={},
+            trace={
+                "empty_snapshot": True,
+                "llm_configured": False,
+                "snapshot": snap_trace,
+            },
         )
 
     # Nastavi sa ostatkom koda...
@@ -895,14 +1018,18 @@ async def create_ceo_advisor_agent(
 
     if use_llm:
         try:
-            executor = OpenAIAssistantExecutor()
-            raw = await executor.ceo_command(text=prompt_text, context=safe_context)
-            if isinstance(raw, dict):
-                result = raw
+            if not _llm_is_configured():
+                result = {"text": _default_kickoff_text(), "proposed_commands": []}
             else:
-                result = {"text": str(raw)}
-        except Exception as e:
-            result = {"text": f"LLM unavailable: {e}"}
+                executor = OpenAIAssistantExecutor()
+                raw = await executor.ceo_command(text=prompt_text, context=safe_context)
+                if isinstance(raw, dict):
+                    result = raw
+                else:
+                    result = {"text": str(raw)}
+        except Exception:
+            # Enterprise fail-soft: no generic LLM error dumps to users; provide kickoff.
+            result = {"text": _default_kickoff_text(), "proposed_commands": []}
 
         text_out = _pick_text(result) or "CEO advisor nije vratio tekstualni output."
         proposed_items = (
@@ -978,6 +1105,7 @@ async def create_ceo_advisor_agent(
     trace["propose_only"] = propose_only
     trace["wants_notion"] = wants_notion
     trace["llm_used"] = use_llm
+    trace["snapshot"] = snap_trace
 
     return AgentOutput(
         text=text_out,

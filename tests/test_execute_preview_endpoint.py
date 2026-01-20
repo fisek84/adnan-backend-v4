@@ -63,8 +63,9 @@ def test_execute_preview_notion_write_shape():
     assert "Name" in props_preview
     assert "title" in props_preview["Name"]
 
-    assert props_preview["Status"] == {"status": {"name": "Active"}}
-    assert props_preview["Priority"] == {"select": {"name": "Low"}}
+    # Goals DB Status is a select in the current schema snapshot.
+    assert props_preview["Status"] == {"select": {"name": "Active"}}
+    assert props_preview["Priority"] == {"select": {"name": "low"}}
     assert props_preview["Deadline"] == {"date": {"start": "2030-01-01"}}
 
 
@@ -419,45 +420,39 @@ def test_execute_preview_wrapper_goal_with_task_assignee_builds_people_spec():
     ]
     assert goal_rows and task_rows, rows
 
-    # At least one goal row should carry a people spec (Assigned To) derived from goal owner
-    has_goal_people = False
+    def _contains_email(v, email: str) -> bool:
+        if isinstance(v, str):
+            return email in v
+        if isinstance(v, list):
+            return any(_contains_email(x, email) for x in v)
+        if isinstance(v, dict):
+            return any(_contains_email(x, email) for x in v.values())
+        return False
+
+    # In the current schema snapshot, the relevant fields are not people-typed.
+    # Emails should be retained in build.wrapper_patch_out instead of being written.
+    has_goal_email_in_wrapper_patch = False
     for row in goal_rows:
-        specs = row.get("property_specs")
-        if not isinstance(specs, dict):
+        b = row.get("build")
+        if not isinstance(b, dict):
             continue
-        for spec in specs.values():
-            if (
-                isinstance(spec, dict)
-                and spec.get("type") == "people"
-                and "names" in spec
-                and "owner@example.com" in spec.get("names", [])
-            ):
-                has_goal_people = True
-                break
-        if has_goal_people:
+        wpo = b.get("wrapper_patch_out")
+        if isinstance(wpo, dict) and _contains_email(wpo, "owner@example.com"):
+            has_goal_email_in_wrapper_patch = True
             break
 
-    # At least one task row should carry a people spec (AI Agent) derived from assignee
-    has_task_people = False
+    has_task_email_in_wrapper_patch = False
     for row in task_rows:
-        specs = row.get("property_specs")
-        if not isinstance(specs, dict):
+        b = row.get("build")
+        if not isinstance(b, dict):
             continue
-        # We don't hardcode column name, but expect one people-type spec with names including the assignee
-        for spec in specs.values():
-            if (
-                isinstance(spec, dict)
-                and spec.get("type") == "people"
-                and "names" in spec
-                and "adnan@example.com" in spec.get("names", [])
-            ):
-                has_task_people = True
-                break
-        if has_task_people:
+        wpo = b.get("wrapper_patch_out")
+        if isinstance(wpo, dict) and _contains_email(wpo, "adnan@example.com"):
+            has_task_email_in_wrapper_patch = True
             break
 
-    assert has_goal_people, goal_rows
-    assert has_task_people, task_rows
+    assert has_goal_email_in_wrapper_patch, goal_rows
+    assert has_task_email_in_wrapper_patch, task_rows
 
 
 def test_execute_preview_wrapper_multiline_goal_properties_are_extracted():

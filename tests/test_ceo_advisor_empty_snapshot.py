@@ -21,5 +21,30 @@ def test_ceo_advisor_empty_snapshot_is_advisory():
     out = asyncio.run(create_ceo_advisor_agent(agent_input, ctx={}))
 
     assert out.read_only is True
+    assert isinstance(out.trace, dict)
+    assert isinstance(out.trace.get("snapshot"), dict)
     assert "NEMA DOVOLJNO PODATAKA" not in (out.text or "").upper()
     assert ("?" in (out.text or "")) or ("KRENIMO" in (out.text or "").upper())
+
+
+def test_ceo_advisor_predlagati_goals_tasks_does_not_use_old_copy(monkeypatch):
+    from services.ceo_advisor_agent import create_ceo_advisor_agent
+
+    # Force offline mode (no LLM) to exercise deterministic kickoff path.
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    agent_input = DummyAgentInput(
+        message="Možeš li predlagati ciljeve i taskove koje ću zapisati u Notion?",
+        snapshot={},
+        metadata={"snapshot_source": "test"},
+    )
+
+    out = asyncio.run(create_ceo_advisor_agent(agent_input, ctx={}))
+
+    txt = out.text or ""
+    assert out.read_only is True
+    assert isinstance(out.trace, dict)
+    assert isinstance(out.trace.get("snapshot"), dict)
+    assert "odgovori na 2-3 pitanja iznad" not in txt.lower()
+    assert "GOALS (top 3)" in txt
+    assert "TASKS (top 5)" in txt
