@@ -40,13 +40,17 @@ export const CommandPreviewModal: React.FC<Props> = ({ open, title, loading, err
   }, [open, data]);
 
   const propertiesPreview: Record<string, any> | null =
-    notion && typeof notion === "object" && notion.properties_preview && typeof notion.properties_preview === "object"
-      ? (notion.properties_preview as Record<string, any>)
+    notion && typeof notion === "object" && (notion as any).properties_preview && typeof (notion as any).properties_preview === "object"
+      ? Object.keys((notion as any).properties_preview as Record<string, any>).length
+        ? ((notion as any).properties_preview as Record<string, any>)
+        : null
       : null;
 
   const propertySpecs: Record<string, any> | null =
-    notion && typeof notion === "object" && notion.property_specs && typeof notion.property_specs === "object"
-      ? (notion.property_specs as Record<string, any>)
+    notion && typeof notion === "object" && (notion as any).property_specs && typeof (notion as any).property_specs === "object"
+      ? Object.keys((notion as any).property_specs as Record<string, any>).length
+        ? ((notion as any).property_specs as Record<string, any>)
+        : null
       : null;
 
   const review = data?.review && typeof data.review === "object" ? data.review : null;
@@ -156,8 +160,10 @@ export const CommandPreviewModal: React.FC<Props> = ({ open, title, loading, err
       colSet.add("db_key");
 
       for (const r of notionRows) {
-        const pp = r?.properties_preview && typeof r.properties_preview === "object" ? r.properties_preview : null;
-        const ps = r?.property_specs && typeof r.property_specs === "object" ? r.property_specs : null;
+        const pp0 = r?.properties_preview && typeof r.properties_preview === "object" ? (r.properties_preview as any) : null;
+        const ps0 = r?.property_specs && typeof r.property_specs === "object" ? (r.property_specs as any) : null;
+        const pp = pp0 && Object.keys(pp0).length ? pp0 : null;
+        const ps = ps0 && Object.keys(ps0).length ? ps0 : null;
         const src = pp || ps || {};
         for (const k of Object.keys(src)) colSet.add(k);
       }
@@ -381,7 +387,7 @@ export const CommandPreviewModal: React.FC<Props> = ({ open, title, loading, err
 
                 {columns.length === 0 ? (
                   <div style={{ opacity: 0.85 }}>
-                    No Notion properties detected in preview.
+                    No Notion properties detected in preview. Click "Show JSON" to verify the response contains a `notion` block.
                   </div>
                 ) : (
                   <div
@@ -429,8 +435,10 @@ export const CommandPreviewModal: React.FC<Props> = ({ open, title, loading, err
                             <tr key={r?.op_id || ridx}>
                               {columns.map((c) => {
                                 const isMeta = c === "op_id" || c === "intent" || c === "db_key";
-                                const pp = r?.properties_preview && typeof r.properties_preview === "object" ? r.properties_preview : null;
-                                const ps = r?.property_specs && typeof r.property_specs === "object" ? r.property_specs : null;
+                                const pp0 = r?.properties_preview && typeof r.properties_preview === "object" ? (r.properties_preview as any) : null;
+                                const ps0 = r?.property_specs && typeof r.property_specs === "object" ? (r.property_specs as any) : null;
+                                const pp = pp0 && Object.keys(pp0).length ? pp0 : null;
+                                const ps = ps0 && Object.keys(ps0).length ? ps0 : null;
 
                                 const v = pp ? pp?.[c] : null;
                                 const display = isMeta

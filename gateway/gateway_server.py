@@ -1689,8 +1689,175 @@ def _notion_properties_preview_from_property_specs(
             out[pn] = {"date": {"start": date_str}} if date_str else {"date": None}
             continue
 
+        if stype == "number":
+            raw_n = spec.get("number")
+            if raw_n is None:
+                raw_n = spec.get("value")
+            try:
+                out[pn] = {"number": float(raw_n)}
+            except Exception:
+                # ignore invalid
+                pass
+            continue
+
+        if stype == "checkbox":
+            raw_v = spec.get("checkbox")
+            if raw_v is None:
+                raw_v = spec.get("value")
+            v = raw_v
+            if isinstance(v, str):
+                sv = v.strip().lower()
+                if sv in {"true", "yes", "da", "1"}:
+                    v = True
+                elif sv in {"false", "no", "ne", "0"}:
+                    v = False
+            if isinstance(v, bool):
+                out[pn] = {"checkbox": v}
+            continue
+
+        if stype == "multi_select":
+            raw_names = spec.get("names")
+            names: List[str] = []
+            if isinstance(raw_names, list):
+                names = [
+                    _ensure_str(x).strip() for x in raw_names if _ensure_str(x).strip()
+                ]
+            else:
+                s_val = _ensure_str(spec.get("value") or "").strip()
+                if s_val:
+                    names = [x.strip() for x in s_val.split(",") if x.strip()]
+            out[pn] = (
+                {"multi_select": [{"name": n} for n in names]}
+                if names
+                else {"multi_select": []}
+            )
+            continue
+
+        if stype == "relation":
+            raw_ids = spec.get("ids")
+            ids: List[str] = []
+            if isinstance(raw_ids, list):
+                ids = [
+                    _ensure_str(x).strip() for x in raw_ids if _ensure_str(x).strip()
+                ]
+            else:
+                raw_one = spec.get("id") or spec.get("value") or ""
+                s_one = _ensure_str(raw_one).strip()
+                if s_one:
+                    ids = [x.strip() for x in s_one.split(",") if x.strip()]
+            out[pn] = (
+                {"relation": [{"id": x} for x in ids]} if ids else {"relation": []}
+            )
+            continue
+
+        if stype == "people":
+            raw_ids = spec.get("ids")
+            ids: List[str] = []
+            if isinstance(raw_ids, list):
+                ids = [
+                    _ensure_str(x).strip() for x in raw_ids if _ensure_str(x).strip()
+                ]
+            if ids:
+                out[pn] = {"people": [{"id": x} for x in ids]}
+                continue
+
+            tokens: List[str] = []
+            for key in ("emails", "names"):
+                raw_list = spec.get(key)
+                if isinstance(raw_list, list):
+                    tokens.extend(
+                        [
+                            _ensure_str(x).strip()
+                            for x in raw_list
+                            if _ensure_str(x).strip()
+                        ]
+                    )
+            if not tokens:
+                raw_value = spec.get("value") or spec.get("name") or ""
+                s_val = _ensure_str(raw_value).strip()
+                if s_val:
+                    tokens = [t.strip() for t in s_val.split(",") if t.strip()]
+
+            out[pn] = (
+                {"people": [{"name": t} for t in tokens]} if tokens else {"people": []}
+            )
+            continue
+
         # Unknown types ignored by design
         continue
+
+    return out
+
+
+def _sanitize_property_specs_for_preview(
+    *, db_key: Optional[str], property_specs: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Sanitize property_specs for preview UI.
+
+    - Drops computed types (formula/rollup/etc.)
+    - Drops registry read_only properties (local SSOT)
+    - No network calls
+    """
+    if not isinstance(property_specs, dict) or not property_specs:
+        return {}
+
+    computed_types = {
+        "formula",
+        "rollup",
+        "created_time",
+        "last_edited_time",
+        "created_by",
+        "last_edited_by",
+        "unique_id",
+    }
+
+    read_only_cf: set[str] = set()
+    try:
+        from services.notion_schema_registry import (  # noqa: PLC0415
+            NotionSchemaRegistry,
+        )
+
+        k = (db_key or "").strip().lower()
+        if k:
+            # tolerate singular/plural
+            candidates = [k]
+            if k.endswith("s"):
+                candidates.append(k[:-1])
+            else:
+                candidates.append(k + "s")
+            db_entry = None
+            for cand in candidates:
+                v = NotionSchemaRegistry.DATABASES.get(cand)
+                if isinstance(v, dict):
+                    db_entry = v
+                    break
+            props = db_entry.get("properties") if isinstance(db_entry, dict) else None
+            if isinstance(props, dict):
+                for pn, meta in props.items():
+                    if (
+                        isinstance(pn, str)
+                        and isinstance(meta, dict)
+                        and meta.get("read_only") is True
+                    ):
+                        read_only_cf.add(pn.strip().casefold())
+    except Exception:
+        read_only_cf = set()
+
+    out: Dict[str, Any] = {}
+    for pn, spec in property_specs.items():
+        if not isinstance(pn, str) or not pn.strip():
+            continue
+        if not isinstance(spec, dict):
+            continue
+
+        stype = _ensure_str(spec.get("type")).strip().lower()
+        if stype in computed_types:
+            continue
+
+        if pn.strip().casefold() in read_only_cf:
+            continue
+
+        out[pn.strip()] = spec
 
     return out
 
@@ -2176,16 +2343,30 @@ async def execute_preview_command(
             # create_page/update_page carry property_specs directly.
             if intent in {"create_page", "update_page"}:
                 db_key = params.get("db_key")
-                property_specs = params.get("property_specs")
-                if isinstance(property_specs, dict) and property_specs:
-                    notion_block = {
-                        "db_key": db_key,
-                        "property_specs": property_specs,
-                        "properties_preview": _notion_properties_preview_from_property_specs(
-                            property_specs
-                        ),
-                        "note": "Preview does not hit Notion. Final execution may still normalize select/status types based on DB schema.",
-                    }
+                raw_specs = (
+                    params.get("property_specs")
+                    or params.get("properties")
+                    or params.get("notion_properties")
+                )
+                if isinstance(raw_specs, dict):
+                    property_specs = _sanitize_property_specs_for_preview(
+                        db_key=db_key, property_specs=raw_specs
+                    )
+                else:
+                    property_specs = {}
+
+                notion_block = {
+                    "op_id": cmd_dump.get("op_id")
+                    if isinstance(cmd_dump, dict)
+                    else None,
+                    "intent": intent,
+                    "db_key": db_key,
+                    "property_specs": property_specs,
+                    "properties_preview": _notion_properties_preview_from_property_specs(
+                        property_specs
+                    ),
+                    "note": "Preview does not hit Notion. Final execution may still normalize select/status types based on DB schema.",
+                }
 
             # create_goal/create_task/create_project derive property_specs at execution time.
             elif intent in {"create_goal", "create_task", "create_project"}:
@@ -2218,15 +2399,26 @@ async def execute_preview_command(
                 if status:
                     property_specs["Status"] = {"type": "status", "name": status}
 
-                if property_specs:
-                    notion_block = {
-                        "db_key": db_key,
-                        "property_specs": property_specs,
-                        "properties_preview": _notion_properties_preview_from_property_specs(
-                            property_specs
-                        ),
-                        "note": "Preview does not hit Notion. create_goal/create_task/create_project derive properties at execution time; this mirrors that mapping.",
-                    }
+                extra_specs = params.get("property_specs")
+                if isinstance(extra_specs, dict) and extra_specs:
+                    property_specs.update(extra_specs)
+
+                property_specs = _sanitize_property_specs_for_preview(
+                    db_key=db_key, property_specs=property_specs
+                )
+
+                notion_block = {
+                    "op_id": cmd_dump.get("op_id")
+                    if isinstance(cmd_dump, dict)
+                    else None,
+                    "intent": intent,
+                    "db_key": db_key,
+                    "property_specs": property_specs,
+                    "properties_preview": _notion_properties_preview_from_property_specs(
+                        property_specs
+                    ),
+                    "note": "Preview does not hit Notion. create_goal/create_task/create_project derive properties at execution time; this mirrors that mapping.",
+                }
 
             # batch_request: preview each operation as a table row
             elif intent in {"batch_request", "batch", "branch_request"}:
@@ -2288,6 +2480,10 @@ async def execute_preview_command(
                             if isinstance(sp0, dict) and sp0:
                                 ps = dict(sp0)
 
+                        ps = _sanitize_property_specs_for_preview(
+                            db_key=db_key, property_specs=ps
+                        )
+
                         row: Dict[str, Any] = {
                             "op_index": idx,
                             "op_id": op_id,
@@ -2337,6 +2533,8 @@ async def execute_preview_command(
         "trace": {
             "canon": "execute_preview",
             "endpoint": "/api/execute/preview",
+            "preview_version": "2026-01-20-preview-v2",
+            "server_version": VERSION,
         },
     }
 

@@ -636,14 +636,17 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
     setBusy("idle");
   }, []);
 
-  // --- URL resolvers (support absolute urls and cross-origin dev) ---
-  const resolveUrl = useCallback(
-    (maybeUrl: string | undefined, fallbackPath: string): string => {
+  // --- URL resolver (resolve a specific API path against a configurable base URL) ---
+  // IMPORTANT: For endpoints like /api/execute/preview we must NOT reuse the base URL path
+  // (e.g. a configured executeRawUrl pointing at /api/execute/raw). Always resolve the path.
+  const resolveEndpoint = useCallback(
+    (baseUrl: string | undefined, path: string): string => {
       try {
-        if (maybeUrl && maybeUrl.trim()) return new URL(maybeUrl, ceoCommandUrl).toString();
-        return new URL(fallbackPath, ceoCommandUrl).toString();
+        const base = baseUrl && baseUrl.trim() ? new URL(baseUrl, ceoCommandUrl).toString() : ceoCommandUrl;
+        return new URL(path, base).toString();
       } catch {
-        return maybeUrl && maybeUrl.trim() ? maybeUrl : fallbackPath;
+        // Fail-soft fallback: if URL parsing fails, at least return the path.
+        return path;
       }
     },
     [ceoCommandUrl]
@@ -673,7 +676,8 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       try {
         return txt ? JSON.parse(txt) : {};
       } catch {
-        return {};
+        const head = (txt || "").slice(0, 800);
+        throw new Error(`${url} returned non-JSON response: ${head || "<empty>"}`);
       }
     },
     [mergedHeaders]
@@ -844,7 +848,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         const patch = proposalPatches[key];
         const patched = applyPatchToProposal(proposalWithSession, patch);
 
-        const previewUrl = resolveUrl(executeRawUrl, "/api/execute/preview");
+        const previewUrl = resolveEndpoint(executeRawUrl, "/api/execute/preview");
         const json = await postJson(previewUrl, patched, controller.signal);
         setPreviewData(json);
       } catch (e) {
@@ -855,7 +859,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         setPreviewLoading(false);
       }
     },
-    [applyPatchToProposal, executeRawUrl, getProposalKey, postJson, previewLoading, proposalPatches, resolveUrl, sessionId]
+    [applyPatchToProposal, executeRawUrl, getProposalKey, postJson, previewLoading, proposalPatches, resolveEndpoint, sessionId]
   );
 
   // ------------------------------
@@ -993,7 +997,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         const patch = proposalPatches[key];
         const patched = applyPatchToProposal(proposalWithSession, patch);
         
-        const execUrl = resolveUrl(executeRawUrl, "/api/execute/raw");
+        const execUrl = resolveEndpoint(executeRawUrl, "/api/execute/raw");
         const execJson = await postJson(execUrl, patched, controller.signal);
 
         const approvalId: string | null =
@@ -1036,7 +1040,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         setLastError(isAbortError(e) ? null : msg);
       }
     },
-    [appendItem, busy, executeRawUrl, handleOpenApprovals, postJson, resolveUrl, sessionId, updateItem]
+    [appendItem, busy, executeRawUrl, handleOpenApprovals, postJson, resolveEndpoint, sessionId, updateItem]
   );
 
   /**
@@ -1044,7 +1048,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
    */
   const handleApprove = useCallback(
     async (approvalId: string) => {
-      const appUrl = resolveUrl(effectiveApproveUrl, "/api/ai-ops/approval/approve");
+      const appUrl = resolveEndpoint(effectiveApproveUrl, "/api/ai-ops/approval/approve");
       if (busy === "submitting" || busy === "streaming") return;
 
       setBusy("submitting");
@@ -1094,7 +1098,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         setLastError(isAbortError(e) ? null : msg);
       }
     },
-    [appendItem, effectiveApproveUrl, busy, postJson, resolveUrl, updateItem]
+    [appendItem, effectiveApproveUrl, busy, postJson, resolveEndpoint, updateItem]
   );
 
   /**
@@ -1102,7 +1106,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
    */
   const handleReject = useCallback(
     async (approvalId: string) => {
-      const rejUrl = resolveUrl(effectiveRejectUrl, "/api/ai-ops/approval/reject");
+      const rejUrl = resolveEndpoint(effectiveRejectUrl, "/api/ai-ops/approval/reject");
       if (busy === "submitting" || busy === "streaming") return;
 
       setBusy("submitting");
@@ -1130,7 +1134,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         setLastError(isAbortError(e) ? null : msg);
       }
     },
-    [appendItem, effectiveRejectUrl, busy, postJson, resolveUrl, updateItem]
+    [appendItem, effectiveRejectUrl, busy, postJson, resolveEndpoint, updateItem]
   );
 
   /**
@@ -1162,7 +1166,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
           },
         };
         
-        const execUrl = resolveUrl(executeRawUrl, "/api/execute/raw");
+        const execUrl = resolveEndpoint(executeRawUrl, "/api/execute/raw");
         const execJson = await postJson(execUrl, proposalWithSession, controller.signal);
 
         const approvalId: string | null =
@@ -1178,7 +1182,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
           return;
         }
 
-        const appUrl = resolveUrl(effectiveApproveUrl, "/api/ai-ops/approval/approve");
+        const appUrl = resolveEndpoint(effectiveApproveUrl, "/api/ai-ops/approval/approve");
         const approveJson = await postJson(appUrl, { approval_id: approvalId }, controller.signal);
 
         const msg =
@@ -1219,7 +1223,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         setLastError(isAbortError(e) ? null : msg);
       }
     },
-    [appendItem, applyPatchToProposal, busy, effectiveApproveUrl, executeRawUrl, getProposalKey, postJson, proposalPatches, resolveUrl, sessionId, updateItem]
+    [appendItem, applyPatchToProposal, busy, effectiveApproveUrl, executeRawUrl, getProposalKey, postJson, proposalPatches, resolveEndpoint, sessionId, updateItem]
   );
 
   // ------------------------------
@@ -1734,7 +1738,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
                 setLastError(null);
                 
                 const newArmedState = !notionOpsArmed;
-                const toggleUrl = resolveUrl(undefined, "/api/notion-ops/toggle");
+                const toggleUrl = resolveEndpoint(undefined, "/api/notion-ops/toggle");
                 
                 const res = await fetch(toggleUrl, {
                   method: "POST",

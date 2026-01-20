@@ -1,7 +1,7 @@
 """
-NOTION SCHEMA REGISTRY — KANONSKI IZVOR ISTINE
+NOTION SCHEMA REGISTRY â€” KANONSKI IZVOR ISTINE
 
-Enhanced with bilingual property support (Bosnian ↔ English)
+Enhanced with bilingual property support (Bosnian â†” English)
 """
 
 from __future__ import annotations
@@ -51,7 +51,7 @@ class NotionSchemaRegistry:
             },
         },
         # =======================
-        # GOALS — DERIVED VIEWS (READ-ONLY)
+        # GOALS â€” DERIVED VIEWS (READ-ONLY)
         # =======================
         # Fallback: ako posebni view DB_ID nije setovan, koristi primarni goals DB.
         "active_goals": {
@@ -221,7 +221,7 @@ class NotionSchemaRegistry:
         # =======================
         # OPTIONAL SOURCES (SNAPSHOT + WORKFLOWS)
         # =======================
-        # NOTE: kpi_weekly_summary workflow ti trenutno pokušava pisati u ai_summary.
+        # NOTE: kpi_weekly_summary workflow ti trenutno pokuĹˇava pisati u ai_summary.
         # Zato ai_summary / ai_weekly_summary MORAJU biti write_enabled=True.
         "ai_summary": {
             "db_id": os.getenv("NOTION_AI_SUMMARY_DB_ID"),
@@ -230,7 +230,7 @@ class NotionSchemaRegistry:
             "optional": True,
             "write_enabled": True,  # <-- FIX: dozvoli pisanje
             "properties": {
-                # Minimalni set: prilagodi imena ako tvoj DB koristi drugačije kolone
+                # Minimalni set: prilagodi imena ako tvoj DB koristi drugaÄŤije kolone
                 "Name": {"type": "title", "required": True},
                 "Summary": {"type": "rich_text", "required": False},
             },
@@ -253,7 +253,13 @@ class NotionSchemaRegistry:
             "object_type": "database",
             "optional": True,
             "write_enabled": False,
-            "properties": {},
+            "properties": {
+                "Name": {"type": "title", "required": True},
+                "Value": {"type": "number", "required": False},
+                "Unit": {"type": "select", "required": False},
+                "As Of": {"type": "date", "required": False},
+                "Notes": {"type": "rich_text", "required": False},
+            },
         },
         "leads": {
             "db_id": os.getenv("NOTION_LEAD_DB_ID") or os.getenv("NOTION_LEADS_DB_ID"),
@@ -261,7 +267,14 @@ class NotionSchemaRegistry:
             "object_type": "database",
             "optional": True,
             "write_enabled": False,
-            "properties": {},
+            "properties": {
+                "Name": {"type": "title", "required": True},
+                "Status": {"type": "select", "required": False},
+                "Email": {"type": "rich_text", "required": False},
+                "Company": {"type": "rich_text", "required": False},
+                "Source": {"type": "select", "required": False},
+                "Created At": {"type": "date", "required": False},
+            },
         },
         "agent_exchange": {
             "db_id": os.getenv("NOTION_AGENT_EXCHANGE_DB_ID"),
@@ -269,7 +282,29 @@ class NotionSchemaRegistry:
             "object_type": "database",
             "optional": True,
             "write_enabled": False,
-            "properties": {},
+            "properties": {
+                "Name": {"type": "title", "required": True},
+                "Status": {"type": "select", "required": False},
+                "Summary": {"type": "rich_text", "required": False},
+                "Created At": {"type": "date", "required": False},
+                "Task": {"type": "relation", "target": "tasks"},
+                "Project": {"type": "relation", "target": "projects"},
+            },
+        },
+        "agent_project": {
+            "db_id": os.getenv("NOTION_AGENT_PROJECT_DB_ID"),
+            "entity": "AgentProject",
+            "object_type": "database",
+            "optional": True,
+            "write_enabled": False,
+            "properties": {
+                "Name": {"type": "title", "required": True},
+                "Status": {"type": "select", "required": False},
+                "Summary": {"type": "rich_text", "required": False},
+                "Owner": {"type": "people", "required": False},
+                "Project": {"type": "relation", "target": "projects"},
+                "Created At": {"type": "date", "required": False},
+            },
         },
         # =======================
         # SOP / OPS SOURCES (PAGES, NOT DATABASES)
@@ -417,9 +452,18 @@ class NotionSchemaRegistry:
                 f"Notion key '{db_key}' is not a database (object_type={db.get('object_type')})."
             )
 
+        if db.get("write_enabled") is False:
+            raise ValueError(
+                f"Notion DB '{db_key}' is write_disabled (write_enabled=False)."
+            )
+
         props = db.get("properties") or {}
         for name, spec in props.items():
-            if spec.get("required") and name not in payload:
+            if (
+                spec.get("required")
+                and spec.get("read_only") is not True
+                and name not in payload
+            ):
                 raise ValueError(
                     f"Missing required Notion property '{name}' for DB '{db_key}'"
                 )
@@ -449,6 +493,9 @@ class NotionSchemaRegistry:
         db_props = db.get("properties") or {}
 
         for prop, value in properties.items():
+            if db_props.get(prop, {}).get("read_only") is True:
+                continue
+
             p_type = db_props[prop]["type"]
             if p_type == "select_or_date":
                 p_type = "select"
@@ -492,7 +539,7 @@ class NotionSchemaRegistry:
         }
 
     # ============================================================
-    # BILINGUAL SUPPORT (Bosnian ↔ English)
+    # BILINGUAL SUPPORT (Bosnian â†” English)
     # ============================================================
 
     @classmethod
