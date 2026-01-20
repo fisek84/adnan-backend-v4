@@ -458,3 +458,152 @@ def test_execute_preview_wrapper_goal_with_task_assignee_builds_people_spec():
 
     assert has_goal_people, goal_rows
     assert has_task_people, task_rows
+
+
+def test_execute_preview_wrapper_multiline_goal_properties_are_extracted():
+    app = _get_app()
+    client = TestClient(app)
+
+    payload = {
+        "command": "ceo.command.propose",
+        "intent": "ceo.command.propose",
+        "params": {
+            "prompt": "Kreiraj cilj: OVO JE PATNJA,\nSTATUS: Active\nPriority Low,\nDeadline: 22.01.2026",
+            "intent": "create_goal",
+        },
+    }
+
+    r = client.post(
+        "/api/execute/preview",
+        headers={"X-Initiator": "ceo_chat"},
+        json=payload,
+    )
+    assert r.status_code == 200
+    body = r.json()
+
+    cmd = body.get("command")
+    assert isinstance(cmd, dict)
+    assert cmd.get("command") == "notion_write"
+    assert cmd.get("intent") == "create_goal"
+
+    params = cmd.get("params")
+    assert isinstance(params, dict)
+    assert params.get("title") == "OVO JE PATNJA"
+    assert params.get("status") in {"Active", "active"}
+    assert params.get("priority") == "Low"
+    assert params.get("deadline") == "2026-01-22"
+
+    notion = body.get("notion")
+    assert isinstance(notion, dict)
+    assert notion.get("db_key") == "goals"
+    pp = notion.get("properties_preview")
+    assert isinstance(pp, dict)
+    assert "Name" in pp
+    assert "Status" in pp
+    assert "Priority" in pp
+    assert "Deadline" in pp
+
+
+def test_execute_preview_wrapper_singleline_goal_properties_are_extracted():
+    app = _get_app()
+    client = TestClient(app)
+
+    payload = {
+        "command": "ceo.command.propose",
+        "intent": "ceo.command.propose",
+        "params": {
+            "prompt": "Kreiraj cilj: OVO JE PATNJA, Status Active, Priority Low, Deadline 22.01.2026",
+            "intent": "create_goal",
+        },
+    }
+
+    r = client.post(
+        "/api/execute/preview",
+        headers={"X-Initiator": "ceo_chat"},
+        json=payload,
+    )
+    assert r.status_code == 200
+    body = r.json()
+
+    cmd = body.get("command")
+    assert isinstance(cmd, dict)
+    params = cmd.get("params")
+    assert isinstance(params, dict)
+
+    assert params.get("title") == "OVO JE PATNJA"
+    assert params.get("priority") == "Low"
+    assert params.get("deadline") == "2026-01-22"
+
+
+def test_execute_preview_wrapper_multiline_task_properties_are_extracted():
+    app = _get_app()
+    client = TestClient(app)
+
+    payload = {
+        "command": "ceo.command.propose",
+        "intent": "ceo.command.propose",
+        "params": {
+            "prompt": "Kreiraj task: OVO JE PATNJA,\nSTATUS: Active\nPriority Low,\nDeadline: 22.01.2026",
+            "intent": "create_task",
+        },
+    }
+
+    r = client.post(
+        "/api/execute/preview",
+        headers={"X-Initiator": "ceo_chat"},
+        json=payload,
+    )
+    assert r.status_code == 200
+    body = r.json()
+
+    cmd = body.get("command")
+    assert isinstance(cmd, dict)
+    assert cmd.get("command") == "notion_write"
+    assert cmd.get("intent") == "create_task"
+
+    params = cmd.get("params")
+    assert isinstance(params, dict)
+    assert params.get("title") == "OVO JE PATNJA"
+    assert params.get("status") in {"Active", "active"}
+    assert params.get("priority") == "Low"
+    assert params.get("deadline") == "2026-01-22"
+
+    notion = body.get("notion")
+    assert isinstance(notion, dict)
+    assert notion.get("db_key") == "tasks"
+    pp = notion.get("properties_preview")
+    assert isinstance(pp, dict)
+    assert "Name" in pp
+    assert "Status" in pp
+    assert "Priority" in pp
+    assert ("Deadline" in pp) or ("Due Date" in pp)
+
+
+def test_execute_preview_wrapper_singleline_task_properties_are_extracted():
+    app = _get_app()
+    client = TestClient(app)
+
+    payload = {
+        "command": "ceo.command.propose",
+        "intent": "ceo.command.propose",
+        "params": {
+            "prompt": "Kreiraj task: OVO JE PATNJA, Status Active, Priority Low, Deadline 22.01.2026",
+            "intent": "create_task",
+        },
+    }
+
+    r = client.post(
+        "/api/execute/preview",
+        headers={"X-Initiator": "ceo_chat"},
+        json=payload,
+    )
+    assert r.status_code == 200
+    body = r.json()
+
+    cmd = body.get("command")
+    assert isinstance(cmd, dict)
+    params = cmd.get("params")
+    assert isinstance(params, dict)
+    assert params.get("title") == "OVO JE PATNJA"
+    assert params.get("priority") == "Low"
+    assert params.get("deadline") == "2026-01-22"

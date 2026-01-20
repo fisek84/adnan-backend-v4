@@ -233,7 +233,29 @@ class BranchRequestHandler:
     def _extract_properties(text: str) -> Dict[str, Any]:
         """Extract additional properties from the request."""
         properties = {}
-        text_lower = text.lower()
+        text = text if isinstance(text, str) else ""
+        # Normalize newlines into separators so multiline prompts parse consistently.
+        text_norm = re.sub(r"[\r\n]+", ", ", text).strip()
+        text_lower = text_norm.lower()
+
+        def _clean_token(v: str) -> str:
+            s = (v or "").strip()
+            s = re.sub(r"^[\s\-:]+", "", s)
+            s = re.sub(r"[\s\.,;:]+$", "", s)
+            return s.strip()
+
+        def _extract_kv(*, key_patterns: List[str]) -> Optional[str]:
+            # Match patterns like:
+            #  - "Status: Active" / "STATUS - Active"
+            #  - "Status Active"
+            for kp in key_patterns:
+                m = re.search(
+                    rf"(?i)\b{kp}\b\s*(?:[:\-\u2013\u2014])?\s*([^,;:]+)",
+                    text_norm,
+                )
+                if m:
+                    return _clean_token(m.group(1) or "")
+            return None
 
         # Priority patterns
         priority_patterns = [
@@ -250,6 +272,21 @@ class BranchRequestHandler:
                 properties["priority"] = value
                 break
 
+        # Explicit priority segments: "Priority Low" / "Priority: Low" / "Prioritet nizak"
+        if "priority" not in properties:
+            raw_prio = _extract_kv(key_patterns=["priority", "prioritet"])
+            if raw_prio:
+                try:
+                    from services.coo_translation_service import (  # noqa: PLC0415
+                        COOTranslationService,
+                    )
+
+                    properties["priority"] = COOTranslationService._normalize_priority(
+                        raw_prio
+                    )
+                except Exception:
+                    properties["priority"] = raw_prio
+
         # Status patterns
         status_patterns = [
             (r"u\s+tijeku|u\s+toku", "In Progress"),
@@ -264,11 +301,33 @@ class BranchRequestHandler:
                 properties["status"] = value
                 break
 
-        # Deadline patterns (ISO format)
-        deadline_pattern = r"(\d{4}-\d{2}-\d{2})"
-        deadline_match = re.search(deadline_pattern, text)
-        if deadline_match:
-            properties["deadline"] = deadline_match.group(1)
+        # Explicit status segments: "Status Active" / "Status: Active"
+        if "status" not in properties:
+            raw_status = _extract_kv(key_patterns=["status"])
+            if raw_status:
+                properties["status"] = raw_status
+
+        # Deadline patterns
+        # Support:
+        #  - ISO: 2026-01-22
+        #  - Dotted: 22.01.2026
+        #  - Keyword forms: "Deadline 22.01.2026" / "Deadline: 22.01.2026" / "Due Date 2026-01-22"
+        raw_deadline = _extract_kv(key_patterns=["deadline", "due\\s+date", "rok"])
+        if not raw_deadline:
+            m_iso = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", text_norm)
+            raw_deadline = m_iso.group(1) if m_iso else None
+
+        if raw_deadline:
+            iso = None
+            try:
+                from services.coo_translation_service import (  # noqa: PLC0415
+                    COOTranslationService,
+                )
+
+                iso = COOTranslationService._try_parse_date_to_iso(raw_deadline)
+            except Exception:
+                iso = None
+            properties["deadline"] = iso or raw_deadline
 
         # Owner/assignee patterns (people hints for all created entities)
         assignee_raw: Optional[str] = None

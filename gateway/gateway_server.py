@@ -633,6 +633,7 @@ def _unwrap_proposal_wrapper_or_raise(
         t = (s or "").strip()
         if not t:
             return t
+
         t2 = re.sub(r"^(task|zadatak)\s*[:\-–—]\s*", "", t, flags=re.IGNORECASE).strip()
         t2 = re.sub(
             r"^(kreiraj|napravi|create)\s+(task|zadatak|project|projekat|projekt|goal|cilj)\w*\s*(?:u\s+notionu)?\s*[:\-–—,;]?\s*",
@@ -640,7 +641,36 @@ def _unwrap_proposal_wrapper_or_raise(
             t2,
             flags=re.IGNORECASE,
         ).strip()
+
+        # Stop title at first recognized property segment.
+        # Examples:
+        #   "OVO, STATUS: Active" -> "OVO"
+        #   "OVO, Priority Low"  -> "OVO"
+        prop_start = None
+        prop_pat = re.compile(
+            r"(?i)(?:^|[,;]|\s{2,})\s*(status|priority|deadline|due\s+date|description)\b\s*(?:[:\-–—]|\s+)",
+        )
+        m = prop_pat.search(t2)
+        if m and m.start() > 0:
+            prop_start = m.start()
+        if prop_start is not None:
+            cut = t2[:prop_start].strip().rstrip(",;:-–—")
+            return cut or t2
+
         return t2 or t
+
+    def _normalize_prompt_for_property_parse(s: str) -> str:
+        """Normalize prompt so property parsing works with multiline + loose separators."""
+        t = (s or "").strip()
+        if not t:
+            return t
+        # Treat newlines as separators (enterprise UX: multiline prompts)
+        t = re.sub(r"[\r\n]+", ", ", t)
+        # Normalize comma spacing
+        t = re.sub(r"\s*,\s*", ", ", t)
+        # Collapse multiple spaces
+        t = re.sub(r"\s+", " ", t).strip()
+        return t
 
     def _extract_relation_title_from_prompt(
         prompt_text: str, *, kind: str
@@ -793,7 +823,8 @@ def _unwrap_proposal_wrapper_or_raise(
             hi = hint_intent.strip().lower()
             if hi in {"create_task", "create_goal", "create_project"}:
                 raw_prompt = prompt.strip()
-                title = _strip_prefixes_for_title(raw_prompt)
+                norm_prompt = _normalize_prompt_for_property_parse(raw_prompt)
+                title = _strip_prefixes_for_title(norm_prompt)
                 if title:
                     extra_params: Dict[str, Any] = {"title": title}
 
@@ -805,7 +836,7 @@ def _unwrap_proposal_wrapper_or_raise(
                         )
 
                         props = BranchRequestHandler._extract_properties(  # type: ignore[attr-defined]
-                            raw_prompt
+                            norm_prompt
                         )
                     except Exception:
                         props = {}
