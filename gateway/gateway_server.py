@@ -914,12 +914,44 @@ def _unwrap_proposal_wrapper_or_raise(
     try:
         if isinstance(hint_intent, str) and hint_intent.strip():
             hi = hint_intent.strip().lower()
-            if hi in {"create_task", "create_goal", "create_project"}:
+            if hi in {"create_task", "create_goal", "create_project", "create_page"}:
                 raw_prompt = prompt.strip()
                 norm_prompt = _normalize_prompt_for_property_parse(raw_prompt)
                 title = _strip_prefixes_for_title(norm_prompt)
                 if title:
-                    extra_params: Dict[str, Any] = {"title": title}
+                    # create_page uses property_specs, while create_* uses structured params.
+                    extra_params: Dict[str, Any]
+                    if hi == "create_page":
+                        extra_params = {
+                            "db_key": None,
+                            "property_specs": {
+                                "Name": {"type": "title", "text": title},
+                            },
+                        }
+
+                        # Attempt to infer db_key (required for schema-backed fills).
+                        dk0 = None
+                        if isinstance(params, dict):
+                            dk0 = params.get("db_key")
+                        if isinstance(dk0, str) and dk0.strip():
+                            extra_params["db_key"] = dk0.strip()
+                        else:
+                            ht = (hint_type or "").strip().lower()
+                            if ht in {"tasks", "task"}:
+                                extra_params["db_key"] = "tasks"
+                            elif ht in {"goals", "goal", "cilj", "ciljevi"}:
+                                extra_params["db_key"] = "goals"
+                            elif ht in {"projects", "project", "projekat", "projekt"}:
+                                extra_params["db_key"] = "projects"
+
+                        # If we still don't know db_key, skip this fast-path.
+                        if (
+                            not isinstance(extra_params.get("db_key"), str)
+                            or not str(extra_params.get("db_key")).strip()
+                        ):
+                            raise RuntimeError("create_page fast-path requires db_key")
+                    else:
+                        extra_params = {"title": title}
 
                     # Reuse branch/property NLP so CEO Console single-input
                     # follows the same backend rules (status/priority/deadline, assignees).
@@ -937,20 +969,44 @@ def _unwrap_proposal_wrapper_or_raise(
                     if isinstance(props, dict) and props:
                         # Map extracted properties into fast-path params.
                         prio = props.get("priority")
-                        if isinstance(prio, str) and prio.strip():
-                            extra_params.setdefault("priority", prio.strip())
-
                         status = props.get("status")
-                        if isinstance(status, str) and status.strip():
-                            extra_params.setdefault("status", status.strip())
-
                         deadline = props.get("deadline")
-                        if isinstance(deadline, str) and deadline.strip():
-                            extra_params.setdefault("deadline", deadline.strip())
-
                         assignees = props.get("assignees")
-                        if isinstance(assignees, list) and assignees:
-                            extra_params.setdefault("assignees", assignees)
+
+                        if hi == "create_page":
+                            ps = extra_params.get("property_specs")
+                            ps = ps if isinstance(ps, dict) else {}
+                            extra_params["property_specs"] = ps
+
+                            if isinstance(status, str) and status.strip():
+                                ps.setdefault(
+                                    "Status", {"type": "select", "name": status.strip()}
+                                )
+                            if isinstance(prio, str) and prio.strip():
+                                ps.setdefault(
+                                    "Priority",
+                                    {"type": "select", "name": prio.strip()},
+                                )
+                            if isinstance(deadline, str) and deadline.strip():
+                                # Prefer Due Date for tasks; schema-backed fill will reconcile.
+                                ps.setdefault(
+                                    "Due Date",
+                                    {"type": "date", "start": deadline.strip()},
+                                )
+                            if isinstance(assignees, list) and assignees:
+                                # Store as wrapper_patch to resolve by schema (people/multi_select/etc)
+                                wrapper_patch.setdefault(
+                                    "Assigned To", ", ".join(map(str, assignees))
+                                )
+                        else:
+                            if isinstance(prio, str) and prio.strip():
+                                extra_params.setdefault("priority", prio.strip())
+                            if isinstance(status, str) and status.strip():
+                                extra_params.setdefault("status", status.strip())
+                            if isinstance(deadline, str) and deadline.strip():
+                                extra_params.setdefault("deadline", deadline.strip())
+                            if isinstance(assignees, list) and assignees:
+                                extra_params.setdefault("assignees", assignees)
 
                     # Preserve relation intent if user specified it by title.
                     if hi == "create_task":
@@ -1062,6 +1118,42 @@ def _unwrap_proposal_wrapper_or_raise(
         for k, v in metadata.items():
             md[k] = v
     ai_command.metadata = md
+
+    # Safety net: if translation produced a polluted Name for create_page,
+    # derive a clean title from the wrapper prompt (stop at first Key: Value pair).
+    try:
+        if (
+            getattr(ai_command, "command", None) == "notion_write"
+            and (getattr(ai_command, "intent", None) or "") == "create_page"
+            and isinstance(prompt, str)
+            and prompt.strip()
+        ):
+            p0 = getattr(ai_command, "params", None)
+            p0 = p0 if isinstance(p0, dict) else {}
+            ps = p0.get("property_specs")
+            ps = ps if isinstance(ps, dict) else {}
+            name_spec = ps.get("Name")
+            name_spec = name_spec if isinstance(name_spec, dict) else {}
+            name_text = name_spec.get("text")
+
+            if isinstance(name_text, str) and name_text.strip():
+                looks_like_kv = re.search(
+                    r"(?i)(?:^|[,;]|\s{2,})\s*[A-Za-z][A-Za-z0-9 _&/\-]{0,60}\s*[:\-–—]\s*\S+",
+                    name_text,
+                )
+                if looks_like_kv:
+                    norm_prompt = _normalize_prompt_for_property_parse(prompt.strip())
+                    clean_title = _strip_prefixes_for_title(norm_prompt)
+                    if isinstance(clean_title, str) and clean_title.strip():
+                        ps = dict(ps)
+                        name_spec = dict(name_spec)
+                        name_spec["text"] = clean_title.strip()
+                        ps["Name"] = name_spec
+                        p0 = dict(p0)
+                        p0["property_specs"] = ps
+                        ai_command.params = p0
+    except Exception:
+        pass
 
     return ai_command
 
