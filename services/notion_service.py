@@ -1403,6 +1403,8 @@ class NotionService:
             "errors": [],
         }
 
+        db_stats: Dict[str, Any] = {}
+
         for db_key in ("goals", "tasks", "projects"):
             try:
                 db_id = self._resolve_db_id(db_key)
@@ -1413,6 +1415,21 @@ class NotionService:
                 for p in pages:
                     pid = _ensure_str(p.get("id"))
                     title = self._extract_page_title(p, title_prop)
+                    # Robust fallback: if schema/title_prop mismatch or title empty,
+                    # try any title-typed property present on the page.
+                    if not title:
+                        props = p.get("properties")
+                        if isinstance(props, dict):
+                            for prop_name, prop in props.items():
+                                if (
+                                    isinstance(prop_name, str)
+                                    and isinstance(prop, dict)
+                                    and prop.get("type") == "title"
+                                ):
+                                    t2 = self._extract_page_title(p, prop_name)
+                                    if t2:
+                                        title = t2
+                                        break
                     url = _ensure_str(p.get("url"))
                     last_edited_time = _ensure_str(p.get("last_edited_time"))
                     created_time = _ensure_str(p.get("created_time"))
@@ -1428,6 +1445,17 @@ class NotionService:
                     )
 
                 payload[db_key] = items
+                db_stats[db_key] = {
+                    "ok": True,
+                    "db_id": db_id,
+                    "title_property": title_prop,
+                    "count": int(len(items)),
+                    "sample_titles": [
+                        it.get("title")
+                        for it in items[:3]
+                        if isinstance(it, dict) and isinstance(it.get("title"), str)
+                    ],
+                }
             except Exception as exc:  # noqa: BLE001
                 meta["ok"] = False
                 try:
@@ -1437,7 +1465,12 @@ class NotionService:
                 except Exception:
                     pass
                 payload[db_key] = []
+                db_stats[db_key] = {
+                    "ok": False,
+                    "error": f"{type(exc).__name__}:{str(exc)}",
+                }
 
+        meta["db_stats"] = db_stats
         return {"payload": payload, "meta": meta}
 
     async def query_database(
