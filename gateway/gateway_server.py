@@ -1119,7 +1119,11 @@ async def _boot_once() -> None:
             # Legacy domain DI (goals/tasks/projects/sync) uses dependencies.py globals.
             # Ensure they are initialized before routers are exercised in minimal uvicorn runs.
             try:
-                from dependencies import get_sync_service, init_services, services_status
+                from dependencies import (
+                    get_sync_service,
+                    init_services,
+                    services_status,
+                )
 
                 init_services()
 
@@ -1134,13 +1138,13 @@ async def _boot_once() -> None:
                 except Exception:
                     # Best-effort: sync/status already has a safe fallback.
                     pass
-                logger.info("Legacy dependencies initialized (goals/tasks/projects/sync)")
+                logger.info(
+                    "Legacy dependencies initialized (goals/tasks/projects/sync)"
+                )
 
                 st = services_status()
                 missing = [
-                    k
-                    for k in ("goals", "tasks", "projects", "sync")
-                    if not st.get(k)
+                    k for k in ("goals", "tasks", "projects", "sync") if not st.get(k)
                 ]
                 if missing:
                     logger.warning("Legacy DI missing services: %s", ",".join(missing))
@@ -4143,7 +4147,9 @@ if _kpi_adapter_stub_enabled():
         app.include_router(kpi_router, prefix="/api")
         logger.info("ENABLE_KPI_ADAPTER_STUB=true included=routers.kpi_router")
     except Exception as exc:  # noqa: BLE001
-        logger.exception("ENABLE_KPI_ADAPTER_STUB: failed to include kpi_router: %s", exc)
+        logger.exception(
+            "ENABLE_KPI_ADAPTER_STUB: failed to include kpi_router: %s", exc
+        )
 
 # Extra routers (feature-flagged)
 if _extra_routers_enabled():
@@ -4156,7 +4162,9 @@ if _extra_routers_enabled():
         app.include_router(sop_query_router, prefix="/api")
         enabled.append("routers.sop_query_router")
     except Exception as exc:  # noqa: BLE001
-        logger.exception("ENABLE_EXTRA_ROUTERS: failed to include sop_query_router: %s", exc)
+        logger.exception(
+            "ENABLE_EXTRA_ROUTERS: failed to include sop_query_router: %s", exc
+        )
         failed.append("routers.sop_query_router")
 
     try:

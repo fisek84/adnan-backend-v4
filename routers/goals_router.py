@@ -116,6 +116,8 @@ async def get_all_goals(goals_service=Depends(get_goals_service)) -> Dict[str, A
             "read_only": True,
             "goals": [g.model_dump() for g in goals],
         }
+    except HTTPException:
+        raise
     except Exception as e:  # noqa: BLE001
         logger.error("Failed to list goals: %s", e)
         raise HTTPException(500, f"Failed to list goals: {e}") from e

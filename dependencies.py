@@ -147,7 +147,9 @@ def init_services() -> None:
 
     with _services_init_lock:
         if _services_initialized:
-            logger.info("dependencies.py -> init_services skipped (already initialized)")
+            logger.info(
+                "dependencies.py -> init_services skipped (already initialized)"
+            )
             return
 
         # Back-compat guard: if an older version initialized everything without the flag.
@@ -165,7 +167,9 @@ def init_services() -> None:
             and _orchestrator is not None
         ):
             _services_initialized = True
-            logger.info("dependencies.py -> init_services skipped (already initialized)")
+            logger.info(
+                "dependencies.py -> init_services skipped (already initialized)"
+            )
             return
 
         logger.info("dependencies.py -> init_services starting")

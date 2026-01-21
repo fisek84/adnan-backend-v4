@@ -147,3 +147,24 @@ tests/test_execute_preview_ssot.py
 tests/test_identity_alignment_contract.py
 tests/test_notion_patch_validation.py
 tests/test_notion_property_specs_builder.py
+
+# =========================
+# Audit / cleanup artifacts (do not commit)
+# =========================
+CLEANUP_*.md
+CLEANUP_PLAN.md
+CLEANUP_CANONICAL.md
+RIPGREP_AUDIT_REPORT*.md
+_patch_*.py
+
+tools/EVIDENCE_*.md
+tools/EVIDENCE_TOP30_STRICT.md
+tools/EVIDENCE_ZERO_INBOUND_STRICT*.md
+tools/health_services_harden.json
+
+# generated/one-off tooling (keep local unless explicitly needed)
+tools/ripgrep_audit*.py
+tools/generate_cleanup_plan*.py
+tools/evidence_top30*.ps1
+tools/capture_*.py
+tools/smoke_uvicorn_flags.py

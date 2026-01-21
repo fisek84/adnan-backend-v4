@@ -48,3 +48,32 @@ def test_ceo_advisor_predlagati_goals_tasks_does_not_use_old_copy(monkeypatch):
     assert "odgovori na 2-3 pitanja iznad" not in txt.lower()
     assert "GOALS (top 3)" in txt
     assert "TASKS (top 5)" in txt
+
+
+def test_ceo_advisor_prepare_prompt_for_goal_subgoal_returns_template(monkeypatch):
+    from services.ceo_advisor_agent import create_ceo_advisor_agent
+
+    # Offline mode (no LLM) should still return a useful template.
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    agent_input = DummyAgentInput(
+        message=(
+            "Dali mozes da mi pripremis prompt za taj cilj i potcilj "
+            "koji cu poslati Notion ops agentu da upise u notion"
+        ),
+        snapshot={},
+        metadata={"snapshot_source": "test"},
+    )
+
+    out = asyncio.run(create_ceo_advisor_agent(agent_input, ctx={}))
+    txt = out.text or ""
+
+    assert out.read_only is True
+    assert isinstance(out.trace, dict)
+    assert out.trace.get("prompt_template") is True
+    # Should be a template, not the dashboard structured output.
+    assert "GOALS (top 3)" not in txt
+    assert "TASKS (top 5)" not in txt
+    assert "GOAL:" in txt
+    assert "POTCILJEVI" in txt
+    assert "Name:" in txt

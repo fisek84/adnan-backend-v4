@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 from typing import Dict, Any
 
@@ -128,6 +129,8 @@ class AdnanAIDecisionService:
             }
 
         if "zapamti" in lower:
+            print("HIT_ZAPAMTI", os.getpid(), os.getcwd(), repr(text))
+            print("PERSONALITY_FILE", str(self.personality_engine.file_path.resolve()))
             self.personality_engine.learn_from_text(text)
             return {
                 "decision_candidate": False,
@@ -162,6 +165,7 @@ class AdnanAIDecisionService:
         if command_block["command"] in self.WRITE_COMMANDS:
             decision["write_intent"] = True
 
+        decision["personality"] = self.personality_engine.get_personality()
         return decision
 
     def _detect_intent(self, text: str) -> Dict[str, Any]:

@@ -388,6 +388,8 @@ async def list_tasks(tasks_service: TasksService = Depends(get_tasks_service)):
             "tasks": [_task_to_dict(t) for t in tasks],
             "read_only": True,
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error("Failed to list tasks: %s", e)
         raise HTTPException(status_code=500, detail="Failed to list tasks")

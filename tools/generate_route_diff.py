@@ -71,9 +71,7 @@ def main() -> int:
     # Enterprise collision definition:
     # if the same METHOD+PATH exists in OFF and ON but resolves to a different handler.
     handler_mismatch = [
-        k
-        for k in shared_keys
-        if (off_map.get(k) or set()) != (on_map.get(k) or set())
+        k for k in shared_keys if (off_map.get(k) or set()) != (on_map.get(k) or set())
     ]
 
     md: List[str] = []
@@ -85,7 +83,9 @@ def main() -> int:
     md.append(f"- OFF routes (METHOD+PATH): {len(off_keys)}")
     md.append(f"- ON routes (METHOD+PATH): {len(on_keys)}")
     md.append(f"- NEW routes when ON: {len(new_keys)}")
-    md.append(f"- METHOD+PATH handler mismatches (OFF vs ON): {len(handler_mismatch)}\n")
+    md.append(
+        f"- METHOD+PATH handler mismatches (OFF vs ON): {len(handler_mismatch)}\n"
+    )
 
     md.append("## New routes when ENABLE_EXTRA_ROUTERS=true\n")
     md.append("| Method | Path | Handler module | Handler name |")
@@ -112,7 +112,9 @@ def main() -> int:
 
     md.append("\n## Collision check\n")
     if not handler_mismatch:
-        md.append("- OK: 0 collisions (no shared METHOD+PATH changes handler between OFF and ON).")
+        md.append(
+            "- OK: 0 collisions (no shared METHOD+PATH changes handler between OFF and ON)."
+        )
     else:
         md.append("- FAIL: shared METHOD+PATH changed handler between OFF and ON.")
         md.append("\n| Method | Path | OFF handlers | ON handlers |")
@@ -120,8 +122,12 @@ def main() -> int:
         for k in handler_mismatch:
             off_handlers = sorted(off_map.get(k) or set())
             on_handlers = sorted(on_map.get(k) or set())
-            off_str = "; ".join([f"{m}.{e}" if m or e else "" for (m, e, _n) in off_handlers])
-            on_str = "; ".join([f"{m}.{e}" if m or e else "" for (m, e, _n) in on_handlers])
+            off_str = "; ".join(
+                [f"{m}.{e}" if m or e else "" for (m, e, _n) in off_handlers]
+            )
+            on_str = "; ".join(
+                [f"{m}.{e}" if m or e else "" for (m, e, _n) in on_handlers]
+            )
             md.append(f"| {k.method} | {k.path} | {off_str} | {on_str} |")
 
     OUT.write_text("\n".join(md) + "\n", encoding="utf-8")

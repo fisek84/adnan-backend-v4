@@ -89,6 +89,56 @@ def _default_kickoff_text() -> str:
     )
 
 
+def _is_prompt_preparation_request(user_text: str) -> bool:
+    t = (user_text or "").strip().lower()
+    if not t:
+        return False
+    # User wants a copy/paste template to send to Notion Ops (not a dashboard summary).
+    return bool(
+        re.search(
+            r"(?i)\b(prompt|template|copy\s*/?\s*paste|copy\s+paste|format|formatiraj|priprem\w*\s+prompt|napis\w*\s+prompt|prompt\s+za)\b",
+            t,
+        )
+    )
+
+
+def _default_notion_ops_goal_subgoal_prompt(*, english_output: bool) -> str:
+    if english_output:
+        return (
+            "Copy/paste this to Notion Ops (Goal + sub-goals):\n\n"
+            "Create a GOAL in Notion.\n\n"
+            "GOAL:\n"
+            "Name: [Clear goal name]\n"
+            "Status: Active\n"
+            "Priority: High\n"
+            "Deadline: [YYYY-MM-DD]\n"
+            "Owner: [Name]\n"
+            "Description: [2-4 sentences: why + scope]\n"
+            "Success Metric: [number/%/definition of done]\n\n"
+            "SUB-GOALS (create as GOALS and link Parent Goal = the goal above):\n"
+            "1) Name: [Measurable sub-goal 1]\n   Status: Active\n   Priority: High\n   Deadline: [YYYY-MM-DD]\n   Success Metric: [criterion]\n"
+            "2) Name: [Measurable sub-goal 2]\n   Status: Active\n   Priority: Medium\n   Deadline: [YYYY-MM-DD]\n   Success Metric: [criterion]\n"
+            "3) Name: [Measurable sub-goal 3]\n   Status: Planned\n   Priority: Medium\n   Deadline: [YYYY-MM-DD]\n   Success Metric: [criterion]\n"
+        )
+
+    return (
+        "Copy/paste ovo Notion Ops agentu (Cilj + potciljevi):\n\n"
+        "Kreiraj GOAL u Notion.\n\n"
+        "GOAL:\n"
+        "Name: [Jasan naziv cilja]\n"
+        "Status: Active\n"
+        "Priority: High\n"
+        "Deadline: [YYYY-MM-DD]\n"
+        "Owner: [Ime]\n"
+        "Description: [2-4 rečenice: zašto + scope]\n"
+        "Success Metric: [broj / % / definicija gotovog]\n\n"
+        "POTCILJEVI (kreiraj kao GOALS i poveži Parent Goal = gore navedeni):\n"
+        "1) Name: [Potcilj 1 – mjerljiv]\n   Status: Active\n   Priority: High\n   Deadline: [YYYY-MM-DD]\n   Success Metric: [kriterij]\n"
+        "2) Name: [Potcilj 2 – mjerljiv]\n   Status: Active\n   Priority: Medium\n   Deadline: [YYYY-MM-DD]\n   Success Metric: [kriterij]\n"
+        "3) Name: [Potcilj 3 – mjerljiv]\n   Status: Planned\n   Priority: Medium\n   Deadline: [YYYY-MM-DD]\n   Success Metric: [kriterij]\n"
+    )
+
+
 # -------------------------------
 # Snapshot unwrapping (CANON)
 # -------------------------------
@@ -148,6 +198,10 @@ def _needs_structured_snapshot_answer(user_text: str) -> bool:
 
     # IMPORTANT: propose-only is NOT structured dashboard mode
     if _is_propose_only_request(t):
+        return False
+
+    # Prompt-prep intent is advisory (not dashboard format)
+    if _is_prompt_preparation_request(t):
         return False
 
     # Any "proposal/suggest" intent = advisory (not dashboard format).
@@ -878,6 +932,7 @@ async def create_ceo_advisor_agent(
 
     propose_only = _is_propose_only_request(base_text)
     wants_notion = _wants_notion_task_or_goal(base_text)
+    wants_prompt_template = _is_prompt_preparation_request(base_text)
 
     # Deterministic: for show/list requests, never rely on LLM.
     if structured_mode and _is_show_request(base_text):
@@ -1015,6 +1070,30 @@ async def create_ceo_advisor_agent(
     text_out: str = ""
 
     use_llm = not propose_only
+
+    # Deterministic, enterprise-safe: if user asks for a prompt template for Notion Ops,
+    # return it even in offline/CI mode (no LLM), and do not emit write proposals.
+    if wants_prompt_template and wants_notion and not structured_mode:
+        text_out = _default_notion_ops_goal_subgoal_prompt(
+            english_output=english_output
+        )
+        trace = ctx.get("trace") if isinstance(ctx, dict) else {}
+        if not isinstance(trace, dict):
+            trace = {}
+        trace["agent_output_text_len"] = len(text_out)
+        trace["structured_mode"] = structured_mode
+        trace["propose_only"] = propose_only
+        trace["wants_notion"] = wants_notion
+        trace["llm_used"] = False
+        trace["snapshot"] = snap_trace
+        trace["prompt_template"] = True
+        return AgentOutput(
+            text=text_out,
+            proposed_commands=[],
+            agent_id="ceo_advisor",
+            read_only=True,
+            trace=trace,
+        )
 
     if use_llm:
         try:

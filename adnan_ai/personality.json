@@ -1,6 +1,13 @@
 {
-  "values": [],
-  "philosophy": [],
+  "values": [
+    "test-001",
+    "test-002",
+    "test-003",
+    "zapamti test-004"
+  ],
+  "philosophy": [
+    "Vrijednosti: integritet, brzina; Pravila: uvijek batch prije single; Filozofija: evidence-based"
+  ],
   "psychology": [],
   "business_mind": [],
   "communication_style": [],

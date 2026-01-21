@@ -74,6 +74,15 @@ def _db_driver_probe_stdout() -> None:
 def main() -> int:
     _db_driver_probe_stdout()
 
+    if (os.getenv("OFL_DRY_RUN") or "").strip().lower() == "true":
+        # Deterministic runtime evidence without requiring a live DB.
+        print("ofl_scheduler: dry_run=true (skipping DB connect)", flush=True)
+        print(
+            "ofl_scheduler: would_call=jobs.outcome_feedback_loop_job.run_once()",
+            flush=True,
+        )
+        return 0
+
     e = sa.create_engine(_db_url(), pool_pre_ping=True)
     try:
         with e.connect() as c:
