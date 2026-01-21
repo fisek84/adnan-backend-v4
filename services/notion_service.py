@@ -1332,6 +1332,114 @@ class NotionService:
             logger.warning("sync_knowledge_snapshot failed (non-fatal)", exc_info=True)
             return {"ok": False}
 
+    # ============================================================
+    # READ-ONLY KNOWLEDGE SNAPSHOT (SSOT)
+    # ============================================================
+    async def build_knowledge_snapshot(self) -> Dict[str, Any]:
+        """Build a lightweight, UI-safe knowledge snapshot from Notion.
+
+        Contract:
+        - Read-only (queries only)
+        - Best-effort (never raises)
+        - Returns wrapper compatible with KnowledgeSnapshotService.update_snapshot:
+            {"payload": {"goals": [], "tasks": [], "projects": [], "last_sync": ...},
+             "meta": {"ok": bool, "synced_at": ... , "errors": [...]}}
+        """
+
+        async def _title_prop_for_db(db_id: str) -> str:
+            try:
+                schema = await self._get_database_schema(db_id)
+                props = schema.get("properties") if isinstance(schema, dict) else None
+                if isinstance(props, dict):
+                    for k, v in props.items():
+                        if (
+                            isinstance(k, str)
+                            and k.strip()
+                            and isinstance(v, dict)
+                            and v.get("type") == "title"
+                        ):
+                            return k
+            except Exception:
+                pass
+            return "Name"
+
+        async def _query_all_pages(
+            *, db_key: str, page_size: int = 50, max_items: int = 200
+        ) -> List[Dict[str, Any]]:
+            out: List[Dict[str, Any]] = []
+            cursor: Optional[str] = None
+            while True:
+                q: Dict[str, Any] = {"page_size": int(page_size)}
+                if cursor:
+                    q["start_cursor"] = cursor
+
+                res = await self.query_database(db_key=db_key, query=q)
+                items = res.get("results") if isinstance(res, dict) else None
+                if isinstance(items, list):
+                    for it in items:
+                        if isinstance(it, dict):
+                            out.append(it)
+                        if len(out) >= int(max_items):
+                            return out
+
+                has_more = res.get("has_more") if isinstance(res, dict) else False
+                nxt = res.get("next_cursor") if isinstance(res, dict) else None
+                if has_more is True and isinstance(nxt, str) and nxt.strip():
+                    cursor = nxt.strip()
+                    continue
+                return out
+
+        synced_at = _utc_iso()
+        payload: Dict[str, Any] = {
+            "goals": [],
+            "tasks": [],
+            "projects": [],
+            "last_sync": synced_at,
+        }
+        meta: Dict[str, Any] = {
+            "ok": True,
+            "synced_at": synced_at,
+            "source": "notion",
+            "errors": [],
+        }
+
+        for db_key in ("goals", "tasks", "projects"):
+            try:
+                db_id = self._resolve_db_id(db_key)
+                title_prop = await _title_prop_for_db(db_id)
+                pages = await _query_all_pages(db_key=db_key)
+
+                items: List[Dict[str, Any]] = []
+                for p in pages:
+                    pid = _ensure_str(p.get("id"))
+                    title = self._extract_page_title(p, title_prop)
+                    url = _ensure_str(p.get("url"))
+                    last_edited_time = _ensure_str(p.get("last_edited_time"))
+                    created_time = _ensure_str(p.get("created_time"))
+                    items.append(
+                        {
+                            "id": pid.replace("-", "") if pid else pid,
+                            "notion_id": pid,
+                            "title": title,
+                            "url": url,
+                            "created_time": created_time,
+                            "last_edited_time": last_edited_time,
+                        }
+                    )
+
+                payload[db_key] = items
+            except Exception as exc:  # noqa: BLE001
+                meta["ok"] = False
+                try:
+                    meta["errors"].append(
+                        f"{db_key}:{type(exc).__name__}:{str(exc)}"
+                    )
+                except Exception:
+                    pass
+                payload[db_key] = []
+
+        return {"payload": payload, "meta": meta}
+
     async def query_database(
         self, *, db_key: str, query: Dict[str, Any]
     ) -> Dict[str, Any]:

@@ -113,7 +113,27 @@ class KnowledgeSnapshotService:
 
         cls._payload = payload if isinstance(payload, dict) else {}
         cls._meta = meta if isinstance(meta, dict) else {}
-        cls._ready = True
+
+        # Readiness should reflect whether we actually have usable snapshot data.
+        # If meta.ok explicitly false and there is no data, mark not-ready.
+        meta_ok = None
+        try:
+            meta_ok = cls._meta.get("ok") if isinstance(cls._meta, dict) else None
+        except Exception:
+            meta_ok = None
+
+        has_core_data = False
+        try:
+            if isinstance(cls._payload, dict):
+                for k in ("goals", "tasks", "projects"):
+                    v = cls._payload.get(k)
+                    if isinstance(v, list) and len(v) > 0:
+                        has_core_data = True
+                        break
+        except Exception:
+            has_core_data = False
+
+        cls._ready = bool(has_core_data or meta_ok is not False)
 
         if isinstance(cls._payload.get("last_sync"), str):
             cls._last_sync = cls._payload["last_sync"]
