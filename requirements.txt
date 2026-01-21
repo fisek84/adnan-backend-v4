@@ -50,6 +50,11 @@ python-multipart==0.0.9
 rapidfuzz==3.6.1
 
 # ===========================
+# OPENAPI CONTRACT PARSING (tests)
+# ===========================
+PyYAML==6.0.1
+
+# ===========================
 # DEV / QUALITY TOOLS (KANON-FIX-008)
 # ===========================
 ruff==0.6.4

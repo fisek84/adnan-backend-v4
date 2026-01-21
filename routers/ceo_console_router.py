@@ -159,11 +159,12 @@ async def ceo_command(req: CEOCommandRequest = Body(...)) -> CEOCommandResponse:
 
     agent_input = AgentInput(
         message=req.text,
-        snapshot=KnowledgeSnapshotService.get_payload() or {},
+        snapshot=KnowledgeSnapshotService.get_snapshot() or {},
         metadata={
             "initiator": req.initiator or "ceo",
             "read_only": True,
             "require_approval": bool(req.require_approval),
+            "snapshot_source": "KnowledgeSnapshotService.get_snapshot",
         },
     )
 

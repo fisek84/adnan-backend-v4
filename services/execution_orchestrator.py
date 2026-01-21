@@ -153,6 +153,95 @@ class ExecutionOrchestrator:
                     "result": res,
                 }
 
+            # ---------- READ-ONLY DIRECTIVE: refresh_snapshot ----------
+            # Canon: read-only, no writes, must return deterministic non-null result.
+            if (cmd.intent == "refresh_snapshot") or (
+                cmd.command == "refresh_snapshot"
+            ):
+                cmd.read_only = True
+                try:
+                    from services.notion_sync_service import NotionSyncService  # type: ignore
+                    from services.knowledge_snapshot_service import (
+                        KnowledgeSnapshotService,
+                    )  # type: ignore
+
+                    ok = await NotionSyncService().sync_knowledge_snapshot()
+                    ks = KnowledgeSnapshotService.get_snapshot()
+                    snapshot_meta = {
+                        "last_sync": ks.get("last_sync"),
+                        "expired": bool(ks.get("expired")),
+                        "ready": bool(ks.get("ready")),
+                        "ttl_seconds": ks.get("ttl_seconds"),
+                        "age_seconds": ks.get("age_seconds"),
+                    }
+
+                    res = {
+                        "ok": bool(ok),
+                        "success": bool(ok),
+                        "read_only": True,
+                        "intent": "refresh_snapshot",
+                        "snapshot_meta": snapshot_meta,
+                        "knowledge_snapshot": ks,
+                    }
+                except Exception as exc:
+                    # Even on failure, return a deterministic non-null result.
+                    try:
+                        from services.knowledge_snapshot_service import (
+                            KnowledgeSnapshotService,
+                        )  # type: ignore
+
+                        ks = KnowledgeSnapshotService.get_snapshot()
+                    except Exception:
+                        ks = {"ready": False, "expired": None, "payload": {}}
+
+                    snapshot_meta = {
+                        "last_sync": ks.get("last_sync"),
+                        "expired": bool(ks.get("expired"))
+                        if isinstance(ks, dict)
+                        else None,
+                        "ready": bool(ks.get("ready"))
+                        if isinstance(ks, dict)
+                        else None,
+                        "ttl_seconds": ks.get("ttl_seconds")
+                        if isinstance(ks, dict)
+                        else None,
+                        "age_seconds": ks.get("age_seconds")
+                        if isinstance(ks, dict)
+                        else None,
+                    }
+
+                    res = {
+                        "ok": False,
+                        "success": False,
+                        "read_only": True,
+                        "intent": "refresh_snapshot",
+                        "error": str(exc),
+                        "error_type": exc.__class__.__name__,
+                        "snapshot_meta": snapshot_meta,
+                        "knowledge_snapshot": ks,
+                    }
+
+                if res.get("ok") is True:
+                    cmd.execution_state = "COMPLETED"
+                    self.registry.complete(cmd.execution_id, res)
+                    return {
+                        "execution_id": cmd.execution_id,
+                        "execution_state": "COMPLETED",
+                        "result": res,
+                    }
+
+                cmd.execution_state = "FAILED"
+                self.registry.fail(cmd.execution_id, res)
+                reason = res.get("error") or "refresh_snapshot failed"
+                return {
+                    "execution_id": cmd.execution_id,
+                    "execution_state": "FAILED",
+                    "result": res,
+                    "failure": res,
+                    "ok": False,
+                    "text": f"Execution FAILED: {reason}",
+                }
+
             # ---------- WORKFLOW ----------
             if self._is_goal_task_workflow(cmd):
                 result = await self._execute_goal_task_workflow(cmd)

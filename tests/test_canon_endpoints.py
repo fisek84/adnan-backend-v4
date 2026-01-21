@@ -84,6 +84,19 @@ def test_ai_run_requires_text_and_is_read_only():
     assert "proposed_commands" in body
     # read-only: proposal wrapper returns proposed_commands list (possibly empty)
 
+    # Enterprise snapshot contract
+    assert "knowledge_snapshot" in body
+    assert isinstance(body["knowledge_snapshot"], dict)
+    assert body["knowledge_snapshot"].get("schema_version") == "v1"
+    assert body["knowledge_snapshot"].get("status") in (
+        "fresh",
+        "stale",
+        "missing_data",
+    )
+    assert isinstance(body["knowledge_snapshot"].get("last_sync"), str)
+    assert "snapshot_meta" in body
+    assert isinstance(body["snapshot_meta"], dict)
+
 
 def test_ceo_command_legacy_wrapper_is_read_only():
     app = _get_app()

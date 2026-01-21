@@ -33,6 +33,19 @@ def test_api_chat_is_read_only_and_returns_proposals():
     # Canonical invariant: endpoint je uvijek READ-ONLY
     assert body["read_only"] is True
 
+    # Enterprise snapshot contract
+    assert "knowledge_snapshot" in body
+    assert isinstance(body["knowledge_snapshot"], dict)
+    assert body["knowledge_snapshot"].get("schema_version") == "v1"
+    assert body["knowledge_snapshot"].get("status") in (
+        "fresh",
+        "stale",
+        "missing_data",
+    )
+    assert isinstance(body["knowledge_snapshot"].get("last_sync"), str)
+    assert "snapshot_meta" in body
+    assert isinstance(body["snapshot_meta"], dict)
+
     # Struktura odgovora
     assert "agent_id" in body
     assert "proposed_commands" in body
@@ -69,6 +82,10 @@ def test_chat_is_read_only_and_does_not_create_approvals():
 
     body = r.json()
     assert body["read_only"] is True
+
+    assert "knowledge_snapshot" in body
+    assert isinstance(body["knowledge_snapshot"], dict)
+    assert body["knowledge_snapshot"].get("schema_version") == "v1"
 
     # Nakon /api/chat broj approvals mora ostati isti
     after = state.list_approvals()
@@ -109,6 +126,8 @@ def test_chat_show_goals_hydrates_snapshot_when_missing(monkeypatch):
 
     body = r.json()
     assert body["read_only"] is True
+    assert "knowledge_snapshot" in body
+    assert isinstance(body["knowledge_snapshot"], dict)
     assert "GOALS (top 3)" in (body.get("text") or "")
     assert "Goal A" in (body.get("text") or "")
     assert "Vidim da je stanje prazno" not in (body.get("text") or "")

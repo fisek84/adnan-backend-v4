@@ -141,6 +141,12 @@ ACTION_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "category": "read",
         "allowed_owners": ["system"],
     },
+    # READ (EXECUTED BY ORCHESTRATOR; handler intentionally None)
+    "refresh_snapshot": {
+        "handler": None,
+        "category": "read",
+        "allowed_owners": ["system"],
+    },
     # WRITE (DELEGATED TO AGENTS)
     "goal_write": {
         "handler": None,  # ❗️NAMJERNO — delegira se NotionOpsAgent-u

@@ -368,6 +368,14 @@ class AgentOutput(_AllowExtraBaseModel):
         default_factory=dict, description="Trace metadata (routing, scoring, itd.)."
     )
 
+    # Enterprise SSOT snapshot (never-empty contract)
+    knowledge_snapshot: Dict[str, Any] = Field(
+        default_factory=dict, description="SSOT knowledge snapshot wrapper."
+    )
+    snapshot_meta: Dict[str, Any] = Field(
+        default_factory=dict, description="Snapshot meta for UI refresh/diagnostics."
+    )
+
     # Defense-in-depth: read_only must never be false in this contract.
     if _is_pydantic_v2():
         from pydantic import field_validator  # type: ignore
@@ -387,6 +395,16 @@ class AgentOutput(_AllowExtraBaseModel):
         def _pcs_none_to_list(cls, v):
             return v or []
 
+        @field_validator("knowledge_snapshot", mode="before")
+        @classmethod
+        def _knowledge_snapshot_none_to_dict(cls, v):
+            return v or {}
+
+        @field_validator("snapshot_meta", mode="before")
+        @classmethod
+        def _snapshot_meta_none_to_dict(cls, v):
+            return v or {}
+
     else:
         from pydantic import validator  # type: ignore
 
@@ -401,3 +419,11 @@ class AgentOutput(_AllowExtraBaseModel):
         @validator("proposed_commands", pre=True, always=True)
         def _pcs_none_to_list(cls, v):
             return v or []
+
+        @validator("knowledge_snapshot", pre=True, always=True)
+        def _knowledge_snapshot_none_to_dict(cls, v):
+            return v or {}
+
+        @validator("snapshot_meta", pre=True, always=True)
+        def _snapshot_meta_none_to_dict(cls, v):
+            return v or {}

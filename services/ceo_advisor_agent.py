@@ -157,6 +157,66 @@ def _unwrap_snapshot(snapshot: Dict[str, Any]) -> Dict[str, Any]:
     return snapshot
 
 
+def _is_fact_sensitive_query(user_text: str) -> bool:
+    """Detect prompts that would require grounded business facts.
+
+    We allow general coaching without snapshot, but we must not assert
+    business state (blocked/at-risk/KPI counts/status) without SSOT data.
+    """
+
+    t = (user_text or "").strip().lower()
+    if not t:
+        return False
+
+    risk_terms = (
+        "blocked",
+        "blokiran",
+        "blokada",
+        "at risk",
+        "u riziku",
+        "risk",
+        "kasni",
+        "kašn",
+        "delayed",
+        "critical",
+        "kritic",
+        "incident",
+        "p0",
+    )
+    if any(s in t for s in risk_terms):
+        return True
+
+    # "status/stanje" questions become fact-sensitive when tied to goals/tasks/KPIs.
+    wants_status = bool(re.search(r"(?i)\b(status|stanje|progress|napredak)\b", t))
+    wants_target = bool(
+        re.search(
+            r"(?i)\b(cilj\w*|goal\w*|task\w*|zadat\w*|zadac\w*|kpi\w*|project\w*|projekat\w*)\b",
+            t,
+        )
+    )
+    if wants_status and wants_target:
+        return True
+
+    # Count/number queries about goals/tasks are fact-sensitive.
+    wants_count = bool(re.search(r"(?i)\b(koliko|broj|how\s+many)\b", t))
+    if wants_count and wants_target:
+        return True
+
+    return False
+
+
+def _snapshot_has_business_facts(snapshot_payload: Dict[str, Any]) -> bool:
+    if not isinstance(snapshot_payload, dict):
+        return False
+    if snapshot_payload.get("dashboard"):
+        return True
+    for k in ("goals", "tasks", "projects", "kpis", "kpi"):
+        v = snapshot_payload.get(k)
+        if isinstance(v, (list, dict)) and bool(v):
+            return True
+    return False
+
+
 # -------------------------------
 # Snapshot-structured mode (as-is)
 # -------------------------------
@@ -934,6 +994,38 @@ async def create_ceo_advisor_agent(
     wants_notion = _wants_notion_task_or_goal(base_text)
     wants_prompt_template = _is_prompt_preparation_request(base_text)
 
+    # Grounding gate: for fact-sensitive questions, never assert state without snapshot.
+    # This prevents hallucinated "blocked/at risk" type claims.
+    snapshot_has_facts = _snapshot_has_business_facts(snapshot_payload)
+    if _is_fact_sensitive_query(base_text) and not snapshot_has_facts:
+        trace = ctx.get("trace") if isinstance(ctx, dict) else {}
+        if not isinstance(trace, dict):
+            trace = {}
+        trace["grounding_gate"] = {
+            "applied": True,
+            "reason": "fact_sensitive_query_without_snapshot",
+            "snapshot": snap_trace,
+        }
+        return AgentOutput(
+            text=(
+                "Ne mogu potvrditi poslovno stanje iz ovog upita jer u READ kontekstu nemam učitan SSOT snapshot. "
+                "Predlog: pokreni 'refresh snapshot' ili otvori CEO Console snapshot pa ponovi pitanje."
+            ),
+            proposed_commands=[
+                ProposedCommand(
+                    command="refresh_snapshot",
+                    args={"source": "ceo_advisory"},
+                    reason="SSOT snapshot nije prisutan za fact-sensitive pitanje.",
+                    requires_approval=True,
+                    risk="LOW",
+                    dry_run=True,
+                )
+            ],
+            agent_id="ceo_advisor",
+            read_only=True,
+            trace=trace,
+        )
+
     # Deterministic: for show/list requests, never rely on LLM.
     if structured_mode and _is_show_request(base_text):
         tgt = _show_target(base_text)
@@ -1111,6 +1203,7 @@ async def create_ceo_advisor_agent(
             result = {"text": _default_kickoff_text(), "proposed_commands": []}
 
         text_out = _pick_text(result) or "CEO advisor nije vratio tekstualni output."
+        "- NE SMIJEŠ tvrditi status/rizik/blokade ili brojeve ciljeva/taskova ako to nije eksplicitno u snapshot-u; u tom slučaju reci da nije poznato iz snapshot-a i predloži refresh.\n"
         proposed_items = (
             result.get("proposed_commands") if isinstance(result, dict) else None
         )

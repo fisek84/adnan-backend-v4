@@ -31,9 +31,9 @@ tags:
 paths:
 
   ############################################################
-  # GOALS — READ / WRITE (EXPLICIT)
+  # GOALS — READ / WRITE
   ############################################################
-  /goals/all:
+  /api/goals/all:
     get:
       summary: "Get all goals (READ)"
       tags: [Goals]
@@ -48,7 +48,7 @@ paths:
                 items:
                   $ref: "#/components/schemas/GoalResponse"
 
-  /goals/create:
+  /api/goals:
     post:
       summary: "Create a goal (WRITE)"
       tags: [Goals]
@@ -67,7 +67,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/GoalResponse"
 
-  /goals/{goal_id}:
+  /api/goals/{goal_id}:
     patch:
       summary: "Update a goal (WRITE)"
       tags: [Goals]
@@ -107,7 +107,7 @@ paths:
   ############################################################
   # TASKS — READ / WRITE
   ############################################################
-  /tasks/all:
+  /api/tasks/all:
     get:
       summary: "Get all tasks (READ)"
       tags: [Tasks]
@@ -122,7 +122,7 @@ paths:
                 items:
                   $ref: "#/components/schemas/TaskResponse"
 
-  /tasks/create:
+  /api/tasks/create:
     post:
       summary: "Create a task (WRITE)"
       tags: [Tasks]
@@ -141,7 +141,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/TaskResponse"
 
-  /tasks/{task_id}:
+  /api/tasks/{task_id}:
     patch:
       summary: "Update a task (WRITE)"
       tags: [Tasks]
@@ -179,11 +179,79 @@ paths:
           description: "Task deleted"
 
   ############################################################
-  # AI COMMANDS — GOVERNED EXECUTION
+  # SYNC — ONE-WAY (READ-ONLY)
   ############################################################
-  /ai/run:
+  /api/sync/status:
+    get:
+      summary: "Sync service status"
+      tags: [Sync]
+      operationId: "syncStatus"
+      responses:
+        "200":
+          description: "Sync status"
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /api/sync/goals:
     post:
-      summary: "Run AI command (GOVERNED)"
+      summary: "Sync goals"
+      tags: [Sync]
+      operationId: "syncGoals"
+      responses:
+        "200":
+          description: "Sync result"
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /api/sync/tasks:
+    post:
+      summary: "Sync tasks"
+      tags: [Sync]
+      operationId: "syncTasks"
+      responses:
+        "200":
+          description: "Sync result"
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /api/sync/projects:
+    post:
+      summary: "Sync projects"
+      tags: [Sync]
+      operationId: "syncProjects"
+      responses:
+        "200":
+          description: "Sync result"
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /api/sync/full:
+    post:
+      summary: "Sync full"
+      tags: [Sync]
+      operationId: "syncFull"
+      responses:
+        "200":
+          description: "Sync result"
+          content:
+            application/json:
+              schema:
+                type: object
+
+  ############################################################
+  # AI (READ-ONLY)
+  ############################################################
+  /api/ai/run:
+    post:
+      summary: "Run AI command (READ-ONLY / GOVERNED)"
       tags: [AI]
       operationId: "runAiCommand"
       requestBody:
@@ -191,62 +259,121 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/AIRequest"
+              type: object
+              required: [text]
+              properties:
+                text: { type: string }
+                snapshot: { type: object, nullable: true }
+                metadata: { type: object, nullable: true }
       responses:
         "200":
-          description: "AI execution result (may require approval)"
+          description: "AI execution result"
           content:
             application/json:
               schema:
                 type: object
 
-  ############################################################
-  # AGENTS — DIRECT EXECUTION (CONTROLLED)
-  ############################################################
-  /ext/agents/message:
+  /api/chat:
     post:
-      summary: "Send message to agent (EXECUTION)"
-      tags: [Agents]
-      operationId: "messageAgent"
+      summary: "Canonical chat (READ-ONLY; never-empty snapshot)"
+      tags: [AI]
+      operationId: "chat"
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [agent, payload]
+              required: [message]
               properties:
-                agent: { type: string }
-                payload: { type: object }
+                message: { type: string }
+                snapshot: { type: object, nullable: true }
+                metadata: { type: object, nullable: true }
+                session_id: { type: string, nullable: true }
       responses:
         "200":
-          description: "Agent execution result"
+          description: "Chat output"
           content:
             application/json:
               schema:
                 type: object
 
-  ############################################################
-  # NOTION OPS — STRUCTURED, GOVERNED
-  ############################################################
-  /ext/notion-ops/execute:
+  /api/ceo/command:
     post:
-      summary: "Execute structured Notion Ops command (GOVERNED)"
-      tags: [Notion Ops]
-      operationId: "notionOpsExecute"
+      summary: "CEO command (READ-ONLY; propose-only)"
+      tags: [AI]
+      operationId: "ceoCommand"
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [command]
               properties:
-                command: { type: string }
-                payload: { type: object }
+                input_text: { type: string, nullable: true }
+                text: { type: string, nullable: true }
+                message: { type: string, nullable: true }
+                session_id: { type: string, nullable: true }
       responses:
         "200":
-          description: "Notion Ops execution result"
+          description: "CEO command output"
+          content:
+            application/json:
+              schema:
+                type: object
+
+  ############################################################
+  # CEO CONSOLE
+  ############################################################
+  /api/ceo/console/snapshot:
+    get:
+      summary: "CEO Console snapshot (never-empty)"
+      tags: [AI]
+      operationId: "ceoConsoleSnapshot"
+      responses:
+        "200":
+          description: "Snapshot"
+          content:
+            application/json:
+              schema:
+                type: object
+
+  ############################################################
+  # EXECUTE (GOVERNED)
+  ############################################################
+  /api/execute/raw:
+    post:
+      summary: "Create execution (approval-gated) or run refresh_snapshot"
+      tags: [AI Ops]
+      operationId: "executeRaw"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: "Execution result"
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /api/execute/preview:
+    post:
+      summary: "Preview execution (read-only)"
+      tags: [AI Ops]
+      operationId: "executePreview"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: "Preview"
           content:
             application/json:
               schema:

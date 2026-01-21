@@ -77,3 +77,25 @@ def test_ceo_advisor_prepare_prompt_for_goal_subgoal_returns_template(monkeypatc
     assert "GOAL:" in txt
     assert "POTCILJEVI" in txt
     assert "Name:" in txt
+
+
+def test_ceo_advisor_fact_sensitive_empty_snapshot_is_grounded(monkeypatch):
+    from services.ceo_advisor_agent import create_ceo_advisor_agent
+
+    # Even if LLM is configured, we must not assert business state without snapshot.
+    monkeypatch.setenv("OPENAI_API_KEY", "test")
+
+    agent_input = DummyAgentInput(
+        message="Da li smo blokirani?",
+        snapshot={},
+        metadata={"snapshot_source": "test"},
+    )
+
+    out = asyncio.run(create_ceo_advisor_agent(agent_input, ctx={}))
+    txt = (out.text or "").lower()
+
+    assert out.read_only is True
+    assert "blokir" not in txt
+    assert "refresh" in txt
+    assert isinstance(out.trace, dict)
+    assert isinstance(out.trace.get("grounding_gate"), dict)

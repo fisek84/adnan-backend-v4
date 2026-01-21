@@ -24,6 +24,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from system_version import ARCH_LOCK, RELEASE_CHANNEL, SYSTEM_NAME, VERSION
 from models.canon import PROPOSAL_WRAPPER_INTENT
+from models.ceo_console_snapshot import CeoConsoleSnapshotResponse
 
 # ================================================================
 # ENV / BOOTSTRAP
@@ -2122,6 +2123,129 @@ async def execute_raw_command(payload: Dict[str, Any] = Body(...)):
 
     normalized = _normalize_execute_raw_payload_dict(payload)
 
+    # Read-only directive: refresh_snapshot should execute immediately and return
+    # deterministic meta so UI can refresh without going through approvals.
+    if (normalized.intent == "refresh_snapshot") or (
+        normalized.command == "refresh_snapshot"
+    ):
+        try:
+            _, _, _, registry, orchestrator = _require_boot_services()
+        except HTTPException as exc:
+            ks = KnowledgeSnapshotService.get_snapshot()
+            snapshot_meta = {
+                "schema_version": ks.get("schema_version"),
+                "status": ks.get("status"),
+                "generated_at": ks.get("generated_at"),
+                "last_sync": ks.get("last_sync"),
+                "expired": bool(ks.get("expired")),
+                "ready": bool(ks.get("ready")),
+                "ttl_seconds": ks.get("ttl_seconds"),
+                "age_seconds": ks.get("age_seconds"),
+            }
+
+            # Contract: never return result:null; include deterministic error object.
+            return {
+                "status": "FAILED",
+                "execution_state": "FAILED",
+                "read_only": True,
+                "execution_id": str(uuid.uuid4()),
+                "approval_id": None,
+                "command": normalized.command or "refresh_snapshot",
+                "intent": normalized.intent or "refresh_snapshot",
+                "snapshot_meta": snapshot_meta,
+                "result": {
+                    "ok": False,
+                    "success": False,
+                    "read_only": True,
+                    "intent": "refresh_snapshot",
+                    "error": str(getattr(exc, "detail", "boot_not_ready")),
+                    "error_type": "boot_not_ready",
+                    "snapshot_meta": snapshot_meta,
+                    "knowledge_snapshot": ks,
+                    "trace": {
+                        "canon": "execute_raw_refresh_snapshot_fail_soft",
+                        "endpoint": "/api/execute/raw",
+                        "reason": "boot_services_unavailable",
+                    },
+                },
+            }
+
+        ai_command = AICommand(
+            command=normalized.command or "refresh_snapshot",
+            intent=normalized.intent or "refresh_snapshot",
+            params=normalized.params if isinstance(normalized.params, dict) else {},
+            initiator=normalized.initiator,
+            read_only=True,
+            metadata=normalized.metadata
+            if isinstance(normalized.metadata, dict)
+            else {},
+        )
+        ai_command.read_only = True
+        _ensure_execution_id(ai_command)
+
+        orchestrator.registry.register(ai_command)
+        registry.register(ai_command)
+
+        out = await orchestrator.execute(ai_command)
+
+        ks = KnowledgeSnapshotService.get_snapshot()
+        snapshot_meta = {
+            "schema_version": ks.get("schema_version"),
+            "status": ks.get("status"),
+            "generated_at": ks.get("generated_at"),
+            "last_sync": ks.get("last_sync"),
+            "expired": bool(ks.get("expired")),
+            "ready": bool(ks.get("ready")),
+            "ttl_seconds": ks.get("ttl_seconds"),
+            "age_seconds": ks.get("age_seconds"),
+        }
+
+        if not isinstance(out, dict):
+            return {
+                "status": "FAILED",
+                "execution_state": "FAILED",
+                "read_only": True,
+                "execution_id": getattr(ai_command, "execution_id", None),
+                "approval_id": None,
+                "command": getattr(ai_command, "command", None),
+                "intent": getattr(ai_command, "intent", None),
+                "snapshot_meta": snapshot_meta,
+                "result": {
+                    "ok": False,
+                    "success": False,
+                    "error": "invalid_orchestrator_response",
+                    "snapshot_meta": snapshot_meta,
+                    "knowledge_snapshot": ks,
+                },
+            }
+
+        out.setdefault("result", {})
+        if isinstance(out.get("result"), dict):
+            out["result"].setdefault("snapshot_meta", snapshot_meta)
+            out["result"].setdefault("knowledge_snapshot", ks)
+
+        exec_state = out.get("execution_state")
+        status = (
+            "COMPLETED" if exec_state == "COMPLETED" else (exec_state or "COMPLETED")
+        )
+
+        return {
+            "status": status,
+            "execution_state": exec_state or "COMPLETED",
+            "read_only": True,
+            "execution_id": out.get("execution_id")
+            or getattr(ai_command, "execution_id", None),
+            "approval_id": out.get("approval_id"),
+            "command": getattr(ai_command, "command", None),
+            "intent": getattr(ai_command, "intent", None),
+            "snapshot_meta": snapshot_meta,
+            "result": out.get("result"),
+            "failure": out.get("failure"),
+            "ok": out.get("ok"),
+            "text": out.get("text"),
+            "trace": out.get("trace"),
+        }
+
     if (normalized.intent in _HARD_READ_ONLY_INTENTS) or (
         normalized.command in _HARD_READ_ONLY_INTENTS
     ):
@@ -2388,6 +2512,33 @@ async def execute_preview_command(
             "trace": {
                 "canon": "execute_preview_hard_block_read_only",
                 "endpoint": "/api/execute/preview",
+            },
+        }
+
+    # Read-only directive: refresh_snapshot preview
+    if (normalized.intent == "refresh_snapshot") or (
+        normalized.command == "refresh_snapshot"
+    ):
+        return {
+            "ok": True,
+            "read_only": True,
+            "command": {
+                "command": normalized.command or "refresh_snapshot",
+                "intent": normalized.intent or "refresh_snapshot",
+                "params": normalized.params
+                if isinstance(normalized.params, dict)
+                else {},
+                "initiator": normalized.initiator,
+                "metadata": normalized.metadata
+                if isinstance(normalized.metadata, dict)
+                else {},
+            },
+            "notion": None,
+            "review": None,
+            "trace": {
+                "canon": "execute_preview_refresh_snapshot",
+                "endpoint": "/api/execute/preview",
+                "intent": "refresh_snapshot",
             },
         }
 
@@ -3999,7 +4150,7 @@ async def ceo_console_status_public():
 # CEO CONSOLE SNAPSHOT
 # ================================================================
 @app.get("/api/ceo/console/snapshot")
-async def ceo_console_snapshot():
+async def ceo_console_snapshot() -> CeoConsoleSnapshotResponse:
     approval_state = get_approval_state()
     approvals_map: Dict[str, Dict[str, Any]] = getattr(approval_state, "_approvals", {})
     approvals_list = list(approvals_map.values())
@@ -4012,11 +4163,16 @@ async def ceo_console_snapshot():
 
     ks = KnowledgeSnapshotService.get_snapshot()
 
-    knowledge_snapshot = {
-        "ready": ks.get("ready", False),
-        "last_sync": ks.get("last_sync"),
-        "trace": ks.get("trace", {}),
+    snapshot_meta = {
+        "knowledge_last_sync": ks.get("last_sync"),
+        "knowledge_ready": bool(ks.get("ready")),
+        "knowledge_expired": bool(ks.get("expired")),
+        "knowledge_ttl_seconds": ks.get("ttl_seconds"),
+        "knowledge_age_seconds": ks.get("age_seconds"),
     }
+
+    # Expose full knowledge snapshot (payload included, even when expired).
+    knowledge_snapshot = ks
 
     ceo_dash = CEOConsoleSnapshotService().snapshot()
     legacy = _derive_legacy_goal_task_summaries_from_ceo_snapshot(ceo_dash)
@@ -4044,12 +4200,13 @@ async def ceo_console_snapshot():
             "completed_count": len(completed),
             "pending": pending,
         },
+        "snapshot_meta": snapshot_meta,
         "knowledge_snapshot": knowledge_snapshot,
         "ceo_dashboard_snapshot": _to_serializable(ceo_dash),
         "goals_summary": legacy["goals_summary"],
         "tasks_summary": legacy["tasks_summary"],
     }
-    return snapshot
+    return snapshot  # type: ignore[return-value]
 
 
 @app.get("/ceo/console/snapshot")

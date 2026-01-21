@@ -45,6 +45,37 @@ logger.setLevel(logging.INFO)
 router = APIRouter(prefix="/ai", tags=["AI"])
 
 
+def _knowledge_bundle() -> Dict[str, Any]:
+    """Enterprise contract: /api/ai/run always returns SSOT snapshot fields."""
+    try:
+        from services.knowledge_snapshot_service import (  # noqa: PLC0415
+            KnowledgeSnapshotService,
+        )
+
+        ks = KnowledgeSnapshotService.get_snapshot()
+    except Exception:
+        ks = {}
+
+    if not isinstance(ks, dict):
+        ks = {}
+
+    meta = {
+        "knowledge_status": ks.get("status"),
+        "knowledge_last_sync": ks.get("last_sync"),
+        "knowledge_generated_at": ks.get("generated_at"),
+        "knowledge_ready": bool(ks.get("ready"))
+        if isinstance(ks.get("ready"), bool)
+        else bool(ks.get("ready")),
+        "knowledge_expired": bool(ks.get("expired"))
+        if isinstance(ks.get("expired"), bool)
+        else bool(ks.get("expired")),
+        "knowledge_ttl_seconds": ks.get("ttl_seconds"),
+        "knowledge_age_seconds": ks.get("age_seconds"),
+        "schema_version": ks.get("schema_version"),
+    }
+    return {"knowledge_snapshot": ks, "snapshot_meta": meta}
+
+
 # ============================================================
 # REQUEST MODEL (UX INPUT ONLY)
 # ============================================================
@@ -297,6 +328,8 @@ async def run_ai(req: AIRequest) -> Dict[str, Any]:
     """
     logger.info("[AI] UX request received")
 
+    kb = _knowledge_bundle()
+
     # READ-ONLY FALLBACK UMJESTO 500:
     if (
         ai_command_service is None
@@ -323,6 +356,7 @@ async def run_ai(req: AIRequest) -> Dict[str, Any]:
             "proposed_commands": [],
             "proposed_commands_v2": [],
             "meta": meta,
+            **kb,
         }
 
     text = (req.text or "").strip()
@@ -390,6 +424,7 @@ async def run_ai(req: AIRequest) -> Dict[str, Any]:
                     "proposed_commands": [proposed_legacy],
                     "proposed_commands_v2": [proposed_v2],
                     "meta": meta,
+                    **kb,
                 }
 
         meta = {
@@ -412,6 +447,7 @@ async def run_ai(req: AIRequest) -> Dict[str, Any]:
             "proposed_commands": [],
             "proposed_commands_v2": [],
             "meta": meta,
+            **kb,
         }
 
     # 2) TRANSLATION (PROPOSE AICommand)
@@ -444,6 +480,7 @@ async def run_ai(req: AIRequest) -> Dict[str, Any]:
             "proposed_commands": [],
             "proposed_commands_v2": [],
             "meta": meta,
+            **kb,
         }
 
     serialized = _serialize_command(command)
@@ -482,6 +519,7 @@ async def run_ai(req: AIRequest) -> Dict[str, Any]:
         "proposed_commands": [proposed_legacy],
         "proposed_commands_v2": [proposed_v2],
         "meta": meta,
+        **kb,
     }
 
 

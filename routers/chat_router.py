@@ -49,6 +49,37 @@ _DEACTIVATE_KEYWORDS = (
 def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
     router = APIRouter()
 
+    def _knowledge_bundle() -> Dict[str, Any]:
+        """Enterprise contract: /api/chat always returns SSOT snapshot fields."""
+        try:
+            from services.knowledge_snapshot_service import (  # noqa: PLC0415
+                KnowledgeSnapshotService,
+            )
+
+            ks = KnowledgeSnapshotService.get_snapshot()
+        except Exception:
+            ks = {}
+
+        if not isinstance(ks, dict):
+            ks = {}
+
+        snapshot_meta = {
+            "knowledge_status": ks.get("status"),
+            "knowledge_last_sync": ks.get("last_sync"),
+            "knowledge_generated_at": ks.get("generated_at"),
+            "knowledge_ready": bool(ks.get("ready"))
+            if isinstance(ks.get("ready"), bool)
+            else bool(ks.get("ready")),
+            "knowledge_expired": bool(ks.get("expired"))
+            if isinstance(ks.get("expired"), bool)
+            else bool(ks.get("expired")),
+            "knowledge_ttl_seconds": ks.get("ttl_seconds"),
+            "knowledge_age_seconds": ks.get("age_seconds"),
+            "schema_version": ks.get("schema_version"),
+        }
+
+        return {"knowledge_snapshot": ks, "snapshot_meta": snapshot_meta}
+
     def _extract_prompt(payload: AgentInput) -> str:
         for k in ("message", "text", "input_text", "prompt"):
             v = getattr(payload, k, None)
@@ -350,6 +381,7 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                     "armed_state": state,
                 },
                 "trace": tr,
+                **_knowledge_bundle(),
             }
         )
 
@@ -421,6 +453,22 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                         payload.snapshot = ks2
                 except Exception:
                     pass
+
+            # Final fallback: if still no snapshot, inject the SSOT knowledge wrapper.
+            # This is read-only, has no IO, and improves grounding/traceability.
+            snap_in2 = getattr(payload, "snapshot", None)
+            has_snap2 = isinstance(snap_in2, dict) and bool(snap_in2)
+            if not has_snap2:
+                try:
+                    from services.knowledge_snapshot_service import (  # noqa: PLC0415
+                        KnowledgeSnapshotService,
+                    )
+
+                    ks3 = KnowledgeSnapshotService.get_snapshot()
+                    if isinstance(ks3, dict) and ks3:
+                        payload.snapshot = ks3
+                except Exception:
+                    pass
         except Exception:
             # Fail-soft: never break /api/chat because snapshot hydration failed.
             pass
@@ -446,6 +494,7 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                             "session_id": session_id,
                         }
                     },
+                    **_knowledge_bundle(),
                 }
             )
 
@@ -469,6 +518,7 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                             "session_id": session_id,
                         }
                     },
+                    **_knowledge_bundle(),
                 }
             )
 
@@ -516,6 +566,7 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                         "armed_state": st,
                     },
                     "trace": out.trace or {},
+                    **_knowledge_bundle(),
                 }
             )
 
@@ -560,6 +611,7 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                         "armed_state": st,
                     },
                     "trace": tr,
+                    **_knowledge_bundle(),
                 }
             )
 
@@ -606,6 +658,7 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                     "armed_state": st,
                 },
                 "trace": tr,
+                **_knowledge_bundle(),
             }
         )
 

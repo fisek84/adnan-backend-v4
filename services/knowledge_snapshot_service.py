@@ -147,32 +147,67 @@ class KnowledgeSnapshotService:
     # =========================================================
     @classmethod
     def get_payload(cls) -> Dict[str, Any]:
-        if cls.is_expired():
-            return {}
+        # Canon: get_payload must be side-effect free and stable.
+        # Expiration is signaled via `expired`, not by blanking payload.
         return cls._payload if isinstance(cls._payload, dict) else {}
 
     @classmethod
     def get_snapshot(cls) -> Dict[str, Any]:
         expired = cls.is_expired()
-        payload = {} if expired else cls.get_payload()
+        payload = cls.get_payload()
+        if not isinstance(payload, dict):
+            payload = {}
+
+        generated_at = cls._utc_now_iso()
+        # Contract: last_sync must always be present as a string (UI never renders empty state).
+        last_sync_out = (
+            cls._last_sync
+            if isinstance(cls._last_sync, str) and cls._last_sync
+            else generated_at
+        )
+
+        # Guarantee a deterministic, UI-safe shape even on cold start or failures.
+        # NOTE: readiness still depends on non-expired state.
+        if not payload:
+            payload = {"goals": [], "tasks": [], "projects": []}
+        else:
+            # Ensure core collections exist and are lists.
+            for k in ("goals", "tasks", "projects"):
+                v = payload.get(k)
+                if not isinstance(v, list):
+                    payload[k] = []
         meta = cls._meta if isinstance(cls._meta, dict) else {}
 
         identity_pack = cls._load_identity_pack_best_effort()
 
+        # Enterprise status is derived from readiness + TTL (not from payload truthiness).
+        if not cls._ready:
+            status = "missing_data"
+        elif expired:
+            status = "stale"
+        else:
+            status = "fresh"
+
         snap: Dict[str, Any] = {
-            "ready": bool(cls._ready and payload and not expired),
+            "schema_version": "v1",
+            "status": status,
+            "generated_at": generated_at,
+            "ready": bool(cls._ready and not expired),
             "expired": bool(expired),
             "ttl_seconds": cls._ttl_seconds(),
             "age_seconds": cls.get_age_seconds(),
-            "last_sync": cls._last_sync,
+            "last_sync": last_sync_out,
             "meta": meta,
             "payload": payload,
             "identity_pack": identity_pack,
             "trace": {
                 "service": "KnowledgeSnapshotService",
-                "generated_at": cls._utc_now_iso(),
+                "generated_at": generated_at,
                 "payload_keys": sorted(list(payload.keys())),
                 "expired": bool(expired),
+                "ttl_seconds": cls._ttl_seconds(),
+                "age_seconds": cls.get_age_seconds(),
+                "is_expired": bool(expired),
             },
         }
 
