@@ -160,12 +160,36 @@ class ExecutionOrchestrator:
             ):
                 cmd.read_only = True
                 try:
-                    from services.notion_sync_service import NotionSyncService  # type: ignore
                     from services.knowledge_snapshot_service import (
                         KnowledgeSnapshotService,
                     )  # type: ignore
 
-                    ok = await NotionSyncService().sync_knowledge_snapshot()
+                    # Use the configured sync service (properly constructed in dependencies).
+                    # This avoids instantiating NotionSyncService() without required args.
+                    try:
+                        from dependencies import get_sync_service  # type: ignore
+
+                        sync_service = get_sync_service()
+                        ok = await sync_service.sync_knowledge_snapshot()
+                    except Exception as exc:
+                        ok = False
+                        # Preserve reason in snapshot meta (non-fatal)
+                        try:
+                            KnowledgeSnapshotService.update_snapshot(
+                                {
+                                    "payload": {
+                                        "goals": [],
+                                        "tasks": [],
+                                        "projects": [],
+                                    },
+                                    "meta": {
+                                        "ok": False,
+                                        "error": f"refresh_snapshot_sync_service_failed:{exc}",
+                                    },
+                                }
+                            )
+                        except Exception:
+                            pass
                     ks = KnowledgeSnapshotService.get_snapshot()
                     snapshot_meta = {
                         "last_sync": ks.get("last_sync"),

@@ -1225,9 +1225,16 @@ async def _boot_once() -> None:
 
             # best-effort knowledge sync
             try:
-                notion_service = try_get_notion_service()
-                if notion_service is not None:
-                    await notion_service.sync_knowledge_snapshot()
+                try:
+                    from dependencies import get_sync_service  # type: ignore
+
+                    sync_service = get_sync_service()
+                    await sync_service.sync_knowledge_snapshot()
+                except Exception as exc:
+                    _append_boot_error(f"knowledge_snapshot_sync_failed:{exc}")
+                    logger.warning(
+                        "Knowledge snapshot sync failed (best-effort): %s", exc
+                    )
             except Exception as exc:  # noqa: BLE001
                 _append_boot_error(f"notion_sync_failed:{exc}")
                 logger.warning("Notion knowledge snapshot sync failed: %s", exc)
