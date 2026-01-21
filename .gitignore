@@ -167,4 +167,3 @@ tools/ripgrep_audit*.py
 tools/generate_cleanup_plan*.py
 tools/evidence_top30*.ps1
 tools/capture_*.py
-tools/smoke_uvicorn_flags.py

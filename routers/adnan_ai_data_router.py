@@ -7,11 +7,23 @@ router = APIRouter(prefix="/adnan-ai", tags=["AdnanAI Data"])
 BASE_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "adnan_ai")
 
 
+_DEFAULTS: dict[str, dict] = {
+    "identity.json": {"identity": {}},
+    "kernel.json": {"kernel": {}},
+    "mode.json": {"mode": {"name": "default"}},
+    "state.json": {"state": {}},
+    "decision_engine.json": {"decision_engine": {}},
+}
+
+
 def read_json(filename: str):
     path = os.path.join(BASE_PATH, filename)
 
     if not os.path.exists(path):
-        raise HTTPException(status_code=404, detail=f"{filename} not found")
+        fallback = dict(_DEFAULTS.get(filename, {}))
+        fallback["source"] = "default"
+        fallback["filename"] = filename
+        return fallback
 
     try:
         # FIX: UTF-8 SIG removes BOM
@@ -20,8 +32,10 @@ def read_json(filename: str):
             if not content:
                 return {}
             return json.loads(content)
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=422, detail=f"Invalid JSON in {filename}: {e}")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=422, detail=f"Unable to read {filename}: {e}")
 
 
 @router.get("/identity")

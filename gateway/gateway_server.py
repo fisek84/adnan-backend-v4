@@ -46,10 +46,6 @@ def _extra_routers_enabled() -> bool:
     return _env_true("ENABLE_EXTRA_ROUTERS", "false")
 
 
-def _kpi_adapter_stub_enabled() -> bool:
-    return _env_true("ENABLE_KPI_ADAPTER_STUB", "false")
-
-
 def _ops_safe_mode() -> bool:
     return _env_true("OPS_SAFE_MODE", "false")
 
@@ -4139,18 +4135,6 @@ app.include_router(tasks_router, prefix="/api")
 app.include_router(projects_router, prefix="/api")
 app.include_router(sync_router, prefix="/api")
 
-# KPI adapter stub (feature-flagged)
-if _kpi_adapter_stub_enabled():
-    try:
-        from routers.kpi_router import router as kpi_router
-
-        app.include_router(kpi_router, prefix="/api")
-        logger.info("ENABLE_KPI_ADAPTER_STUB=true included=routers.kpi_router")
-    except Exception as exc:  # noqa: BLE001
-        logger.exception(
-            "ENABLE_KPI_ADAPTER_STUB: failed to include kpi_router: %s", exc
-        )
-
 # Extra routers (feature-flagged)
 if _extra_routers_enabled():
     enabled: List[str] = []
@@ -4174,7 +4158,8 @@ if _extra_routers_enabled():
         enabled.append("routers.adnan_ai_action_router")
     except Exception as exc:  # noqa: BLE001
         logger.exception(
-            "ENABLE_EXTRA_ROUTERS: failed to include adnan_ai_action_router: %s", exc
+            "ENABLE_EXTRA_ROUTERS: failed to include adnan_ai_action_router: %s",
+            exc,
         )
         failed.append("routers.adnan_ai_action_router")
 

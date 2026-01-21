@@ -168,6 +168,10 @@ class AdnanAIDecisionService:
         decision["personality"] = self.personality_engine.get_personality()
         return decision
 
+    # Backwards-compatible alias used by routers (read/propose-only).
+    def process(self, text: str) -> Dict[str, Any]:
+        return self.process_ceo_instruction(text)
+
     def _detect_intent(self, text: str) -> Dict[str, Any]:
         t = text.lower()
         action = None

@@ -419,7 +419,7 @@ class ConversationStateService:
     # =========================
 
     def set_sop_list(
-        self, *, sops: List[Dict[str, Any]], request_id: Optional[str] = None
+        self, sops: List[Dict[str, Any]], request_id: Optional[str] = None
     ) -> Dict[str, Any]:
         self._transition(
             CSIState.SOP_LIST.value, reason="set_sop_list", request_id=request_id
