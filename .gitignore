@@ -41,6 +41,14 @@ adnan_ai/memory/
 *.log
 adnan_ai/memory/*.log
 
+# runtime smoke artifacts (do not commit)
+artifacts/extra_routers/*.log
+artifacts/extra_routers/*.log.err
+artifacts/extra_routers/smoke_status.json
+
+# runtime artifacts (do not commit)
+artifacts/
+
 # =========================
 # Output / tmp artefakti
 # =========================

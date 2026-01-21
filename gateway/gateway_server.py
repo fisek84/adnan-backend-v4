@@ -42,6 +42,14 @@ def _env_true(name: str, default: str = "false") -> bool:
     return (os.getenv(name, default) or "").strip().lower() == "true"
 
 
+def _extra_routers_enabled() -> bool:
+    return _env_true("ENABLE_EXTRA_ROUTERS", "false")
+
+
+def _kpi_adapter_stub_enabled() -> bool:
+    return _env_true("ENABLE_KPI_ADAPTER_STUB", "false")
+
+
 def _ops_safe_mode() -> bool:
     return _env_true("OPS_SAFE_MODE", "false")
 
@@ -178,6 +186,7 @@ def validate_runtime_env_or_raise() -> None:
 # ================================================================
 from models.ai_command import AICommand
 from routers.chat_router import build_chat_router
+from routers.voice_router import router as voice_router
 from services.ai_command_service import AICommandService
 from services.approval_state_service import get_approval_state
 from services.coo_conversation_service import COOConversationService
@@ -226,8 +235,12 @@ from routers.adnan_ai_router import router as adnan_ai_router
 from routers.ai_ops_router import ai_ops_router
 from routers.alerting_router import router as alerting_router
 from routers.audit_router import router as audit_router
+from routers.goals_router import router as goals_router
 from routers.metrics_router import router as metrics_router
 from routers.notion_ops_router import router as notion_ops_router
+from routers.projects_router import router as projects_router
+from routers.sync_router import router as sync_router
+from routers.tasks_router import router as tasks_router
 
 import routers.ai_ops_router as ai_ops_router_module
 import routers.ai_router as ai_router_module
@@ -1103,6 +1116,39 @@ async def _boot_once() -> None:
                 logger.critical("Boot aborted due to invalid env: %s", exc)
                 raise
 
+            # Legacy domain DI (goals/tasks/projects/sync) uses dependencies.py globals.
+            # Ensure they are initialized before routers are exercised in minimal uvicorn runs.
+            try:
+                from dependencies import get_sync_service, init_services, services_status
+
+                init_services()
+
+                # Optional verification hook: proves idempotency in logs without adding new call sites.
+                if os.getenv("SSOT_DI_VERIFY", "false").strip().lower() == "true":
+                    init_services()
+
+                try:
+                    from routers import sync_router as _sync_router_module
+
+                    _sync_router_module.set_sync_service(get_sync_service())
+                except Exception:
+                    # Best-effort: sync/status already has a safe fallback.
+                    pass
+                logger.info("Legacy dependencies initialized (goals/tasks/projects/sync)")
+
+                st = services_status()
+                missing = [
+                    k
+                    for k in ("goals", "tasks", "projects", "sync")
+                    if not st.get(k)
+                ]
+                if missing:
+                    logger.warning("Legacy DI missing services: %s", ",".join(missing))
+            except Exception as exc:  # noqa: BLE001
+                _append_boot_error(f"dependencies_init_failed:{exc}")
+                logger.critical("Legacy dependencies init failed: %s", exc)
+                raise
+
             # SSOT: init NotionService singleton here
             try:
                 init_notion_service_from_env_or_raise()
@@ -1187,6 +1233,7 @@ async def _boot_once() -> None:
 
             _BOOT_READY = True
             logger.info("System boot completed. READY.")
+            logger.info("SSOT boot complete")
         except Exception:
             _BOOT_READY = False
             raise
@@ -1220,7 +1267,7 @@ def _is_boot_exempt_path(path: str) -> bool:
     p = (path or "").strip()
     if not p:
         return True
-    if p in {"/health", "/ready", "/", "/favicon.ico"}:
+    if p in {"/health", "/health/services", "/ready", "/", "/favicon.ico"}:
         return True
     if p.startswith("/docs") or p.startswith("/openapi") or p.startswith("/redoc"):
         return True
@@ -4043,6 +4090,23 @@ async def health_check():
     }
 
 
+@app.get("/health/services")
+async def health_services():
+    from dependencies import services_status
+
+    st = services_status()
+    core = {
+        k: ("OK" if st.get(k) else "NOT_CONFIGURED")
+        for k in ("goals", "tasks", "projects", "sync")
+    }
+    return {
+        "ok": True,
+        "boot_ready": _BOOT_READY,
+        "services": core,
+        "details": st,
+    }
+
+
 @app.get("/ready")
 async def ready_check():
     if not _BOOT_READY:
@@ -4059,12 +4123,69 @@ async def ready_check():
 # INCLUDE ROUTERS
 # ================================================================
 app.include_router(audit_router, prefix="/api")
+app.include_router(voice_router, prefix="/api")
 app.include_router(adnan_ai_router, prefix="/api")
 app.include_router(ai_router_module.router, prefix="/api")
 app.include_router(ai_ops_router, prefix="/api")
 app.include_router(notion_ops_router, prefix="/api")
 app.include_router(metrics_router, prefix="/api")
 app.include_router(alerting_router, prefix="/api")
+app.include_router(goals_router, prefix="/api")
+app.include_router(tasks_router, prefix="/api")
+app.include_router(projects_router, prefix="/api")
+app.include_router(sync_router, prefix="/api")
+
+# KPI adapter stub (feature-flagged)
+if _kpi_adapter_stub_enabled():
+    try:
+        from routers.kpi_router import router as kpi_router
+
+        app.include_router(kpi_router, prefix="/api")
+        logger.info("ENABLE_KPI_ADAPTER_STUB=true included=routers.kpi_router")
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("ENABLE_KPI_ADAPTER_STUB: failed to include kpi_router: %s", exc)
+
+# Extra routers (feature-flagged)
+if _extra_routers_enabled():
+    enabled: List[str] = []
+    failed: List[str] = []
+
+    try:
+        from routers.sop_query_router import router as sop_query_router
+
+        app.include_router(sop_query_router, prefix="/api")
+        enabled.append("routers.sop_query_router")
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("ENABLE_EXTRA_ROUTERS: failed to include sop_query_router: %s", exc)
+        failed.append("routers.sop_query_router")
+
+    try:
+        from routers.adnan_ai_action_router import router as adnan_ai_action_router
+
+        app.include_router(adnan_ai_action_router, prefix="/api")
+        enabled.append("routers.adnan_ai_action_router")
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(
+            "ENABLE_EXTRA_ROUTERS: failed to include adnan_ai_action_router: %s", exc
+        )
+        failed.append("routers.adnan_ai_action_router")
+
+    try:
+        from routers.adnan_ai_data_router import router as adnan_ai_data_router
+
+        app.include_router(adnan_ai_data_router, prefix="/api")
+        enabled.append("routers.adnan_ai_data_router")
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(
+            "ENABLE_EXTRA_ROUTERS: failed to include adnan_ai_data_router: %s", exc
+        )
+        failed.append("routers.adnan_ai_data_router")
+
+    logger.info(
+        "ENABLE_EXTRA_ROUTERS=true enabled=%s failed=%s",
+        ",".join(enabled) if enabled else "-",
+        ",".join(failed) if failed else "-",
+    )
 if _chat_router is not None:
     app.include_router(_chat_router, prefix="/api")  # /api/chat
     app.include_router(_chat_router, prefix="")  # /chat alias
