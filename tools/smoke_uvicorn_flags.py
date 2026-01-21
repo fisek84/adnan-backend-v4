@@ -193,7 +193,9 @@ def _run_uvicorn_mode(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Smoke-test ENABLE_EXTRA_ROUTERS via OpenAPI")
+    parser = argparse.ArgumentParser(
+        description="Smoke-test ENABLE_EXTRA_ROUTERS via OpenAPI"
+    )
     parser.add_argument(
         "--port",
         type=int,
@@ -209,10 +211,16 @@ def main() -> int:
     host = "127.0.0.1"
     off_port = int(args.port)
     if not _is_port_free(host, off_port):
-        raise SystemExit(f"OFF port {off_port} is not free (hard requirement: bind exactly)")
+        raise SystemExit(
+            f"OFF port {off_port} is not free (hard requirement: bind exactly)"
+        )
 
     preferred_on = off_port + 1
-    on_port = preferred_on if _is_port_free(host, preferred_on) else _next_free_port(host, preferred_on)
+    on_port = (
+        preferred_on
+        if _is_port_free(host, preferred_on)
+        else _next_free_port(host, preferred_on)
+    )
 
     off = _run_uvicorn_mode(
         port=off_port,
@@ -295,7 +303,9 @@ def main() -> int:
 
     unexpected_off = [rp for rp in expected_on if rp in off_set]
     if unexpected_off:
-        print("Unexpected routes present in openapi_off (should be absent when flag OFF):")
+        print(
+            "Unexpected routes present in openapi_off (should be absent when flag OFF):"
+        )
         print(json.dumps(unexpected_off, indent=2))
         raise SystemExit(4)
 
