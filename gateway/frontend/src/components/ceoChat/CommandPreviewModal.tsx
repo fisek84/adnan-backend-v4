@@ -213,31 +213,6 @@ export const CommandPreviewModal: React.FC<Props> = ({
     ? (review.missing_fields as any[]).filter((x) => typeof x === "string")
     : [];
 
-  const enterpriseSelectionSchema = useMemo(() => {
-    if (!enterpriseEnabled || !isBatchPreview) return null;
-    if (!reviewSchemaByDb || typeof reviewSchemaByDb !== "object") return null;
-
-    const dk = selectionDbKey;
-    if (!dk || dk === "__mixed__") return null;
-
-    const direct = (reviewSchemaByDb as any)[dk];
-    if (direct && typeof direct === "object" && !Array.isArray(direct)) return direct as any;
-
-    // Best-effort: accept singular keys from backend.
-    const alias = dk.endsWith("s") ? dk.slice(0, -1) : dk + "s";
-    const alt = (reviewSchemaByDb as any)[alias];
-    if (alt && typeof alt === "object" && !Array.isArray(alt)) return alt as any;
-
-    return null;
-  }, [enterpriseEnabled, isBatchPreview, reviewSchemaByDb, selectionDbKey]);
-
-  const enterpriseSelectionPreviewRow = useMemo(() => {
-    if (!enterpriseEnabled || !isBatchPreview || !notionRows) return null;
-    if (!selectedOpIdList.length) return null;
-    const oid = selectedOpIdList[0];
-    return notionRows.find((x) => String(x?.op_id || "") === oid) || null;
-  }, [enterpriseEnabled, isBatchPreview, notionRows, selectedOpIdList]);
-
   const editableTypes = new Set([
     "title",
     "rich_text",
@@ -436,6 +411,31 @@ export const CommandPreviewModal: React.FC<Props> = ({
   const activeSelectedRow = useMemo(() => {
     if (!enterpriseEnabled || !isBatchPreview || !notionRows) return null;
     if (selectedOpIdList.length !== 1) return null;
+    const oid = selectedOpIdList[0];
+    return notionRows.find((x) => String(x?.op_id || "") === oid) || null;
+  }, [enterpriseEnabled, isBatchPreview, notionRows, selectedOpIdList]);
+
+  const enterpriseSelectionSchema = useMemo(() => {
+    if (!enterpriseEnabled || !isBatchPreview) return null;
+    if (!reviewSchemaByDb || typeof reviewSchemaByDb !== "object") return null;
+
+    const dk = selectionDbKey;
+    if (!dk || dk === "__mixed__") return null;
+
+    const direct = (reviewSchemaByDb as any)[dk];
+    if (direct && typeof direct === "object" && !Array.isArray(direct)) return direct as any;
+
+    // Best-effort: accept singular keys from backend.
+    const alias = dk.endsWith("s") ? dk.slice(0, -1) : dk + "s";
+    const alt = (reviewSchemaByDb as any)[alias];
+    if (alt && typeof alt === "object" && !Array.isArray(alt)) return alt as any;
+
+    return null;
+  }, [enterpriseEnabled, isBatchPreview, reviewSchemaByDb, selectionDbKey]);
+
+  const enterpriseSelectionPreviewRow = useMemo(() => {
+    if (!enterpriseEnabled || !isBatchPreview || !notionRows) return null;
+    if (!selectedOpIdList.length) return null;
     const oid = selectedOpIdList[0];
     return notionRows.find((x) => String(x?.op_id || "") === oid) || null;
   }, [enterpriseEnabled, isBatchPreview, notionRows, selectedOpIdList]);
