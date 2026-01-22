@@ -53,7 +53,12 @@ export const CommandPreviewModal: React.FC<Props> = ({
   const [patchLocal, setPatchLocal] = useState<Record<string, string>>({});
   const [enterpriseDraft, setEnterpriseDraft] = useState<Record<string, string>>({});
 
-  const enterpriseEnabled = Boolean(enterprisePreviewEditorEnabled);
+  // Prefer the explicit UI flag, but also allow backend-driven enablement.
+  // This avoids "looks unchanged" situations when the UI build-time env var isn't set,
+  // but the server is already returning enterprise canonical preview.
+  const enterpriseEnabled =
+    Boolean(enterprisePreviewEditorEnabled) ||
+    Boolean((notion as any)?.canonical_preview_operations);
   const enterprisePatchList = Array.isArray(enterprisePatches)
     ? (enterprisePatches as Array<{ op_id: string; changes: Record<string, any> }> )
     : [];
@@ -107,7 +112,7 @@ export const CommandPreviewModal: React.FC<Props> = ({
     setSelectedOpIds({});
     setEditingCell(null);
     setEditingValue("");
-  }, [open, data]);
+  }, [open]);
 
   const propertiesPreview: Record<string, any> | null =
     notion &&
