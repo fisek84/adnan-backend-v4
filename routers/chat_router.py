@@ -508,11 +508,32 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 pol = classify_prompt(prompt)
                 snap_in0 = getattr(payload, "snapshot", None)
                 has_snap0 = isinstance(snap_in0, dict) and bool(snap_in0)
+
+                def _needs_notion_refresh(snap: Any) -> bool:
+                    if not isinstance(snap, dict):
+                        return True
+                    status = snap.get("status")
+                    if isinstance(status, str) and status.strip() in {"missing_data"}:
+                        return True
+                    payload0 = (
+                        snap.get("payload")
+                        if isinstance(snap.get("payload"), dict)
+                        else snap
+                    )
+                    if not isinstance(payload0, dict):
+                        return True
+                    # If none of the required collections have data, treat as missing.
+                    for k in pol.notion_db_keys:
+                        v = payload0.get(k)
+                        if isinstance(v, list) and len(v) > 0:
+                            return False
+                    return True
+
                 if (
                     not _is_test_mode()
                     and pol.needs_notion
                     and pol.notion_db_keys
-                    and not has_snap0
+                    and (not has_snap0 or _needs_notion_refresh(snap_in0))
                     and (os.getenv("CEO_NOTION_TARGETED_READS_ENABLED") or "true")
                     .strip()
                     .lower()
