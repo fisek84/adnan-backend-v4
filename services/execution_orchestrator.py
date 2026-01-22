@@ -199,6 +199,44 @@ class ExecutionOrchestrator:
                         "age_seconds": ks.get("age_seconds"),
                     }
 
+                    # Unified grounding refresh meta (no IO)
+                    try:
+                        from dependencies import get_memory_read_only_service  # type: ignore
+                        from services.grounding_pack_service import (  # type: ignore
+                            GroundingPackService,
+                        )
+
+                        mem_ro = get_memory_read_only_service()
+                        mem_snapshot = (
+                            mem_ro.export_public_snapshot() if mem_ro else {}
+                        )
+                        gp = GroundingPackService.build(
+                            prompt="refresh_snapshot",
+                            knowledge_snapshot=ks if isinstance(ks, dict) else {},
+                            memory_public_snapshot=mem_snapshot,
+                            legacy_trace={"intent": "refresh_snapshot"},
+                            agent_id="refresh_snapshot",
+                        )
+                        grounding_refresh = {
+                            "enabled": bool(gp.get("enabled") is True)
+                            if isinstance(gp, dict)
+                            else False,
+                            "generated_at": gp.get("diagnostics", {}).get("generated_at")
+                            if isinstance(gp, dict)
+                            else None,
+                            "identity_pack_hash": gp.get("identity_pack", {}).get("hash")
+                            if isinstance(gp, dict)
+                            else None,
+                            "kb_hash": gp.get("kb_snapshot", {}).get("hash")
+                            if isinstance(gp, dict)
+                            else None,
+                            "memory_hash": gp.get("memory_snapshot", {}).get("hash")
+                            if isinstance(gp, dict)
+                            else None,
+                        }
+                    except Exception:
+                        grounding_refresh = {"enabled": False}
+
                     res = {
                         "ok": bool(ok),
                         "success": bool(ok),
@@ -206,6 +244,7 @@ class ExecutionOrchestrator:
                         "intent": "refresh_snapshot",
                         "snapshot_meta": snapshot_meta,
                         "knowledge_snapshot": ks,
+                        "grounding_refresh": grounding_refresh,
                     }
                 except Exception as exc:
                     # Even on failure, return a deterministic non-null result.
@@ -243,6 +282,7 @@ class ExecutionOrchestrator:
                         "error_type": exc.__class__.__name__,
                         "snapshot_meta": snapshot_meta,
                         "knowledge_snapshot": ks,
+                        "grounding_refresh": {"enabled": False},
                     }
 
                 if res.get("ok") is True:

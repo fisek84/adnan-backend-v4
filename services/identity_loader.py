@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import time
 import logging
 import os
 from typing import Any, Callable, Dict
@@ -255,6 +257,7 @@ def load_ceo_identity_pack() -> Dict[str, Any]:
     - errors list contains per-section errors.
     """
     pack: Dict[str, Any] = {
+        # Backward-compatible fields (do not remove)
         "available": True,
         "source": "identity_loader",
         "identity": None,
@@ -264,6 +267,19 @@ def load_ceo_identity_pack() -> Dict[str, Any]:
         "memory": None,
         "agents": None,
         "errors": [],
+        # CANON fields (additive)
+        "schema_version": "identity_pack.v1",
+        "status": "ok",
+        "meta": {},
+        "diagnostics": {
+            "missing_keys": [],
+            "recommended_action": None,
+        },
+        "immutable_laws": {"kernel": None},
+        "trajectory_targets": None,
+        "reasoning_filters": None,
+        "tone": None,
+        "authority_order": None,
     }
 
     def _try(label: str, fn: Callable[[], Dict[str, Any]]) -> None:
@@ -281,6 +297,137 @@ def load_ceo_identity_pack() -> Dict[str, Any]:
 
     if pack["identity"] is None and pack["kernel"] is None:
         pack["available"] = False
+
+    # -----------------------------
+    # CANON mapping (best-effort)
+    # -----------------------------
+    missing: list[str] = []
+
+    kernel = pack.get("kernel") if isinstance(pack.get("kernel"), dict) else None
+    identity = pack.get("identity") if isinstance(pack.get("identity"), dict) else None
+
+    # immutable_laws.kernel
+    immutable = None
+    if isinstance(kernel, dict):
+        v = kernel.get("immutable_laws")
+        if isinstance(v, list) and v:
+            immutable = v
+    if immutable is None:
+        missing.append("immutable_laws.kernel")
+    pack["immutable_laws"] = {"kernel": immutable}
+
+    # reasoning_filters (Clarity → Energy → Growth)
+    rf = None
+    if isinstance(kernel, dict):
+        tf = kernel.get("thinking_framework")
+        if isinstance(tf, dict) and tf:
+            rf = {
+                "primary_filter": tf.get("primary_filter"),
+                "filters": tf.get("filters"),
+            }
+    if rf is None and isinstance(identity, dict):
+        ts = identity.get("thinking_style")
+        if isinstance(ts, dict) and ts:
+            rf = {
+                "primary_filter": ts.get("primary_filter"),
+                "filters": ts.get("filters"),
+            }
+    if rf is None:
+        missing.append("reasoning_filters")
+    pack["reasoning_filters"] = rf
+
+    # tone
+    tone = None
+    if isinstance(kernel, dict):
+        ct = kernel.get("communication_tone")
+        if isinstance(ct, dict) and ct:
+            tone = {"style": ct.get("style"), "rules": ct.get("rules")}
+    if tone is None and isinstance(identity, dict):
+        cs = identity.get("communication_style")
+        if isinstance(cs, dict) and cs:
+            tone = {"style": cs.get("tone"), "rules": cs.get("rules")}
+    if tone is None:
+        missing.append("tone")
+    pack["tone"] = tone
+
+    # trajectory_targets (derive from kernel law_trajectory if present)
+    traj = None
+    if isinstance(kernel, dict):
+        laws = kernel.get("immutable_laws")
+        if isinstance(laws, list):
+            for it in laws:
+                if not isinstance(it, dict):
+                    continue
+                if it.get("id") == "law_trajectory":
+                    rule = it.get("rule")
+                    if isinstance(rule, str) and rule.strip():
+                        traj = {
+                            "trajectory": rule.strip(),
+                            "source_law_id": "law_trajectory",
+                        }
+                        break
+    if traj is None:
+        missing.append("trajectory_targets")
+    pack["trajectory_targets"] = traj
+
+    # authority_order is not defined in current identity files; keep None + diagnostics.
+    if pack.get("authority_order") is None:
+        missing.append("authority_order")
+
+    # status / diagnostics
+    if pack.get("available") is not True:
+        pack["status"] = "missing"
+        pack["diagnostics"] = {
+            "missing_keys": ["identity", "kernel"],
+            "recommended_action": "provide_identity_files",
+        }
+    else:
+        pack["status"] = "ok"
+        pack["diagnostics"] = {
+            "missing_keys": sorted(set(missing)),
+            "recommended_action": "add_missing_identity_keys" if missing else None,
+        }
+
+    # meta (hash + file mtimes)
+    paths = {
+        "identity": resolve_path("identity.json"),
+        "kernel": resolve_path("kernel.json"),
+        "decision_engine": resolve_path("decision_engine.json"),
+        "static_memory": resolve_path("static_memory.json"),
+        "memory": resolve_path("memory.json"),
+        "agents": resolve_path("agents.json"),
+    }
+
+    mt: Dict[str, Any] = {}
+    for k, p in paths.items():
+        try:
+            if os.path.exists(p):
+                mt[k] = int(os.path.getmtime(p))
+            else:
+                mt[k] = None
+        except Exception:
+            mt[k] = None
+
+    # stable hash of the whole pack excluding meta.hash itself
+    try:
+        tmp = dict(pack)
+        tmp_meta = dict(tmp.get("meta") or {})
+        tmp_meta.pop("hash", None)
+        tmp["meta"] = tmp_meta
+        digest = hashlib.sha256(
+            json.dumps(tmp, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
+                "utf-8"
+            )
+        ).hexdigest()
+    except Exception:
+        digest = ""
+
+    pack["meta"] = {
+        "hash": digest,
+        "last_modified": mt,
+        "paths": paths,
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
 
     return pack
 

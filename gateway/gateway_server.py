@@ -4213,6 +4213,32 @@ async def ceo_console_snapshot() -> CeoConsoleSnapshotResponse:
         "goals_summary": legacy["goals_summary"],
         "tasks_summary": legacy["tasks_summary"],
     }
+
+    # Grounding Pack (additive; does not break legacy contract)
+    try:
+        from dependencies import get_memory_read_only_service  # noqa: PLC0415
+        from services.grounding_pack_service import (  # noqa: PLC0415
+            GroundingPackService,
+        )
+
+        mem_ro = get_memory_read_only_service()
+        mem_snapshot = mem_ro.export_public_snapshot() if mem_ro else {}
+
+        gp = GroundingPackService.build(
+            prompt="ceo_console_snapshot",
+            knowledge_snapshot=knowledge_snapshot if isinstance(knowledge_snapshot, dict) else {},
+            memory_public_snapshot=mem_snapshot,
+            legacy_trace={"source": "ceo_console_snapshot"},
+            agent_id="ceo_console_snapshot",
+        )
+    except Exception:
+        gp = {"enabled": False, "feature_flags": {"CEO_GROUNDING_PACK_ENABLED": False}}
+
+    snapshot["console_snapshot"] = {
+        "grounding_pack": gp,
+        "diagnostics": gp.get("diagnostics") if isinstance(gp, dict) else None,
+        "trace_v2": gp.get("trace") if isinstance(gp, dict) else None,
+    }
     return snapshot  # type: ignore[return-value]
 
 

@@ -1137,6 +1137,10 @@ async def create_ceo_advisor_agent(
         },
     }
 
+    gp = ctx.get("grounding_pack") if isinstance(ctx, dict) else None
+    if isinstance(gp, dict) and gp:
+        safe_context["grounding_pack"] = gp
+
     if structured_mode:
         prompt_text = _format_enforcer(base_text, english_output)
     else:
@@ -1145,6 +1149,25 @@ async def create_ceo_advisor_agent(
             "Ako predlaže akciju, vrati je u proposed_commands. "
             "Ne izvršavaj ništa."
         )
+
+        # Grounding: require explicit KB citations when using curated knowledge.
+        if isinstance(gp, dict) and gp:
+            kb_ids = []
+            try:
+                kb_retrieved = gp.get("kb_retrieved")
+                if isinstance(kb_retrieved, dict):
+                    kb_ids = list(kb_retrieved.get("used_entry_ids") or [])
+            except Exception:
+                kb_ids = []
+
+            kb_ids = [x for x in kb_ids if isinstance(x, str) and x.strip()]
+            if kb_ids:
+                prompt_text += (
+                    "\n\nGROUNDING (KB citations required): "
+                    "Ako koristiš kurirano znanje iz KB, moraš citirati tačne KB entry id-je "
+                    "u formatu [KB:<id>]. "
+                    f"Dozvoljeni KB ids: {', '.join(kb_ids)}."
+                )
         if english_output:
             prompt_text += (
                 "\nIMPORTANT: Respond in English (clear, concise, business tone). "

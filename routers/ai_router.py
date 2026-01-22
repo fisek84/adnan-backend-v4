@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from services.ai_command_service import AICommandService
 from services.coo_conversation_service import COOConversationService
 from services.coo_translation_service import COOTranslationService
+from dependencies import get_memory_read_only_service
 
 # Injected via gateway_server.py (or main bootstrap)
 ai_command_service: Optional[AICommandService] = None
@@ -74,6 +75,43 @@ def _knowledge_bundle() -> Dict[str, Any]:
         "schema_version": ks.get("schema_version"),
     }
     return {"knowledge_snapshot": ks, "snapshot_meta": meta}
+
+
+def _grounding_bundle(*, prompt: str, kb: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        mem_ro = get_memory_read_only_service()
+        mem_snapshot = mem_ro.export_public_snapshot() if mem_ro else {}
+    except Exception:
+        mem_snapshot = {}
+
+    ks = kb.get("knowledge_snapshot") if isinstance(kb, dict) else {}
+    if not isinstance(ks, dict):
+        ks = {}
+
+    try:
+        from services.grounding_pack_service import (  # noqa: PLC0415
+            GroundingPackService,
+        )
+
+        gp = GroundingPackService.build(
+            prompt=prompt,
+            knowledge_snapshot=ks,
+            memory_public_snapshot=mem_snapshot,
+            legacy_trace=None,
+            agent_id="ai_router",
+        )
+    except Exception:
+        gp = {"enabled": False, "feature_flags": {"CEO_GROUNDING_PACK_ENABLED": False}}
+
+    out: Dict[str, Any] = {"grounding_pack": gp}
+    if isinstance(gp, dict):
+        diag = gp.get("diagnostics")
+        tr2 = gp.get("trace")
+        if isinstance(diag, dict):
+            out["diagnostics"] = diag
+        if isinstance(tr2, dict):
+            out["trace_v2"] = tr2
+    return out
 
 
 # ============================================================
@@ -329,6 +367,7 @@ async def run_ai(req: AIRequest) -> Dict[str, Any]:
     logger.info("[AI] UX request received")
 
     kb = _knowledge_bundle()
+    grounding = _grounding_bundle(prompt=(req.text or "").strip(), kb=kb)
 
     # READ-ONLY FALLBACK UMJESTO 500:
     if (
@@ -357,6 +396,7 @@ async def run_ai(req: AIRequest) -> Dict[str, Any]:
             "proposed_commands_v2": [],
             "meta": meta,
             **kb,
+            **grounding,
         }
 
     text = (req.text or "").strip()
@@ -425,6 +465,7 @@ async def run_ai(req: AIRequest) -> Dict[str, Any]:
                     "proposed_commands_v2": [proposed_v2],
                     "meta": meta,
                     **kb,
+                    **grounding,
                 }
 
         meta = {
@@ -448,6 +489,7 @@ async def run_ai(req: AIRequest) -> Dict[str, Any]:
             "proposed_commands_v2": [],
             "meta": meta,
             **kb,
+            **grounding,
         }
 
     # 2) TRANSLATION (PROPOSE AICommand)
@@ -481,6 +523,7 @@ async def run_ai(req: AIRequest) -> Dict[str, Any]:
             "proposed_commands_v2": [],
             "meta": meta,
             **kb,
+            **grounding,
         }
 
     serialized = _serialize_command(command)
@@ -520,6 +563,7 @@ async def run_ai(req: AIRequest) -> Dict[str, Any]:
         "proposed_commands_v2": [proposed_v2],
         "meta": meta,
         **kb,
+        **grounding,
     }
 
 

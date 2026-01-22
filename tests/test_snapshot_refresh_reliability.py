@@ -129,6 +129,11 @@ def test_well_known_contract_no_drift_against_runtime():
     plugin_path = root / ".well-known" / "ai-plugin.json"
     openapi_path = root / ".well-known" / "openapi.yaml"
 
+    # Hard BOM guard: ai-plugin.json must be valid UTF-8 JSON without BOM.
+    raw_plugin = plugin_path.read_bytes()
+    assert not raw_plugin.startswith(b"\xef\xbb\xbf"), "ai-plugin.json must not have UTF-8 BOM"
+    json.loads(raw_plugin.decode("utf-8"))
+
     plugin = json.loads(_read_text_best_effort(plugin_path))
     openapi = yaml.safe_load(_read_text_best_effort(openapi_path))
 

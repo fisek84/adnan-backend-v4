@@ -49,6 +49,39 @@ _DEACTIVATE_KEYWORDS = (
 def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
     router = APIRouter()
 
+    def _grounding_bundle(
+        *,
+        prompt: str,
+        knowledge_snapshot: Dict[str, Any],
+        memory_snapshot: Dict[str, Any],
+        legacy_trace: Optional[Dict[str, Any]] = None,
+        agent_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        try:
+            from services.grounding_pack_service import (  # noqa: PLC0415
+                GroundingPackService,
+            )
+
+            gp = GroundingPackService.build(
+                prompt=prompt,
+                knowledge_snapshot=knowledge_snapshot,
+                memory_public_snapshot=memory_snapshot,
+                legacy_trace=legacy_trace,
+                agent_id=agent_id,
+            )
+        except Exception:
+            gp = {"enabled": False, "feature_flags": {"CEO_GROUNDING_PACK_ENABLED": False}}
+
+        out: Dict[str, Any] = {"grounding_pack": gp}
+        if isinstance(gp, dict):
+            diag = gp.get("diagnostics")
+            tr2 = gp.get("trace")
+            if isinstance(diag, dict):
+                out["diagnostics"] = diag
+            if isinstance(tr2, dict):
+                out["trace_v2"] = tr2
+        return out
+
     def _knowledge_bundle() -> Dict[str, Any]:
         """Enterprise contract: /api/chat always returns SSOT snapshot fields."""
         try:
@@ -348,6 +381,8 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         session_id: Optional[str],
         state: Dict[str, Any],
         why: str,
+        kb: Dict[str, Any],
+        grounding: Dict[str, Any],
     ) -> JSONResponse:
         msg = "Notion Ops nije aktivan. Želiš aktivirati? (napiši: 'notion ops aktiviraj' / 'notion ops uključi')"
         if isinstance(why, str) and why.strip():
@@ -381,7 +416,8 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                     "armed_state": state,
                 },
                 "trace": tr,
-                **_knowledge_bundle(),
+                **kb,
+                **grounding,
             }
         )
 
@@ -392,6 +428,11 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
 
         prompt = _extract_prompt(payload)
         session_id = _extract_session_id(payload)
+
+        kb = _knowledge_bundle()
+        ks_for_gp = kb.get("knowledge_snapshot") if isinstance(kb, dict) else {}
+        if not isinstance(ks_for_gp, dict):
+            ks_for_gp = {}
 
         # ------------------------------------------------------------
         # READ SNAPSHOT INJECTION (CANON)
@@ -476,6 +517,14 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         # PHASE 6: Notion Ops ARMED Gate (activation/deactivation)
         if session_id and _is_activate(prompt):
             st = await _set_armed(session_id, True, prompt=prompt)
+            tr = {"phase6_notion_ops_gate": {"event": "armed", "session_id": session_id}}
+            grounding = _grounding_bundle(
+                prompt=prompt,
+                knowledge_snapshot=ks_for_gp,
+                memory_snapshot=mem_snapshot,
+                legacy_trace=tr,
+                agent_id=None,
+            )
             return JSONResponse(
                 content={
                     "text": "NOTION OPS: ARMED",
@@ -488,18 +537,22 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                         "session_id": session_id,
                         "armed_state": st,
                     },
-                    "trace": {
-                        "phase6_notion_ops_gate": {
-                            "event": "armed",
-                            "session_id": session_id,
-                        }
-                    },
-                    **_knowledge_bundle(),
+                    "trace": tr,
+                    **kb,
+                    **grounding,
                 }
             )
 
         if session_id and _is_deactivate(prompt):
             st = await _set_armed(session_id, False, prompt=prompt)
+            tr = {"phase6_notion_ops_gate": {"event": "disarmed", "session_id": session_id}}
+            grounding = _grounding_bundle(
+                prompt=prompt,
+                knowledge_snapshot=ks_for_gp,
+                memory_snapshot=mem_snapshot,
+                legacy_trace=tr,
+                agent_id=None,
+            )
             return JSONResponse(
                 content={
                     "text": "NOTION OPS: DISARMED",
@@ -512,13 +565,9 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                         "session_id": session_id,
                         "armed_state": st,
                     },
-                    "trace": {
-                        "phase6_notion_ops_gate": {
-                            "event": "disarmed",
-                            "session_id": session_id,
-                        }
-                    },
-                    **_knowledge_bundle(),
+                    "trace": tr,
+                    **kb,
+                    **grounding,
                 }
             )
 
@@ -530,8 +579,31 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         )
         armed = bool(st.get("armed") is True)
 
+        # Build a first grounding pack early so the agent can cite KB ids deterministically.
+        pre_grounding = _grounding_bundle(
+            prompt=prompt,
+            knowledge_snapshot=ks_for_gp,
+            memory_snapshot=mem_snapshot,
+            legacy_trace=None,
+            agent_id="ceo_advisor",
+        )
+        gp_for_agent = pre_grounding.get("grounding_pack") if isinstance(pre_grounding, dict) else None
+        gp_for_agent = gp_for_agent if isinstance(gp_for_agent, dict) else {}
+
         # Call advisor agent
-        out = await create_ceo_advisor_agent(payload, {"memory": mem_snapshot})
+        out = await create_ceo_advisor_agent(
+            payload,
+            {"memory": mem_snapshot, "grounding_pack": gp_for_agent},
+        )
+
+        legacy_trace = out.trace or {}
+        grounding = _grounding_bundle(
+            prompt=prompt,
+            knowledge_snapshot=ks_for_gp,
+            memory_snapshot=mem_snapshot,
+            legacy_trace=legacy_trace if isinstance(legacy_trace, dict) else {},
+            agent_id=getattr(out, "agent_id", None),
+        )
 
         pcs = getattr(out, "proposed_commands", None)
         normalized = _normalize_proposed_commands(pcs)
@@ -546,6 +618,8 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                     session_id=session_id,
                     state=st,
                     why="Write intent detected but Notion Ops is not ARMED.",
+                    kb=kb,
+                    grounding=grounding,
                 )
 
             # Read-only, non-write: keep existing behavior (contract NOOP when no actionable)
@@ -566,7 +640,8 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                         "armed_state": st,
                     },
                     "trace": out.trace or {},
-                    **_knowledge_bundle(),
+                    **kb,
+                    **grounding,
                 }
             )
 
@@ -611,7 +686,8 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                         "armed_state": st,
                     },
                     "trace": tr,
-                    **_knowledge_bundle(),
+                    **kb,
+                    **grounding,
                 }
             )
 
@@ -658,7 +734,8 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                     "armed_state": st,
                 },
                 "trace": tr,
-                **_knowledge_bundle(),
+                **kb,
+                **grounding,
             }
         )
 
