@@ -174,6 +174,28 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         """
         return await _get_state_shared(session_id)
 
+    def _debug_enabled(payload: AgentInput) -> bool:
+        md = getattr(payload, "metadata", None)
+        include_debug = False
+        if isinstance(md, dict):
+            v = md.get("include_debug")
+            include_debug = v is True or (
+                isinstance(v, str)
+                and v.strip().lower() in {"1", "true", "yes", "on"}
+            )
+
+        env = (os.getenv("DEBUG_API_RESPONSES") or "").strip().lower()
+        env_debug = env in {"1", "true", "yes", "on"}
+        return bool(include_debug or env_debug)
+
+    def _minimal_trace_intent(trace_obj: Any) -> Dict[str, Any]:
+        if not isinstance(trace_obj, dict):
+            return {}
+        intent = trace_obj.get("intent")
+        if isinstance(intent, str) and intent.strip():
+            return {"intent": intent.strip()}
+        return {}
+
     def _normalize_proposed_commands(raw: Any) -> List[ProposedCommand]:
         if raw is None:
             return []
@@ -396,6 +418,7 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         why: str,
         kb: Dict[str, Any],
         grounding: Dict[str, Any],
+        debug_on: bool,
     ) -> JSONResponse:
         msg = "Notion Ops nije aktivan. Želiš aktivirati? (napiši: 'notion ops aktiviraj' / 'notion ops uključi')"
         if isinstance(why, str) and why.strip():
@@ -432,23 +455,29 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             "why": why,
         }
 
-        return JSONResponse(
-            content={
-                "text": (getattr(out, "text", "") or "").strip() or msg,
-                "proposed_commands": pcs_out,
-                "agent_id": getattr(out, "agent_id", None),
-                "read_only": True,
-                "notion_ops": {
-                    "armed": False,
-                    "armed_at": None,
-                    "session_id": session_id,
-                    "armed_state": state,
-                },
-                "trace": tr,
-                **kb,
-                **grounding,
-            }
-        )
+        content: Dict[str, Any] = {
+            "text": (getattr(out, "text", "") or "").strip() or msg,
+            "proposed_commands": pcs_out,
+            "agent_id": getattr(out, "agent_id", None),
+            "read_only": True,
+            "notion_ops": {
+                "armed": False,
+                "armed_at": None,
+                "session_id": session_id,
+                "armed_state": state,
+            },
+        }
+
+        if debug_on:
+            content["trace"] = tr
+            content.update(kb)
+            content.update(grounding)
+        else:
+            mt = _minimal_trace_intent(tr)
+            if mt:
+                content["trace"] = mt
+
+        return JSONResponse(content=content)
 
     @router.post("/chat", response_model=AgentOutput, response_model_by_alias=False)
     async def chat(payload: AgentInput):
@@ -458,6 +487,7 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         prompt = _extract_prompt(payload)
         session_id = _extract_session_id(payload)
         notion_calls_for_trace: Optional[int] = None
+        debug_on = _debug_enabled(payload)
 
         def _is_test_mode() -> bool:
             return (os.getenv("TESTING") or "").strip() == "1" or (
@@ -682,23 +712,23 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 legacy_trace=tr,
                 agent_id=None,
             )
-            return JSONResponse(
-                content={
-                    "text": "NOTION OPS: ARMED",
-                    "proposed_commands": [],
-                    "agent_id": None,
-                    "read_only": True,
-                    "notion_ops": {
-                        "armed": True,
-                        "armed_at": st.get("armed_at"),
-                        "session_id": session_id,
-                        "armed_state": st,
-                    },
-                    "trace": tr,
-                    **kb,
-                    **grounding,
-                }
-            )
+            content: Dict[str, Any] = {
+                "text": "NOTION OPS: ARMED",
+                "proposed_commands": [],
+                "agent_id": None,
+                "read_only": True,
+                "notion_ops": {
+                    "armed": True,
+                    "armed_at": st.get("armed_at"),
+                    "session_id": session_id,
+                    "armed_state": st,
+                },
+            }
+            if debug_on:
+                content["trace"] = tr
+                content.update(kb)
+                content.update(grounding)
+            return JSONResponse(content=content)
 
         if session_id and _is_deactivate(prompt):
             st = await _set_armed(session_id, False, prompt=prompt)
@@ -715,23 +745,23 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 legacy_trace=tr,
                 agent_id=None,
             )
-            return JSONResponse(
-                content={
-                    "text": "NOTION OPS: DISARMED",
-                    "proposed_commands": [],
-                    "agent_id": None,
-                    "read_only": True,
-                    "notion_ops": {
-                        "armed": False,
-                        "armed_at": None,
-                        "session_id": session_id,
-                        "armed_state": st,
-                    },
-                    "trace": tr,
-                    **kb,
-                    **grounding,
-                }
-            )
+            content: Dict[str, Any] = {
+                "text": "NOTION OPS: DISARMED",
+                "proposed_commands": [],
+                "agent_id": None,
+                "read_only": True,
+                "notion_ops": {
+                    "armed": False,
+                    "armed_at": None,
+                    "session_id": session_id,
+                    "armed_state": st,
+                },
+            }
+            if debug_on:
+                content["trace"] = tr
+                content.update(kb)
+                content.update(grounding)
+            return JSONResponse(content=content)
 
         # Determine armed state (default false if no session_id)
         st = (
@@ -788,6 +818,7 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                     why="Write intent detected but Notion Ops is not ARMED.",
                     kb=kb,
                     grounding=grounding,
+                    debug_on=debug_on,
                 )
 
             # If the advisor returned non-actionable proposal wrappers (e.g. approval-gated
@@ -827,28 +858,9 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                         )
                     )
 
-                return JSONResponse(
-                    content={
-                        "text": out.text,
-                        "proposed_commands": pcs_out,
-                        "agent_id": out.agent_id,
-                        "read_only": True,
-                        "notion_ops": {
-                            "armed": False,
-                            "armed_at": None,
-                            "session_id": session_id,
-                            "armed_state": st,
-                        },
-                        "trace": out.trace or {},
-                        **kb,
-                        **grounding,
-                    }
-                )
-
-            return JSONResponse(
-                content={
+                content: Dict[str, Any] = {
                     "text": out.text,
-                    "proposed_commands": [],
+                    "proposed_commands": pcs_out,
                     "agent_id": out.agent_id,
                     "read_only": True,
                     "notion_ops": {
@@ -857,11 +869,38 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                         "session_id": session_id,
                         "armed_state": st,
                     },
-                    "trace": out.trace or {},
-                    **kb,
-                    **grounding,
                 }
-            )
+                if debug_on:
+                    content["trace"] = out.trace or {}
+                    content.update(kb)
+                    content.update(grounding)
+                else:
+                    minimal_trace = _minimal_trace_intent(out.trace)
+                    if minimal_trace:
+                        content["trace"] = minimal_trace
+                return JSONResponse(content=content)
+
+            content: Dict[str, Any] = {
+                "text": out.text,
+                "proposed_commands": [],
+                "agent_id": out.agent_id,
+                "read_only": True,
+                "notion_ops": {
+                    "armed": False,
+                    "armed_at": None,
+                    "session_id": session_id,
+                    "armed_state": st,
+                },
+            }
+            if debug_on:
+                content["trace"] = out.trace or {}
+                content.update(kb)
+                content.update(grounding)
+            else:
+                minimal_trace = _minimal_trace_intent(out.trace)
+                if minimal_trace:
+                    content["trace"] = minimal_trace
+            return JSONResponse(content=content)
 
         # ARMED: allow actionable, otherwise allow approval-wrapper fallback
         if actionable:
@@ -891,23 +930,27 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             if _looks_like_write_intent(prompt):
                 text_out = _armed_write_ack(prompt, has_actionable=True)
 
-            return JSONResponse(
-                content={
-                    "text": text_out,
-                    "proposed_commands": pcs_out,
-                    "agent_id": out.agent_id,
-                    "read_only": True,
-                    "notion_ops": {
-                        "armed": True,
-                        "armed_at": st.get("armed_at"),
-                        "session_id": session_id,
-                        "armed_state": st,
-                    },
-                    "trace": tr,
-                    **kb,
-                    **grounding,
-                }
-            )
+            content: Dict[str, Any] = {
+                "text": text_out,
+                "proposed_commands": pcs_out,
+                "agent_id": out.agent_id,
+                "read_only": True,
+                "notion_ops": {
+                    "armed": True,
+                    "armed_at": st.get("armed_at"),
+                    "session_id": session_id,
+                    "armed_state": st,
+                },
+            }
+            if debug_on:
+                content["trace"] = tr
+                content.update(kb)
+                content.update(grounding)
+            else:
+                minimal_trace = _minimal_trace_intent(tr)
+                if minimal_trace:
+                    content["trace"] = minimal_trace
+            return JSONResponse(content=content)
 
         # No actionable → fallback:
         if _looks_like_write_intent(prompt):
@@ -934,28 +977,30 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         if _looks_like_write_intent(prompt):
             text_out = _armed_write_ack(prompt, has_actionable=False)
 
-        return JSONResponse(
-            content={
-                "text": text_out,
-                "proposed_commands": [
-                    _ensure_payload_summary_contract(
-                        _pc_to_dict(fallback, prompt=prompt)
-                    )
-                ]
-                if isinstance(fallback, ProposedCommand)
-                else [],
-                "agent_id": out.agent_id,
-                "read_only": True,
-                "notion_ops": {
-                    "armed": True,
-                    "armed_at": st.get("armed_at"),
-                    "session_id": session_id,
-                    "armed_state": st,
-                },
-                "trace": tr,
-                **kb,
-                **grounding,
-            }
-        )
+        content: Dict[str, Any] = {
+            "text": text_out,
+            "proposed_commands": [
+                _ensure_payload_summary_contract(_pc_to_dict(fallback, prompt=prompt))
+            ]
+            if isinstance(fallback, ProposedCommand)
+            else [],
+            "agent_id": out.agent_id,
+            "read_only": True,
+            "notion_ops": {
+                "armed": True,
+                "armed_at": st.get("armed_at"),
+                "session_id": session_id,
+                "armed_state": st,
+            },
+        }
+        if debug_on:
+            content["trace"] = tr
+            content.update(kb)
+            content.update(grounding)
+        else:
+            minimal_trace = _minimal_trace_intent(tr)
+            if minimal_trace:
+                content["trace"] = minimal_trace
+        return JSONResponse(content=content)
 
     return router

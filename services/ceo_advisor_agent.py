@@ -311,6 +311,67 @@ def _is_prompt_preparation_request(user_text: str) -> bool:
     )
 
 
+def _is_planning_or_help_request(user_text: str) -> bool:
+    """True for advisory 'help me plan/start' prompts.
+
+    These should NOT be forced into dashboard GOALS/TASKS format.
+    """
+
+    t = (user_text or "").strip().lower()
+    if not t:
+        return False
+    return bool(
+        re.search(
+            r"(?i)\b("
+            r"planiram|planir\w*|sljede\w*\s+sedmic\w*|naredn\w*\s+sedmic\w*|"
+            r"mo\u017ee\u0161\s+li\s+mi\s+pomo\u0107|mozes\s+li\s+mi\s+pomo[\u0107c]|"
+            r"kako\s+da\s+pocn\w*|kako\s+da\s+po\u010dn\w*|krenut\w*|"
+            r"pomozi|pomo\u0107|pomoc|pomo\u0107i|pomoci|help|start|po\u010det\w*|pocet\w*|"
+            r"7\s*dana|sedmodnev\w*|7-day|7day"
+            r")\b",
+            t,
+        )
+    )
+
+
+def _is_dashboard_intent(user_text: str) -> bool:
+    """True only for explicit dashboard/listing/status intent.
+
+    Note: merely mentioning 'goal/task' is not enough.
+    """
+
+    t = (user_text or "").strip().lower()
+    if not t:
+        return False
+
+    if _is_show_request(t):
+        return True
+
+    wants_targets = bool(
+        re.search(r"(?i)\b(cilj\w*|goal\w*|task\w*|zadat\w*|zadac\w*|kpi\w*)\b", t)
+    )
+    if not wants_targets:
+        return False
+
+    return any(
+        k in t
+        for k in (
+            "dashboard",
+            "snapshot",
+            "status",
+            "stanje",
+            "sažetak",
+            "sazetak",
+            "prioritet",
+            "priority",
+            "top 3",
+            "top3",
+            "top 5",
+            "top5",
+        )
+    )
+
+
 def _default_notion_ops_goal_subgoal_prompt(*, english_output: bool) -> str:
     if english_output:
         return (
@@ -465,6 +526,10 @@ def _needs_structured_snapshot_answer(user_text: str) -> bool:
     if not t:
         return True
 
+    # Planning/help prompts should NOT be forced into dashboard (GOALS/TASKS) format.
+    if _is_planning_or_help_request(t):
+        return False
+
     # IMPORTANT: propose-only is NOT structured dashboard mode
     if _is_propose_only_request(t):
         return False
@@ -504,40 +569,8 @@ def _needs_structured_snapshot_answer(user_text: str) -> bool:
     if any(a in t for a in action_signals):
         return False
 
-    keywords = (
-        "dashboard",
-        "snapshot",
-        "stanje",
-        "status",
-        "cilj",
-        "ciljevi",
-        "goal",
-        "goals",
-        "task",
-        "tasks",
-        "zadaci",
-        "prioritet",
-        "kpi",
-        "planovi",
-        "weekly",
-        "sedmica",
-        "top 3",
-        "top 5",
-        "prikaži",
-        "prikazi",
-        "izlistaj",
-        "sazetak",
-    )
-
-    if any(k in t for k in keywords):
-        return True
-
-    # Allow "plan" to trigger structured mode ONLY when it is clearly about
-    # goals/tasks/KPIs planning, not generic "business plan" questions.
-    if "plan" in t and bool(
-        re.search(r"(?i)\b(cilj\w*|goal\w*|task\w*|zadat\w*|kpi\w*)\b", t)
-    ):
-        return True
+    # Structured dashboard mode is ONLY for explicit dashboard intent.
+    return _is_dashboard_intent(t)
 
     return False
 

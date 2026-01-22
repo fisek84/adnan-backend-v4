@@ -68,7 +68,7 @@ def test_chat_never_missing_kb_fields():
         json={
             "message": "Pokaži ciljeve",
             "snapshot": {},
-            "metadata": {"initiator": "test"},
+            "metadata": {"initiator": "test", "include_debug": True},
         },
     )
     assert r.status_code == 200

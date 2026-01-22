@@ -26,6 +26,7 @@ def test_informational_no_proposals(monkeypatch):
             "message": "Objasni kako radi approval flow u ovom sistemu.",
             "identity_pack": {"user_id": "test"},
             "snapshot": {},
+            "metadata": {"include_debug": True},
         },
     )
     assert r.status_code == 200, r.text
@@ -68,6 +69,7 @@ def test_notion_reads_when_needed_via_snapshot(monkeypatch):
             "message": "Koji su mi aktivni taskovi?",
             "identity_pack": {"user_id": "test"},
             "snapshot": {},
+            "metadata": {"include_debug": True},
         },
     )
     assert r.status_code == 200, r.text

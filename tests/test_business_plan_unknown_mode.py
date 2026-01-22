@@ -57,6 +57,7 @@ def test_api_chat_business_plan_unknown_mode_even_with_snapshot_present(
             "identity_pack": {"user_id": "test"},
             # present_in_request must be true, but without business facts.
             "snapshot": {"meta": {"present_in_request": True}},
+            "metadata": {"include_debug": True},
         },
     )
     assert r.status_code == 200, r.text
@@ -90,6 +91,7 @@ def test_kb_retrieval_no_false_positive_roles_for_business_plan(monkeypatch):
             "message": "biznis plan",
             "identity_pack": {"user_id": "test"},
             "snapshot": {},
+            "metadata": {"include_debug": True},
         },
     )
     assert r.status_code == 200, r.text
@@ -114,7 +116,12 @@ def test_snapshot_budget_default_min_calls(monkeypatch):
 
     r = client.post(
         "/api/chat",
-        json={"message": "ping", "identity_pack": {"user_id": "test"}, "snapshot": {}},
+        json={
+            "message": "ping",
+            "identity_pack": {"user_id": "test"},
+            "snapshot": {},
+            "metadata": {"include_debug": True},
+        },
     )
     assert r.status_code == 200, r.text
     body = r.json()

@@ -17,7 +17,12 @@ def _load_app():
 def _get_memory_public_snapshot(client: TestClient) -> dict:
     r = client.post(
         "/api/chat",
-        json={"message": "ping", "identity_pack": {"user_id": "test"}, "snapshot": {}},
+        json={
+            "message": "ping",
+            "identity_pack": {"user_id": "test"},
+            "snapshot": {},
+            "metadata": {"include_debug": True},
+        },
     )
     assert r.status_code == 200, r.text
     body = r.json()
@@ -46,6 +51,7 @@ def test_memory_write_end_to_end_chat_to_approve_to_execute_updates_snapshot():
             "message": f"Zapamti ovo: {marker}",
             "identity_pack": {"user_id": "test"},
             "snapshot": {},
+            "metadata": {"include_debug": True},
         },
     )
     assert chat_r.status_code == 200, chat_r.text

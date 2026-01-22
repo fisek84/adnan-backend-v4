@@ -23,6 +23,7 @@ def test_api_chat_is_read_only_and_returns_proposals():
         "message": "Please create a Notion database schema for weekly KPI tracking (but do not execute).",
         "identity_pack": {"user_id": "test"},
         "snapshot": {"now": "2025-12-25"},
+        "metadata": {"include_debug": True},
     }
 
     r = client.post("/api/chat", json=payload)
@@ -75,6 +76,7 @@ def test_chat_is_read_only_and_does_not_create_approvals():
         "message": "Check my goals and KPIs, but DO NOT execute anything.",
         "identity_pack": {"user_id": "test"},
         "snapshot": {"now": "2025-12-25"},
+        "metadata": {"include_debug": True},
     }
 
     r = client.post("/api/chat", json=payload)
@@ -119,6 +121,7 @@ def test_chat_show_goals_hydrates_snapshot_when_missing(monkeypatch):
         "message": "Pokaži koje ciljeve imamo",
         "identity_pack": {"user_id": "test"},
         "snapshot": {},
+        "metadata": {"include_debug": True},
     }
 
     r = client.post("/api/chat", json=payload)

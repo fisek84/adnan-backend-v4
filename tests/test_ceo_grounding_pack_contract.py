@@ -14,7 +14,11 @@ def test_chat_includes_grounding_pack_contract(monkeypatch):
     client = TestClient(app)
 
     r = client.post(
-        "/api/chat", json={"message": "Koja je naša operativna filozofija?"}
+        "/api/chat",
+        json={
+            "message": "Koja je naša operativna filozofija?",
+            "metadata": {"include_debug": True},
+        },
     )
     assert r.status_code == 200
     body = r.json()
@@ -72,7 +76,10 @@ def test_grounding_pack_can_be_disabled(monkeypatch):
     app = _get_app()
     client = TestClient(app)
 
-    r = client.post("/api/chat", json={"message": "test"})
+    r = client.post(
+        "/api/chat",
+        json={"message": "test", "metadata": {"include_debug": True}},
+    )
     assert r.status_code == 200
     body = r.json()
 
@@ -91,7 +98,10 @@ def test_kb_only_question_trace_strict(monkeypatch):
     client = TestClient(app)
 
     q = "Koja je naša operativna filozofija i zakoni odlučivanja?"
-    r = client.post("/api/chat", json={"message": q})
+    r = client.post(
+        "/api/chat",
+        json={"message": q, "metadata": {"include_debug": True}},
+    )
     assert r.status_code == 200
     body = r.json()
 
@@ -127,7 +137,10 @@ def test_budget_breach_redacts_notion_snapshot(monkeypatch):
     app = _get_app()
     client = TestClient(app)
 
-    r = client.post("/api/chat", json={"message": "Pokaži ciljeve"})
+    r = client.post(
+        "/api/chat",
+        json={"message": "Pokaži ciljeve", "metadata": {"include_debug": True}},
+    )
     assert r.status_code == 200
     body = r.json()
 
