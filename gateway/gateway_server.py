@@ -3166,8 +3166,18 @@ async def execute_preview_command(
                     }
                 else:
                     fs0 = review_block.get("fields_schema")
+                    # Merge (don't replace): review_contract may provide a minimal schema
+                    # (e.g. Status/Priority only). For "Show all" UX, we want the full
+                    # best-effort DB schema to be available while preserving any existing
+                    # prompt-derived specs/options.
                     if not isinstance(fs0, dict) or not fs0:
                         review_block["fields_schema"] = union_schema
+                    else:
+                        merged: Dict[str, Any] = dict(fs0)
+                        for k, v in union_schema.items():
+                            if k not in merged:
+                                merged[k] = v
+                        review_block["fields_schema"] = merged
                 review_block["fields_schema_by_db_key"] = by_db
                 review_block["schema_source_by_db_key"] = sources
     except Exception:

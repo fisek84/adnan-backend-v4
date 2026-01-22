@@ -1547,10 +1547,17 @@ export const CommandPreviewModal: React.FC<Props> = ({
                                       verticalAlign: "top",
                                       minWidth: sz.minWidth,
                                       maxWidth: sz.maxWidth,
-                                      whiteSpace: sz.whiteSpace || "normal",
-                                      wordBreak: isLongTextColumn(c)
-                                        ? "break-word"
-                                        : "normal",
+                                      whiteSpace: isMeta
+                                        ? "nowrap"
+                                        : sz.whiteSpace || "normal",
+                                      wordBreak: isMeta
+                                        ? "normal"
+                                        : isLongTextColumn(c)
+                                          ? "break-word"
+                                          : "normal",
+                                      overflowWrap: isMeta ? "normal" : undefined,
+                                      overflow: isMeta ? "hidden" : undefined,
+                                      textOverflow: isMeta ? "ellipsis" : undefined,
                                       cursor: canEdit ? "pointer" : undefined,
                                     }}
                                     onClick={() => {
