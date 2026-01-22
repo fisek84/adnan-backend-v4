@@ -51,6 +51,7 @@ export const CommandPreviewModal: React.FC<Props> = ({
   const [showRaw, setShowRaw] = useState(false);
   const [showAllFields, setShowAllFields] = useState(false);
   const [patchLocal, setPatchLocal] = useState<Record<string, string>>({});
+  const [enterpriseDraft, setEnterpriseDraft] = useState<Record<string, string>>({});
 
   const enterpriseEnabled = Boolean(enterprisePreviewEditorEnabled);
   const enterprisePatchList = Array.isArray(enterprisePatches)
@@ -69,11 +70,6 @@ export const CommandPreviewModal: React.FC<Props> = ({
     { op_id: string; field: string } | null
   >(null);
   const [editingValue, setEditingValue] = useState<string>("");
-  const [bulkScope, setBulkScope] = useState<
-    "selected" | "all_goals" | "all_tasks"
-  >("selected");
-  const [bulkField, setBulkField] = useState<string>("Status");
-  const [bulkValue, setBulkValue] = useState<string>("");
 
   // Batch composer (single approval, multiple ops)
   const [batchOps, setBatchOps] = useState<any[] | null>(null);
@@ -94,6 +90,7 @@ export const CommandPreviewModal: React.FC<Props> = ({
   useEffect(() => {
     if (!open) return;
     setPatchLocal({});
+    setEnterpriseDraft({});
     setShowAllFields(false);
     setBatchOps(null);
     setNewItemKind("create_task");
@@ -110,9 +107,6 @@ export const CommandPreviewModal: React.FC<Props> = ({
     setSelectedOpIds({});
     setEditingCell(null);
     setEditingValue("");
-    setBulkScope("selected");
-    setBulkField("Status");
-    setBulkValue("");
   }, [open, data]);
 
   const propertiesPreview: Record<string, any> | null =
@@ -219,6 +213,31 @@ export const CommandPreviewModal: React.FC<Props> = ({
     ? (review.missing_fields as any[]).filter((x) => typeof x === "string")
     : [];
 
+  const enterpriseSelectionSchema = useMemo(() => {
+    if (!enterpriseEnabled || !isBatchPreview) return null;
+    if (!reviewSchemaByDb || typeof reviewSchemaByDb !== "object") return null;
+
+    const dk = selectionDbKey;
+    if (!dk || dk === "__mixed__") return null;
+
+    const direct = (reviewSchemaByDb as any)[dk];
+    if (direct && typeof direct === "object" && !Array.isArray(direct)) return direct as any;
+
+    // Best-effort: accept singular keys from backend.
+    const alias = dk.endsWith("s") ? dk.slice(0, -1) : dk + "s";
+    const alt = (reviewSchemaByDb as any)[alias];
+    if (alt && typeof alt === "object" && !Array.isArray(alt)) return alt as any;
+
+    return null;
+  }, [enterpriseEnabled, isBatchPreview, reviewSchemaByDb, selectionDbKey]);
+
+  const enterpriseSelectionPreviewRow = useMemo(() => {
+    if (!enterpriseEnabled || !isBatchPreview || !notionRows) return null;
+    if (!selectedOpIdList.length) return null;
+    const oid = selectedOpIdList[0];
+    return notionRows.find((x) => String(x?.op_id || "") === oid) || null;
+  }, [enterpriseEnabled, isBatchPreview, notionRows, selectedOpIdList]);
+
   const editableTypes = new Set([
     "title",
     "rich_text",
@@ -269,16 +288,35 @@ export const CommandPreviewModal: React.FC<Props> = ({
     return showAllFields ? schemaKeys : picked.length ? picked : schemaKeys;
   }, [effectiveReviewSchema, reviewMissing, showAllFields]);
 
-  function fieldOptions(fieldKey: string): string[] {
-    const fs: any = (effectiveReviewSchema as any)?.[fieldKey] ?? {};
+  function _fieldSpec(schema: Record<string, any> | null, fieldKey: string): any {
+    if (!schema || typeof schema !== "object") return {};
+    return (schema as any)?.[fieldKey] ?? {};
+  }
+
+  function fieldTypeFromSchema(
+    schema: Record<string, any> | null,
+    fieldKey: string,
+  ): string {
+    const fs: any = _fieldSpec(schema, fieldKey);
+    return typeof fs?.type === "string" ? fs.type : "";
+  }
+
+  function fieldOptionsFromSchema(
+    schema: Record<string, any> | null,
+    fieldKey: string,
+  ): string[] {
+    const fs: any = _fieldSpec(schema, fieldKey);
     const opts = Array.isArray(fs?.options)
       ? fs.options.filter((x: any) => typeof x === "string")
       : [];
     return opts;
   }
 
-  function isReadOnlyField(fieldKey: string): boolean {
-    const fs: any = (effectiveReviewSchema as any)?.[fieldKey] ?? {};
+  function isReadOnlyFieldFromSchema(
+    schema: Record<string, any> | null,
+    fieldKey: string,
+  ): boolean {
+    const fs: any = _fieldSpec(schema, fieldKey);
     if (fs && typeof fs === "object" && fs.read_only === true) return true;
     const t = typeof fs?.type === "string" ? String(fs.type).toLowerCase() : "";
     return [
@@ -292,12 +330,25 @@ export const CommandPreviewModal: React.FC<Props> = ({
     ].includes(t);
   }
 
+  function fieldOptions(fieldKey: string): string[] {
+    return fieldOptionsFromSchema(effectiveReviewSchema, fieldKey);
+  }
+
+  function isReadOnlyField(fieldKey: string): boolean {
+    return isReadOnlyFieldFromSchema(effectiveReviewSchema, fieldKey);
+  }
+
   function isEditableCellField(fieldKey: string): boolean {
-    if (!fieldKey || fieldKey === "op_id" || fieldKey === "intent" || fieldKey === "db_key") return false;
-    const fs: any = (effectiveReviewSchema as any)?.[fieldKey] ?? null;
-    const t = typeof fs?.type === "string" ? fs.type : "";
+    if (
+      !fieldKey ||
+      fieldKey === "op_id" ||
+      fieldKey === "intent" ||
+      fieldKey === "db_key"
+    )
+      return false;
+    const t = fieldTypeFromSchema(effectiveReviewSchema, fieldKey);
     if (!t || !editableTypes.has(t)) return false;
-    if (isReadOnlyField(fieldKey)) return false;
+    if (isReadOnlyFieldFromSchema(effectiveReviewSchema, fieldKey)) return false;
     return true;
   }
 
@@ -353,6 +404,41 @@ export const CommandPreviewModal: React.FC<Props> = ({
     const dk = typeof r?.db_key === "string" ? r.db_key.trim() : "";
     return dk;
   }
+
+  function normalizeDbKey(dk: string): string {
+    const k = String(dk || "").trim().toLowerCase();
+    if (k === "goal") return "goals";
+    if (k === "task") return "tasks";
+    if (k === "project") return "projects";
+    return k;
+  }
+
+  const selectedOpIdList = useMemo(() => {
+    return Object.entries(selectedOpIds)
+      .filter(([, v]) => Boolean(v))
+      .map(([k]) => String(k))
+      .filter((k) => k.trim());
+  }, [selectedOpIds]);
+
+  const selectionDbKey = useMemo(() => {
+    if (!enterpriseEnabled || !isBatchPreview || !notionRows) return null;
+    const set = new Set<string>();
+    for (const oid of selectedOpIdList) {
+      const r = notionRows.find((x) => String(x?.op_id || "") === oid);
+      const dk = normalizeDbKey(rowDbKey(r));
+      if (dk) set.add(dk);
+    }
+    if (set.size === 1) return Array.from(set)[0];
+    if (set.size === 0) return null;
+    return "__mixed__";
+  }, [enterpriseEnabled, isBatchPreview, notionRows, normalizeDbKey, selectedOpIdList]);
+
+  const activeSelectedRow = useMemo(() => {
+    if (!enterpriseEnabled || !isBatchPreview || !notionRows) return null;
+    if (selectedOpIdList.length !== 1) return null;
+    const oid = selectedOpIdList[0];
+    return notionRows.find((x) => String(x?.op_id || "") === oid) || null;
+  }, [enterpriseEnabled, isBatchPreview, notionRows, selectedOpIdList]);
 
   function patchedValueForCell(opId: string, fieldKey: string): string | null {
     const ch = enterprisePatchByOpId[String(opId || "").trim()];
@@ -485,6 +571,66 @@ export const CommandPreviewModal: React.FC<Props> = ({
     for (const k of keys) if (!ordered.includes(k)) ordered.push(k);
     return ordered;
   }, [propertiesPreview, propertySpecs, effectiveReviewSchema, notionRows]);
+
+  function _normColKey(c: string): string {
+    return String(c || "").trim().toLowerCase();
+  }
+
+  function isLongTextColumn(c: string): boolean {
+    const k = _normColKey(c);
+    return k === "name" || k === "title" || k === "description";
+  }
+
+  function columnSizing(c: string): {
+    minWidth: number;
+    maxWidth?: number;
+    whiteSpace?: React.CSSProperties["whiteSpace"];
+  } {
+    const k = _normColKey(c);
+    if (k === "op_id") return { minWidth: 120, maxWidth: 140, whiteSpace: "nowrap" };
+    if (k === "intent") return { minWidth: 110, maxWidth: 140, whiteSpace: "nowrap" };
+    if (k === "db_key") return { minWidth: 80, maxWidth: 110, whiteSpace: "nowrap" };
+
+    if (k === "status") return { minWidth: 120, maxWidth: 160, whiteSpace: "nowrap" };
+    if (k === "priority") return { minWidth: 110, maxWidth: 150, whiteSpace: "nowrap" };
+    if (k === "deadline" || k === "due date")
+      return { minWidth: 130, maxWidth: 150, whiteSpace: "nowrap" };
+
+    if (k === "assigned to" || k === "owner")
+      return { minWidth: 170, maxWidth: 220, whiteSpace: "nowrap" };
+    if (k === "project" || k === "goal" || k === "parent goal")
+      return { minWidth: 160, maxWidth: 240, whiteSpace: "nowrap" };
+
+    if (k === "description") return { minWidth: 360, maxWidth: 560, whiteSpace: "normal" };
+    if (k === "name" || k === "title")
+      return { minWidth: 260, maxWidth: 520, whiteSpace: "normal" };
+
+    // Default: keep it readable but not squished.
+    return { minWidth: 160, maxWidth: 320, whiteSpace: "normal" };
+  }
+
+  function renderCellTextWithClamp(
+    text: string,
+    opts: { lines: number },
+  ): React.ReactNode {
+    const t = String(text || "");
+    if (!t) return "";
+    const lines = Math.max(1, Number(opts?.lines || 3));
+    return (
+      <span
+        title={t}
+        style={{
+          display: "-webkit-box",
+          WebkitLineClamp: lines,
+          WebkitBoxOrient: "vertical",
+          overflow: "hidden",
+          whiteSpace: "normal",
+        }}
+      >
+        {t}
+      </span>
+    );
+  }
 
   const tableValidationSummary = useMemo(() => {
     if (!notionRows || notionRows.length === 0) return null;
@@ -1236,10 +1382,10 @@ export const CommandPreviewModal: React.FC<Props> = ({
                   >
                     <table
                       style={{
-                        width: "100%",
+                        width: "max-content",
                         borderCollapse: "separate",
                         borderSpacing: 0,
-                        minWidth: 760,
+                        minWidth: 1100,
                         fontSize: 12,
                       }}
                     >
@@ -1258,6 +1404,7 @@ export const CommandPreviewModal: React.FC<Props> = ({
                                 fontWeight: 700,
                                 color: "rgba(255,255,255,0.88)",
                                 whiteSpace: "nowrap",
+                                minWidth: 44,
                               }}
                             >
                               ✓
@@ -1276,7 +1423,9 @@ export const CommandPreviewModal: React.FC<Props> = ({
                                   "1px solid rgba(255,255,255,0.10)",
                                 fontWeight: 700,
                                 color: "rgba(255,255,255,0.88)",
-                                whiteSpace: "nowrap",
+                                whiteSpace: columnSizing(c).whiteSpace || "nowrap",
+                                minWidth: columnSizing(c).minWidth,
+                                maxWidth: columnSizing(c).maxWidth,
                               }}
                             >
                               {c}
@@ -1286,8 +1435,25 @@ export const CommandPreviewModal: React.FC<Props> = ({
                       </thead>
                       <tbody>
                         {notionRows && notionRows.length > 0 ? (
-                          notionRows.map((r, ridx) => (
-                            <tr key={r?.op_id || ridx}>
+                          notionRows.map((r, ridx) => {
+                            const rowOpId =
+                              typeof r?.op_id === "string" ? String(r.op_id) : "";
+                            const rowSelected =
+                              enterpriseEnabled &&
+                              isBatchPreview &&
+                              rowOpId &&
+                              Boolean(selectedOpIds[rowOpId]);
+                            return (
+                              <tr
+                                key={r?.op_id || ridx}
+                                style={
+                                  rowSelected
+                                    ? {
+                                        background: "rgba(59,130,246,0.08)",
+                                      }
+                                    : undefined
+                                }
+                              >
                               {enterpriseEnabled && isBatchPreview ? (
                                 <td
                                   style={{
@@ -1297,6 +1463,7 @@ export const CommandPreviewModal: React.FC<Props> = ({
                                     color: "rgba(255,255,255,0.90)",
                                     verticalAlign: "top",
                                     whiteSpace: "nowrap",
+                                    minWidth: 44,
                                   }}
                                 >
                                   <input
@@ -1317,6 +1484,7 @@ export const CommandPreviewModal: React.FC<Props> = ({
                                 </td>
                               ) : null}
                               {columns.map((c) => {
+                                const sz = columnSizing(c);
                                 const isMeta =
                                   c === "op_id" ||
                                   c === "intent" ||
@@ -1336,10 +1504,14 @@ export const CommandPreviewModal: React.FC<Props> = ({
                                 const ps =
                                   ps0 && Object.keys(ps0).length ? ps0 : null;
 
-                                const opId = typeof r?.op_id === "string" ? r.op_id : "";
+                                const opId =
+                                  typeof r?.op_id === "string" ? r.op_id : "";
                                 const v = pp ? pp?.[c] : null;
-                                const patchedCell = enterpriseEnabled && opId ? patchedValueForCell(opId, c) : null;
-                                const display = isMeta
+                                const patchedCell =
+                                  enterpriseEnabled && opId
+                                    ? patchedValueForCell(opId, c)
+                                    : null;
+                                const displayText = isMeta
                                   ? String(r?.[c] ?? "")
                                   : pp
                                     ? renderNotionValue(v)
@@ -1368,20 +1540,25 @@ export const CommandPreviewModal: React.FC<Props> = ({
                                         "1px solid rgba(255,255,255,0.06)",
                                       color: "rgba(255,255,255,0.90)",
                                       verticalAlign: "top",
-                                      maxWidth: 320,
-                                      whiteSpace: "pre-wrap",
-                                      wordBreak: "break-word",
+                                      minWidth: sz.minWidth,
+                                      maxWidth: sz.maxWidth,
+                                      whiteSpace: sz.whiteSpace || "normal",
+                                      wordBreak: isLongTextColumn(c)
+                                        ? "break-word"
+                                        : "normal",
                                       cursor: canEdit ? "pointer" : undefined,
                                     }}
                                     onClick={() => {
                                       if (!canEdit) return;
                                       if (!opId) return;
                                       setEditingCell({ op_id: opId, field: c });
-                                      const init = patchedCell !== null ? patchedCell : String(display ?? "");
+                                      const init =
+                                        patchedCell !== null
+                                          ? patchedCell
+                                          : String(displayText ?? "");
                                       setEditingValue(init);
                                       // selecting the row is a reasonable default
                                       setSelectedOpIds((prev) => ({ ...prev, [opId]: true }));
-                                      setBulkField(c);
                                     }}
                                   >
                                     {isEditing ? (
@@ -1442,7 +1619,14 @@ export const CommandPreviewModal: React.FC<Props> = ({
                                       })()
                                     ) : (
                                       <span style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
-                                        <span>{(display as any) || "—"}</span>
+                                        <span>
+                                          {isLongTextColumn(c)
+                                            ? renderCellTextWithClamp(
+                                                displayText as any,
+                                                { lines: c === "Description" ? 4 : 3 },
+                                              )
+                                            : (displayText as any) || "—"}
+                                        </span>
                                         {enterpriseEnabled && !isMeta && patchedCell !== null ? (
                                           <span
                                             style={{
@@ -1462,11 +1646,13 @@ export const CommandPreviewModal: React.FC<Props> = ({
                                   </td>
                                 );
                               })}
-                            </tr>
-                          ))
+                              </tr>
+                            );
+                          })
                         ) : (
                           <tr>
                             {columns.map((c) => {
+                              const sz = columnSizing(c);
                               const v = (propertiesPreview || ({} as any))?.[c];
                               const display = propertiesPreview
                                 ? renderNotionValue(v)
@@ -1485,12 +1671,19 @@ export const CommandPreviewModal: React.FC<Props> = ({
                                       "1px solid rgba(255,255,255,0.06)",
                                     color: "rgba(255,255,255,0.90)",
                                     verticalAlign: "top",
-                                    maxWidth: 320,
-                                    whiteSpace: "pre-wrap",
-                                    wordBreak: "break-word",
+                                    minWidth: sz.minWidth,
+                                    maxWidth: sz.maxWidth,
+                                    whiteSpace: sz.whiteSpace || "normal",
+                                    wordBreak: isLongTextColumn(c)
+                                      ? "break-word"
+                                      : "normal",
                                   }}
                                 >
-                                  {display || "—"}
+                                  {isLongTextColumn(c)
+                                    ? renderCellTextWithClamp(display, {
+                                        lines: c === "Description" ? 4 : 3,
+                                      })
+                                    : display || "—"}
                                 </td>
                               );
                             })}
@@ -2285,7 +2478,8 @@ export const CommandPreviewModal: React.FC<Props> = ({
                 </div>
               ) : null}
 
-              {reviewSchema && editableFields.length > 0 ? (
+              {effectiveReviewSchema &&
+              (enterpriseEnabled && isBatchPreview ? true : editableFields.length > 0) ? (
                 <div
                   style={{
                     marginBottom: 14,
@@ -2345,143 +2539,360 @@ export const CommandPreviewModal: React.FC<Props> = ({
                         }}
                       >
                         <div style={{ fontSize: 12, opacity: 0.8 }}>
-                          Scope:
+                          Selected rows: <b>{selectedOpIdList.length}</b>
                         </div>
-                        <select
-                          value={bulkScope}
-                          onChange={(e) =>
-                            setBulkScope(e.target.value as any)
-                          }
-                          style={{
-                            border: "1px solid rgba(255,255,255,0.12)",
-                            background: "rgba(255,255,255,0.02)",
-                            color: "rgba(255,255,255,0.92)",
-                            borderRadius: 12,
-                            padding: "8px 10px",
-                            fontSize: 12,
-                            outline: "none",
-                          }}
-                          disabled={loading}
-                        >
-                          <option value="selected">Selected rows</option>
-                          <option value="all_goals">All goals</option>
-                          <option value="all_tasks">All tasks</option>
-                        </select>
-
-                        <div style={{ fontSize: 12, opacity: 0.8 }}>
-                          Field:
-                        </div>
-                        <select
-                          value={bulkField}
-                          onChange={(e) => setBulkField(e.target.value)}
-                          style={{
-                            border: "1px solid rgba(255,255,255,0.12)",
-                            background: "rgba(255,255,255,0.02)",
-                            color: "rgba(255,255,255,0.92)",
-                            borderRadius: 12,
-                            padding: "8px 10px",
-                            fontSize: 12,
-                            outline: "none",
-                          }}
-                          disabled={loading}
-                        >
-                          {supportedPatchFields
-                            .filter((k) => isEditableCellField(k))
-                            .map((k) => (
-                              <option key={k} value={k}>
-                                {k}
-                              </option>
-                            ))}
-                        </select>
-
-                        {fieldOptions(bulkField).length > 0 ? (
-                          <select
-                            value={bulkValue}
-                            onChange={(e) => setBulkValue(e.target.value)}
-                            style={{
-                              border: "1px solid rgba(255,255,255,0.12)",
-                              background: "rgba(255,255,255,0.02)",
-                              color: "rgba(255,255,255,0.92)",
-                              borderRadius: 12,
-                              padding: "8px 10px",
-                              fontSize: 12,
-                              outline: "none",
-                            }}
-                            disabled={loading}
-                          >
-                            <option value="">(clear)</option>
-                            {fieldOptions(bulkField).map((o) => (
-                              <option key={o} value={o} style={{ color: "#000" }}>
-                                {o}
-                              </option>
-                            ))}
-                          </select>
-                        ) : (
-                          <input
-                            value={bulkValue}
-                            onChange={(e) => setBulkValue(e.target.value)}
-                            placeholder="Value"
-                            style={{
-                              border: "1px solid rgba(255,255,255,0.12)",
-                              background: "rgba(255,255,255,0.02)",
-                              color: "rgba(255,255,255,0.92)",
-                              borderRadius: 12,
-                              padding: "8px 10px",
-                              fontSize: 12,
-                              outline: "none",
-                              minWidth: 220,
-                            }}
-                            disabled={loading}
-                          />
-                        )}
-
-                        <button
-                          onClick={() => {
-                            if (!bulkField) return;
-                            if (!isEditableCellField(bulkField)) return;
-
-                            const targets: string[] = [];
-                            for (const r of notionRows || []) {
-                              const oid = typeof r?.op_id === "string" ? r.op_id.trim() : "";
-                              if (!oid) continue;
-                              const dk = rowDbKey(r).toLowerCase();
-
-                              if (bulkScope === "selected") {
-                                if (selectedOpIds[oid]) targets.push(oid);
-                                continue;
-                              }
-                              if (bulkScope === "all_goals") {
-                                if (dk === "goals" || dk === "goal") targets.push(oid);
-                                continue;
-                              }
-                              if (bulkScope === "all_tasks") {
-                                if (dk === "tasks" || dk === "task") targets.push(oid);
-                                continue;
-                              }
-                            }
-
-                            for (const oid of targets) {
-                              upsertEnterprisePatch(oid, bulkField, bulkValue);
-                            }
-                          }}
-                          style={{
-                            padding: "8px 10px",
-                            borderRadius: 10,
-                            border: "1px solid rgba(255,255,255,0.12)",
-                            background: "rgba(255,255,255,0.06)",
-                            color: "rgba(255,255,255,0.92)",
-                            cursor: "pointer",
-                          }}
-                          disabled={loading || !onEnterprisePatchesChange}
-                          title="Apply field/value to selected scope (creates patches only)"
-                        >
-                          Apply
-                        </button>
-
                         <div style={{ fontSize: 12, opacity: 0.75 }}>
+                          {selectedOpIdList.length === 0
+                            ? "Select rows in the table above to edit."
+                            : selectionDbKey === "__mixed__"
+                              ? "Select rows of the same type (all goals or all tasks) to bulk edit."
+                              : selectionDbKey
+                                ? `Type: ${selectionDbKey}`
+                                : ""}
+                        </div>
+                        <div style={{ marginLeft: "auto", fontSize: 12, opacity: 0.75 }}>
                           Pending patches: {enterprisePatchList.length}
                         </div>
                       </div>
+
+                      <div style={{ height: 10 }} />
+
+                      {selectedOpIdList.length === 0 ? (
+                        <div
+                          style={{
+                            fontSize: 12,
+                            opacity: 0.78,
+                            borderRadius: 12,
+                            border: "1px solid rgba(255,255,255,0.10)",
+                            background: "rgba(255,255,255,0.02)",
+                            padding: 10,
+                          }}
+                        >
+                          Select at least one row to enable editing.
+                        </div>
+                      ) : selectionDbKey === "__mixed__" ? (
+                        <div
+                          style={{
+                            fontSize: 12,
+                            opacity: 0.78,
+                            borderRadius: 12,
+                            border: "1px solid rgba(255,255,255,0.10)",
+                            background: "rgba(255,255,255,0.02)",
+                            padding: 10,
+                          }}
+                        >
+                          Mixed selection detected. For bulk editing, select rows of the same type
+                          (all goals or all tasks).
+                        </div>
+                      ) : (
+                        (() => {
+                          const schema0 = enterpriseSelectionSchema as any;
+                          const schemaKeys = schema0 && typeof schema0 === "object" ? Object.keys(schema0) : [];
+
+                          const preferredOrder = [
+                            "Name",
+                            "Title",
+                            "Status",
+                            "Priority",
+                            "Deadline",
+                            "Due Date",
+                            "Description",
+                          ];
+
+                          const sortable = (keys: string[]) => {
+                            const out: string[] = [];
+                            for (const p of preferredOrder) if (keys.includes(p)) out.push(p);
+                            for (const k of keys) if (!out.includes(k)) out.push(k);
+                            return out;
+                          };
+
+                          const allFields = sortable(schemaKeys);
+                          const editableOnly = allFields.filter((k) => {
+                            const t = fieldTypeFromSchema(schema0, k);
+                            return typeof t === "string" && t && editableTypes.has(t);
+                          });
+
+                          const defaultFields = (() => {
+                            const base = reviewMissing
+                              .filter((k) => editableOnly.includes(k))
+                              .slice(0, 8);
+                            if (base.length) return base;
+                            return editableOnly.slice(0, 12);
+                          })();
+
+                          const fieldsToShow = showAllFields
+                            ? allFields
+                            : defaultFields.length
+                              ? defaultFields
+                              : editableOnly;
+
+                          const selectedCount = selectedOpIdList.length;
+                          const canBulkApply =
+                            selectedCount > 0 &&
+                            Boolean(onEnterprisePatchesChange) &&
+                            Boolean(schema0) &&
+                            fieldsToShow.length > 0;
+
+                          const currentRow = enterpriseSelectionPreviewRow || activeSelectedRow;
+                          const rowPp =
+                            currentRow?.properties_preview && typeof currentRow.properties_preview === "object"
+                              ? (currentRow.properties_preview as any)
+                              : null;
+                          const rowPs =
+                            currentRow?.property_specs && typeof currentRow.property_specs === "object"
+                              ? (currentRow.property_specs as any)
+                              : null;
+
+                          const currentValueHint = (fieldKey: string): string => {
+                            const v = rowPp ? rowPp?.[fieldKey] : null;
+                            if (rowPp) {
+                              const s = renderNotionValue(v);
+                              if (s) return s;
+                            }
+                            if (rowPs) {
+                              const s2 = renderSpecValue(rowPs?.[fieldKey] ?? null);
+                              if (s2) return s2;
+                            }
+                            return "";
+                          };
+
+                          return (
+                            <>
+                              {!schema0 || !schemaKeys.length ? (
+                                <div
+                                  style={{
+                                    fontSize: 12,
+                                    opacity: 0.78,
+                                    borderRadius: 12,
+                                    border: "1px solid rgba(255,255,255,0.10)",
+                                    background: "rgba(255,255,255,0.02)",
+                                    padding: 10,
+                                  }}
+                                >
+                                  Schema for this selection is not available in preview. Open JSON to verify
+                                  `review.fields_schema_by_db_key` is present.
+                                </div>
+                              ) : (
+                                <div
+                                  style={{
+                                    display: "grid",
+                                    gridTemplateColumns: "1fr 1fr",
+                                    gap: 10,
+                                  }}
+                                >
+                                  {fieldsToShow.map((fieldKey) => {
+                                    const t = fieldTypeFromSchema(schema0, fieldKey);
+                                    const readOnly = isReadOnlyFieldFromSchema(schema0, fieldKey);
+                                    const supported = Boolean(t && editableTypes.has(t));
+                                    const disabled = loading || readOnly || !supported;
+
+                                    const opts = fieldOptionsFromSchema(schema0, fieldKey);
+                                    const hint = currentValueHint(fieldKey);
+
+                                    const draftVal =
+                                      typeof enterpriseDraft?.[fieldKey] === "string"
+                                        ? enterpriseDraft[fieldKey]
+                                        : "";
+
+                                    const labelNote = readOnly
+                                      ? "read-only"
+                                      : !supported
+                                        ? t
+                                          ? `unsupported (${t})`
+                                          : "unsupported"
+                                        : t;
+
+                                    const placeholder = hint ? `Current: ${hint}` : "";
+
+                                    const setDraft = (v: string) => {
+                                      setEnterpriseDraft((prev) => ({
+                                        ...(prev || {}),
+                                        [fieldKey]: v,
+                                      }));
+                                    };
+
+                                    const lower = String(t || "").toLowerCase();
+
+                                    return (
+                                      <div
+                                        key={fieldKey}
+                                        style={{
+                                          display: "flex",
+                                          flexDirection: "column",
+                                          gap: 6,
+                                        }}
+                                      >
+                                        <div
+                                          style={{
+                                            fontSize: 12,
+                                            color: "rgba(255,255,255,0.78)",
+                                            display: "flex",
+                                            alignItems: "center",
+                                            gap: 8,
+                                          }}
+                                          title={
+                                            readOnly
+                                              ? "This field is read-only and cannot be changed."
+                                              : !supported
+                                                ? "This field type is not supported for patches."
+                                                : hint
+                                                  ? `Current value: ${hint}`
+                                                  : undefined
+                                          }
+                                        >
+                                          <span>{fieldKey}</span>
+                                          <span
+                                            style={{
+                                              fontSize: 11,
+                                              opacity: 0.65,
+                                              border: "1px solid rgba(255,255,255,0.12)",
+                                              padding: "1px 6px",
+                                              borderRadius: 999,
+                                            }}
+                                          >
+                                            {labelNote || ""}
+                                          </span>
+                                        </div>
+
+                                        {opts.length > 0 ? (
+                                          <select
+                                            value={draftVal}
+                                            onChange={(e) => setDraft(e.target.value)}
+                                            disabled={disabled}
+                                            style={{
+                                              border: "1px solid rgba(255,255,255,0.12)",
+                                              background: "rgba(255,255,255,0.02)",
+                                              color: "rgba(255,255,255,0.92)",
+                                              borderRadius: 12,
+                                              padding: "10px 10px",
+                                              fontSize: 13,
+                                              outline: "none",
+                                            }}
+                                          >
+                                            <option value="">(clear)</option>
+                                            {opts.map((o: string) => (
+                                              <option key={o} value={o} style={{ color: "#000" }}>
+                                                {o}
+                                              </option>
+                                            ))}
+                                          </select>
+                                        ) : lower === "checkbox" ? (
+                                          <select
+                                            value={draftVal}
+                                            onChange={(e) => setDraft(e.target.value)}
+                                            disabled={disabled}
+                                            style={{
+                                              border: "1px solid rgba(255,255,255,0.12)",
+                                              background: "rgba(255,255,255,0.02)",
+                                              color: "rgba(255,255,255,0.92)",
+                                              borderRadius: 12,
+                                              padding: "10px 10px",
+                                              fontSize: 13,
+                                              outline: "none",
+                                            }}
+                                          >
+                                            <option value="">(clear)</option>
+                                            <option value="true" style={{ color: "#000" }}>
+                                              true
+                                            </option>
+                                            <option value="false" style={{ color: "#000" }}>
+                                              false
+                                            </option>
+                                          </select>
+                                        ) : (
+                                          <input
+                                            value={draftVal}
+                                            onChange={(e) => setDraft(e.target.value)}
+                                            disabled={disabled}
+                                            placeholder={
+                                              placeholder ||
+                                              (lower === "multi_select"
+                                                ? "Comma-separated"
+                                                : lower === "people"
+                                                  ? "Emails or names (comma-separated)"
+                                                  : lower === "relation"
+                                                    ? "page_id(s) or $op_id refs"
+                                                    : "")
+                                            }
+                                            style={{
+                                              border: "1px solid rgba(255,255,255,0.12)",
+                                              background: "rgba(255,255,255,0.02)",
+                                              color: "rgba(255,255,255,0.92)",
+                                              borderRadius: 12,
+                                              padding: "10px 10px",
+                                              fontSize: 13,
+                                              outline: "none",
+                                            }}
+                                          />
+                                        )}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+
+                              <div style={{ height: 10 }} />
+                              <div
+                                style={{
+                                  display: "flex",
+                                  gap: 8,
+                                  justifyContent: "flex-end",
+                                  flexWrap: "wrap",
+                                }}
+                              >
+                                <button
+                                  onClick={() => {
+                                    const keys = Object.keys(enterpriseDraft || {});
+                                    if (!keys.length) return;
+                                    if (!selectedOpIdList.length) return;
+                                    for (const oid of selectedOpIdList) {
+                                      for (const k of keys) {
+                                        upsertEnterprisePatch(oid, k, enterpriseDraft[k]);
+                                      }
+                                    }
+                                    setEnterpriseDraft({});
+                                  }}
+                                  style={{
+                                    padding: "8px 10px",
+                                    borderRadius: 10,
+                                    border: "1px solid rgba(255,255,255,0.12)",
+                                    background: "rgba(255,255,255,0.06)",
+                                    color: "rgba(255,255,255,0.92)",
+                                    cursor: "pointer",
+                                  }}
+                                  disabled={
+                                    loading ||
+                                    !canBulkApply ||
+                                    !Object.keys(enterpriseDraft || {}).length
+                                  }
+                                  title={
+                                    selectionDbKey === "__mixed__"
+                                      ? "Select rows of the same type to bulk edit"
+                                      : `Apply current edits to selected ${selectedCount} row(s)`
+                                  }
+                                >
+                                  Apply to selected {selectedCount}
+                                </button>
+                                <button
+                                  onClick={() => setEnterpriseDraft({})}
+                                  style={{
+                                    padding: "8px 10px",
+                                    borderRadius: 10,
+                                    border: "1px solid rgba(255,255,255,0.12)",
+                                    background: "rgba(255,255,255,0.03)",
+                                    color: "rgba(255,255,255,0.92)",
+                                    cursor: "pointer",
+                                  }}
+                                  disabled={loading || !Object.keys(enterpriseDraft || {}).length}
+                                  title="Clear draft edits (does not clear patches)"
+                                >
+                                  Clear draft
+                                </button>
+                              </div>
+                            </>
+                          );
+                        })()
+                      )}
                     </>
                   ) : (
                     <div

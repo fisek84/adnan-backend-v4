@@ -3045,6 +3045,19 @@ async def execute_preview_command(
         except Exception:
             pass
 
+        # Prefer offline SSOT schema when Notion schema can't be fetched.
+        # This keeps preview/UI usable ("Show all" can list full field set) without new endpoints.
+        try:
+            from services.notion_schema_registry import (  # noqa: PLC0415
+                NotionSchemaRegistry,
+            )
+
+            off = NotionSchemaRegistry.offline_validation_schema(db_key)
+            if isinstance(off, dict) and off:
+                return off, "offline"
+        except Exception:
+            pass
+
         fb = await _fallback_fields_schema(db_key)
         return (fb if isinstance(fb, dict) else {}), "fallback"
 
