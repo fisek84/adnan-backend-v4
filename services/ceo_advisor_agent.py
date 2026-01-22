@@ -173,28 +173,18 @@ def _build_trace_status_text(*, trace_v2: Dict[str, Any], english_output: bool) 
             reason = it.get("skipped_reason")
             if isinstance(src, str) and src.strip():
                 if isinstance(reason, str) and reason.strip():
-                    skipped_list.append(f"{src.strip()}: {reason.strip()}")
+                    skipped_list.append(f"{src.strip()} ({reason.strip()})")
                 else:
                     skipped_list.append(f"{src.strip()}")
 
     if english_output:
-        parts = []
-        if used_list:
-            parts.append("For this question I used: " + ", ".join(used_list) + ".")
-        if skipped_list:
-            parts.append("Skipped: " + ", ".join(skipped_list) + ".")
-        if not parts:
-            return "I don't have trace data for this request, so I can't confirm which sources were used."
-        return " ".join(parts)
+        used_txt = ", ".join(used_list) if used_list else "(none)"
+        skipped_txt = ", ".join(skipped_list) if skipped_list else "(none)"
+        return f"Used: {used_txt}. Skipped: {skipped_txt}."
 
-    parts = []
-    if used_list:
-        parts.append("Za ovo pitanje sam koristio: " + ", ".join(used_list) + ".")
-    if skipped_list:
-        parts.append("Preskočeno: " + ", ".join(skipped_list) + ".")
-    if not parts:
-        return "Nemam trace podatke u ovom requestu; ne mogu potvrditi koji su izvori korišteni."
-    return " ".join(parts)
+    used_txt = ", ".join(used_list) if used_list else "(nema)"
+    skipped_txt = ", ".join(skipped_list) if skipped_list else "(nema)"
+    return f"Korišteno: {used_txt}. Preskočeno: {skipped_txt}."
 
 
 def _extract_after_colon(user_text: str) -> str:
