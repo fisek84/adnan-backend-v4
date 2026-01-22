@@ -29,6 +29,10 @@ services:
       - key: RENDER
         value: "true"
 
+      # Enable enterprise preview editor (canonical preview + patches-only editing)
+      - key: ENTERPRISE_PREVIEW_EDITOR
+        value: "1"
+
       - key: DATABASE_URL
         sync: false
 
