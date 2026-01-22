@@ -1437,7 +1437,12 @@ class NotionService:
     # ============================================================
     # READ-ONLY KNOWLEDGE SNAPSHOT (SSOT)
     # ============================================================
-    async def build_knowledge_snapshot(self) -> Dict[str, Any]:
+    async def build_knowledge_snapshot(
+        self,
+        *,
+        db_keys: Optional[List[str]] = None,
+        max_items_by_db: Optional[Dict[str, int]] = None,
+    ) -> Dict[str, Any]:
         """Build a lightweight, UI-safe knowledge snapshot from Notion.
 
         Contract:
@@ -1448,9 +1453,20 @@ class NotionService:
              "meta": {"ok": bool, "synced_at": ... , "errors": [...]}}
         """
 
-        async def _title_prop_for_db(db_id: str) -> str:
+        def _title_prop_for_db_cached(db_id: str) -> str:
+            """Best-effort title property without spending Notion calls.
+
+            IMPORTANT: do not fetch schema here. Schema discovery is optional and
+            expensive under strict budgets.
+            """
+
             try:
-                schema = await self._get_database_schema(db_id)
+                cached = self._db_schema_cache.get(db_id)
+                schema = (
+                    cached.schema
+                    if cached and isinstance(cached.schema, dict)
+                    else None
+                )
                 props = schema.get("properties") if isinstance(schema, dict) else None
                 if isinstance(props, dict):
                     for k, v in props.items():
@@ -1463,6 +1479,8 @@ class NotionService:
                             return k
             except Exception:
                 pass
+
+            # Default (Notion common case)
             return "Name"
 
         async def _query_all_pages(
@@ -1519,15 +1537,49 @@ class NotionService:
 
         db_stats: Dict[str, Any] = {}
 
+        # Default: tasks-first priority (minimum viable context under strict budgets).
+        keys = (
+            db_keys
+            if isinstance(db_keys, list) and db_keys
+            else ["tasks", "projects", "goals"]
+        )
+        # Ensure deterministic ordering and allow only known keys.
+        keys = [
+            k
+            for k in ("tasks", "projects", "goals")
+            if k in set([str(x) for x in keys])
+        ]
+        if not keys:
+            keys = ["tasks", "projects", "goals"]
+
+        limits = max_items_by_db if isinstance(max_items_by_db, dict) else {}
+        default_limits = {"tasks": 50, "projects": 30, "goals": 30}
+
         async with notion_budget_context(
             max_calls=max_calls,
             max_latency_ms=max_latency_ms,
         ) as budget_state:
-            for db_key in ("goals", "tasks", "projects"):
+            for db_key in keys:
                 try:
                     db_id = self._resolve_db_id(db_key)
-                    title_prop = await _title_prop_for_db(db_id)
-                    pages = await _query_all_pages(db_key=db_key)
+                    title_prop = _title_prop_for_db_cached(db_id)
+
+                    max_items = limits.get(db_key)
+                    try:
+                        max_items_i = (
+                            int(max_items)
+                            if max_items is not None
+                            else int(default_limits.get(db_key, 50))
+                        )
+                    except Exception:
+                        max_items_i = int(default_limits.get(db_key, 50))
+                    if max_items_i <= 0:
+                        max_items_i = int(default_limits.get(db_key, 50))
+
+                    page_size = min(50, max_items_i)
+                    pages = await _query_all_pages(
+                        db_key=db_key, page_size=page_size, max_items=max_items_i
+                    )
 
                     items: List[Dict[str, Any]] = []
                     for p in pages:

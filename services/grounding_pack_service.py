@@ -8,6 +8,8 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
+from services.grounding_policy import classify_prompt
+
 
 def _env_true(name: str, default: str = "true") -> bool:
     return (os.getenv(name, default) or "").strip().lower() == "true"
@@ -133,7 +135,12 @@ class GroundingPackService:
 
     @classmethod
     def notion_targeted_reads_enabled(cls) -> bool:
-        return cls._env_bool("CEO_NOTION_TARGETED_READS_ENABLED", "false")
+        # Tests must remain offline/deterministic.
+        if (os.getenv("TESTING") or "").strip() == "1" or (
+            "PYTEST_CURRENT_TEST" in os.environ
+        ):
+            return False
+        return cls._env_bool("CEO_NOTION_TARGETED_READS_ENABLED", "true")
 
     @classmethod
     def enabled(cls) -> bool:
@@ -349,7 +356,9 @@ class GroundingPackService:
             "memory_snapshot": len(_stable_json_dumps(mem).encode("utf-8")),
         }
 
-        # Enforce Notion payload size budget INSIDE grounding_pack only.
+        # Enforce Notion budgets:
+        # - payload_bytes budget (inside grounding_pack)
+        # - read budget as reported by Notion snapshot meta (max_calls/max_latency)
         budget_exceeded = False
         budget_exceeded_detail: Dict[str, Any] = {}
         max_payload = budgets.get("notion", {}).get("max_payload_bytes")
@@ -407,26 +416,48 @@ class GroundingPackService:
         legacy = legacy_trace if isinstance(legacy_trace, dict) else {}
         llm_used = bool(legacy.get("llm_used") is True)
 
-        # Heuristic: KB-only questions should not consume Notion.
-        t_prompt = (prompt or "").strip().lower()
-        wants_notion = bool(
-            any(
-                k in t_prompt
-                for k in (
-                    "notion",
-                    "cilj",
-                    "ciljevi",
-                    "goal",
-                    "goals",
-                    "task",
-                    "tasks",
-                    "zadat",
-                    "kpi",
-                    "projekat",
-                    "project",
-                )
-            )
+        policy = classify_prompt(prompt)
+
+        # Notion budget exceeded can be reported by snapshot meta (max_calls/max_latency).
+        notion_meta = (
+            notion_snapshot.get("meta") if isinstance(notion_snapshot, dict) else None
         )
+        notion_meta = notion_meta if isinstance(notion_meta, dict) else {}
+        meta_budget = (
+            notion_meta.get("budget")
+            if isinstance(notion_meta.get("budget"), dict)
+            else {}
+        )
+        meta_budget_exceeded = bool(meta_budget.get("exceeded") is True)
+        meta_budget_kind = meta_budget.get("exceeded_kind")
+        meta_budget_detail = meta_budget.get("exceeded_detail")
+        if meta_budget_exceeded and not budget_exceeded:
+            budget_exceeded = True
+            budget_exceeded_detail = {
+                "type": "notion_budget",
+                "kind": meta_budget_kind,
+                "detail": meta_budget_detail
+                if isinstance(meta_budget_detail, dict)
+                else {},
+            }
+
+        # Also detect budget_exceeded in meta errors (legacy snapshots).
+        try:
+            errs = notion_meta.get("errors")
+            if isinstance(errs, list) and any(
+                isinstance(e, str) and ":budget_exceeded:" in e for e in errs
+            ):
+                if not budget_exceeded:
+                    budget_exceeded = True
+                    budget_exceeded_detail = {
+                        "type": "notion_budget",
+                        "kind": meta_budget_kind or "max_calls",
+                        "detail": meta_budget_detail
+                        if isinstance(meta_budget_detail, dict)
+                        else {},
+                    }
+        except Exception:
+            pass
 
         used_sources: List[str] = []
         not_used: List[Dict[str, Any]] = []
@@ -451,41 +482,54 @@ class GroundingPackService:
         notion_calls = 0
         try:
             if isinstance(legacy, dict) and isinstance(legacy.get("notion_calls"), int):
+                # Per-request (targeted) reads only.
                 notion_calls = int(legacy.get("notion_calls"))
         except Exception:
             notion_calls = 0
 
         notion_read_ids: List[str] = []
-        if budget_exceeded:
-            not_used.append(
-                {"source": "notion_snapshot", "skipped_reason": "budget_exceeded"}
-            )
-        elif wants_notion:
-            # Targeted reads are feature-flagged; default is zero calls.
-            if not cls.notion_targeted_reads_enabled():
-                not_used.append(
-                    {
-                        "source": "notion_snapshot",
-                        "skipped_reason": "targeted_reads_disabled",
-                    }
-                )
-            else:
-                # IO happens outside this service; here we only report.
-                not_used.append(
-                    {
-                        "source": "notion_snapshot",
-                        "skipped_reason": "no_targeted_reads_performed_in_builder",
-                    }
-                )
-        else:
-            not_used.append(
-                {"source": "notion_snapshot", "skipped_reason": "kb_only_question"}
-            )
+        notion_has_data = bool(
+            counts.get("tasks", 0) > 0
+            or counts.get("projects", 0) > 0
+            or counts.get("goals", 0) > 0
+        )
 
-        # Memory snapshot is included in the pack but marked as not used unless explicitly needed.
-        # IMPORTANT: do NOT treat a provenance/source-list prompt (e.g. "KB/Identity/Memory/Notion")
-        # as requiring memory snapshot.
-        if re.search(r"(?i)\b(audit|memorij\w*|memory\s+snapshot)\b", t_prompt):
+        if policy.needs_notion and notion_has_data and not budget_exceeded:
+            used_sources.append("notion_snapshot")
+        else:
+            if policy.needs_notion:
+                if budget_exceeded:
+                    not_used.append(
+                        {
+                            "source": "notion_snapshot",
+                            "skipped_reason": "budget_exceeded",
+                        }
+                    )
+                elif not cls.notion_targeted_reads_enabled() and not notion_has_data:
+                    not_used.append(
+                        {
+                            "source": "notion_snapshot",
+                            "skipped_reason": "targeted_reads_disabled",
+                        }
+                    )
+                elif not notion_has_data:
+                    not_used.append(
+                        {"source": "notion_snapshot", "skipped_reason": "missing_data"}
+                    )
+                else:
+                    not_used.append(
+                        {"source": "notion_snapshot", "skipped_reason": "not_used"}
+                    )
+            else:
+                not_used.append(
+                    {
+                        "source": "notion_snapshot",
+                        "skipped_reason": "not_required_for_prompt",
+                    }
+                )
+
+        # Memory snapshot: ONLY when user explicitly asks for memory/audit.
+        if policy.needs_memory_snapshot:
             used_sources.append("memory_snapshot")
         else:
             not_used.append(

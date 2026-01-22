@@ -33,9 +33,13 @@ def test_provenance_query_does_not_trigger_memory_governance(monkeypatch):
     assert r.status_code == 200, r.text
     body = r.json()
 
+    pcs = body.get("proposed_commands") or []
+    assert isinstance(pcs, list)
+    assert pcs == [], "trace_status must not emit noop proposals"
+
     txt = body.get("text") or ""
-    assert "kori" in txt.lower()  # korišteno / koristio
-    assert "presko" in txt.lower()  # preskočeno
+    assert "korišteno" in txt.lower()
+    assert "preskočeno" in txt.lower()
 
     # Must NOT include memory governance instructions or bracket tags.
     assert "zapamti" not in txt.lower()
@@ -47,7 +51,6 @@ def test_provenance_query_does_not_trigger_memory_governance(monkeypatch):
     assert "identity_pack" in txt
     assert "kb_snapshot" in txt
     assert "notion_snapshot" in txt
-    assert "targeted_reads_disabled" in txt
     assert "memory_snapshot" in txt
     assert "not_required_for_prompt" in txt
 

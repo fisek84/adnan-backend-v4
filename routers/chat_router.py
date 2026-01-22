@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 
 from typing import Any, Dict, List, Optional
@@ -400,10 +401,26 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         if isinstance(why, str) and why.strip():
             msg = f"{msg}\n\nReason: {why}"
 
-        noop = _build_contract_noop_wrapper(
-            prompt, reason="NOTION OPS NOT ARMED: read-only gate enforced."
-        )
-        fb = _ensure_payload_summary_contract(_pc_to_dict(noop, prompt=prompt))
+        pcs_out: List[Dict[str, Any]] = []
+        # For a blocked write-intent request, the only meaningful proposal is to arm Notion Ops.
+        if isinstance(session_id, str) and session_id.strip():
+            arm = ProposedCommand(
+                command="notion_ops_toggle",
+                args={"session_id": session_id.strip(), "armed": True},
+                reason="Notion write intent detected; arm Notion Ops to continue.",
+                requires_approval=True,
+                risk="LOW",
+                dry_run=True,
+                scope="api_notion_ops_toggle",
+                payload_summary={
+                    "endpoint": "/api/notion-ops/toggle",
+                    "canon": "NOTION_OPS_ARM_SUGGESTION",
+                    "source": "api_chat",
+                },
+            )
+            pcs_out.append(
+                _ensure_payload_summary_contract(_pc_to_dict(arm, prompt=prompt))
+            )
 
         tr = out.trace or {} if hasattr(out, "trace") else {}
         if not isinstance(tr, dict):
@@ -418,7 +435,7 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         return JSONResponse(
             content={
                 "text": (getattr(out, "text", "") or "").strip() or msg,
-                "proposed_commands": [fb],
+                "proposed_commands": pcs_out,
                 "agent_id": getattr(out, "agent_id", None),
                 "read_only": True,
                 "notion_ops": {
@@ -440,6 +457,28 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
 
         prompt = _extract_prompt(payload)
         session_id = _extract_session_id(payload)
+        notion_calls_for_trace: Optional[int] = None
+
+        def _is_test_mode() -> bool:
+            return (os.getenv("TESTING") or "").strip() == "1" or (
+                "PYTEST_CURRENT_TEST" in os.environ
+            )
+
+        def _snapshot_meta_from_ks(ks: Dict[str, Any]) -> Dict[str, Any]:
+            return {
+                "knowledge_status": ks.get("status"),
+                "knowledge_last_sync": ks.get("last_sync"),
+                "knowledge_generated_at": ks.get("generated_at"),
+                "knowledge_ready": bool(ks.get("ready"))
+                if isinstance(ks.get("ready"), bool)
+                else bool(ks.get("ready")),
+                "knowledge_expired": bool(ks.get("expired"))
+                if isinstance(ks.get("expired"), bool)
+                else bool(ks.get("expired")),
+                "knowledge_ttl_seconds": ks.get("ttl_seconds"),
+                "knowledge_age_seconds": ks.get("age_seconds"),
+                "schema_version": ks.get("schema_version"),
+            }
 
         kb = _knowledge_bundle()
         ks_for_gp = kb.get("knowledge_snapshot") if isinstance(kb, dict) else {}
@@ -454,6 +493,89 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         # ------------------------------------------------------------
         try:
             t0 = (prompt or "").strip().lower()
+
+            # Adaptive grounding policy: read-only Notion targeted reads for operational questions.
+            # This is best-effort and cached per session. Tests remain offline.
+            try:
+                from services.grounding_policy import classify_prompt  # noqa: PLC0415
+                from services.session_snapshot_cache import (
+                    SESSION_SNAPSHOT_CACHE,
+                )  # noqa: PLC0415
+                from services.notion_service import (  # noqa: PLC0415
+                    get_or_init_notion_service,
+                )
+
+                pol = classify_prompt(prompt)
+                snap_in0 = getattr(payload, "snapshot", None)
+                has_snap0 = isinstance(snap_in0, dict) and bool(snap_in0)
+                if (
+                    not _is_test_mode()
+                    and pol.needs_notion
+                    and pol.notion_db_keys
+                    and not has_snap0
+                    and (os.getenv("CEO_NOTION_TARGETED_READS_ENABLED") or "true")
+                    .strip()
+                    .lower()
+                    == "true"
+                ):
+                    db_keys_csv = ",".join(pol.notion_db_keys)
+                    ttl_s_raw = (
+                        os.getenv("CEO_CHAT_SNAPSHOT_TTL_SECONDS") or "60"
+                    ).strip()
+                    try:
+                        ttl_s = int(ttl_s_raw)
+                    except Exception:
+                        ttl_s = 60
+
+                    cached = None
+                    if isinstance(session_id, str) and session_id.strip():
+                        cached = SESSION_SNAPSHOT_CACHE.get(
+                            session_id=session_id.strip(), db_keys_csv=db_keys_csv
+                        )
+                    if isinstance(cached, dict) and cached:
+                        payload.snapshot = cached
+                        kb = {
+                            "knowledge_snapshot": cached,
+                            "snapshot_meta": _snapshot_meta_from_ks(cached),
+                        }
+                        ks_for_gp = cached
+                    else:
+                        notion = get_or_init_notion_service()
+                        if notion is not None:
+                            max_items = {"tasks": 50, "projects": 30, "goals": 30}
+                            snap = await notion.build_knowledge_snapshot(
+                                db_keys=list(pol.notion_db_keys),
+                                max_items_by_db=max_items,
+                            )
+                            if isinstance(snap, dict) and snap:
+                                payload.snapshot = snap
+                                kb = {
+                                    "knowledge_snapshot": snap,
+                                    "snapshot_meta": _snapshot_meta_from_ks(snap),
+                                }
+                                ks_for_gp = snap
+                                try:
+                                    m = (
+                                        snap.get("meta")
+                                        if isinstance(snap.get("meta"), dict)
+                                        else {}
+                                    )
+                                    if isinstance(m.get("notion_calls"), int):
+                                        notion_calls_for_trace = int(
+                                            m.get("notion_calls")
+                                        )
+                                except Exception:
+                                    notion_calls_for_trace = None
+                                if isinstance(session_id, str) and session_id.strip():
+                                    SESSION_SNAPSHOT_CACHE.set(
+                                        session_id=session_id.strip(),
+                                        db_keys_csv=db_keys_csv,
+                                        value=snap,
+                                        ttl_seconds=ttl_s,
+                                    )
+            except Exception:
+                # Fail-soft: never block chat on Notion targeted reads.
+                pass
 
             wants_target = bool(
                 re.search(
@@ -620,6 +742,8 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         )
 
         legacy_trace = out.trace or {}
+        if isinstance(legacy_trace, dict) and isinstance(notion_calls_for_trace, int):
+            legacy_trace["notion_calls"] = int(notion_calls_for_trace)
         grounding = _grounding_bundle(
             prompt=prompt,
             knowledge_snapshot=ks_for_gp,
@@ -700,15 +824,10 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                     }
                 )
 
-            # Read-only, non-write: keep existing behavior (contract NOOP when no actionable)
-            fallback = _build_contract_noop_wrapper(
-                prompt, reason="Read-only (no actionable proposals)."
-            )
-            fb = _ensure_payload_summary_contract(_pc_to_dict(fallback, prompt=prompt))
             return JSONResponse(
                 content={
                     "text": out.text,
-                    "proposed_commands": [fb],
+                    "proposed_commands": [],
                     "agent_id": out.agent_id,
                     "read_only": True,
                     "notion_ops": {
@@ -776,14 +895,9 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 reason="Approval required (write intent, but no structured proposal returned).",
             )
         else:
-            fallback = _build_contract_noop_wrapper(
-                prompt,
-                reason="Contract stability no-op (read-only chat produced no actionable proposals).",
-            )
+            fallback = None
 
         out.read_only = True
-        fb = _pc_to_dict(fallback, prompt=prompt)
-        fb = _ensure_payload_summary_contract(fb)
 
         tr = out.trace or {}
         if not isinstance(tr, dict):
@@ -802,7 +916,13 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         return JSONResponse(
             content={
                 "text": text_out,
-                "proposed_commands": [fb],
+                "proposed_commands": [
+                    _ensure_payload_summary_contract(
+                        _pc_to_dict(fallback, prompt=prompt)
+                    )
+                ]
+                if isinstance(fallback, ProposedCommand)
+                else [],
                 "agent_id": out.agent_id,
                 "read_only": True,
                 "notion_ops": {
