@@ -38,7 +38,13 @@ def test_chat_is_minimal_by_default(monkeypatch):
     assert isinstance(body.get("proposed_commands"), list)
 
     # Debug payload must NOT be present by default.
-    for k in ("knowledge_snapshot", "snapshot_meta", "grounding_pack", "trace_v2", "diagnostics"):
+    for k in (
+        "knowledge_snapshot",
+        "snapshot_meta",
+        "grounding_pack",
+        "trace_v2",
+        "diagnostics",
+    ):
         assert k not in body
 
     # If trace is present, it must be minimal.

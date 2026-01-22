@@ -180,8 +180,7 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         if isinstance(md, dict):
             v = md.get("include_debug")
             include_debug = v is True or (
-                isinstance(v, str)
-                and v.strip().lower() in {"1", "true", "yes", "on"}
+                isinstance(v, str) and v.strip().lower() in {"1", "true", "yes", "on"}
             )
 
         env = (os.getenv("DEBUG_API_RESPONSES") or "").strip().lower()
