@@ -2426,7 +2426,8 @@ async def execute_raw_command(payload: Dict[str, Any] = Body(...)):
             db_keys0 = [k for k in [str(x).strip() for x in db_keys0] if k]
             db_keys0 = list(dict.fromkeys(db_keys0))
             schema_by_db_key = {
-                dk: NotionSchemaRegistry.offline_validation_schema(dk) for dk in db_keys0
+                dk: NotionSchemaRegistry.offline_validation_schema(dk)
+                for dk in db_keys0
             }
 
             patched_ops, issues_by_op, global_issues = (
@@ -2437,8 +2438,12 @@ async def execute_raw_command(payload: Dict[str, Any] = Body(...)):
                 )
             )
 
-            patch_issues_by_op_id = issues_by_op if isinstance(issues_by_op, dict) else {}
-            patch_global_issues = global_issues if isinstance(global_issues, list) else []
+            patch_issues_by_op_id = (
+                issues_by_op if isinstance(issues_by_op, dict) else {}
+            )
+            patch_global_issues = (
+                global_issues if isinstance(global_issues, list) else []
+            )
 
             # Install patched operations as the canonical executable command.
             params_new = dict(params0)
@@ -2455,7 +2460,9 @@ async def execute_raw_command(payload: Dict[str, Any] = Body(...)):
                 pl1 = op1.get("payload")
                 pl1 = pl1 if isinstance(pl1, dict) else {}
 
-                db_key1 = pl1.get("db_key") if isinstance(pl1.get("db_key"), str) else None
+                db_key1 = (
+                    pl1.get("db_key") if isinstance(pl1.get("db_key"), str) else None
+                )
                 if not db_key1:
                     oi1 = op_intent1.strip().lower()
                     if oi1 == "create_goal":
@@ -2467,7 +2474,11 @@ async def execute_raw_command(payload: Dict[str, Any] = Body(...)):
 
                 schema1 = schema_by_db_key.get(db_key1 or "") if db_key1 else {}
                 if not isinstance(schema1, dict) or not schema1:
-                    schema1 = NotionSchemaRegistry.offline_validation_schema(db_key1 or "") if db_key1 else {}
+                    schema1 = (
+                        NotionSchemaRegistry.offline_validation_schema(db_key1 or "")
+                        if db_key1
+                        else {}
+                    )
 
                 ps1 = pl1.get("property_specs")
                 ps1 = ps1 if isinstance(ps1, dict) else {}
@@ -2485,10 +2496,14 @@ async def execute_raw_command(payload: Dict[str, Any] = Body(...)):
                     extra_issues = patch_issues_by_op_id.get(op_id1)
                     if isinstance(extra_issues, list) and extra_issues:
                         errs = sum(
-                            1 for it in extra_issues if isinstance(it, dict) and it.get("severity") == "error"
+                            1
+                            for it in extra_issues
+                            if isinstance(it, dict) and it.get("severity") == "error"
                         )
                         warns = sum(
-                            1 for it in extra_issues if isinstance(it, dict) and it.get("severity") == "warning"
+                            1
+                            for it in extra_issues
+                            if isinstance(it, dict) and it.get("severity") == "warning"
                         )
                         extra = {
                             "mode": "strict",
@@ -2506,8 +2521,14 @@ async def execute_raw_command(payload: Dict[str, Any] = Body(...)):
 
             merged = merge_validation_reports(*per_op_reports)
             if patch_global_issues:
-                its = merged.get("issues") if isinstance(merged.get("issues"), list) else []
-                its = list(its) + [x for x in patch_global_issues if isinstance(x, dict)]
+                its = (
+                    merged.get("issues")
+                    if isinstance(merged.get("issues"), list)
+                    else []
+                )
+                its = list(its) + [
+                    x for x in patch_global_issues if isinstance(x, dict)
+                ]
                 merged["issues"] = its
                 merged["summary"] = {
                     "errors": sum(1 for it in its if it.get("severity") == "error"),
@@ -2829,11 +2850,9 @@ async def execute_preview_command(
     # Enterprise preview editor: optional patches applied server-side.
     if enterprise_enabled and patches_in is not None:
         try:
-            if (
-                getattr(ai_command, "command", None) == "notion_write"
-                and getattr(ai_command, "intent", None)
-                in {"batch_request", "batch", "branch_request"}
-            ):
+            if getattr(ai_command, "command", None) == "notion_write" and getattr(
+                ai_command, "intent", None
+            ) in {"batch_request", "batch", "branch_request"}:
                 params0 = getattr(ai_command, "params", None)
                 params0 = params0 if isinstance(params0, dict) else {}
                 ops0 = params0.get("operations")
@@ -3427,10 +3446,16 @@ async def execute_preview_command(
                             )
 
                             errs = sum(
-                                1 for it in extra if isinstance(it, dict) and it.get("severity") == "error"
+                                1
+                                for it in extra
+                                if isinstance(it, dict)
+                                and it.get("severity") == "error"
                             )
                             warns = sum(
-                                1 for it in extra if isinstance(it, dict) and it.get("severity") == "warning"
+                                1
+                                for it in extra
+                                if isinstance(it, dict)
+                                and it.get("severity") == "warning"
                             )
                             extra_report = {
                                 "mode": "strict",

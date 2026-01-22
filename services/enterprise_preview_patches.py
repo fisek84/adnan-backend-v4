@@ -297,7 +297,11 @@ def apply_patches_to_batch_operations(
 
     if patches is None:
         # No-op
-        return [dict(op) if isinstance(op, dict) else {} for op in ops_in], issues_by_op_id, global_issues
+        return (
+            [dict(op) if isinstance(op, dict) else {} for op in ops_in],
+            issues_by_op_id,
+            global_issues,
+        )
 
     if not isinstance(patches, list):
         global_issues.append(
@@ -307,7 +311,11 @@ def apply_patches_to_batch_operations(
                 provided=patches,
             ).to_dict()
         )
-        return [dict(op) if isinstance(op, dict) else {} for op in ops_in], issues_by_op_id, global_issues
+        return (
+            [dict(op) if isinstance(op, dict) else {} for op in ops_in],
+            issues_by_op_id,
+            global_issues,
+        )
 
     # Build deterministic list of patch entries (in given order)
     patch_entries: List[Tuple[str, Dict[str, Any]]] = []
