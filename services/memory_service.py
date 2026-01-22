@@ -6,11 +6,12 @@ import json
 import os
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Literal
 
 
-BASE_PATH = Path(__file__).resolve().parent.parent / "adnan_ai" / "memory"
+_DEFAULT_BASE_PATH = Path(__file__).resolve().parent.parent / "adnan_ai" / "memory"
 
 ScopeType = Literal["user", "session", "task", "execution"]
 
@@ -33,11 +34,17 @@ class MemoryService:
     MAX_WRITE_AUDIT_EVENTS = 500
 
     def __init__(self):
-        BASE_PATH.mkdir(parents=True, exist_ok=True)
+        # NOTE (Windows deadlock root-cause): several codepaths call _save() while already
+        # holding the lock (e.g., upsert_memory_write_v1 -> _save, _purge_expired_locked -> _save).
+        # A non-reentrant Lock would deadlock; use RLock.
+        self._lock = threading.RLock()
 
-        self.memory_file = BASE_PATH / "memory.json"
-        self.tmp_file = BASE_PATH / "memory.json.tmp"
-        self._lock = threading.Lock()
+        base_path = (os.getenv("MEMORY_PATH") or "").strip()
+        base = Path(base_path) if base_path else _DEFAULT_BASE_PATH
+        base.mkdir(parents=True, exist_ok=True)
+
+        self.memory_file = base / "memory.json"
+        self.tmp_file = base / "memory.json.tmp"
 
         self.memory = self._load()
 
@@ -56,6 +63,10 @@ class MemoryService:
         # Phase 5/6 keys
         self.memory.setdefault("write_audit_events", [])
 
+        # Phase 7 (enterprise): canonical memory_write.v1 sink
+        self.memory.setdefault("memory_items", [])
+        self.memory.setdefault("last_memory_write", None)
+
         # Phase 6 canonical scoped state
         self.memory.setdefault("scopes", {})
         scopes = self.memory["scopes"]
@@ -69,6 +80,170 @@ class MemoryService:
                 scopes[st] = {}
 
         self._save()
+
+    def _utc_now_iso(self) -> str:
+        return datetime.now(timezone.utc).isoformat()
+
+    @staticmethod
+    def _missing_keys_report(keys: List[str]) -> Dict[str, Any]:
+        missing = [k for k in keys if isinstance(k, str) and k.strip()]
+        return {
+            "ok": False,
+            "stored_id": None,
+            "memory_count": None,
+            "last_write": None,
+            "errors": [f"missing:{k}" for k in missing],
+            "diagnostics": {
+                "missing_keys": missing,
+                "recommended_action": "fix_memory_write_payload",
+            },
+        }
+
+    def upsert_memory_write_v1(
+        self,
+        payload: Dict[str, Any],
+        *,
+        approval_id: str,
+        execution_id: Optional[str],
+        identity_id: str,
+    ) -> Dict[str, Any]:
+        """Canonical, deterministic SSOT sink for memory_write.v1.
+
+        - Validates schema and required fields
+        - Enforces idempotency via idempotency_key
+        - Writes to memory["memory_items"] only
+        """
+
+        if not isinstance(payload, dict):
+            return {
+                "ok": False,
+                "stored_id": None,
+                "memory_count": None,
+                "last_write": None,
+                "errors": ["invalid_payload:not_object"],
+                "diagnostics": {
+                    "missing_keys": ["schema_version", "item"],
+                    "recommended_action": "send_memory_write_v1_object",
+                },
+            }
+
+        sv = payload.get("schema_version")
+        if not isinstance(sv, str) or sv.strip() != "memory_write.v1":
+            return {
+                "ok": False,
+                "stored_id": None,
+                "memory_count": None,
+                "last_write": None,
+                "errors": ["invalid_schema_version"],
+                "diagnostics": {
+                    "missing_keys": ["schema_version"],
+                    "recommended_action": "use_schema_version_memory_write_v1",
+                },
+            }
+
+        item = payload.get("item")
+        if not isinstance(item, dict):
+            return self._missing_keys_report(
+                ["item.type", "item.text", "item.tags", "item.source"]
+            )  # type: ignore[return-value]
+
+        item_type = item.get("type")
+        item_text = item.get("text")
+        tags = item.get("tags")
+        source = item.get("source")
+        grounded_on = payload.get("grounded_on")
+        idem = payload.get("idempotency_key")
+
+        missing: List[str] = []
+        if not isinstance(item_type, str) or not item_type.strip():
+            missing.append("item.type")
+        if not isinstance(item_text, str) or not item_text.strip():
+            missing.append("item.text")
+        if not isinstance(tags, list) or not all(
+            isinstance(x, str) and x.strip() for x in tags
+        ):
+            missing.append("item.tags")
+        if not isinstance(source, str) or not source.strip():
+            missing.append("item.source")
+        grounded_on_list: List[str] = []
+        if isinstance(grounded_on, list):
+            grounded_on_list = [
+                str(x).strip()
+                for x in grounded_on
+                if isinstance(x, str) and str(x).strip()
+            ]
+        has_kb = any(x.startswith("KB:") for x in grounded_on_list)
+        has_identity = any("identity_pack." in x for x in grounded_on_list)
+        if (
+            (not grounded_on_list)
+            or len(grounded_on_list) < 2
+            or (not has_kb)
+            or (not has_identity)
+        ):
+            missing.append("grounded_on")
+        if not isinstance(idem, str) or not idem.strip():
+            missing.append("idempotency_key")
+
+        if missing:
+            return self._missing_keys_report(missing)  # type: ignore[return-value]
+
+        with self._lock:
+            self.memory.setdefault("memory_items", [])
+            items = self.memory.get("memory_items")
+            if not isinstance(items, list):
+                items = []
+                self.memory["memory_items"] = items
+
+            # Idempotency: if same idempotency_key already exists, return existing.
+            for it in items:
+                if not isinstance(it, dict):
+                    continue
+                if it.get("idempotency_key") == idem:
+                    stored_id0 = it.get("stored_id")
+                    last_write0 = self.memory.get("last_memory_write")
+                    return {
+                        "ok": True,
+                        "stored_id": stored_id0,
+                        "memory_count": int(
+                            len([x for x in items if isinstance(x, dict)])
+                        ),
+                        "last_write": last_write0,
+                        "errors": [],
+                    }
+
+            stored_id = f"mem_{idem[:16]}"
+            now_iso = self._utc_now_iso()
+            rec = {
+                "stored_id": stored_id,
+                "schema_version": "memory_write.v1",
+                "idempotency_key": idem,
+                "item": {
+                    "type": str(item_type).strip().lower(),
+                    "text": str(item_text).strip(),
+                    "tags": [
+                        str(x).strip()
+                        for x in (tags or [])
+                        if isinstance(x, str) and x.strip()
+                    ],
+                    "source": str(source).strip().lower(),
+                },
+                "grounded_on": list(grounded_on_list),
+                "approval_id": approval_id,
+                "execution_id": execution_id,
+                "identity_id": identity_id,
+                "created_at": now_iso,
+            }
+            items.append(rec)
+            self.memory["last_memory_write"] = now_iso
+            self._save()
+
+            return {
+                "ok": True,
+                "stored_id": stored_id,
+                "memory_count": int(len([x for x in items if isinstance(x, dict)])),
+                "last_write": now_iso,
+                "errors": [],
+            }
 
     # ============================================================
     # INTERNALS

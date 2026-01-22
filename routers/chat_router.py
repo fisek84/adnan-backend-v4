@@ -24,7 +24,7 @@ from services.notion_ops_state import (
 )
 
 # Commands that are NOT considered "structured/actionable proposals" for fallback detection.
-_NON_ACTIONABLE_PROPOSALS = {"refresh_snapshot"}
+_NON_ACTIONABLE_PROPOSALS = {"refresh_snapshot", "notion_ops_toggle"}
 
 # Activation keywords (exact per spec)
 _ACTIVATE_KEYWORDS = (
@@ -303,9 +303,18 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         if not isinstance(args, dict):
             args = {}
             d["args"] = args
-        p = args.get("prompt")
-        if not isinstance(p, str) or not p.strip():
-            args["prompt"] = (prompt or "").strip() or "noop"
+
+        # Legacy behavior: wrapper proposals expect a prompt for Notion translation.
+        # Canonical exception: memory_write.v1 proposals must not carry free-form prompt.
+        if d.get("command") == PROPOSAL_WRAPPER_INTENT:
+            schema = args.get("schema_version")
+            is_memory_write_v1 = (
+                isinstance(schema, str) and schema.strip() == "memory_write.v1"
+            )
+            if not is_memory_write_v1:
+                p = args.get("prompt")
+                if not isinstance(p, str) or not p.strip():
+                    args["prompt"] = (prompt or "").strip() or "noop"
         return d
 
     def _ensure_payload_summary_contract(pc_dict: Dict[str, Any]) -> Dict[str, Any]:
@@ -634,6 +643,61 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                     why="Write intent detected but Notion Ops is not ARMED.",
                     kb=kb,
                     grounding=grounding,
+                )
+
+            # If the advisor returned non-actionable proposal wrappers (e.g. approval-gated
+            # memory/knowledge write proposals), keep them even when Notion Ops is DISARMED.
+            # This preserves the enterprise workflow: propose → approve → execute.
+            wrappers = [
+                pc
+                for pc in normalized
+                if getattr(pc, "command", None) == PROPOSAL_WRAPPER_INTENT
+            ]
+            if wrappers:
+                pcs_out: List[Dict[str, Any]] = []
+                for pc in wrappers:
+                    d = _pc_to_dict(pc, prompt=prompt)
+                    pcs_out.append(_ensure_payload_summary_contract(d))
+
+                # Enterprise UX: when Notion Ops is DISARMED, include an explicit arm suggestion
+                # as a separate proposal (never auto-executed).
+                if isinstance(session_id, str) and session_id.strip():
+                    arm = ProposedCommand(
+                        command="notion_ops_toggle",
+                        args={"session_id": session_id.strip(), "armed": True},
+                        reason="Optional: arm Notion Ops for Notion writes (not required for memory_write).",
+                        requires_approval=True,
+                        risk="LOW",
+                        dry_run=True,
+                        scope="api_notion_ops_toggle",
+                        payload_summary={
+                            "endpoint": "/api/notion-ops/toggle",
+                            "canon": "NOTION_OPS_ARM_SUGGESTION",
+                            "source": "api_chat",
+                        },
+                    )
+                    pcs_out.append(
+                        _ensure_payload_summary_contract(
+                            _pc_to_dict(arm, prompt=prompt)
+                        )
+                    )
+
+                return JSONResponse(
+                    content={
+                        "text": out.text,
+                        "proposed_commands": pcs_out,
+                        "agent_id": out.agent_id,
+                        "read_only": True,
+                        "notion_ops": {
+                            "armed": False,
+                            "armed_at": None,
+                            "session_id": session_id,
+                            "armed_state": st,
+                        },
+                        "trace": out.trace or {},
+                        **kb,
+                        **grounding,
+                    }
                 )
 
             # Read-only, non-write: keep existing behavior (contract NOOP when no actionable)

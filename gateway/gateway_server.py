@@ -170,8 +170,20 @@ REQUIRED_ENV_VARS = [
 ]
 
 
+def _is_test_mode() -> bool:
+    # Pytest sets PYTEST_CURRENT_TEST; we also allow explicit TESTING=1.
+    return (os.getenv("TESTING") or "").strip() == "1" or (
+        "PYTEST_CURRENT_TEST" in os.environ
+    )
+
+
 def validate_runtime_env_or_raise() -> None:
-    missing = [k for k in REQUIRED_ENV_VARS if not (os.getenv(k) or "").strip()]
+    required = list(REQUIRED_ENV_VARS)
+    # Tests run with network disabled; allow missing OpenAI key.
+    if _is_test_mode() and "OPENAI_API_KEY" in required:
+        required.remove("OPENAI_API_KEY")
+
+    missing = [k for k in required if not (os.getenv(k) or "").strip()]
     if missing:
         logger.critical("Missing ENV vars: %s", ", ".join(missing))
         raise RuntimeError(f"Missing ENV vars: {', '.join(missing)}")
@@ -600,6 +612,22 @@ def _unwrap_proposal_wrapper_or_raise(
     wrapper_patch = _extract_wrapper_patch_from_params(
         params if isinstance(params, dict) else {}
     )
+
+    # ============================================================
+    # CANON: memory_write.v1 proposals do NOT require prompt.
+    # They are executable, strict JSON payloads.
+    # ============================================================
+    if isinstance(params, dict):
+        sv = params.get("schema_version")
+        if isinstance(sv, str) and sv.strip() == "memory_write.v1":
+            return AICommand(
+                command="memory_write",
+                intent="memory_write",
+                params=params,
+                initiator=initiator,
+                read_only=False,
+                metadata=metadata,
+            )
 
     # SSOT: prompt normalization + patch extraction lives in one place.
     from services.notion_write_intent_normalizer import (  # noqa: PLC0415
@@ -1764,7 +1792,15 @@ def _normalize_execute_raw_payload_dict(body: Dict[str, Any]) -> ExecuteRawInput
                 elif isinstance(ac_args, dict):
                     params = dict(ac_args)
 
-    if intent == PROPOSAL_WRAPPER_INTENT and "prompt" not in params:
+    if (
+        (intent == PROPOSAL_WRAPPER_INTENT or cmd == PROPOSAL_WRAPPER_INTENT)
+        and "prompt" not in params
+        and not (
+            isinstance(params, dict)
+            and isinstance(params.get("schema_version"), str)
+            and params.get("schema_version") == "memory_write.v1"
+        )
+    ):
         args = body.get("args")
         if isinstance(args, dict):
             prompt = args.get("prompt")

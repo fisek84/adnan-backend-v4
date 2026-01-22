@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import re
+import hashlib
+import json
 from typing import Any, Dict, List, Optional, Tuple
 
 from models.agent_contract import AgentInput, AgentOutput, ProposedCommand
@@ -48,6 +50,11 @@ def _wants_goal(user_text: str) -> bool:
 
 
 def _llm_is_configured() -> bool:
+    # Tests must be deterministic and offline.
+    if (os.getenv("TESTING") or "").strip() == "1" or (
+        "PYTEST_CURRENT_TEST" in os.environ
+    ):
+        return False
     # Enterprise: avoid hard dependency on OpenAI for basic advisory flows.
     # If not configured, we must produce a useful deterministic response.
     api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
@@ -86,6 +93,151 @@ def _default_kickoff_text() -> str:
         "3) Razbij cilj na 3 deliverable-a | to do | high\n"
         "4) Zakazi weekly review (15 min) | to do | medium\n"
         "5) Kreiraj prvu sedmičnu listu top 3 taskova | to do | medium\n"
+    )
+
+
+def _is_memory_capability_question(user_text: str) -> bool:
+    t = (user_text or "").strip().lower()
+    if not t:
+        return False
+    # Questions about whether the system can remember/store info.
+    return bool(
+        re.search(
+            r"(?i)\b(mo\u017ee\u0161\s+li\s+pamt\w*|mozes\s+li\s+pamt\w*|da\s+li\s+pamt\w*|pamti\u0161|pamtis|pamti\u0161\s+li|pamtis\s+li|memorij\w*|memory)\b",
+            t,
+        )
+    ) and not bool(
+        re.search(
+            r"(?i)\b(zapamti|remember\s+this|pro\u0161iri\s+znanje|prosiri\s+znanje|nau\u010di)\b",
+            t,
+        )
+    )
+
+
+def _is_memory_write_request(user_text: str) -> bool:
+    t = (user_text or "").strip().lower()
+    if not t:
+        return False
+    return bool(re.search(r"(?i)\b(zapamti|remember\s+this|nau\u010di)\b", t))
+
+
+def _is_expand_knowledge_request(user_text: str) -> bool:
+    t = (user_text or "").strip().lower()
+    if not t:
+        return False
+    return bool(
+        re.search(
+            r"(?i)\b(pro\u0161iri\s+znanje|prosiri\s+znanje|pro\u0161irenje\s+znanja)\b",
+            t,
+        )
+    )
+
+
+def _extract_after_colon(user_text: str) -> str:
+    s = (user_text or "").strip()
+    if not s:
+        return ""
+    if ":" in s:
+        after = s.split(":", 1)[1].strip()
+        return after
+    return ""
+
+
+def _memory_capability_text(*, english_output: bool) -> str:
+    if english_output:
+        return (
+            "Yes, but only through explicit, approval-gated proposals. "
+            "No silent writes. In read-only chat I can propose a memory update, "
+            "and you approve it before anything is persisted.\n\n"
+            "If you want me to remember something, write: 'Remember this: ...' or 'Expand knowledge: ...'\n"
+            "(Both create a proposal that requires approval.)\n\n"
+            "[KB:memory_model_001] [ID:identity_pack.kernel.system_safety]"
+        )
+    return (
+        "Mogu, ali samo kroz eksplicitne, approval-gated prijedloge. "
+        "Nema silent write-a. U read-only chatu mogu pripremiti prijedlog za upis u memoriju/znanje, "
+        "a ti ga odobriš prije nego što se bilo šta trajno sačuva.\n\n"
+        "Ako želiš da nešto zapamtim, napiši: 'Zapamti ovo: ...' ili 'Proširi znanje: ...' "
+        "(oba prave proposal koji traži odobrenje).\n\n"
+        "[KB:memory_model_001] [ID:identity_pack.kernel.system_safety]"
+    )
+
+
+def _normalize_item_text(text: str) -> str:
+    s = (text or "").strip()
+    if not s:
+        return ""
+    # Normalize whitespace only (deterministic; preserves content).
+    return re.sub(r"\s+", " ", s)
+
+
+def _deterministic_memory_item_type(full_prompt: str) -> str:
+    t = (full_prompt or "").strip().lower()
+    if t.startswith("proširi znanje") or t.startswith("prosiri znanje"):
+        return "rule"
+    if t.startswith("nauči") or t.startswith("nauci"):
+        return "fact"
+    if t.startswith("zapamti") or t.startswith("remember"):
+        # Heuristic but deterministic: preferences often use "moj/my".
+        if " moj " in f" {t} " or " my " in f" {t} ":
+            return "preference"
+        return "fact"
+    return "fact"
+
+
+def _memory_idempotency_key(
+    *, item_type: str, item_text: str, tags: List[str], source: str
+) -> str:
+    tags_norm = [str(x).strip().lower() for x in (tags or []) if str(x).strip()]
+    tags_norm = sorted(set(tags_norm))
+    payload = {
+        "schema_version": "memory_write.v1",
+        "item": {
+            "type": str(item_type or "").strip().lower() or "fact",
+            "text": str(item_text or "").strip(),
+            "tags": tags_norm,
+            "source": str(source or "").strip().lower() or "user",
+        },
+    }
+    raw = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _unknown_mode_text(*, english_output: bool) -> str:
+    if english_output:
+        return (
+            "I don't have this knowledge yet (not in my curated KB / current snapshot).\n\n"
+            "Options:\n"
+            "1) Clarify: answer 1–3 questions and I'll respond with a best-effort answer (clearly marking assumptions).\n"
+            "2) Expand knowledge: write 'Expand knowledge: ...' and I'll prepare an approval-gated write proposal.\n\n"
+            "Quick questions:\n"
+            "- What is the goal: definition, decision, or implementation plan?\n"
+            "- What context/domain is this in (business/tech/legal)?\n"
+            "- Any constraints (time, tools, scope)?"
+        )
+    return (
+        "Nemam ovo znanje još (nije u kuriranom KB-u / trenutnom snapshotu).\n\n"
+        "Opcije:\n"
+        "1) Razjasni: odgovori na 1–3 pitanja i daću najbolji mogući odgovor (jasno ću označiti pretpostavke).\n"
+        "2) Proširi znanje: napiši 'Proširi znanje: ...' i pripremiću approval-gated prijedlog za upis.\n\n"
+        "Brza pitanja:\n"
+        "- Šta ti tačno treba: definicija, odluka ili plan implementacije?\n"
+        "- Koji je kontekst/domena (biz/tech/legal)?\n"
+        "- Koja su ograničenja (vrijeme, alati, scope)?"
+    )
+
+
+def _should_use_kickoff_in_offline_mode(user_text: str) -> bool:
+    t = (user_text or "").strip().lower()
+    if not t:
+        return False
+    # If user is asking about goals/tasks/KPIs/planning in an empty state,
+    # the deterministic kickoff is a good enterprise-safe fallback.
+    return bool(
+        re.search(
+            r"(?i)\b(cilj\w*|goal\w*|task\w*|zadat\w*|kpi\w*|plan\w*|weekly|sedmic\w*)\b",
+            t,
+        )
     )
 
 
@@ -496,11 +648,14 @@ def _normalize_date_iso(v: Any) -> Optional[str]:
     if not s:
         return None
 
-    if len(s) == 10 and s[4] == "-" and s[7] == "-":
+    # ISO already
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", s):
         return s
 
-    if len(s) == 10 and s[2] == "." and s[5] == ".":
-        dd, mm, yyyy = s.split(".")
+    # dd.mm.yyyy
+    m = re.fullmatch(r"(\d{2})\.(\d{2})\.(\d{4})", s)
+    if m:
+        dd, mm, yyyy = m.group(1), m.group(2), m.group(3)
         if len(yyyy) == 4:
             return f"{yyyy}-{mm}-{dd}"
 
@@ -508,17 +663,16 @@ def _normalize_date_iso(v: Any) -> Optional[str]:
 
 
 def _extract_deadline_from_text(text: str) -> Optional[str]:
-    """
-    Finds deadline/due date in the user's message.
+    """Finds deadline/due date in the user's message.
+
     Supports:
-      - deadline 01.10.2025
       - due date 01.10.2025
       - deadline: 2025-10-01
       - rok 01.10.2025
     Returns ISO YYYY-MM-DD or None.
     """
-    t = (text or "").strip()
 
+    t = (text or "").strip()
     m = re.search(
         r"(deadline|rok|due date|duedate|due)\s*[:=]?\s*(\d{2}\.\d{2}\.\d{4})",
         t,
@@ -994,10 +1148,155 @@ async def create_ceo_advisor_agent(
     wants_notion = _wants_notion_task_or_goal(base_text)
     wants_prompt_template = _is_prompt_preparation_request(base_text)
 
+    use_llm = not propose_only
+
     # Grounding gate: for fact-sensitive questions, never assert state without snapshot.
     # This prevents hallucinated "blocked/at risk" type claims.
     snapshot_has_facts = _snapshot_has_business_facts(snapshot_payload)
-    if _is_fact_sensitive_query(base_text) and not snapshot_has_facts:
+    fact_sensitive = _is_fact_sensitive_query(base_text)
+
+    # Grounding pack (if present): used to decide whether we have curated KB coverage.
+    gp_ctx = ctx.get("grounding_pack") if isinstance(ctx, dict) else None
+    gp_ctx = gp_ctx if isinstance(gp_ctx, dict) else {}
+    kb_used_ids: List[str] = []
+    try:
+        kb_retrieved = gp_ctx.get("kb_retrieved") if isinstance(gp_ctx, dict) else None
+        if isinstance(kb_retrieved, dict):
+            kb_used_ids = list(kb_retrieved.get("used_entry_ids") or [])
+    except Exception:
+        kb_used_ids = []
+    kb_used_ids = [x for x in kb_used_ids if isinstance(x, str) and x.strip()]
+    kb_has_coverage = bool(kb_used_ids)
+
+    # Deterministic capability Q&A for memory (never needs LLM).
+    t0 = (base_text or "").strip().lower()
+    if (not fact_sensitive) and _is_memory_capability_question(t0):
+        return AgentOutput(
+            text=_memory_capability_text(english_output=english_output),
+            proposed_commands=[],
+            agent_id="ceo_advisor",
+            read_only=True,
+            trace={
+                "deterministic": True,
+                "intent": "memory_capability",
+                "kb_used_entry_ids": kb_used_ids,
+                "snapshot": snap_trace,
+            },
+        )
+
+    # Deterministic: explicit user choice to persist/expand knowledge should
+    # always result in an approval-gated proposal (never silent writes).
+    if (not fact_sensitive) and (
+        _is_memory_write_request(t0) or _is_expand_knowledge_request(t0)
+    ):
+        detail = _extract_after_colon(base_text)
+        if not detail:
+            detail = base_text
+
+        # Canonical, deterministic memory_write.v1 payload (no free-form prompt).
+        item_text = _normalize_item_text(detail)
+        item_type = _deterministic_memory_item_type(base_text)
+        tags = ["memory_write", "user_note"]
+        source = "user"
+        idem = _memory_idempotency_key(
+            item_type=item_type,
+            item_text=item_text,
+            tags=tags,
+            source=source,
+        )
+        grounded_on = ["KB:memory_model_001", "identity_pack.kernel.system_safety"]
+
+        gp_ctx0 = ctx.get("grounding_pack") if isinstance(ctx, dict) else None
+        gp_ctx0 = gp_ctx0 if isinstance(gp_ctx0, dict) else {}
+        identity_hash = None
+        try:
+            ip = gp_ctx0.get("identity_pack") if isinstance(gp_ctx0, dict) else None
+            if isinstance(ip, dict):
+                identity_hash = ip.get("hash")
+        except Exception:
+            identity_hash = None
+
+        memory_write_payload: Dict[str, Any] = {
+            "schema_version": "memory_write.v1",
+            "approval_required": True,
+            "idempotency_key": idem,
+            "grounded_on": grounded_on,
+            "item": {
+                "type": item_type,
+                "text": item_text,
+                "tags": tags,
+                "source": source,
+            },
+        }
+
+        txt = (
+            (
+                "Razumijem. Mogu pripremiti prijedlog da ovo upišemo u memoriju/znanje, ali to zahtijeva odobrenje.\n\n"
+                "Ako želiš upis u Notion (DB/page), prvo aktiviraj Notion Ops: 'notion ops aktiviraj'."
+            )
+            if not english_output
+            else (
+                "Got it. I can prepare a proposal to store this in memory/knowledge, but it requires approval.\n\n"
+                "If you want a Notion write (DB/page), arm Notion Ops first: 'notion ops activate'."
+            )
+        )
+
+        return AgentOutput(
+            text=txt,
+            proposed_commands=[
+                ProposedCommand(
+                    command=PROPOSAL_WRAPPER_INTENT,
+                    intent="memory_write",
+                    args=memory_write_payload,
+                    reason="Approval-gated memory/knowledge write proposal.",
+                    requires_approval=True,
+                    risk="LOW",
+                    dry_run=True,
+                    scope="api_execute_raw",
+                    payload_summary={
+                        "schema_version": "memory_write.v1",
+                        "identity_id": identity_hash,
+                        "grounded_on": grounded_on,
+                        "idempotency_key": idem,
+                    },
+                )
+            ],
+            agent_id="ceo_advisor",
+            read_only=True,
+            trace={
+                "deterministic": True,
+                "intent": "memory_or_expand_knowledge",
+                "kb_used_entry_ids": kb_used_ids,
+                "proposal_kind": "memory_write",
+                "schema_version": "memory_write.v1",
+                "idempotency_key": idem,
+                "grounded_on_count": len(grounded_on),
+                "snapshot": snap_trace,
+            },
+        )
+
+    # Enterprise unknown-mode: if the grounding layer retrieved no curated KB
+    # entries for this prompt, do not answer from general model knowledge.
+    # Keep the chat going with clarifying questions and an explicit expand-knowledge option.
+    if (
+        (not fact_sensitive)
+        and (not kb_has_coverage)
+        and (not snapshot_has_facts)
+        and (not _should_use_kickoff_in_offline_mode(t0))
+    ):
+        return AgentOutput(
+            text=_unknown_mode_text(english_output=english_output),
+            proposed_commands=[],
+            agent_id="ceo_advisor",
+            read_only=True,
+            trace={
+                "deterministic": True,
+                "intent": "unknown_mode",
+                "kb_used_entry_ids": kb_used_ids,
+                "snapshot": snap_trace,
+            },
+        )
+    if fact_sensitive and not snapshot_has_facts:
         trace = ctx.get("trace") if isinstance(ctx, dict) else {}
         if not isinstance(trace, dict):
             trace = {}
@@ -1127,6 +1426,137 @@ async def create_ceo_advisor_agent(
             },
         )
 
+    # -------------------------------
+    # Deterministic offline behavior (enterprise)
+    # -------------------------------
+    # If OpenAI/LLM isn't configured (or is intentionally disabled in CI/offline
+    # deployments), we must NOT default to the GOALS/TASKS dashboard for unrelated
+    # knowledge/system questions. Instead, use unknown-mode and/or approval-gated
+    # proposals for explicit "remember/expand knowledge" requests.
+    if use_llm and not _llm_is_configured():
+        t0 = (base_text or "").strip().lower()
+
+        # Prompt-template intent should return a copy/paste template even offline.
+        if wants_prompt_template and wants_notion and not structured_mode:
+            text_out = _default_notion_ops_goal_subgoal_prompt(
+                english_output=english_output
+            )
+            trace = ctx.get("trace") if isinstance(ctx, dict) else {}
+            if not isinstance(trace, dict):
+                trace = {}
+            trace["agent_output_text_len"] = len(text_out)
+            trace["structured_mode"] = structured_mode
+            trace["propose_only"] = propose_only
+            trace["wants_notion"] = wants_notion
+            trace["llm_used"] = False
+            trace["snapshot"] = snap_trace
+            trace["prompt_template"] = True
+            trace["offline_mode"] = True
+            return AgentOutput(
+                text=text_out,
+                proposed_commands=[],
+                agent_id="ceo_advisor",
+                read_only=True,
+                trace=trace,
+            )
+
+        if _is_memory_capability_question(t0):
+            return AgentOutput(
+                text=_memory_capability_text(english_output=english_output),
+                proposed_commands=[],
+                agent_id="ceo_advisor",
+                read_only=True,
+                trace={
+                    "offline_mode": True,
+                    "deterministic": True,
+                    "intent": "memory_capability",
+                    "snapshot": snap_trace,
+                },
+            )
+
+        if _is_memory_write_request(t0) or _is_expand_knowledge_request(t0):
+            detail = _extract_after_colon(base_text)
+            if not detail:
+                detail = base_text
+
+            wrapper_prompt = (
+                "Prepare a write proposal (requires approval) to persist the following into canonical memory/knowledge. "
+                "Use intent=memory_write. Params should include a single field 'note' with the raw user text. "
+                f"USER_NOTE: {detail}"
+            )
+
+            txt = (
+                (
+                    "Razumijem. Mogu pripremiti prijedlog da ovo upišemo u memoriju/znanje, ali to zahtijeva odobrenje.\n\n"
+                    "Ako želiš upis u Notion (DB/page), prvo aktiviraj Notion Ops: 'notion ops aktiviraj'."
+                )
+                if not english_output
+                else (
+                    "Got it. I can prepare a proposal to store this in memory/knowledge, but it requires approval.\n\n"
+                    "If you want a Notion write (DB/page), arm Notion Ops first: 'notion ops activate'."
+                )
+            )
+
+            return AgentOutput(
+                text=txt,
+                proposed_commands=[
+                    ProposedCommand(
+                        command=PROPOSAL_WRAPPER_INTENT,
+                        args={"prompt": wrapper_prompt},
+                        reason="Approval-gated memory/knowledge write proposal.",
+                        requires_approval=True,
+                        risk="LOW",
+                        dry_run=True,
+                        scope="api_execute_raw",
+                    )
+                ],
+                agent_id="ceo_advisor",
+                read_only=True,
+                trace={
+                    "offline_mode": True,
+                    "deterministic": True,
+                    "intent": "memory_or_expand_knowledge",
+                    "snapshot": snap_trace,
+                },
+            )
+
+        # For goal/task planning prompts, keep the existing deterministic kickoff.
+        if not snapshot_has_facts and _should_use_kickoff_in_offline_mode(t0):
+            return AgentOutput(
+                text=_default_kickoff_text(),
+                proposed_commands=[
+                    ProposedCommand(
+                        command="refresh_snapshot",
+                        args={"source": "ceo_dashboard"},
+                        reason="Snapshot nije prisutan u requestu (offline/CI).",
+                        requires_approval=True,
+                        risk="LOW",
+                        dry_run=True,
+                    )
+                ],
+                agent_id="ceo_advisor",
+                read_only=True,
+                trace={
+                    "offline_mode": True,
+                    "deterministic": True,
+                    "intent": "kickoff",
+                    "snapshot": snap_trace,
+                },
+            )
+
+        return AgentOutput(
+            text=_unknown_mode_text(english_output=english_output),
+            proposed_commands=[],
+            agent_id="ceo_advisor",
+            read_only=True,
+            trace={
+                "offline_mode": True,
+                "deterministic": True,
+                "intent": "unknown_mode",
+                "snapshot": snap_trace,
+            },
+        )
+
     # Nastavi sa ostatkom koda...
     safe_context: Dict[str, Any] = {
         "canon": {"read_only": True, "no_tools": True, "no_side_effects": True},
@@ -1184,8 +1614,6 @@ async def create_ceo_advisor_agent(
     proposed: List[ProposedCommand] = []
     text_out: str = ""
 
-    use_llm = not propose_only
-
     # Deterministic, enterprise-safe: if user asks for a prompt template for Notion Ops,
     # return it even in offline/CI mode (no LLM), and do not emit write proposals.
     if wants_prompt_template and wants_notion and not structured_mode:
@@ -1212,18 +1640,55 @@ async def create_ceo_advisor_agent(
 
     if use_llm:
         try:
-            if not _llm_is_configured():
+            executor = OpenAIAssistantExecutor()
+            raw = await executor.ceo_command(text=prompt_text, context=safe_context)
+            if isinstance(raw, dict):
+                result = raw
+            else:
+                result = {"text": str(raw)}
+        except Exception:
+            # Enterprise fail-soft: do not dump LLM errors; return deterministic unknown-mode.
+            t0 = (base_text or "").strip().lower()
+            if _is_memory_capability_question(t0):
+                result = {
+                    "text": _memory_capability_text(english_output=english_output),
+                    "proposed_commands": [],
+                }
+            elif _is_memory_write_request(t0) or _is_expand_knowledge_request(t0):
+                detail = _extract_after_colon(base_text)
+                if not detail:
+                    detail = base_text
+                wrapper_prompt = (
+                    "Prepare a write proposal (requires approval) to persist the following into canonical memory/knowledge. "
+                    "Use intent=memory_write. Params should include a single field 'note' with the raw user text. "
+                    f"USER_NOTE: {detail}"
+                )
+                result = {
+                    "text": (
+                        "Razumijem. Pripremiću approval-gated prijedlog za upis. "
+                        "Ako treba upis u Notion, prvo aktiviraj Notion Ops: 'notion ops aktiviraj'."
+                        if not english_output
+                        else "Got it. I'll prepare an approval-gated write proposal. If this needs a Notion write, arm Notion Ops first."
+                    ),
+                    "proposed_commands": [
+                        {
+                            "command": PROPOSAL_WRAPPER_INTENT,
+                            "args": {"prompt": wrapper_prompt},
+                            "reason": "Approval-gated memory/knowledge write proposal.",
+                            "requires_approval": True,
+                            "risk": "LOW",
+                            "dry_run": True,
+                            "scope": "api_execute_raw",
+                        }
+                    ],
+                }
+            elif not snapshot_has_facts and _should_use_kickoff_in_offline_mode(t0):
                 result = {"text": _default_kickoff_text(), "proposed_commands": []}
             else:
-                executor = OpenAIAssistantExecutor()
-                raw = await executor.ceo_command(text=prompt_text, context=safe_context)
-                if isinstance(raw, dict):
-                    result = raw
-                else:
-                    result = {"text": str(raw)}
-        except Exception:
-            # Enterprise fail-soft: no generic LLM error dumps to users; provide kickoff.
-            result = {"text": _default_kickoff_text(), "proposed_commands": []}
+                result = {
+                    "text": _unknown_mode_text(english_output=english_output),
+                    "proposed_commands": [],
+                }
 
         text_out = _pick_text(result) or "CEO advisor nije vratio tekstualni output."
         "- NE SMIJEŠ tvrditi status/rizik/blokade ili brojeve ciljeva/taskova ako to nije eksplicitno u snapshot-u; u tom slučaju reci da nije poznato iz snapshot-a i predloži refresh.\n"

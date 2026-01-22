@@ -186,9 +186,12 @@ class GroundingPackService:
                 ]
             ).lower()
 
+            # Tokenize content to avoid substring false positives.
+            content_tokens = set(_tokenize(content))
+
             overlap = 0
             for t in toks:
-                if t and t in content:
+                if t and t in content_tokens:
                     overlap += 1
 
             pr = e.get("priority")
@@ -197,10 +200,13 @@ class GroundingPackService:
             except Exception:
                 prf = 0.0
 
+            # Strict retrieval: require at least one overlapping token.
+            # Priority only breaks ties among overlapping entries.
+            if overlap <= 0:
+                continue
+
             # Deterministic score: overlap dominates; priority breaks ties.
             score = float(overlap) * 10.0 + prf
-            if score <= 0.0:
-                continue
             scored.append((score, e))
 
         # Deterministic sorting

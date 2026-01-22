@@ -113,6 +113,12 @@ def get_agent_router() -> AgentRouter:
     return _require_service(_agent_router, "agent_router")  # type: ignore[return-value]
 
 
+def _is_test_mode() -> bool:
+    return (os.getenv("TESTING") or "").strip() == "1" or (
+        "PYTEST_CURRENT_TEST" in os.environ
+    )
+
+
 def get_queue_service() -> QueueService:
     return _require_service(_queue, "queue")  # type: ignore[return-value]
 
@@ -204,10 +210,18 @@ def init_services() -> None:
         # ----------------------------------------
         _memory = MemoryService()
         _memory_ro = ReadOnlyMemoryService(_memory)
-        _agent_router = AgentRouter()
-        logger.info(
-            "🧠 MemoryService (RW) + 🔒 ReadOnlyMemoryService (RO) + 🤖 AgentRouter initialized."
-        )
+
+        # In tests we run with network disabled; do not initialize OpenAI-backed routers.
+        if not _is_test_mode() and (os.getenv("OPENAI_API_KEY") or "").strip():
+            _agent_router = AgentRouter()
+            logger.info(
+                "🧠 MemoryService (RW) + 🔒 ReadOnlyMemoryService (RO) + 🤖 AgentRouter initialized."
+            )
+        else:
+            _agent_router = None
+            logger.info(
+                "🧠 MemoryService (RW) + 🔒 ReadOnlyMemoryService (RO) initialized (AgentRouter disabled in tests/offline)."
+            )
 
         # ----------------------------------------
         # 5) Local backend services (wired to WriteGateway)

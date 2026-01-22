@@ -42,6 +42,9 @@ class TestCEONotionOpsActivation(unittest.TestCase):
             "OPS_SAFE_MODE": os.environ.get("OPS_SAFE_MODE"),
             "CEO_TOKEN_ENFORCEMENT": os.environ.get("CEO_TOKEN_ENFORCEMENT"),
             "CEO_APPROVAL_TOKEN": os.environ.get("CEO_APPROVAL_TOKEN"),
+            # Prevent accidental live OpenAI calls in unit tests.
+            "OPENAI_API_KEY": os.environ.get("OPENAI_API_KEY"),
+            "CEO_ADVISOR_ASSISTANT_ID": os.environ.get("CEO_ADVISOR_ASSISTANT_ID"),
         }
 
     def tearDown(self):
@@ -207,6 +210,10 @@ class TestCEONotionOpsActivation(unittest.TestCase):
     def test_state_consistency_across_endpoints(self):
         """Test that state is consistent between toggle API and chat keywords."""
         os.environ["CEO_TOKEN_ENFORCEMENT"] = "false"
+
+        # This test is about Notion Ops state plumbing, not LLM behaviour.
+        # Force offline mode to keep it deterministic and avoid network IO.
+        os.environ.pop("OPENAI_API_KEY", None)
 
         headers = {"X-Initiator": "ceo_chat"}
 

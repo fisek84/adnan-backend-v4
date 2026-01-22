@@ -48,12 +48,19 @@ class ReadOnlyMemoryService:
         if not isinstance(raw, dict):
             return {}
 
+        memory_items = raw.get("memory_items")
+        items_count = 0
+        if isinstance(memory_items, list):
+            items_count = len([x for x in memory_items if isinstance(x, dict)])
+
         return {
             "schema_version": raw.get("schema_version"),
             "decision_outcomes": list(raw.get("decision_outcomes") or []),
             "execution_stats": dict(raw.get("execution_stats") or {}),
             "write_audit_events": list(raw.get("write_audit_events") or []),
             "active_decision": raw.get("active_decision"),
+            "memory_items_count": items_count,
+            "last_memory_write": raw.get("last_memory_write"),
         }
 
     # ----------------------------

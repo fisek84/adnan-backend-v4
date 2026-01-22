@@ -73,6 +73,15 @@
       "priority": 0.8,
       "content": "Komanda ka ops agentu mora biti strukturirana: intent, db_key, properties map, constraints, trace_id, execution_id, approval_id, idempotency_key. Ops agent izvršava samo ono što je u ugovoru i vraća: status, page_id/entry_id, validaciju, i eventualne greške.",
       "updated_at": "2025-12-26"
+    },
+    {
+      "id": "memory_model_001",
+      "title": "Memorija i proširenje znanja (approval-gated)",
+      "tags": ["memory", "knowledge", "governance", "approval"],
+      "applies_to": ["all"],
+      "priority": 0.95,
+      "content": "Adnan.AI ne radi silent write. /api/chat je read-only: može predložiti upis u memoriju/znanje ili Notion, ali ništa se ne upisuje bez eksplicitnog odobrenja (approval). Kada korisnik kaže 'Zapamti ovo' ili 'Proširi znanje', sistem treba napraviti proposal koji zahtijeva odobrenje; nakon odobrenja izvršenje ide kroz kanonski execution flow. Bitno: proposal može postojati i kada Notion Ops nije aktiviran; za stvarni Notion write korisnik mora eksplicitno aktivirati (arm) Notion Ops prije izvršenja.",
+      "updated_at": "2026-01-22"
     }
   ]
 }

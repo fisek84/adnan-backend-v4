@@ -316,6 +316,21 @@ class ExecutionOrchestrator:
             else:
                 result = await self.notion_agent.execute(cmd)
 
+            # memory_write is fail-soft by contract: invalid payloads still produce a
+            # deterministic result object and do not escalate to FAILED envelope.
+            if (
+                self._is_memory_write(cmd)
+                and isinstance(result, dict)
+                and result.get("ok") is False
+            ):
+                cmd.execution_state = "COMPLETED"
+                self.registry.complete(cmd.execution_id, result)
+                return {
+                    "execution_id": cmd.execution_id,
+                    "execution_state": "COMPLETED",
+                    "result": result,
+                }
+
             if self._is_failure_result(result):
                 cmd.execution_state = "FAILED"
                 self.registry.fail(cmd.execution_id, result)
