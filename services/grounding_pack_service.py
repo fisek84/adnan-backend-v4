@@ -483,7 +483,9 @@ class GroundingPackService:
             )
 
         # Memory snapshot is included in the pack but marked as not used unless explicitly needed.
-        if "memory" in t_prompt or "audit" in t_prompt:
+        # IMPORTANT: do NOT treat a provenance/source-list prompt (e.g. "KB/Identity/Memory/Notion")
+        # as requiring memory snapshot.
+        if re.search(r"(?i)\b(audit|memorij\w*|memory\s+snapshot)\b", t_prompt):
             used_sources.append("memory_snapshot")
         else:
             not_used.append(

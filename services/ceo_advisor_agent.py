@@ -133,6 +133,70 @@ def _is_expand_knowledge_request(user_text: str) -> bool:
     )
 
 
+def _is_trace_status_query(user_text: str) -> bool:
+    """Detect user intent to ask for provenance / trace status.
+
+    This must have higher priority than memory capability/governance classifiers.
+    """
+
+    t = (user_text or "").strip().lower()
+    if not t:
+        return False
+
+    # Strong triggers (BHS + EN)
+    if re.search(
+        r"(?i)\b(provenance|sources\s+used|status\s+izvora|izvori\s+znanja|sta\s+je\s+koristen\w*|\u0161ta\s+je\s+kori\u0161ten\w*|sta\s+je\s+preskocen\w*|\u0161ta\s+je\s+presko\u010den\w*|za\u0161to\s+presko\u010den\w*|zasto\s+preskocen\w*|trace)\b",
+        t,
+    ):
+        return True
+
+    # Source-list phrasing like "KB/Identity/Memory/Notion"
+    if "kb" in t and "identity" in t and "notion" in t and "memory" in t:
+        return True
+
+    return False
+
+
+def _build_trace_status_text(*, trace_v2: Dict[str, Any], english_output: bool) -> str:
+    used = trace_v2.get("used_sources")
+    used_list = [
+        str(x).strip() for x in (used or []) if isinstance(x, str) and str(x).strip()
+    ]
+
+    skipped_list = []
+    not_used = trace_v2.get("not_used")
+    if isinstance(not_used, list):
+        for it in not_used:
+            if not isinstance(it, dict):
+                continue
+            src = it.get("source")
+            reason = it.get("skipped_reason")
+            if isinstance(src, str) and src.strip():
+                if isinstance(reason, str) and reason.strip():
+                    skipped_list.append(f"{src.strip()}: {reason.strip()}")
+                else:
+                    skipped_list.append(f"{src.strip()}")
+
+    if english_output:
+        parts = []
+        if used_list:
+            parts.append("For this question I used: " + ", ".join(used_list) + ".")
+        if skipped_list:
+            parts.append("Skipped: " + ", ".join(skipped_list) + ".")
+        if not parts:
+            return "I don't have trace data for this request, so I can't confirm which sources were used."
+        return " ".join(parts)
+
+    parts = []
+    if used_list:
+        parts.append("Za ovo pitanje sam koristio: " + ", ".join(used_list) + ".")
+    if skipped_list:
+        parts.append("Preskočeno: " + ", ".join(skipped_list) + ".")
+    if not parts:
+        return "Nemam trace podatke u ovom requestu; ne mogu potvrditi koji su izvori korišteni."
+    return " ".join(parts)
+
+
 def _extract_after_colon(user_text: str) -> str:
     s = (user_text or "").strip()
     if not s:
@@ -1180,6 +1244,30 @@ async def create_ceo_advisor_agent(
         kb_used_ids = []
     kb_used_ids = [x for x in kb_used_ids if isinstance(x, str) and x.strip()]
     kb_has_coverage = bool(kb_used_ids)
+
+    # TRACE_STATUS / provenance query: answer from grounding trace, never from memory governance.
+    t_prompt0 = (base_text or "").strip().lower()
+    if _is_trace_status_query(t_prompt0):
+        tr2 = None
+        try:
+            tr2 = gp_ctx.get("trace") if isinstance(gp_ctx, dict) else None
+        except Exception:
+            tr2 = None
+
+        tr2 = tr2 if isinstance(tr2, dict) else {}
+        txt = _build_trace_status_text(trace_v2=tr2, english_output=english_output)
+        return AgentOutput(
+            text=txt,
+            proposed_commands=[],
+            agent_id="ceo_advisor",
+            read_only=True,
+            trace={
+                "deterministic": True,
+                "intent": "trace_status",
+                "kb_used_entry_ids": kb_used_ids,
+                "snapshot": snap_trace,
+            },
+        )
 
     # Deterministic capability Q&A for memory (never needs LLM).
     t0 = (base_text or "").strip().lower()
