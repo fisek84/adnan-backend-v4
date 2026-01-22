@@ -51,6 +51,16 @@ def _ops_safe_mode() -> bool:
     return _env_true("OPS_SAFE_MODE", "false")
 
 
+def _enterprise_preview_editor_enabled() -> bool:
+    # Default OFF.
+    v = (
+        os.getenv("ENTERPRISE_PREVIEW_EDITOR")
+        or os.getenv("ENTERPRISE_PREVIEW_EDITOR_ENABLED")
+        or ""
+    )
+    return (v or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _ceo_token_enforcement_enabled() -> bool:
     return _env_true("CEO_TOKEN_ENFORCEMENT", "false")
 
@@ -2164,6 +2174,9 @@ async def execute_raw_command(payload: Dict[str, Any] = Body(...)):
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Body must be an object")
 
+    enterprise_enabled = _enterprise_preview_editor_enabled()
+    patches_in = payload.get("patches") if isinstance(payload, dict) else None
+
     normalized = _normalize_execute_raw_payload_dict(payload)
 
     # Read-only directive: refresh_snapshot should execute immediately and return
@@ -2322,6 +2335,218 @@ async def execute_raw_command(payload: Dict[str, Any] = Body(...)):
         read_only=normalized.read_only,
         metadata=normalized.metadata if isinstance(normalized.metadata, dict) else {},
     )
+
+    # Enterprise preview editor: apply the same server-side patches at execution creation time.
+    # This guarantees the registered canonical command (later resumed by approval) is 1:1.
+    if enterprise_enabled and patches_in is not None:
+        patch_issues_by_op_id: Dict[str, List[Dict[str, Any]]] = {}
+        patch_global_issues: List[Dict[str, Any]] = []
+
+        if not (
+            getattr(ai_command, "command", None) == "notion_write"
+            and getattr(ai_command, "intent", None)
+            in {"batch_request", "batch", "branch_request"}
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "validation_failed",
+                    "message": "Patches are only supported for Notion batch proposals.",
+                    "validation": {
+                        "mode": "strict",
+                        "issues": [
+                            {
+                                "severity": "error",
+                                "code": "patches_not_supported",
+                                "source": "patches",
+                                "message": "Patches are only supported for Notion batch proposals.",
+                            }
+                        ],
+                        "can_approve": False,
+                        "summary": {"errors": 1, "warnings": 0},
+                    },
+                },
+            )
+
+        params0 = getattr(ai_command, "params", None)
+        params0 = params0 if isinstance(params0, dict) else {}
+        ops0 = params0.get("operations")
+        if not isinstance(ops0, list) or not ops0:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "validation_failed",
+                    "message": "Patches require a non-empty operations list.",
+                    "validation": {
+                        "mode": "strict",
+                        "issues": [
+                            {
+                                "severity": "error",
+                                "code": "missing_operations",
+                                "source": "patches",
+                                "message": "Missing operations[] for batch patching.",
+                            }
+                        ],
+                        "can_approve": False,
+                        "summary": {"errors": 1, "warnings": 0},
+                    },
+                },
+            )
+
+        try:
+            from services.enterprise_preview_patches import (  # noqa: PLC0415
+                apply_patches_to_batch_operations,
+            )
+            from services.notion_schema_registry import (  # noqa: PLC0415
+                NotionSchemaRegistry,
+            )
+            from services.notion_patch_validation import (  # noqa: PLC0415
+                merge_validation_reports,
+                validate_notion_payload,
+            )
+
+            db_keys0: List[str] = []
+            for op0 in ops0:
+                if not isinstance(op0, dict):
+                    continue
+                pl0 = op0.get("payload")
+                pl0 = pl0 if isinstance(pl0, dict) else {}
+                dk0 = pl0.get("db_key")
+                if isinstance(dk0, str) and dk0.strip():
+                    db_keys0.append(dk0.strip())
+                else:
+                    oi0 = (op0.get("intent") or "").strip().lower()
+                    if oi0 == "create_goal":
+                        db_keys0.append("goals")
+                    elif oi0 == "create_task":
+                        db_keys0.append("tasks")
+                    elif oi0 == "create_project":
+                        db_keys0.append("projects")
+
+            db_keys0 = [k for k in [str(x).strip() for x in db_keys0] if k]
+            db_keys0 = list(dict.fromkeys(db_keys0))
+            schema_by_db_key = {
+                dk: NotionSchemaRegistry.offline_validation_schema(dk) for dk in db_keys0
+            }
+
+            patched_ops, issues_by_op, global_issues = (
+                apply_patches_to_batch_operations(
+                    operations=[op for op in ops0 if isinstance(op, dict)],
+                    patches=patches_in,
+                    schema_by_db_key=schema_by_db_key,
+                )
+            )
+
+            patch_issues_by_op_id = issues_by_op if isinstance(issues_by_op, dict) else {}
+            patch_global_issues = global_issues if isinstance(global_issues, list) else []
+
+            # Install patched operations as the canonical executable command.
+            params_new = dict(params0)
+            params_new["operations"] = patched_ops
+            ai_command.params = params_new
+
+            # Fail-closed strict validation for patched operations.
+            per_op_reports: List[Dict[str, Any]] = []
+            for op1 in patched_ops:
+                if not isinstance(op1, dict):
+                    continue
+                op_id1 = op1.get("op_id") if isinstance(op1.get("op_id"), str) else None
+                op_intent1 = (op1.get("intent") or "").strip()
+                pl1 = op1.get("payload")
+                pl1 = pl1 if isinstance(pl1, dict) else {}
+
+                db_key1 = pl1.get("db_key") if isinstance(pl1.get("db_key"), str) else None
+                if not db_key1:
+                    oi1 = op_intent1.strip().lower()
+                    if oi1 == "create_goal":
+                        db_key1 = "goals"
+                    elif oi1 == "create_task":
+                        db_key1 = "tasks"
+                    elif oi1 == "create_project":
+                        db_key1 = "projects"
+
+                schema1 = schema_by_db_key.get(db_key1 or "") if db_key1 else {}
+                if not isinstance(schema1, dict) or not schema1:
+                    schema1 = NotionSchemaRegistry.offline_validation_schema(db_key1 or "") if db_key1 else {}
+
+                ps1 = pl1.get("property_specs")
+                ps1 = ps1 if isinstance(ps1, dict) else {}
+
+                base_report = validate_notion_payload(
+                    db_key=(db_key1 or ""),
+                    schema=schema1 if isinstance(schema1, dict) else {},
+                    wrapper_patch=None,
+                    property_specs=ps1,
+                    mode="strict",
+                )
+
+                extra = None
+                if op_id1 and op_id1 in patch_issues_by_op_id:
+                    extra_issues = patch_issues_by_op_id.get(op_id1)
+                    if isinstance(extra_issues, list) and extra_issues:
+                        errs = sum(
+                            1 for it in extra_issues if isinstance(it, dict) and it.get("severity") == "error"
+                        )
+                        warns = sum(
+                            1 for it in extra_issues if isinstance(it, dict) and it.get("severity") == "warning"
+                        )
+                        extra = {
+                            "mode": "strict",
+                            "db_key": (db_key1 or "").strip() or None,
+                            "issues": extra_issues,
+                            "can_approve": errs == 0,
+                            "summary": {"errors": errs, "warnings": warns},
+                        }
+
+                per_op_reports.append(
+                    merge_validation_reports(base_report, extra)
+                    if isinstance(extra, dict)
+                    else base_report
+                )
+
+            merged = merge_validation_reports(*per_op_reports)
+            if patch_global_issues:
+                its = merged.get("issues") if isinstance(merged.get("issues"), list) else []
+                its = list(its) + [x for x in patch_global_issues if isinstance(x, dict)]
+                merged["issues"] = its
+                merged["summary"] = {
+                    "errors": sum(1 for it in its if it.get("severity") == "error"),
+                    "warnings": sum(1 for it in its if it.get("severity") == "warning"),
+                }
+                merged["can_approve"] = merged["summary"].get("errors", 0) == 0
+
+            if merged.get("can_approve") is False:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error": "validation_failed",
+                        "message": "Validation failed for enterprise preview patches.",
+                        "validation": merged,
+                    },
+                )
+        except HTTPException:
+            raise
+        except Exception:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "validation_failed",
+                    "message": "Failed to apply/validate enterprise preview patches.",
+                    "validation": {
+                        "mode": "strict",
+                        "issues": [
+                            {
+                                "severity": "error",
+                                "code": "patch_apply_failed",
+                                "source": "patches",
+                                "message": "Failed to apply/validate patches.",
+                            }
+                        ],
+                        "can_approve": False,
+                        "summary": {"errors": 1, "warnings": 0},
+                    },
+                },
+            )
 
     # Strict-mode validation: block creation of executions that would be rejected later.
     # Default is warn-only (no blocking) unless NOTION_PATCH_VALIDATION_MODE=strict.
@@ -2531,6 +2756,9 @@ async def execute_preview_command(
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Body must be an object")
 
+    enterprise_enabled = _enterprise_preview_editor_enabled()
+    patches_in = payload.get("patches") if isinstance(payload, dict) else None
+
     normalized = _normalize_execute_raw_payload_dict(payload)
 
     # Hard read-only intents stay read-only.
@@ -2593,6 +2821,105 @@ async def execute_preview_command(
         read_only=True,
         metadata=normalized.metadata if isinstance(normalized.metadata, dict) else {},
     )
+
+    patch_issues_by_op_id: Dict[str, List[Dict[str, Any]]] = {}
+    patch_global_issues: List[Dict[str, Any]] = []
+    force_validation_mode: Optional[str] = None
+
+    # Enterprise preview editor: optional patches applied server-side.
+    if enterprise_enabled and patches_in is not None:
+        try:
+            if (
+                getattr(ai_command, "command", None) == "notion_write"
+                and getattr(ai_command, "intent", None)
+                in {"batch_request", "batch", "branch_request"}
+            ):
+                params0 = getattr(ai_command, "params", None)
+                params0 = params0 if isinstance(params0, dict) else {}
+                ops0 = params0.get("operations")
+                if isinstance(ops0, list) and ops0:
+                    from services.enterprise_preview_patches import (  # noqa: PLC0415
+                        apply_patches_to_batch_operations,
+                    )
+                    from services.notion_schema_registry import (  # noqa: PLC0415
+                        NotionSchemaRegistry,
+                    )
+
+                    db_keys0: List[str] = []
+                    for op0 in ops0:
+                        if not isinstance(op0, dict):
+                            continue
+                        pl0 = op0.get("payload")
+                        pl0 = pl0 if isinstance(pl0, dict) else {}
+                        dk0 = pl0.get("db_key")
+                        if isinstance(dk0, str) and dk0.strip():
+                            db_keys0.append(dk0.strip())
+                        else:
+                            oi0 = (op0.get("intent") or "").strip().lower()
+                            if oi0 == "create_goal":
+                                db_keys0.append("goals")
+                            elif oi0 == "create_task":
+                                db_keys0.append("tasks")
+                            elif oi0 == "create_project":
+                                db_keys0.append("projects")
+
+                    db_keys0 = [k for k in [str(x).strip() for x in db_keys0] if k]
+                    db_keys0 = list(dict.fromkeys(db_keys0))
+                    schema_by_db_key = {
+                        dk: NotionSchemaRegistry.offline_validation_schema(dk)
+                        for dk in db_keys0
+                    }
+
+                    patched_ops, issues_by_op, global_issues = (
+                        apply_patches_to_batch_operations(
+                            operations=[op for op in ops0 if isinstance(op, dict)],
+                            patches=patches_in,
+                            schema_by_db_key=schema_by_db_key,
+                        )
+                    )
+
+                    patch_issues_by_op_id = (
+                        issues_by_op if isinstance(issues_by_op, dict) else {}
+                    )
+                    patch_global_issues = (
+                        global_issues if isinstance(global_issues, list) else []
+                    )
+                    force_validation_mode = "strict"
+
+                    params_new = dict(params0)
+                    params_new["operations"] = patched_ops
+                    ai_command.params = params_new
+                else:
+                    patch_global_issues.append(
+                        {
+                            "severity": "error",
+                            "code": "patches_not_supported",
+                            "source": "patches",
+                            "message": "Patches are only supported for batch operations.",
+                        }
+                    )
+                    force_validation_mode = "strict"
+            else:
+                patch_global_issues.append(
+                    {
+                        "severity": "error",
+                        "code": "patches_not_supported",
+                        "source": "patches",
+                        "message": "Patches are only supported for Notion batch proposals.",
+                    }
+                )
+                force_validation_mode = "strict"
+        except Exception:
+            # Fail closed for approval: treat patch subsystem failure as a validation error.
+            patch_global_issues.append(
+                {
+                    "severity": "error",
+                    "code": "patch_apply_failed",
+                    "source": "patches",
+                    "message": "Failed to apply patches.",
+                }
+            )
+            force_validation_mode = "strict"
 
     # Preview should always be treated as read-only.
     ai_command.read_only = True
@@ -2825,7 +3152,7 @@ async def execute_preview_command(
                 wrapper_patch0 if isinstance(wrapper_patch0, dict) else None
             )
 
-            validation_mode = _notion_patch_validation_mode()
+            validation_mode = force_validation_mode or _notion_patch_validation_mode()
 
             async def _best_effort_schema_for_db_key(
                 db_key: Optional[str],
@@ -3079,6 +3406,45 @@ async def execute_preview_command(
                 if isinstance(ops, list) and ops:
                     rows: List[Dict[str, Any]] = []
 
+                    def _merge_patch_issues(
+                        *,
+                        base: Optional[Dict[str, Any]],
+                        db_key: Optional[str],
+                        op_id: Optional[str],
+                    ) -> Optional[Dict[str, Any]]:
+                        if not enterprise_enabled:
+                            return base
+                        oid = (op_id or "").strip()
+                        if not oid:
+                            return base
+                        extra = patch_issues_by_op_id.get(oid)
+                        if not isinstance(extra, list) or not extra:
+                            return base
+
+                        try:
+                            from services.notion_patch_validation import (  # noqa: PLC0415
+                                merge_validation_reports,
+                            )
+
+                            errs = sum(
+                                1 for it in extra if isinstance(it, dict) and it.get("severity") == "error"
+                            )
+                            warns = sum(
+                                1 for it in extra if isinstance(it, dict) and it.get("severity") == "warning"
+                            )
+                            extra_report = {
+                                "mode": "strict",
+                                "db_key": (db_key or "").strip() or None,
+                                "issues": extra,
+                                "can_approve": errs == 0,
+                                "summary": {"errors": errs, "warnings": warns},
+                            }
+                            if isinstance(base, dict):
+                                return merge_validation_reports(base, extra_report)
+                            return merge_validation_reports(extra_report)
+                        except Exception:
+                            return base
+
                     def _format_ref(v: Any) -> Optional[str]:
                         if v is None:
                             return None
@@ -3188,8 +3554,12 @@ async def execute_preview_command(
                                     )
                                     else {},
                                 }
-                            row["validation"] = await _validation_for_preview(
-                                db_key=db_key, property_specs=ps
+                            row["validation"] = _merge_patch_issues(
+                                base=await _validation_for_preview(
+                                    db_key=db_key, property_specs=ps
+                                ),
+                                db_key=db_key,
+                                op_id=op_id if isinstance(op_id, str) else None,
                             )
                         rows.append(row)
 
@@ -3211,6 +3581,17 @@ async def execute_preview_command(
                             except Exception:
                                 pass
 
+                    global_errs = 0
+                    global_warns = 0
+                    if enterprise_enabled and patch_global_issues:
+                        for it in patch_global_issues:
+                            if not isinstance(it, dict):
+                                continue
+                            if it.get("severity") == "warning":
+                                global_warns += 1
+                            else:
+                                global_errs += 1
+
                     notion_block = {
                         "type": "batch_preview",
                         "operations": (
@@ -3221,13 +3602,40 @@ async def execute_preview_command(
                         "rows": rows,
                         "validation": {
                             "mode": validation_mode,
-                            "summary": {"errors": errors, "warnings": warnings},
-                            "can_approve": errors == 0,
+                            "summary": {
+                                "errors": errors + global_errs,
+                                "warnings": warnings + global_warns,
+                            },
+                            "can_approve": (errors + global_errs) == 0,
                         },
                         "note": "Preview does not hit Notion. Final execution may still normalize select/status types based on DB schema.",
                     }
+
+                    if enterprise_enabled:
+                        notion_block["canonical_preview_operations"] = notion_block.get(
+                            "operations"
+                        )
+                        if patch_global_issues:
+                            notion_block["validation"]["issues"] = patch_global_issues
     except Exception:
-        notion_block = None
+        # Fail-closed: return a deterministic validation object so UI can block approval.
+        notion_block = {
+            "type": "preview_error",
+            "validation": {
+                "mode": "strict" if enterprise_enabled else validation_mode,
+                "issues": [
+                    {
+                        "severity": "error",
+                        "code": "preview_failed",
+                        "source": "server",
+                        "message": "Failed to build Notion preview.",
+                    }
+                ],
+                "summary": {"errors": 1, "warnings": 0},
+                "can_approve": False,
+            },
+            "note": "Preview failed; no execution can be approved from this response.",
+        }
 
     return {
         "ok": True,

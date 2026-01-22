@@ -17,6 +17,23 @@ import "./CeoChatbox.css";
 
 type CeoConsoleApi = ReturnType<typeof createCeoConsoleApi>;
 
+type EnterpriseOpPatch = { op_id: string; changes: Record<string, any> };
+
+type EnterprisePreviewGate = {
+  patchesSig: string;
+  canApprove: boolean;
+  errors: number;
+  dirty: boolean;
+};
+
+const enterprisePreviewEditorEnabled =
+  String((import.meta as any)?.env?.VITE_ENTERPRISE_PREVIEW_EDITOR ?? "")
+    .trim()
+    .toLowerCase() === "true" ||
+  String((import.meta as any)?.env?.VITE_ENTERPRISE_PREVIEW_EDITOR ?? "")
+    .trim()
+    .toLowerCase() === "1";
+
 const uid = () =>
   typeof crypto !== "undefined" && "randomUUID" in crypto
     ? crypto.randomUUID()
@@ -696,6 +713,12 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
   const [previewProposalLabel, setPreviewProposalLabel] = useState<string | undefined>(undefined);
   const [previewProposalKey, setPreviewProposalKey] = useState<string | null>(null);
   const [proposalPatches, setProposalPatches] = useState<Record<string, Record<string, any>>>({});
+  const [proposalEnterprisePatches, setProposalEnterprisePatches] = useState<
+    Record<string, EnterpriseOpPatch[]>
+  >({});
+  const [enterprisePreviewGateByKey, setEnterprisePreviewGateByKey] = useState<
+    Record<string, EnterprisePreviewGate>
+  >({});
 
   const stableStringify = useCallback((value: any): string => {
     const seen = new WeakSet<object>();
@@ -818,7 +841,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
   };
 
   const handlePreviewProposal = useCallback(
-    async (proposal: ProposedCmd, label?: string) => {
+    async (proposal: ProposedCmd, label?: string, patchesOverride?: EnterpriseOpPatch[]) => {
       if (previewLoading) return;
 
       setPreviewOpen(true);
@@ -845,12 +868,40 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
           },
         };
 
-        const patch = proposalPatches[key];
-        const patched = applyPatchToProposal(proposalWithSession, patch);
-
         const previewUrl = resolveEndpoint(executeRawUrl, "/api/execute/preview");
-        const json = await postJson(previewUrl, patched, controller.signal);
-        setPreviewData(json);
+        if (enterprisePreviewEditorEnabled) {
+          const patches = Array.isArray(patchesOverride)
+            ? (patchesOverride as EnterpriseOpPatch[])
+            : (proposalEnterprisePatches[key] || []);
+          const patchesSig = stableStringify(patches);
+          const json = await postJson(
+            previewUrl,
+            { ...proposalWithSession, patches },
+            controller.signal,
+          );
+          setPreviewData(json);
+
+          // Capture approval gating info for this proposal key.
+          const notion = (json as any)?.notion;
+          const v = notion && typeof notion === "object" ? (notion as any).validation : null;
+          const summary = v && typeof v === "object" ? v.summary : null;
+          const errs = summary && typeof summary === "object" ? Number(summary.errors || 0) : 0;
+          const canApprove = Boolean(v && typeof v === "object" ? v.can_approve : true);
+          setEnterprisePreviewGateByKey((prev) => ({
+            ...prev,
+            [key]: {
+              patchesSig,
+              canApprove,
+              errors: Number.isFinite(errs) ? errs : 0,
+              dirty: false,
+            },
+          }));
+        } else {
+          const patch = proposalPatches[key];
+          const patched = applyPatchToProposal(proposalWithSession, patch);
+          const json = await postJson(previewUrl, patched, controller.signal);
+          setPreviewData(json);
+        }
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         setPreviewError(msg);
@@ -859,7 +910,18 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         setPreviewLoading(false);
       }
     },
-    [applyPatchToProposal, executeRawUrl, getProposalKey, postJson, previewLoading, proposalPatches, resolveEndpoint, sessionId]
+    [
+      applyPatchToProposal,
+      executeRawUrl,
+      getProposalKey,
+      postJson,
+      previewLoading,
+      stableStringify,
+      proposalEnterprisePatches,
+      proposalPatches,
+      resolveEndpoint,
+      sessionId,
+    ]
   );
 
   // ------------------------------
@@ -994,11 +1056,22 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         };
 
         const key = getProposalKey(proposal);
-        const patch = proposalPatches[key];
-        const patched = applyPatchToProposal(proposalWithSession, patch);
-        
         const execUrl = resolveEndpoint(executeRawUrl, "/api/execute/raw");
-        const execJson = await postJson(execUrl, patched, controller.signal);
+
+        const execJson = enterprisePreviewEditorEnabled
+          ? await postJson(
+              execUrl,
+              {
+                ...proposalWithSession,
+                patches: proposalEnterprisePatches[key] || [],
+              },
+              controller.signal,
+            )
+          : await postJson(
+              execUrl,
+              applyPatchToProposal(proposalWithSession, proposalPatches[key]),
+              controller.signal,
+            );
 
         const approvalId: string | null =
           typeof execJson?.approval_id === "string" && execJson.approval_id ? execJson.approval_id : null;
@@ -1040,7 +1113,20 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         setLastError(isAbortError(e) ? null : msg);
       }
     },
-    [appendItem, busy, executeRawUrl, handleOpenApprovals, postJson, resolveEndpoint, sessionId, updateItem]
+    [
+      appendItem,
+      applyPatchToProposal,
+      busy,
+      executeRawUrl,
+      getProposalKey,
+      handleOpenApprovals,
+      postJson,
+      proposalEnterprisePatches,
+      proposalPatches,
+      resolveEndpoint,
+      sessionId,
+      updateItem,
+    ]
   );
 
   /**
@@ -1165,9 +1251,18 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
             source: "ceo_dashboard",
           },
         };
-        
+
+        const key = getProposalKey(proposalWithSession as any);
+
+        const execPayload = enterprisePreviewEditorEnabled
+          ? {
+              ...(proposalWithSession as any),
+              patches: proposalEnterprisePatches[key] || [],
+            }
+          : applyPatchToProposal(proposalWithSession as any, proposalPatches[key]);
+
         const execUrl = resolveEndpoint(executeRawUrl, "/api/execute/raw");
-        const execJson = await postJson(execUrl, proposalWithSession, controller.signal);
+        const execJson = await postJson(execUrl, execPayload, controller.signal);
 
         const approvalId: string | null =
           typeof execJson?.approval_id === "string" && execJson.approval_id ? execJson.approval_id : null;
@@ -1223,7 +1318,20 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         setLastError(isAbortError(e) ? null : msg);
       }
     },
-    [appendItem, applyPatchToProposal, busy, effectiveApproveUrl, executeRawUrl, getProposalKey, postJson, proposalPatches, resolveEndpoint, sessionId, updateItem]
+    [
+      appendItem,
+      applyPatchToProposal,
+      busy,
+      effectiveApproveUrl,
+      executeRawUrl,
+      getProposalKey,
+      postJson,
+      proposalEnterprisePatches,
+      proposalPatches,
+      resolveEndpoint,
+      sessionId,
+      updateItem,
+    ]
   );
 
   // ------------------------------
@@ -1405,11 +1513,59 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         loading={previewLoading}
         error={previewError}
         data={previewData}
+        enterprisePreviewEditorEnabled={enterprisePreviewEditorEnabled}
+        enterprisePatches={
+          previewProposalKey ? proposalEnterprisePatches[previewProposalKey] || [] : []
+        }
+        onEnterprisePatchesChange={(patches) => {
+          if (!previewProposalKey) return;
+          const list = Array.isArray(patches)
+            ? (patches as EnterpriseOpPatch[])
+            : [];
+          setProposalEnterprisePatches((prev) => ({
+            ...prev,
+            [previewProposalKey]: list,
+          }));
+
+          if (enterprisePreviewEditorEnabled) {
+            const sig = stableStringify(list);
+            setEnterprisePreviewGateByKey((prev) => ({
+              ...prev,
+              [previewProposalKey]: {
+                patchesSig: sig,
+                canApprove: false,
+                errors: 1,
+                dirty: true,
+              },
+            }));
+          }
+        }}
         onApplyPatch={(patch) => {
           if (!previewProposalKey) return;
-          const merged = { ...(proposalPatches[previewProposalKey] || {}), ...(patch || {}) };
+          if (enterprisePreviewEditorEnabled) {
+            const list = Array.isArray(patch)
+              ? (patch as EnterpriseOpPatch[])
+              : [];
+            setProposalEnterprisePatches((prev) => ({
+              ...prev,
+              [previewProposalKey]: list,
+            }));
+
+            if (previewProposal)
+              void handlePreviewProposal(previewProposal, previewProposalLabel, list);
+            return;
+          }
+
+          const merged = {
+            ...(proposalPatches[previewProposalKey] || {}),
+            ...(patch || {}),
+          };
           setProposalPatches((prev) => ({ ...prev, [previewProposalKey]: merged }));
-          if (previewProposal) void handlePreviewProposal(applyPatchToProposal(previewProposal, merged), previewProposalLabel);
+          if (previewProposal)
+            void handlePreviewProposal(
+              applyPatchToProposal(previewProposal, merged),
+              previewProposalLabel,
+            );
         }}
         onClose={() => {
           previewAbortRef.current?.abort();
@@ -1593,6 +1749,21 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
                           {proposedCommands.map((p, idx) => {
                             const label = proposalLabel(p, idx);
 
+                            const proposalKey = getProposalKey(p, label);
+                            const enterprisePatchesForProposal = enterprisePreviewEditorEnabled
+                              ? (proposalEnterprisePatches[proposalKey] || [])
+                              : [];
+                            const enterpriseSig = stableStringify(enterprisePatchesForProposal);
+                            const gate = enterprisePreviewGateByKey[proposalKey];
+                            const enterpriseNeedsPreview =
+                              enterprisePreviewEditorEnabled &&
+                              enterprisePatchesForProposal.length > 0 &&
+                              (!gate || gate.dirty || gate.patchesSig !== enterpriseSig);
+                            const enterpriseBlockedByValidation =
+                              enterprisePreviewEditorEnabled &&
+                              enterprisePatchesForProposal.length > 0 &&
+                              Boolean(gate && (gate.canApprove === false || (gate.errors || 0) > 0));
+
                             return (
                               <li key={`${it.id}_p_${idx}`}>
                                 <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
@@ -1616,8 +1787,20 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
                                     <button
                                       className="govButton"
                                       onClick={() => void handleApproveProposal(p)}
-                                      disabled={busy === "submitting" || busy === "streaming" || notionLoading}
-                                      title="Create execution and approve"
+                                      disabled={
+                                        busy === "submitting" ||
+                                        busy === "streaming" ||
+                                        notionLoading ||
+                                        enterpriseNeedsPreview ||
+                                        enterpriseBlockedByValidation
+                                      }
+                                      title={
+                                        enterpriseNeedsPreview
+                                          ? "Update Preview to validate patches before approving"
+                                          : enterpriseBlockedByValidation
+                                            ? "Blocked by validation errors in Preview"
+                                            : "Create execution and approve"
+                                      }
                                     >
                                       Approve
                                     </button>
