@@ -14,7 +14,9 @@ def _env_true(name: str, default: str = "true") -> bool:
 
 def _stable_json_dumps(obj: Any) -> str:
     try:
-        return json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return json.dumps(
+            obj, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
     except Exception:
         return json.dumps(str(obj), ensure_ascii=False)
 
@@ -177,7 +179,9 @@ class GroundingPackService:
             content = " ".join(
                 [
                     str(e.get("title") or ""),
-                    " ".join([str(x) for x in (e.get("tags") or []) if isinstance(x, str)]),
+                    " ".join(
+                        [str(x) for x in (e.get("tags") or []) if isinstance(x, str)]
+                    ),
                     str(e.get("content") or ""),
                 ]
             ).lower()
@@ -245,7 +249,9 @@ class GroundingPackService:
         t_kb1 = time.perf_counter()
 
         # Notion snapshot (SSOT wrapper is already stable)
-        notion_snapshot = knowledge_snapshot if isinstance(knowledge_snapshot, dict) else {}
+        notion_snapshot = (
+            knowledge_snapshot if isinstance(knowledge_snapshot, dict) else {}
+        )
         notion_payload = _unwrap_snapshot_payload(notion_snapshot)
 
         # Memory snapshot (read-only exported)
@@ -282,7 +288,9 @@ class GroundingPackService:
             "notion": {
                 "targeted_reads_enabled": bool(cls.notion_targeted_reads_enabled()),
                 "max_calls": cls._env_int("CEO_NOTION_MAX_CALLS", 2),
-                "max_payload_bytes": cls._env_int("CEO_NOTION_MAX_PAYLOAD_BYTES", 25000),
+                "max_payload_bytes": cls._env_int(
+                    "CEO_NOTION_MAX_PAYLOAD_BYTES", 25000
+                ),
                 "max_latency_ms": cls._env_int("CEO_NOTION_MAX_LATENCY_MS", 1500),
             },
             "kb": {"max_entries": cls.KB_MAX_ENTRIES},
@@ -344,7 +352,9 @@ class GroundingPackService:
 
         # Deterministic recommendation (router/agent still decides proposals)
         recommended_action = None
-        if bool(notion_snapshot.get("expired") is True) or (counts["goals"] == 0 and counts["tasks"] == 0):
+        if bool(notion_snapshot.get("expired") is True) or (
+            counts["goals"] == 0 and counts["tasks"] == 0
+        ):
             recommended_action = "refresh_snapshot"
 
         # Trace v2
@@ -354,7 +364,22 @@ class GroundingPackService:
         # Heuristic: KB-only questions should not consume Notion.
         t_prompt = (prompt or "").strip().lower()
         wants_notion = bool(
-            any(k in t_prompt for k in ("notion", "cilj", "ciljevi", "goal", "goals", "task", "tasks", "zadat", "kpi", "projekat", "project"))
+            any(
+                k in t_prompt
+                for k in (
+                    "notion",
+                    "cilj",
+                    "ciljevi",
+                    "goal",
+                    "goals",
+                    "task",
+                    "tasks",
+                    "zadat",
+                    "kpi",
+                    "projekat",
+                    "project",
+                )
+            )
         )
 
         used_sources: List[str] = []
@@ -386,7 +411,9 @@ class GroundingPackService:
 
         notion_read_ids: List[str] = []
         if budget_exceeded:
-            not_used.append({"source": "notion_snapshot", "skipped_reason": "budget_exceeded"})
+            not_used.append(
+                {"source": "notion_snapshot", "skipped_reason": "budget_exceeded"}
+            )
         elif wants_notion:
             # Targeted reads are feature-flagged; default is zero calls.
             if not cls.notion_targeted_reads_enabled():
@@ -405,13 +432,20 @@ class GroundingPackService:
                     }
                 )
         else:
-            not_used.append({"source": "notion_snapshot", "skipped_reason": "kb_only_question"})
+            not_used.append(
+                {"source": "notion_snapshot", "skipped_reason": "kb_only_question"}
+            )
 
         # Memory snapshot is included in the pack but marked as not used unless explicitly needed.
         if "memory" in t_prompt or "audit" in t_prompt:
             used_sources.append("memory_snapshot")
         else:
-            not_used.append({"source": "memory_snapshot", "skipped_reason": "not_required_for_prompt"})
+            not_used.append(
+                {
+                    "source": "memory_snapshot",
+                    "skipped_reason": "not_required_for_prompt",
+                }
+            )
 
         trace_v2 = {
             "schema_version": "v1",

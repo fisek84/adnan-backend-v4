@@ -1,11 +1,13 @@
 # services/notion_service.py
 from __future__ import annotations
 
+import contextvars
 import logging
 import os
 import re
 import time
 import asyncio
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -15,6 +17,99 @@ import httpx
 from models.ai_command import AICommand
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================
+# NOTION BUDGET CONTEXT (READ PATH ONLY)
+# ============================================================
+
+
+class NotionBudgetExceeded(RuntimeError):
+    def __init__(self, *, kind: str, detail: Optional[Dict[str, Any]] = None) -> None:
+        super().__init__(kind)
+        self.kind = kind
+        self.detail = detail or {}
+
+
+@dataclass
+class _NotionBudgetState:
+    max_calls: Optional[int]
+    max_latency_ms: Optional[int]
+    started_at: float
+    calls: int = 0
+    exceeded: bool = False
+    exceeded_kind: Optional[str] = None
+    exceeded_detail: Dict[str, Any] = None  # type: ignore[assignment]
+
+    def __post_init__(self) -> None:
+        if self.exceeded_detail is None:
+            self.exceeded_detail = {}
+
+    def _check_deadline_only(self) -> None:
+        if self.max_latency_ms is None:
+            return
+        if self.max_latency_ms < 0:
+            return
+        elapsed_ms = int(round((time.monotonic() - self.started_at) * 1000.0))
+        if elapsed_ms > int(self.max_latency_ms):
+            self.exceeded = True
+            self.exceeded_kind = "max_latency_ms"
+            self.exceeded_detail = {
+                "elapsed_ms": elapsed_ms,
+                "limit_ms": int(self.max_latency_ms),
+            }
+            raise NotionBudgetExceeded(
+                kind="max_latency_ms", detail=self.exceeded_detail
+            )
+
+    def check_and_consume_call(self) -> None:
+        # Latency check first (if we've already blown the window, do not spend a call).
+        self._check_deadline_only()
+
+        if self.max_calls is None:
+            self.calls += 1
+            return
+        if self.max_calls < 0:
+            self.calls += 1
+            return
+
+        if self.calls >= int(self.max_calls):
+            self.exceeded = True
+            self.exceeded_kind = "max_calls"
+            self.exceeded_detail = {
+                "calls": int(self.calls),
+                "limit": int(self.max_calls),
+            }
+            raise NotionBudgetExceeded(kind="max_calls", detail=self.exceeded_detail)
+
+        self.calls += 1
+
+
+_NOTION_BUDGET_STATE: contextvars.ContextVar[Optional[_NotionBudgetState]] = (
+    contextvars.ContextVar("notion_budget_state", default=None)
+)
+
+
+def env_int(name: str, default: int) -> int:
+    raw = (os.getenv(name) or "").strip()
+    try:
+        return int(raw)
+    except Exception:
+        return int(default)
+
+
+@asynccontextmanager
+async def notion_budget_context(*, max_calls: int, max_latency_ms: int):
+    state = _NotionBudgetState(
+        max_calls=int(max_calls),
+        max_latency_ms=int(max_latency_ms),
+        started_at=time.monotonic(),
+    )
+    token = _NOTION_BUDGET_STATE.set(state)
+    try:
+        yield state
+    finally:
+        _NOTION_BUDGET_STATE.reset(token)
 
 
 # ============================================================
@@ -516,6 +611,10 @@ class NotionService:
     ) -> Dict[str, Any]:
         client = await self._get_client()
 
+        budget_state = _NOTION_BUDGET_STATE.get()
+        if budget_state is not None:
+            budget_state.check_and_consume_call()
+
         try:
             resp = await client.request(
                 method,
@@ -527,6 +626,9 @@ class NotionService:
             raise RuntimeError(
                 f"Notion request failed: {type(exc).__name__}: {exc}"
             ) from exc
+
+        if budget_state is not None:
+            budget_state._check_deadline_only()
 
         text = resp.text or ""
         if resp.status_code >= 400:
@@ -1403,72 +1505,127 @@ class NotionService:
             "errors": [],
         }
 
+        max_calls = env_int("CEO_NOTION_MAX_CALLS", 2)
+        max_latency_ms = env_int("CEO_NOTION_MAX_LATENCY_MS", 1500)
+        meta["budget"] = {
+            "schema_version": "v1",
+            "max_calls": int(max_calls),
+            "max_latency_ms": int(max_latency_ms),
+            "exceeded": False,
+            "exceeded_kind": None,
+            "exceeded_detail": {},
+        }
+        meta["notion_calls"] = 0
+
         db_stats: Dict[str, Any] = {}
 
-        for db_key in ("goals", "tasks", "projects"):
-            try:
-                db_id = self._resolve_db_id(db_key)
-                title_prop = await _title_prop_for_db(db_id)
-                pages = await _query_all_pages(db_key=db_key)
-
-                items: List[Dict[str, Any]] = []
-                for p in pages:
-                    pid = _ensure_str(p.get("id"))
-                    title = self._extract_page_title(p, title_prop)
-                    # Robust fallback: if schema/title_prop mismatch or title empty,
-                    # try any title-typed property present on the page.
-                    if not title:
-                        props = p.get("properties")
-                        if isinstance(props, dict):
-                            for prop_name, prop in props.items():
-                                if (
-                                    isinstance(prop_name, str)
-                                    and isinstance(prop, dict)
-                                    and prop.get("type") == "title"
-                                ):
-                                    t2 = self._extract_page_title(p, prop_name)
-                                    if t2:
-                                        title = t2
-                                        break
-                    url = _ensure_str(p.get("url"))
-                    last_edited_time = _ensure_str(p.get("last_edited_time"))
-                    created_time = _ensure_str(p.get("created_time"))
-                    items.append(
-                        {
-                            "id": pid.replace("-", "") if pid else pid,
-                            "notion_id": pid,
-                            "title": title,
-                            "url": url,
-                            "created_time": created_time,
-                            "last_edited_time": last_edited_time,
-                        }
-                    )
-
-                payload[db_key] = items
-                db_stats[db_key] = {
-                    "ok": True,
-                    "db_id": db_id,
-                    "title_property": title_prop,
-                    "count": int(len(items)),
-                    "sample_titles": [
-                        it.get("title")
-                        for it in items[:3]
-                        if isinstance(it, dict) and isinstance(it.get("title"), str)
-                    ],
-                }
-            except Exception as exc:  # noqa: BLE001
-                meta["ok"] = False
+        async with notion_budget_context(
+            max_calls=max_calls,
+            max_latency_ms=max_latency_ms,
+        ) as budget_state:
+            for db_key in ("goals", "tasks", "projects"):
                 try:
-                    meta["errors"].append(
-                        f"{db_key}:{type(exc).__name__}:{str(exc)}"
-                    )
-                except Exception:
-                    pass
-                payload[db_key] = []
-                db_stats[db_key] = {
-                    "ok": False,
-                    "error": f"{type(exc).__name__}:{str(exc)}",
-                }
+                    db_id = self._resolve_db_id(db_key)
+                    title_prop = await _title_prop_for_db(db_id)
+                    pages = await _query_all_pages(db_key=db_key)
+
+                    items: List[Dict[str, Any]] = []
+                    for p in pages:
+                        pid = _ensure_str(p.get("id"))
+                        title = self._extract_page_title(p, title_prop)
+                        # Robust fallback: if schema/title_prop mismatch or title empty,
+                        # try any title-typed property present on the page.
+                        if not title:
+                            props = p.get("properties")
+                            if isinstance(props, dict):
+                                for prop_name, prop in props.items():
+                                    if (
+                                        isinstance(prop_name, str)
+                                        and isinstance(prop, dict)
+                                        and prop.get("type") == "title"
+                                    ):
+                                        t2 = self._extract_page_title(p, prop_name)
+                                        if t2:
+                                            title = t2
+                                            break
+                        url = _ensure_str(p.get("url"))
+                        last_edited_time = _ensure_str(p.get("last_edited_time"))
+                        created_time = _ensure_str(p.get("created_time"))
+                        items.append(
+                            {
+                                "id": pid.replace("-", "") if pid else pid,
+                                "notion_id": pid,
+                                "title": title,
+                                "url": url,
+                                "created_time": created_time,
+                                "last_edited_time": last_edited_time,
+                            }
+                        )
+
+                    payload[db_key] = items
+                    db_stats[db_key] = {
+                        "ok": True,
+                        "db_id": db_id,
+                        "title_property": title_prop,
+                        "count": int(len(items)),
+                        "sample_titles": [
+                            it.get("title")
+                            for it in items[:3]
+                            if isinstance(it, dict) and isinstance(it.get("title"), str)
+                        ],
+                    }
+                except NotionBudgetExceeded as exc:
+                    meta["ok"] = False
+                    meta["budget"]["exceeded"] = True
+                    meta["budget"]["exceeded_kind"] = exc.kind
+                    meta["budget"]["exceeded_detail"] = exc.detail
+                    try:
+                        meta["errors"].append(f"{db_key}:budget_exceeded:{exc.kind}")
+                    except Exception:
+                        pass
+                    payload[db_key] = []
+                    db_stats[db_key] = {
+                        "ok": False,
+                        "error": f"budget_exceeded:{exc.kind}",
+                        "budget": exc.detail,
+                    }
+
+                    # Deterministic: stop additional calls once budget exceeded.
+                    for rest in ("goals", "tasks", "projects"):
+                        if rest == db_key:
+                            continue
+                        db_stats.setdefault(
+                            rest,
+                            {
+                                "ok": False,
+                                "error": f"budget_exceeded:{exc.kind}",
+                                "budget": exc.detail,
+                            },
+                        )
+                    break
+                except Exception as exc:  # noqa: BLE001
+                    meta["ok"] = False
+                    try:
+                        meta["errors"].append(
+                            f"{db_key}:{type(exc).__name__}:{str(exc)}"
+                        )
+                    except Exception:
+                        pass
+                    payload[db_key] = []
+                    db_stats[db_key] = {
+                        "ok": False,
+                        "error": f"{type(exc).__name__}:{str(exc)}",
+                    }
+
+            # Export budget stats for downstream trace/grounding_pack
+            try:
+                meta["notion_calls"] = int(budget_state.calls)
+                if budget_state.exceeded and not meta["budget"].get("exceeded"):
+                    meta["budget"]["exceeded"] = True
+                    meta["budget"]["exceeded_kind"] = budget_state.exceeded_kind
+                    meta["budget"]["exceeded_detail"] = budget_state.exceeded_detail
+            except Exception:
+                pass
 
         meta["db_stats"] = db_stats
         return {"payload": payload, "meta": meta}

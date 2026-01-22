@@ -370,9 +370,21 @@ def load_ceo_identity_pack() -> Dict[str, Any]:
         missing.append("trajectory_targets")
     pack["trajectory_targets"] = traj
 
-    # authority_order is not defined in current identity files; keep None + diagnostics.
-    if pack.get("authority_order") is None:
+    # authority_order (SSOT; prefer kernel.json)
+    ao = None
+    if isinstance(kernel, dict):
+        v = kernel.get("authority_order")
+        if isinstance(v, list):
+            ao_list = [x.strip() for x in v if isinstance(x, str) and x.strip()]
+            ao = ao_list if ao_list else None
+    if ao is None and isinstance(identity, dict):
+        v = identity.get("authority_order")
+        if isinstance(v, list):
+            ao_list = [x.strip() for x in v if isinstance(x, str) and x.strip()]
+            ao = ao_list if ao_list else None
+    if ao is None:
         missing.append("authority_order")
+    pack["authority_order"] = ao
 
     # status / diagnostics
     if pack.get("available") is not True:
@@ -415,9 +427,9 @@ def load_ceo_identity_pack() -> Dict[str, Any]:
         tmp_meta.pop("hash", None)
         tmp["meta"] = tmp_meta
         digest = hashlib.sha256(
-            json.dumps(tmp, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
-                "utf-8"
-            )
+            json.dumps(
+                tmp, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8")
         ).hexdigest()
     except Exception:
         digest = ""

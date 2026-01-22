@@ -1,5 +1,3 @@
-import os
-
 from fastapi.testclient import TestClient
 
 
@@ -15,7 +13,9 @@ def test_chat_includes_grounding_pack_contract(monkeypatch):
     app = _get_app()
     client = TestClient(app)
 
-    r = client.post("/api/chat", json={"message": "Koja je naša operativna filozofija?"})
+    r = client.post(
+        "/api/chat", json={"message": "Koja je naša operativna filozofija?"}
+    )
     assert r.status_code == 200
     body = r.json()
 

@@ -4,7 +4,13 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence
 from urllib.parse import urlencode
 
-from services.notion_service import NotionService, get_notion_service
+from services.notion_service import (
+    NotionBudgetExceeded,
+    NotionService,
+    env_int,
+    get_notion_service,
+    notion_budget_context,
+)
 
 PageObj = Dict[str, Any]
 BlockObj = Dict[str, Any]
@@ -104,19 +110,29 @@ class NotionReadService:
         if not q:
             return {"title": "", "url": "", "content_markdown": ""}
 
-        page = await self.get_page_by_title_contains(q)
-        if not page:
+        max_calls = env_int("CEO_NOTION_MAX_CALLS", 2)
+        max_latency_ms = env_int("CEO_NOTION_MAX_LATENCY_MS", 1500)
+
+        try:
+            async with notion_budget_context(
+                max_calls=max_calls,
+                max_latency_ms=max_latency_ms,
+            ):
+                page = await self.get_page_by_title_contains(q)
+                if not page:
+                    return {"title": "", "url": "", "content_markdown": ""}
+
+                title = self._extract_page_title(page)
+                url = page.get("url", "") if isinstance(page, dict) else ""
+                content_md = await self.render_page_to_markdown(page)
+
+                return {
+                    "title": (title or "").strip(),
+                    "url": (url or "").strip(),
+                    "content_markdown": (content_md or "").strip(),
+                }
+        except NotionBudgetExceeded:
             return {"title": "", "url": "", "content_markdown": ""}
-
-        title = self._extract_page_title(page)
-        url = page.get("url", "") if isinstance(page, dict) else ""
-        content_md = await self.render_page_to_markdown(page)
-
-        return {
-            "title": (title or "").strip(),
-            "url": (url or "").strip(),
-            "content_markdown": (content_md or "").strip(),
-        }
 
     # -------------------------
     # internals

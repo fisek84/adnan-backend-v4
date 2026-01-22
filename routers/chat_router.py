@@ -70,7 +70,10 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 agent_id=agent_id,
             )
         except Exception:
-            gp = {"enabled": False, "feature_flags": {"CEO_GROUNDING_PACK_ENABLED": False}}
+            gp = {
+                "enabled": False,
+                "feature_flags": {"CEO_GROUNDING_PACK_ENABLED": False},
+            }
 
         out: Dict[str, Any] = {"grounding_pack": gp}
         if isinstance(gp, dict):
@@ -517,7 +520,9 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         # PHASE 6: Notion Ops ARMED Gate (activation/deactivation)
         if session_id and _is_activate(prompt):
             st = await _set_armed(session_id, True, prompt=prompt)
-            tr = {"phase6_notion_ops_gate": {"event": "armed", "session_id": session_id}}
+            tr = {
+                "phase6_notion_ops_gate": {"event": "armed", "session_id": session_id}
+            }
             grounding = _grounding_bundle(
                 prompt=prompt,
                 knowledge_snapshot=ks_for_gp,
@@ -545,7 +550,12 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
 
         if session_id and _is_deactivate(prompt):
             st = await _set_armed(session_id, False, prompt=prompt)
-            tr = {"phase6_notion_ops_gate": {"event": "disarmed", "session_id": session_id}}
+            tr = {
+                "phase6_notion_ops_gate": {
+                    "event": "disarmed",
+                    "session_id": session_id,
+                }
+            }
             grounding = _grounding_bundle(
                 prompt=prompt,
                 knowledge_snapshot=ks_for_gp,
@@ -587,7 +597,11 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             legacy_trace=None,
             agent_id="ceo_advisor",
         )
-        gp_for_agent = pre_grounding.get("grounding_pack") if isinstance(pre_grounding, dict) else None
+        gp_for_agent = (
+            pre_grounding.get("grounding_pack")
+            if isinstance(pre_grounding, dict)
+            else None
+        )
         gp_for_agent = gp_for_agent if isinstance(gp_for_agent, dict) else {}
 
         # Call advisor agent

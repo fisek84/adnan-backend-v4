@@ -228,6 +228,17 @@ class KnowledgeSnapshotService:
                 "ttl_seconds": cls._ttl_seconds(),
                 "age_seconds": cls.get_age_seconds(),
                 "is_expired": bool(expired),
+                "notion_calls": (
+                    int(meta.get("notion_calls"))
+                    if isinstance(meta, dict)
+                    and isinstance(meta.get("notion_calls"), int)
+                    else 0
+                ),
+                "notion_budget": (
+                    meta.get("budget")
+                    if isinstance(meta, dict) and isinstance(meta.get("budget"), dict)
+                    else None
+                ),
             },
         }
 

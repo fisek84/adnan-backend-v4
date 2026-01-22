@@ -4226,7 +4226,9 @@ async def ceo_console_snapshot() -> CeoConsoleSnapshotResponse:
 
         gp = GroundingPackService.build(
             prompt="ceo_console_snapshot",
-            knowledge_snapshot=knowledge_snapshot if isinstance(knowledge_snapshot, dict) else {},
+            knowledge_snapshot=knowledge_snapshot
+            if isinstance(knowledge_snapshot, dict)
+            else {},
             memory_public_snapshot=mem_snapshot,
             legacy_trace={"source": "ceo_console_snapshot"},
             agent_id="ceo_console_snapshot",

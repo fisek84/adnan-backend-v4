@@ -65,7 +65,11 @@ def test_chat_never_missing_kb_fields():
 
     r = client.post(
         "/api/chat",
-        json={"message": "Pokaži ciljeve", "snapshot": {}, "metadata": {"initiator": "test"}},
+        json={
+            "message": "Pokaži ciljeve",
+            "snapshot": {},
+            "metadata": {"initiator": "test"},
+        },
     )
     assert r.status_code == 200
 
@@ -106,7 +110,11 @@ def test_refresh_snapshot_execute_raw_never_null_result():
 
     r = client.post(
         "/api/execute/raw",
-        json={"intent": "refresh_snapshot", "command": "refresh_snapshot", "params": {}},
+        json={
+            "intent": "refresh_snapshot",
+            "command": "refresh_snapshot",
+            "params": {},
+        },
     )
 
     # Must not 500/503; even boot-unready must be fail-soft with deterministic result.
@@ -131,7 +139,9 @@ def test_well_known_contract_no_drift_against_runtime():
 
     # Hard BOM guard: ai-plugin.json must be valid UTF-8 JSON without BOM.
     raw_plugin = plugin_path.read_bytes()
-    assert not raw_plugin.startswith(b"\xef\xbb\xbf"), "ai-plugin.json must not have UTF-8 BOM"
+    assert not raw_plugin.startswith(
+        b"\xef\xbb\xbf"
+    ), "ai-plugin.json must not have UTF-8 BOM"
     json.loads(raw_plugin.decode("utf-8"))
 
     plugin = json.loads(_read_text_best_effort(plugin_path))
@@ -161,7 +171,10 @@ def test_well_known_contract_no_drift_against_runtime():
         assert m in ("GET", "POST", "PATCH", "DELETE"), name
 
         assert p in openapi_paths, f"plugin route missing in openapi: {name} {m} {p}"
-        assert (p, m) in runtime_routes, f"plugin route missing in runtime: {name} {m} {p}"
+        assert (
+            p,
+            m,
+        ) in runtime_routes, f"plugin route missing in runtime: {name} {m} {p}"
 
     # Critical UI routes must be present in all three sources.
     critical = {

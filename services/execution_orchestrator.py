@@ -207,9 +207,7 @@ class ExecutionOrchestrator:
                         )
 
                         mem_ro = get_memory_read_only_service()
-                        mem_snapshot = (
-                            mem_ro.export_public_snapshot() if mem_ro else {}
-                        )
+                        mem_snapshot = mem_ro.export_public_snapshot() if mem_ro else {}
                         gp = GroundingPackService.build(
                             prompt="refresh_snapshot",
                             knowledge_snapshot=ks if isinstance(ks, dict) else {},
@@ -221,10 +219,14 @@ class ExecutionOrchestrator:
                             "enabled": bool(gp.get("enabled") is True)
                             if isinstance(gp, dict)
                             else False,
-                            "generated_at": gp.get("diagnostics", {}).get("generated_at")
+                            "generated_at": gp.get("diagnostics", {}).get(
+                                "generated_at"
+                            )
                             if isinstance(gp, dict)
                             else None,
-                            "identity_pack_hash": gp.get("identity_pack", {}).get("hash")
+                            "identity_pack_hash": gp.get("identity_pack", {}).get(
+                                "hash"
+                            )
                             if isinstance(gp, dict)
                             else None,
                             "kb_hash": gp.get("kb_snapshot", {}).get("hash")
