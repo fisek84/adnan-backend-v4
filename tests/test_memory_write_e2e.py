@@ -156,4 +156,6 @@ def test_memory_write_invalid_payload_is_fail_soft_with_diagnostics():
     assert isinstance(diag, dict)
     assert isinstance(diag.get("missing_keys"), list)
     assert "grounded_on" in diag.get("missing_keys")
-    assert isinstance(diag.get("recommended_action"), str) and diag.get("recommended_action")
+    assert isinstance(diag.get("recommended_action"), str) and diag.get(
+        "recommended_action"
+    )
