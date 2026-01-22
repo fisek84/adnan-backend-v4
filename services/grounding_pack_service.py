@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
@@ -74,6 +75,13 @@ def _tokenize(text: str) -> List[str]:
         "se",
     }
     return [w for w in out if w and w not in stop]
+
+
+def _is_business_plan_query(prompt: str) -> bool:
+    t = (prompt or "").strip().lower()
+    if not t:
+        return False
+    return bool(re.search(r"(?i)\b(biznis\s+plan|business\s+plan)\b", t))
 
 
 def _unwrap_snapshot_payload(snapshot: Dict[str, Any]) -> Dict[str, Any]:
@@ -156,7 +164,12 @@ class GroundingPackService:
         try:
             from services.identity_loader import load_json_file, resolve_path  # noqa: PLC0415
 
-            kb = load_json_file(resolve_path("knowledge.json"))
+            # Allow tests to override KB file without redirecting the whole identity directory.
+            kb_path = (os.getenv("IDENTITY_KNOWLEDGE_PATH") or "").strip()
+            if kb_path:
+                kb = load_json_file(os.path.abspath(kb_path))
+            else:
+                kb = load_json_file(resolve_path("knowledge.json"))
             return kb if isinstance(kb, dict) else {}
         except Exception as exc:  # noqa: BLE001
             return {
@@ -171,6 +184,10 @@ class GroundingPackService:
         entries = kb.get("entries")
         items = entries if isinstance(entries, list) else []
         toks = _tokenize(prompt)
+
+        # Prevent low-signal matches that cause false positives (e.g., "plan" matching agent roles).
+        low_signal = {"plan", "plans", "planning"}
+        toks_high = [t for t in toks if t not in low_signal]
 
         scored: List[Tuple[float, Dict[str, Any]]] = []
         for e in items:
@@ -189,10 +206,13 @@ class GroundingPackService:
             # Tokenize content to avoid substring false positives.
             content_tokens = set(_tokenize(content))
 
-            overlap = 0
+            overlap_total = 0
+            overlap_high = 0
             for t in toks:
                 if t and t in content_tokens:
-                    overlap += 1
+                    overlap_total += 1
+                    if t in toks_high:
+                        overlap_high += 1
 
             pr = e.get("priority")
             try:
@@ -200,13 +220,20 @@ class GroundingPackService:
             except Exception:
                 prf = 0.0
 
-            # Strict retrieval: require at least one overlapping token.
-            # Priority only breaks ties among overlapping entries.
-            if overlap <= 0:
+            # Coverage gating:
+            # - If prompt has >=2 meaningful tokens, require >=2 total overlaps AND at least
+            #   one overlap from a non-generic token (prevents "plan"-only matches).
+            # - If prompt has 0/1 tokens, require >=1 overlap.
+            if len(toks) >= 2:
+                if overlap_total < 2 or overlap_high < 1:
+                    continue
+            else:
+                if overlap_total <= 0:
+                    continue
                 continue
 
             # Deterministic score: overlap dominates; priority breaks ties.
-            score = float(overlap) * 10.0 + prf
+            score = float(overlap_total) * 10.0 + prf
             scored.append((score, e))
 
         # Deterministic sorting
@@ -254,6 +281,16 @@ class GroundingPackService:
         kb_retrieval = cls._retrieve_kb(prompt=prompt, kb=kb_file)
         t_kb1 = time.perf_counter()
 
+        # Deterministic domain diagnostics: business plan questions must be backed by
+        # a dedicated KB entry; otherwise we force unknown-mode downstream.
+        business_plan_missing = False
+        if _is_business_plan_query(prompt):
+            used = set(
+                [x for x in (kb_retrieval.used_entry_ids or []) if isinstance(x, str)]
+            )
+            if "plans_business_plan_001" not in used:
+                business_plan_missing = True
+
         # Notion snapshot (SSOT wrapper is already stable)
         notion_snapshot = (
             knowledge_snapshot if isinstance(knowledge_snapshot, dict) else {}
@@ -279,6 +316,9 @@ class GroundingPackService:
         if not isinstance(kb_entries, list) or len(kb_entries or []) == 0:
             missing_keys.append("kb_snapshot")
 
+        if business_plan_missing:
+            missing_keys.append("plans_business_plan_001")
+
         errors: List[Dict[str, Any]] = []
         if isinstance(identity_pack.get("errors"), list):
             for e in identity_pack.get("errors"):
@@ -293,7 +333,7 @@ class GroundingPackService:
             "schema_version": "v1",
             "notion": {
                 "targeted_reads_enabled": bool(cls.notion_targeted_reads_enabled()),
-                "max_calls": cls._env_int("CEO_NOTION_MAX_CALLS", 2),
+                "max_calls": cls._env_int("CEO_NOTION_MAX_CALLS", 3),
                 "max_payload_bytes": cls._env_int(
                     "CEO_NOTION_MAX_PAYLOAD_BYTES", 25000
                 ),
@@ -484,7 +524,9 @@ class GroundingPackService:
             "schema_version": "v1",
             "generated_at": _now_iso(),
             "missing_keys": missing_keys,
-            "recommended_action": recommended_action,
+            "recommended_action": (
+                "add_identity_kb_entry" if business_plan_missing else recommended_action
+            ),
             "last_sync": notion_snapshot.get("last_sync"),
             "errors": errors,
             "counts": counts,

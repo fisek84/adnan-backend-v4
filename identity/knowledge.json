@@ -57,6 +57,15 @@
       "updated_at": "2025-12-26"
     },
     {
+      "id": "plans_business_plan_001",
+      "title": "Business plan (biznis plan) — kanonski okvir",
+      "tags": ["plans", "business_plan", "strategy"],
+      "applies_to": ["all"],
+      "priority": 0.85,
+      "content": "Business plan / biznis plan je strukturirani dokument (ili pitch deck) koji objašnjava: (1) problem i ciljnu grupu, (2) rješenje i value proposition, (3) tržište i konkurenciju, (4) go-to-market strategiju (kanali, ponuda, cijene), (5) operacije (tim, proces, resursi), (6) finansije (prihodi, troškovi, unit economics), i (7) plan implementacije + KPI-je (30/60/90 dana). Ako treba, mogu dati minimalni 1-page template i listu pitanja za popunu.",
+      "updated_at": "2026-01-22"
+    },
+    {
       "id": "output_format_001",
       "title": "Standard format odgovora",
       "tags": ["output", "format", "communication"],

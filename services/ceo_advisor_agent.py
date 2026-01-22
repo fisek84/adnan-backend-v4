@@ -216,7 +216,7 @@ def _unknown_mode_text(*, english_output: bool) -> str:
             "- Any constraints (time, tools, scope)?"
         )
     return (
-        "Nemam ovo znanje još (nije u kuriranom KB-u / trenutnom snapshotu).\n\n"
+        "Trenutno nemam to znanje (nije u kuriranom KB-u / trenutnom snapshotu).\n\n"
         "Opcije:\n"
         "1) Razjasni: odgovori na 1–3 pitanja i daću najbolji mogući odgovor (jasno ću označiti pretpostavke).\n"
         "2) Proširi znanje: napiši 'Proširi znanje: ...' i pripremiću approval-gated prijedlog za upis.\n\n"
@@ -233,12 +233,15 @@ def _should_use_kickoff_in_offline_mode(user_text: str) -> bool:
         return False
     # If user is asking about goals/tasks/KPIs/planning in an empty state,
     # the deterministic kickoff is a good enterprise-safe fallback.
-    return bool(
-        re.search(
-            r"(?i)\b(cilj\w*|goal\w*|task\w*|zadat\w*|kpi\w*|plan\w*|weekly|sedmic\w*)\b",
-            t,
-        )
+    # IMPORTANT: don't trigger dashboard/kickoff purely on the word "plan".
+    # Otherwise normal questions like "biznis plan" get wrongly routed to GOALS/TASKS.
+    wants_targets = bool(
+        re.search(r"(?i)\b(cilj\w*|goal\w*|task\w*|zadat\w*|kpi\w*)\b", t)
     )
+    wants_planning = bool(re.search(r"(?i)\b(weekly|sedmic\w*)\b", t)) or (
+        wants_targets and bool(re.search(r"(?i)\b(plan\w*)\b", t))
+    )
+    return wants_targets or wants_planning
 
 
 def _is_prompt_preparation_request(user_text: str) -> bool:
@@ -461,7 +464,6 @@ def _needs_structured_snapshot_answer(user_text: str) -> bool:
         "zadaci",
         "prioritet",
         "kpi",
-        "plan",
         "planovi",
         "weekly",
         "sedmica",
@@ -472,7 +474,18 @@ def _needs_structured_snapshot_answer(user_text: str) -> bool:
         "izlistaj",
         "sazetak",
     )
-    return any(k in t for k in keywords)
+
+    if any(k in t for k in keywords):
+        return True
+
+    # Allow "plan" to trigger structured mode ONLY when it is clearly about
+    # goals/tasks/KPIs planning, not generic "business plan" questions.
+    if "plan" in t and bool(
+        re.search(r"(?i)\b(cilj\w*|goal\w*|task\w*|zadat\w*|kpi\w*)\b", t)
+    ):
+        return True
+
+    return False
 
 
 def _is_show_request(user_text: str) -> bool:

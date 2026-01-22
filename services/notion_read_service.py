@@ -110,7 +110,7 @@ class NotionReadService:
         if not q:
             return {"title": "", "url": "", "content_markdown": ""}
 
-        max_calls = env_int("CEO_NOTION_MAX_CALLS", 2)
+        max_calls = env_int("CEO_NOTION_MAX_CALLS", 3)
         max_latency_ms = env_int("CEO_NOTION_MAX_LATENCY_MS", 1500)
 
         try:

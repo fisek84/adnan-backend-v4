@@ -1505,7 +1505,7 @@ class NotionService:
             "errors": [],
         }
 
-        max_calls = env_int("CEO_NOTION_MAX_CALLS", 2)
+        max_calls = env_int("CEO_NOTION_MAX_CALLS", 3)
         max_latency_ms = env_int("CEO_NOTION_MAX_LATENCY_MS", 1500)
         meta["budget"] = {
             "schema_version": "v1",
