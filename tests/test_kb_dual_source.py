@@ -84,6 +84,16 @@ def test_notion_mapping_and_status_skip():
     }
     assert map_notion_page_to_kb_entry(page_inactive) is None
 
+    page_inactive_status_type = {
+        "properties": {
+            "Name": {"title": [{"plain_text": "T"}]},
+            "ID": {"rich_text": [{"plain_text": "id3"}]},
+            "Content": {"rich_text": [{"plain_text": "x"}]},
+            "Status": {"status": {"name": "inactive"}},
+        }
+    }
+    assert map_notion_page_to_kb_entry(page_inactive_status_type) is None
+
 
 @pytest.mark.anyio
 async def test_notion_singleflight_one_http_call(monkeypatch):

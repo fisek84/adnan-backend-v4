@@ -68,11 +68,18 @@ def map_notion_page_to_kb_entry(page: Dict[str, Any]) -> Optional[KBEntry]:
 
     status = props.get("Status")
     if isinstance(status, dict):
+        # Support both legacy `select` and Notion `status` property types.
         sel = status.get("select")
-        if isinstance(sel, dict):
+        st = status.get("status")
+
+        name: Optional[str] = None
+        if isinstance(sel, dict) and isinstance(sel.get("name"), str):
             name = sel.get("name")
-            if isinstance(name, str) and name.strip().lower() != "active":
-                return None
+        elif isinstance(st, dict) and isinstance(st.get("name"), str):
+            name = st.get("name")
+
+        if isinstance(name, str) and name.strip() and name.strip().lower() != "active":
+            return None
 
     title_prop = props.get("Name")
     title = ""
