@@ -19,7 +19,7 @@ def _get_token() -> str:
 
 def _chunk_rich_text(text: str, *, chunk_size: int = 1900) -> List[Dict[str, Any]]:
     # Notion rich_text has practical size limits; keep conservative.
-    t = (text or "")
+    t = text or ""
     if not t:
         return []
     out: List[Dict[str, Any]] = []
@@ -35,24 +35,20 @@ def _props_from_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
     content = entry.get("content") if isinstance(entry.get("content"), str) else ""
 
     tags = entry.get("tags") if isinstance(entry.get("tags"), list) else []
-    tags_ms = [
-        {"name": x}
-        for x in tags
-        if isinstance(x, str) and x.strip()
-    ]
+    tags_ms = [{"name": x} for x in tags if isinstance(x, str) and x.strip()]
 
-    applies = entry.get("applies_to") if isinstance(entry.get("applies_to"), list) else []
-    applies_ms = [
-        {"name": x}
-        for x in applies
-        if isinstance(x, str) and x.strip()
-    ]
+    applies = (
+        entry.get("applies_to") if isinstance(entry.get("applies_to"), list) else []
+    )
+    applies_ms = [{"name": x} for x in applies if isinstance(x, str) and x.strip()]
 
     pr = entry.get("priority")
     priority = float(pr) if isinstance(pr, (int, float)) else 0.5
 
     updated_at = entry.get("updated_at")
-    updated_start = updated_at if isinstance(updated_at, str) and updated_at.strip() else None
+    updated_start = (
+        updated_at if isinstance(updated_at, str) and updated_at.strip() else None
+    )
 
     props: Dict[str, Any] = {
         "Name": {"title": [{"type": "text", "text": {"content": title or kb_id}}]},
@@ -127,7 +123,11 @@ async def main() -> None:
     base_url = (os.getenv("NOTION_API_BASE_URL") or "https://api.notion.com").strip()
 
     kb_path = (os.getenv("IDENTITY_KNOWLEDGE_PATH") or "").strip()
-    kb = load_json_file(os.path.abspath(kb_path)) if kb_path else load_json_file(resolve_path("knowledge.json"))
+    kb = (
+        load_json_file(os.path.abspath(kb_path))
+        if kb_path
+        else load_json_file(resolve_path("knowledge.json"))
+    )
 
     entries = kb.get("entries") if isinstance(kb, dict) else []
     items = entries if isinstance(entries, list) else []
@@ -142,12 +142,16 @@ async def main() -> None:
     updated = 0
     skipped = 0
 
-    async with httpx.AsyncClient(base_url=base_url, headers=headers, timeout=15.0) as client:
+    async with httpx.AsyncClient(
+        base_url=base_url, headers=headers, timeout=15.0
+    ) as client:
         for raw in items:
             if not isinstance(raw, dict):
                 skipped += 1
                 continue
-            if not isinstance(raw.get("id"), str) or not isinstance(raw.get("content"), str):
+            if not isinstance(raw.get("id"), str) or not isinstance(
+                raw.get("content"), str
+            ):
                 skipped += 1
                 continue
 

@@ -153,12 +153,16 @@ class NotionKBStore(KBStore):
         transport: Optional[httpx.AsyncBaseTransport] = None,
     ) -> None:
         self._db_id = (db_id or os.getenv("NOTION_KB_DB_ID") or "").strip()
-        self._base_url = (base_url or os.getenv("NOTION_API_BASE_URL") or "https://api.notion.com").strip()
+        self._base_url = (
+            base_url or os.getenv("NOTION_API_BASE_URL") or "https://api.notion.com"
+        ).strip()
         self._notion_version = (
             notion_version or os.getenv("NOTION_VERSION") or "2022-06-28"
         ).strip()
-        self._ttl = cache_ttl_seconds if cache_ttl_seconds is not None else _env_int(
-            "KB_NOTION_CACHE_TTL_SECONDS", 900
+        self._ttl = (
+            cache_ttl_seconds
+            if cache_ttl_seconds is not None
+            else _env_int("KB_NOTION_CACHE_TTL_SECONDS", 900)
         )
         self._timeout = timeout_seconds
         self._transport = transport

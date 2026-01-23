@@ -6,8 +6,9 @@ from services.kb_types import KBEntry
 
 
 class KBStore(Protocol):
-    async def get_entries(self, ctx: Optional[Dict[str, Any]] = None) -> List[KBEntry]:
-        ...
+    async def get_entries(
+        self, ctx: Optional[Dict[str, Any]] = None
+    ) -> List[KBEntry]: ...
 
     def get_meta(self) -> Dict[str, Any]:
         """Returns metadata about the most recent `get_entries` call.

@@ -56,7 +56,9 @@ def test_notion_mapping_and_status_skip():
             "Tags": {"multi_select": [{"name": "a"}, {"name": "b"}]},
             "AppliesTo": {"multi_select": []},
             "Priority": {"number": 0.9},
-            "Content": {"rich_text": [{"plain_text": "line1"}, {"plain_text": "line2"}]},
+            "Content": {
+                "rich_text": [{"plain_text": "line1"}, {"plain_text": "line2"}]
+            },
             "UpdatedAt": {"date": {"start": "2026-01-02"}},
             "Status": {"select": {"name": "active"}},
         },
@@ -143,7 +145,9 @@ def test_file_mode_retrieval_matches_raw_loader(monkeypatch):
     monkeypatch.setenv("CEO_NOTION_TARGETED_READS_ENABLED", "false")
 
     kb_raw = load_json_file(resolve_path("knowledge.json"))
-    baseline = GroundingPackService._retrieve_kb(prompt="notion ops approval dispatch", kb=kb_raw)
+    baseline = GroundingPackService._retrieve_kb(
+        prompt="notion ops approval dispatch", kb=kb_raw
+    )
 
     gp = GroundingPackService.build(
         prompt="notion ops approval dispatch",
@@ -190,7 +194,9 @@ async def test_kb_source_notion_success_and_fallback(monkeypatch):
         }
         return httpx.Response(200, json=body)
 
-    ok_store = NotionKBStore(db_id="db", base_url="http://test", transport=httpx.MockTransport(ok_handler))
+    ok_store = NotionKBStore(
+        db_id="db", base_url="http://test", transport=httpx.MockTransport(ok_handler)
+    )
 
     import services.kb_get_store as kb_get_store
 
@@ -208,7 +214,9 @@ async def test_kb_source_notion_success_and_fallback(monkeypatch):
         return httpx.Response(500, json={"error": "boom"})
 
     _reset_cache_for_tests()
-    fail_store = NotionKBStore(db_id="db", base_url="http://test", transport=httpx.MockTransport(fail_handler))
+    fail_store = NotionKBStore(
+        db_id="db", base_url="http://test", transport=httpx.MockTransport(fail_handler)
+    )
     kb_get_store._NOTION_STORE = fail_store
     kb_get_store._FALLBACK_STORE = None
 
