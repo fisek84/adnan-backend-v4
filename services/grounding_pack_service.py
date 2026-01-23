@@ -5,10 +5,28 @@ import json
 import os
 import re
 import time
+import logging
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 from services.grounding_policy import classify_prompt
+
+
+logger = logging.getLogger(__name__)
+
+
+_KB_EXECUTOR = ThreadPoolExecutor(max_workers=4)
+
+
+def _run_coro_in_worker(coro: Any) -> Any:
+    """Run an async coroutine from sync code, even when an event loop is already running."""
+
+    def _runner() -> Any:
+        return asyncio.run(coro)
+
+    return _KB_EXECUTOR.submit(_runner).result()
 
 
 def _env_true(name: str, default: str = "true") -> bool:
@@ -167,24 +185,63 @@ class GroundingPackService:
             }
 
     @classmethod
-    def _load_kb_file(cls) -> Dict[str, Any]:
-        try:
-            from services.identity_loader import load_json_file, resolve_path  # noqa: PLC0415
+    def _load_kb_file(
+        cls, *, ctx: Optional[Dict[str, Any]] = None
+    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        """Load KB payload.
 
-            # Allow tests to override KB file without redirecting the whole identity directory.
-            kb_path = (os.getenv("IDENTITY_KNOWLEDGE_PATH") or "").strip()
-            if kb_path:
-                kb = load_json_file(os.path.abspath(kb_path))
-            else:
-                kb = load_json_file(resolve_path("knowledge.json"))
-            return kb if isinstance(kb, dict) else {}
-        except Exception as exc:  # noqa: BLE001
-            return {
+        Back-compat guarantee:
+        - Default (KB_SOURCE unset) uses FILE and returns payload compatible with the
+          previous `identity/knowledge.json` loader.
+        - Only the KB entries source can change (file vs Notion).
+        """
+
+        try:
+            from services.kb_get_store import get_kb_store  # noqa: PLC0415
+            from services.kb_file_store import FileKBStore  # noqa: PLC0415
+
+            store = get_kb_store()
+            meta: Dict[str, Any] = (
+                store.get_meta() if hasattr(store, "get_meta") else {}
+            )
+
+            # Preserve top-level payload fields from the file format when possible.
+            kb_file: Dict[str, Any] = {
                 "version": "unknown",
-                "description": "kb_load_failed",
+                "description": None,
                 "entries": [],
-                "_error": str(exc),
             }
+
+            if isinstance(store, FileKBStore):
+                payload, entries = store.load_payload_and_entries()
+                kb_file = payload if isinstance(payload, dict) else kb_file
+                kb_file["entries"] = entries
+                meta = store.get_meta()
+            else:
+                entries = _run_coro_in_worker(store.get_entries(ctx))
+                kb_file = {
+                    "version": "notion",
+                    "description": "notion_kb",
+                    "entries": entries if isinstance(entries, list) else [],
+                }
+                meta = store.get_meta()
+
+            return kb_file, (meta if isinstance(meta, dict) else {})
+        except Exception as exc:  # noqa: BLE001
+            return (
+                {
+                    "version": "unknown",
+                    "description": "kb_load_failed",
+                    "entries": [],
+                    "_error": str(exc),
+                },
+                {
+                    "source": "file",
+                    "cache_hit": False,
+                    "last_sync": None,
+                    "error_code": getattr(exc, "error_code", None),
+                },
+            )
 
     @classmethod
     def _retrieve_kb(cls, *, prompt: str, kb: Dict[str, Any]) -> KBRetrievalResult:
@@ -281,12 +338,47 @@ class GroundingPackService:
         identity_pack = cls._load_identity_pack()
         identity_hash = _sha256_hex(identity_pack)
 
-        kb_file = cls._load_kb_file()
+        ctx: Dict[str, Any] = {}
+        if isinstance(agent_id, str) and agent_id.strip():
+            ctx["agent_id"] = agent_id.strip()
+        if isinstance(legacy_trace, dict):
+            rid = legacy_trace.get("request_id") or legacy_trace.get("requestId")
+            if isinstance(rid, str) and rid.strip():
+                ctx["request_id"] = rid.strip()
+
+        t_kb_load0 = time.perf_counter()
+        kb_file, kb_meta = cls._load_kb_file(ctx=ctx)
+        t_kb_load1 = time.perf_counter()
         kb_hash = _sha256_hex(kb_file)
 
         t_kb0 = time.perf_counter()
         kb_retrieval = cls._retrieve_kb(prompt=prompt, kb=kb_file)
         t_kb1 = time.perf_counter()
+
+        try:
+            src = (
+                kb_meta.get("source") if isinstance(kb_meta, dict) else None
+            ) or "file"
+            cache_hit = (
+                bool(kb_meta.get("cache_hit")) if isinstance(kb_meta, dict) else False
+            )
+            fallback_used = src == "file_fallback"
+            logger.info(
+                "KB retrieval loaded",
+                extra={
+                    "kb_source": src,
+                    "cache_hit": cache_hit,
+                    "entries_count": len(kb_file.get("entries") or [])
+                    if isinstance(kb_file.get("entries"), list)
+                    else 0,
+                    "fallback_used": fallback_used,
+                    "latency_ms": int(round((t_kb_load1 - t_kb_load0) * 1000.0)),
+                    "request_id": ctx.get("request_id"),
+                    "error_code": kb_meta.get("error_code") if fallback_used else None,
+                },
+            )
+        except Exception:
+            pass
 
         # Deterministic domain diagnostics: business plan questions must be backed by
         # a dedicated KB entry; otherwise we force unknown-mode downstream.
