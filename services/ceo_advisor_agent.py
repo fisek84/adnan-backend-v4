@@ -8,7 +8,6 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from models.agent_contract import AgentInput, AgentOutput, ProposedCommand
 from models.canon import PROPOSAL_WRAPPER_INTENT
-from services.agent_router.openai_assistant_executor import OpenAIAssistantExecutor
 
 # PHASE 6: Import shared Notion Ops state management
 
@@ -1764,7 +1763,9 @@ async def create_ceo_advisor_agent(
 
     if use_llm:
         try:
-            executor = OpenAIAssistantExecutor()
+            from services.agent_router.executor_factory import get_executor
+
+            executor = get_executor(purpose="ceo_advisor")
             raw = await executor.ceo_command(text=prompt_text, context=safe_context)
             if isinstance(raw, dict):
                 result = raw

@@ -150,6 +150,10 @@ curl -X POST http://localhost:8000/api/notion-ops/toggle \
 - `CEO_APPROVAL_TOKEN=<secret>` - CEO authentication token
 - `OPS_SAFE_MODE=true` - Enable safe mode (CEOs bypass)
 
+### Optional (OpenAI API migration flag)
+- `OPENAI_API_MODE=assistants|responses` - Feature flag for OpenAI API mode (default: `assistants`)
+- `OPENAI_RESPONSES_MODEL=<model>` - Model name used when `OPENAI_API_MODE=responses` (default: `gpt-4.1-mini`)
+
 ## Security Model
 
 ### CEO Users Can:

@@ -1,7 +1,6 @@
 # services/ops_planner.py
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import os
@@ -9,7 +8,11 @@ import re
 import time
 from typing import Any, Dict, Optional
 
-from openai import OpenAI
+from services.agent_router.executor_errors import (
+    ExecutorTimeout,
+    ExecutorToolCallAttempt,
+)
+from services.agent_router.executor_factory import get_executor
 
 logger = logging.getLogger(__name__)
 
@@ -200,7 +203,7 @@ class OpsPlanner:
         self._poll_interval_s = float(poll_interval_s)
         self._max_wait_s = float(max_wait_s)
 
-        self.client = OpenAI(api_key=api_key)
+        # OpenAI client is owned by the executor implementation.
 
     def _get_assistant_id_or_raise(self) -> str:
         aid = os.getenv(self._assistant_id_env) or os.getenv(
@@ -211,86 +214,6 @@ class OpsPlanner:
                 f"Missing assistant id: set {self._assistant_id_env} (or fallback {self._fallback_assistant_id_env})."
             )
         return aid
-
-    async def _to_thread(self, fn, *args, **kwargs):
-        return await asyncio.to_thread(fn, *args, **kwargs)
-
-    async def _cancel_run_best_effort(self, *, thread_id: str, run_id: str) -> None:
-        try:
-            await self._to_thread(
-                self.client.beta.threads.runs.cancel, thread_id=thread_id, run_id=run_id
-            )
-        except Exception:
-            return
-
-    async def _wait_for_completion(self, *, thread_id: str, run_id: str) -> None:
-        start = time.monotonic()
-
-        while True:
-            if time.monotonic() - start > self._max_wait_s:
-                await self._cancel_run_best_effort(thread_id=thread_id, run_id=run_id)
-                raise OpsPlannerTimeout("OpsPlanner run timed out")
-
-            run_status = await self._to_thread(
-                self.client.beta.threads.runs.retrieve,
-                thread_id=thread_id,
-                run_id=run_id,
-            )
-
-            status = getattr(run_status, "status", None)
-
-            if status == "requires_action":
-                # No tools allowed: hard fail
-                await self._cancel_run_best_effort(thread_id=thread_id, run_id=run_id)
-                raise OpsPlannerToolCallAttempt(
-                    "OpsPlanner attempted tool calls (requires_action)"
-                )
-
-            if status == "completed":
-                return
-
-            if status in {"failed", "cancelled", "expired"}:
-                last_error = getattr(run_status, "last_error", None)
-                code = getattr(last_error, "code", None) if last_error else None
-                msg = getattr(last_error, "message", None) if last_error else None
-                raise OpsPlannerError(
-                    f"OpsPlanner run failed: status={status} code={code} message={msg}"
-                )
-
-            await asyncio.sleep(self._poll_interval_s)
-
-    async def _get_final_text(self, *, thread_id: str) -> str:
-        messages = await self._to_thread(
-            self.client.beta.threads.messages.list, thread_id=thread_id
-        )
-        data = getattr(messages, "data", None) or []
-        assistant_msgs = [m for m in data if getattr(m, "role", None) == "assistant"]
-        if not assistant_msgs:
-            raise OpsPlannerError("OpsPlanner produced no assistant message")
-
-        def _created_at(m: Any) -> int:
-            ca = getattr(m, "created_at", None)
-            return int(ca) if isinstance(ca, int) else 0
-
-        msg = max(assistant_msgs, key=_created_at)
-        content = getattr(msg, "content", None)
-        if not content:
-            raise OpsPlannerError("OpsPlanner assistant message has empty content")
-
-        chunks: list[str] = []
-        for part in content:
-            # Newer SDK: part.type == "text" and part.text.value contains text
-            ptype = getattr(part, "type", None)
-            if ptype == "text":
-                text_obj = getattr(part, "text", None)
-                value = getattr(text_obj, "value", None) if text_obj else None
-                if isinstance(value, str) and value.strip():
-                    chunks.append(value)
-
-        out = "\n".join(chunks).strip()
-        if not out:
-            raise OpsPlannerError("OpsPlanner produced empty text")
-        return out
 
     async def plan_ai_commands(self, prompt: str, snapshot: Any) -> Dict[str, Any]:
         p = (prompt or "").strip()
@@ -312,40 +235,32 @@ class OpsPlanner:
             },
         }
 
-        thread = await self._to_thread(self.client.beta.threads.create)
-
-        await self._to_thread(
-            self.client.beta.threads.messages.create,
-            thread_id=thread.id,
-            role="user",
-            content=_safe_dumps(envelope),
-        )
-
         t0 = time.monotonic()
 
         # NOTE: do NOT set tool_choice="none" (your API rejects it).
         # We enforce no-tools by system prompt + requires_action guard.
         try:
-            run = await self._to_thread(
-                self.client.beta.threads.runs.create,
-                thread_id=thread.id,
-                assistant_id=assistant_id,
-                instructions=_OPS_PLANNER_SYSTEM_PROMPT,
-                response_format={"type": "json_object"},
-                temperature=0,
+            executor = get_executor(purpose="ops_planner")
+            parsed = await executor.execute(
+                {
+                    "assistant_id": assistant_id,
+                    "content": _safe_dumps(envelope),
+                    "instructions": _OPS_PLANNER_SYSTEM_PROMPT,
+                    "response_format": {"type": "json_object"},
+                    "temperature": 0,
+                    "parse_mode": "text_json",
+                    "limit": 10,
+                    "input": _safe_dumps(envelope),
+                    "allow_tools": False,
+                }
             )
-        except TypeError:
-            # Compatibility fallback
-            run = await self._to_thread(
-                self.client.beta.threads.runs.create,
-                thread_id=thread.id,
-                assistant_id=assistant_id,
-            )
+        except ExecutorToolCallAttempt as e:
+            raise OpsPlannerToolCallAttempt(str(e)) from e
+        except ExecutorTimeout as e:
+            raise OpsPlannerTimeout(str(e)) from e
+        except Exception as e:  # noqa: BLE001
+            raise OpsPlannerError(f"OpsPlanner execution failed: {e}") from e
 
-        await self._wait_for_completion(thread_id=thread.id, run_id=run.id)
-
-        final_text = await self._get_final_text(thread_id=thread.id)
-        parsed = _json_parse_or_raise(final_text)
         parsed = _validate_plan_or_raise(parsed)
 
         elapsed_ms = int((time.monotonic() - t0) * 1000)

@@ -56,11 +56,9 @@ async def _llm_readonly_advice(prompt: str, user_text: str) -> str:
     """
     # 1) Prefer canonical executor if present
     try:
-        from services.agent_router.openai_assistant_executor import (  # type: ignore
-            OpenAIAssistantExecutor,
-        )
+        from services.agent_router.executor_factory import get_executor
 
-        execr = OpenAIAssistantExecutor()
+        execr = get_executor(purpose="ceo_advisor")
         if hasattr(execr, "chat_readonly"):
             out = await execr.chat_readonly(text=user_text, system_prompt=prompt)  # type: ignore[misc]
             if isinstance(out, str) and out.strip():
