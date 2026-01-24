@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import time
+import uuid
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Dict, Optional
@@ -1276,7 +1277,8 @@ class OpenAIAssistantExecutor:
 
         except Exception as exc:  # noqa: BLE001
             elapsed_ms = int((time.monotonic() - t0) * 1000)
-            logger.exception("CEO advisory failed (assistant_id=%s)", assistant_id)
+            err_id = str(uuid.uuid4())
+            logger.exception("CEO_ADVISORY_FAILED err_id=%s", err_id)
 
             err_type = exc.__class__.__name__
             err_msg = str(exc)[:2000]
@@ -1295,7 +1297,7 @@ class OpenAIAssistantExecutor:
                     f"CEO advisory nije mogao završiti (internal error: {err_type})."
                 )
                 text_out = (
-                    f"CEO advisory nije mogao završiti (internal error: {err_type})."
+                    f"CEO advisory nije mogao završiti (internal error: {err_type}; err_id={err_id})."
                 )
 
             if os.getenv("DEBUG_CEO_ADVISOR_ERRORS") == "1":
