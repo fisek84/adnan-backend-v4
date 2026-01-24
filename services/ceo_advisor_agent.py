@@ -1407,18 +1407,37 @@ async def create_ceo_advisor_agent(
         and (not snapshot_has_facts)
         and (not _should_use_kickoff_in_offline_mode(t0))
     ):
-        return AgentOutput(
-            text=_unknown_mode_text(english_output=english_output),
-            proposed_commands=[],
-            agent_id="ceo_advisor",
-            read_only=True,
-            trace={
-                "deterministic": True,
-                "intent": "unknown_mode",
-                "kb_used_entry_ids": kb_used_ids,
-                "snapshot": snap_trace,
-            },
-        )
+        # default KB-only; enable general knowledge via CEO_ADVISOR_ALLOW_GENERAL_KNOWLEDGE=1
+        allow_general = os.getenv("CEO_ADVISOR_ALLOW_GENERAL_KNOWLEDGE", "0") == "1"
+        if not allow_general:
+            return AgentOutput(
+                text=(
+                    "Trenutno nemam to znanje (nije u kuriranom KB-u / trenutnom snapshotu).\n\n"
+                    "Opcije:\n"
+                    "1) Razjasni: odgovori na 1–3 pitanja i daću najbolji mogući odgovor (jasno ću označiti pretpostavke).\n"
+                    "2) Proširi znanje: napiši 'Proširi znanje: ...' i pripremiću approval-gated prijedlog za upis.\n\n"
+                    "Brza pitanja:\n"
+                    "- Šta ti tačno treba: definicija, odluka ili plan implementacije?\n"
+                    "- Koji je kontekst/domena (biz/tech/legal)?\n"
+                    "- Koja su ograničenja (vrijeme, alati, scope)?"
+                ),
+                proposed_commands=[],
+                agent_id="ceo_advisor",
+                read_only=True,
+                notion_ops={
+                    "armed": False,
+                    "armed_at": None,
+                    "session_id": None,
+                    "armed_state": {"armed": False, "armed_at": None},
+                },
+                trace={
+                    "deterministic": True,
+                    "intent": "unknown_mode",
+                    "kb_used_entry_ids": kb_used_ids,
+                    "snapshot": snap_trace,
+                },
+            )
+        # else: allow_general==True, nastavi do LLM path-a (ne vraćaj fallback)
     if fact_sensitive and not snapshot_has_facts:
         trace = ctx.get("trace") if isinstance(ctx, dict) else {}
         if not isinstance(trace, dict):
