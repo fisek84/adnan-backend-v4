@@ -1036,7 +1036,14 @@ class OpenAIAssistantExecutor:
         enforce_dashboard_text = bool(
             ((context or {}).get("metadata") or {}).get("structured_mode")
         )
-        thread = await self._to_thread(self.client.beta.threads.create)
+        api_mode = (os.getenv("OPENAI_API_MODE") or "assistants").strip().lower()
+        responses_model = (
+            os.getenv("OPENAI_RESPONSES_MODEL") or ""
+        ).strip() or "gpt-4.1-mini"
+
+        thread = None
+        if api_mode != "responses":
+            thread = await self._to_thread(self.client.beta.threads.create)
 
         safe_context = dict(context)
         canon = dict(safe_context.get("canon") or {})
@@ -1193,30 +1200,68 @@ class OpenAIAssistantExecutor:
 
         content, shrink_trace = _safe_dumps_for_openai(advisory_contract)
 
-        await self._to_thread(
-            self.client.beta.threads.messages.create,
-            thread_id=thread.id,
-            role="user",
-            content=content,
-        )
+        if thread is not None:
+            await self._to_thread(
+                self.client.beta.threads.messages.create,
+                thread_id=thread.id,
+                role="user",
+                content=content,
+            )
 
         t0 = time.monotonic()
         run = None
         try:
-            run = await self._create_run_best_effort(
-                thread_id=thread.id,
-                assistant_id=assistant_id,
-                instructions=run_instructions,
-                tool_choice=None,
-            )
+            if api_mode == "responses":
+                resp = await self._to_thread(
+                    self.client.responses.create,
+                    model=responses_model,
+                    input=content,
+                    instructions=run_instructions,
+                    temperature=0,
+                    text={"format": {"type": "json_object"}},
+                    tool_choice="none",
+                    tools=[],
+                )
 
-            await self._wait_for_run_completion(
-                thread_id=thread.id, run_id=run.id, allow_tools=False
-            )
+                output = getattr(resp, "output", None) or []
+                for item in output:
+                    itype = getattr(item, "type", None)
+                    if isinstance(itype, str) and itype.lower().endswith("_call"):
+                        raise ReadOnlyToolCallAttempt(
+                            "Run attempted tool calls (hard-blocked): ['(responses_tool_call)']"
+                        )
+                    if isinstance(itype, str) and itype.lower() in {
+                        "function_call",
+                        "tool_call",
+                    }:
+                        raise ReadOnlyToolCallAttempt(
+                            "Run attempted tool calls (hard-blocked): ['(responses_tool_call)']"
+                        )
 
-            final_text = await self._get_final_assistant_message_text(
-                thread_id=thread.id
-            )
+                final_text = getattr(resp, "output_text", None)
+                if not isinstance(final_text, str) or not final_text.strip():
+                    raise RuntimeError("Assistant produced no response")
+                final_text = final_text.strip()
+
+            else:
+                if thread is None:
+                    raise RuntimeError("internal_error: missing_thread")
+
+                run = await self._create_run_best_effort(
+                    thread_id=thread.id,
+                    assistant_id=assistant_id,
+                    instructions=run_instructions,
+                    tool_choice=None,
+                )
+
+                await self._wait_for_run_completion(
+                    thread_id=thread.id, run_id=run.id, allow_tools=False
+                )
+
+                final_text = await self._get_final_assistant_message_text(
+                    thread_id=thread.id
+                )
+
             parsed = self._safe_json_parse(final_text)
             parsed = _ensure_contract(
                 parsed, enforce_dashboard_text=enforce_dashboard_text
@@ -1293,7 +1338,9 @@ class OpenAIAssistantExecutor:
                 "proposed_commands": [],
                 "trace": {
                     "assistant_id": assistant_id,
-                    "thread_id": getattr(thread, "id", None),
+                    "thread_id": getattr(thread, "id", None)
+                    if thread is not None
+                    else None,
                     "run_id": getattr(run, "id", None) if run else None,
                     "read_only_guard": True,
                     "no_tools_guard": True,

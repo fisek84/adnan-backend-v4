@@ -15,10 +15,11 @@ Uloga:
 
 from typing import Dict, Any, Optional
 import os
-import asyncio
 import uuid
 
-from openai import OpenAI
+import json
+
+from services.agent_router.executor_factory import get_executor
 
 from services.agent_registry_service import AgentRegistryService
 from services.agent_load_balancer_service import AgentLoadBalancerService
@@ -34,8 +35,6 @@ class AgentRouter:
         health_service: Optional[AgentHealthService] = None,
         isolation_service: Optional[AgentIsolationService] = None,
     ):
-        self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
         # SOURCES OF TRUTH
         self._registry = registry or AgentRegistryService()
         self._load = load_balancer or AgentLoadBalancerService()
@@ -125,43 +124,39 @@ class AgentRouter:
             }
 
         try:
-            thread = self.client.beta.threads.create()
+            executor = get_executor(purpose="agent_router")
 
-            self.client.beta.threads.messages.create(
-                thread_id=thread.id,
-                role="user",
-                content={
-                    "execution_id": execution_id,
-                    "command": command,
-                    "payload": payload.get("payload", {}),
-                },
+            content_obj = {
+                "execution_id": execution_id,
+                "command": command,
+                "payload": payload.get("payload", {}),
+            }
+
+            instructions = (agent.get("metadata") or {}).get("instructions") or (
+                agent.get("metadata") or {}
+            ).get("system_prompt")
+
+            if (
+                os.getenv("OPENAI_API_MODE") or "assistants"
+            ).strip().lower() == "responses":
+                if not isinstance(instructions, str) or not instructions.strip():
+                    raise RuntimeError(
+                        "responses_mode_requires_agent_instructions_in_metadata"
+                    )
+
+            result_json = await executor.execute(
+                {
+                    "assistant_id": assistant_id,
+                    "content": content_obj,
+                    "instructions": instructions,
+                    "response_format": {"type": "json_object"},
+                    "temperature": 0,
+                    "parse_mode": "output_json",
+                    "limit": 1,
+                    "input": json.dumps(content_obj, ensure_ascii=False),
+                    "allow_tools": False,
+                }
             )
-
-            run = self.client.beta.threads.runs.create(
-                thread_id=thread.id,
-                assistant_id=assistant_id,
-                temperature=0,
-                response_format={"type": "json_object"},
-            )
-
-            while run.status not in {"completed", "failed", "cancelled"}:
-                await asyncio.sleep(0.3)
-                run = self.client.beta.threads.runs.retrieve(
-                    thread_id=thread.id,
-                    run_id=run.id,
-                )
-
-            if run.status != "completed":
-                raise RuntimeError(f"agent_run_status={run.status}")
-
-            messages = self.client.beta.threads.messages.list(
-                thread_id=thread.id,
-                limit=1,
-            )
-
-            content = messages.data[0].content[0]
-            if content["type"] != "output_json":
-                raise RuntimeError("invalid_agent_response")
 
             # ---------------------------------------------
             # SUCCESS SIGNALS
@@ -174,7 +169,7 @@ class AgentRouter:
                 "execution_id": execution_id,
                 "agent": agent_name,
                 "agent_id": agent["agent_id"],
-                "result": content["json"],
+                "result": result_json,
             }
 
         except Exception as e:

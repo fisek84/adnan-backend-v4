@@ -15,11 +15,10 @@ Uloga:
 
 from typing import Dict, Any, Optional
 import os
-import asyncio
 import uuid
 import json
 
-from openai import OpenAI
+from services.agent_router.executor_factory import get_executor
 
 from services.agent_registry_service import AgentRegistryService
 from services.agent_load_balancer_service import AgentLoadBalancerService
@@ -35,8 +34,6 @@ class AgentRouter:
         health_service: Optional[AgentHealthService] = None,
         isolation_service: Optional[AgentIsolationService] = None,
     ):
-        self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
         # SOURCES OF TRUTH
         self._registry = registry or AgentRegistryService()
         self._load = load_balancer or AgentLoadBalancerService()
@@ -124,8 +121,6 @@ class AgentRouter:
             }
 
         try:
-            thread = self.client.beta.threads.create()
-
             user_content = json.dumps(
                 {
                     "execution_id": execution_id,
@@ -135,69 +130,34 @@ class AgentRouter:
                 ensure_ascii=False,
             )
 
-            self.client.beta.threads.messages.create(
-                thread_id=thread.id,
-                role="user",
-                content=user_content,
+            executor = get_executor(purpose="agent_router")
+
+            # In Responses mode, Assistants IDs are not usable; require local instructions.
+            instructions = (agent.get("metadata") or {}).get("instructions") or (
+                agent.get("metadata") or {}
+            ).get("system_prompt")
+
+            if (
+                os.getenv("OPENAI_API_MODE") or "assistants"
+            ).strip().lower() == "responses":
+                if not isinstance(instructions, str) or not instructions.strip():
+                    raise RuntimeError(
+                        "responses_mode_requires_agent_instructions_in_metadata"
+                    )
+
+            result_json = await executor.execute(
+                {
+                    "assistant_id": assistant_id,
+                    "content": user_content,
+                    "instructions": instructions,
+                    "response_format": {"type": "json_object"},
+                    "temperature": 0,
+                    "parse_mode": "text_json",
+                    "limit": 10,
+                    "input": user_content,
+                    "allow_tools": False,
+                }
             )
-
-            run = self.client.beta.threads.runs.create(
-                thread_id=thread.id,
-                assistant_id=assistant_id,
-                temperature=0,
-                response_format={"type": "json_object"},
-            )
-
-            while run.status not in {"completed", "failed", "cancelled"}:
-                await asyncio.sleep(0.3)
-                run = self.client.beta.threads.runs.retrieve(
-                    thread_id=thread.id,
-                    run_id=run.id,
-                )
-
-            if run.status != "completed":
-                raise RuntimeError(f"agent_run_status={run.status}")
-
-            messages = self.client.beta.threads.messages.list(
-                thread_id=thread.id,
-                limit=10,
-            )
-
-            if not getattr(messages, "data", None):
-                raise RuntimeError("no_agent_messages")
-
-            # find the newest assistant message
-            assistant_msgs = [
-                m for m in messages.data if getattr(m, "role", None) == "assistant"
-            ]
-            if not assistant_msgs:
-                raise RuntimeError("no_assistant_message")
-
-            def _created_at(m: Any) -> int:
-                ca = getattr(m, "created_at", None)
-                return int(ca) if isinstance(ca, int) else 0
-
-            msg = max(assistant_msgs, key=_created_at)
-
-            content = getattr(msg, "content", None)
-            if not content:
-                raise RuntimeError("empty_agent_message_content")
-
-            # Expect JSON as text
-            content_block = content[0]
-            if getattr(content_block, "type", None) != "text":
-                raise RuntimeError("invalid_agent_response_type")
-
-            try:
-                text_value = content_block.text.value
-            except AttributeError:
-                # fallback for dict-like blocks
-                text_value = content_block["text"]["value"]  # type: ignore[index]
-
-            try:
-                result_json = json.loads(text_value)
-            except json.JSONDecodeError:
-                raise RuntimeError("invalid_json_response")
 
             # ---------------------------------------------
             # SUCCESS SIGNALS
