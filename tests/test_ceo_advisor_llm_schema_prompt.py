@@ -22,12 +22,14 @@ def test_ceo_advisor_prompt_requires_json_text_field(monkeypatch):
 
     asyncio.run(
         create_ceo_advisor_agent(
-            AgentInput(message="Koji je glavni grad Francuske?", snapshot={}, metadata={}),
+            AgentInput(
+                message="Koji je glavni grad Francuske?", snapshot={}, metadata={}
+            ),
             ctx={},
         )
     )
 
     prompt = captured.get("text") or ""
     assert "json" in prompt.lower()
-    assert "'text'" in prompt or "\"text\"" in prompt
+    assert "'text'" in prompt or '"text"' in prompt
     assert "proposed_commands" in prompt

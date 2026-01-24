@@ -49,5 +49,7 @@ def test_executor_falls_back_to_chat_completions_when_no_responses_api():
     # response_format={type: json_object}.
     msgs = client.chat.completions.last_kwargs.get("messages")
     assert isinstance(msgs, list) and msgs
-    joined = "\n".join(str(m.get("content") or "") for m in msgs if isinstance(m, dict)).lower()
+    joined = "\n".join(
+        str(m.get("content") or "") for m in msgs if isinstance(m, dict)
+    ).lower()
     assert "json" in joined
