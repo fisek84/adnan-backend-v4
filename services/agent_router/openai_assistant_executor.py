@@ -1296,9 +1296,7 @@ class OpenAIAssistantExecutor:
                 summary = (
                     f"CEO advisory nije mogao završiti (internal error: {err_type})."
                 )
-                text_out = (
-                    f"CEO advisory nije mogao završiti (internal error: {err_type}; err_id={err_id})."
-                )
+                text_out = f"CEO advisory nije mogao završiti (internal error: {err_type}; err_id={err_id})."
 
             if os.getenv("DEBUG_CEO_ADVISOR_ERRORS") == "1":
                 text_out = f"{text_out}\n\nDEBUG_ERROR:\n{err_repr}"
