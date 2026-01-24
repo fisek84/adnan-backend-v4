@@ -12,7 +12,7 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
 from models.agent_contract import AgentInput, AgentOutput, ProposedCommand
-from services.ceo_advisor_agent import create_ceo_advisor_agent
+from services.ceo_advisor_agent import create_ceo_advisor_agent, LLMNotConfiguredError
 from dependencies import get_memory_read_only_service
 
 # Must match gateway_server.PROPOSAL_WRAPPER_INTENT
@@ -190,10 +190,13 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
     def _minimal_trace_intent(trace_obj: Any) -> Dict[str, Any]:
         if not isinstance(trace_obj, dict):
             return {}
+        out: Dict[str, Any] = {}
+
         intent = trace_obj.get("intent")
         if isinstance(intent, str) and intent.strip():
-            return {"intent": intent.strip()}
-        return {}
+            out["intent"] = intent.strip()
+
+        return out
 
     def _normalize_proposed_commands(raw: Any) -> List[ProposedCommand]:
         if raw is None:
@@ -786,10 +789,29 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         gp_for_agent = gp_for_agent if isinstance(gp_for_agent, dict) else {}
 
         # Call advisor agent
-        out = await create_ceo_advisor_agent(
-            payload,
-            {"memory": mem_snapshot, "grounding_pack": gp_for_agent},
-        )
+        try:
+            out = await create_ceo_advisor_agent(
+                payload,
+                {"memory": mem_snapshot, "grounding_pack": gp_for_agent},
+            )
+        except LLMNotConfiguredError as e:
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "text": str(e),
+                    "proposed_commands": [],
+                    "agent_id": "ceo_advisor",
+                    "read_only": True,
+                    "trace": {
+                        "intent": "error",
+                        "exit_reason": "error.llm_not_configured",
+                    },
+                    "error": {
+                        "code": "error.llm_not_configured",
+                        "message": str(e),
+                    },
+                },
+            )
 
         legacy_trace = out.trace or {}
         if isinstance(legacy_trace, dict) and isinstance(notion_calls_for_trace, int):

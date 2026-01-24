@@ -199,6 +199,13 @@ def validate_runtime_env_or_raise() -> None:
         logger.critical("Missing ENV vars: %s", ", ".join(missing))
         raise RuntimeError(f"Missing ENV vars: {', '.join(missing)}")
     logger.info("Environment variables validated.")
+    # Helpful boot-time flags (do NOT print secrets).
+    logger.info(
+        "LLM flags: OPENAI_API_MODE=%s CEO_ADVISOR_ALLOW_GENERAL_KNOWLEDGE=%s CEO_ADVISOR_STRICT_LLM=%s",
+        (os.getenv("OPENAI_API_MODE") or "").strip() or "(unset)",
+        (os.getenv("CEO_ADVISOR_ALLOW_GENERAL_KNOWLEDGE") or "").strip() or "0",
+        (os.getenv("CEO_ADVISOR_STRICT_LLM") or "").strip() or "0",
+    )
 
 
 # ================================================================

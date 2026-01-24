@@ -97,6 +97,7 @@ class AgentRouter:
 
         agent_name = agent["agent_name"]
         assistant_id = agent.get("metadata", {}).get("assistant_id")
+        entrypoint = agent.get("metadata", {}).get("entrypoint")
 
         if not assistant_id:
             return {
@@ -121,6 +122,34 @@ class AgentRouter:
             }
 
         try:
+            # Special handling for CEO Advisor: use Python entrypoint, not OpenAI executor
+            if agent_name == "ceo_advisor" and entrypoint:
+                # Dynamically import and call the entrypoint function
+                import importlib
+
+                module_path, func_name = entrypoint.split(":")
+                mod = importlib.import_module(module_path)
+                func = getattr(mod, func_name)
+                # Prepare AgentInput if needed, else pass payload
+                agent_input = payload.get("payload", {})
+                # If async, await; else, call directly
+                import inspect
+
+                if inspect.iscoroutinefunction(func):
+                    result = await func(agent_input, ctx={})
+                else:
+                    result = func(agent_input, ctx={})
+                self._load.record_success(agent_name)
+                self._health.mark_heartbeat(agent_name)
+                return {
+                    "success": True,
+                    "execution_id": execution_id,
+                    "agent": agent_name,
+                    "agent_id": agent.get("agent_id"),
+                    "result": result,
+                }
+
+            # Default: OpenAI executor for all other agents
             user_content = json.dumps(
                 {
                     "execution_id": execution_id,
@@ -132,7 +161,6 @@ class AgentRouter:
 
             executor = get_executor(purpose="agent_router")
 
-            # In Responses mode, Assistants IDs are not usable; require local instructions.
             instructions = (agent.get("metadata") or {}).get("instructions") or (
                 agent.get("metadata") or {}
             ).get("system_prompt")
@@ -159,9 +187,6 @@ class AgentRouter:
                 }
             )
 
-            # ---------------------------------------------
-            # SUCCESS SIGNALS
-            # ---------------------------------------------
             self._load.record_success(agent_name)
             self._health.mark_heartbeat(agent_name)
 
@@ -174,13 +199,9 @@ class AgentRouter:
             }
 
         except Exception as e:
-            # ---------------------------------------------
-            # FAILURE CONTAINMENT
-            # ---------------------------------------------
             self._load.record_failure(agent_name)
             self._health.mark_unhealthy(agent_name, reason=str(e))
             self._isolation.isolate(agent_name)
-
             return {
                 "success": False,
                 "execution_id": execution_id,
@@ -188,6 +209,5 @@ class AgentRouter:
                 "reason": "agent_execution_failed",
                 "error": str(e),
             }
-
         finally:
             self._load.release(agent_name)

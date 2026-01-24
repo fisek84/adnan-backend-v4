@@ -49,15 +49,36 @@ def _wants_goal(user_text: str) -> bool:
 
 
 def _llm_is_configured() -> bool:
-    # Tests must be deterministic and offline.
-    if (os.getenv("TESTING") or "").strip() == "1" or (
-        "PYTEST_CURRENT_TEST" in os.environ
-    ):
+    # Explicit offline/disable flag.
+    if (os.getenv("CEO_ADVISOR_FORCE_OFFLINE") or "").strip() == "1":
         return False
     # Enterprise: avoid hard dependency on OpenAI for basic advisory flows.
     # If not configured, we must produce a useful deterministic response.
     api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
     return bool(api_key)
+
+
+class LLMNotConfiguredError(RuntimeError):
+    """Raised when the request expects LLM execution but no LLM is configured."""
+
+
+def _strict_llm_required(meta: Any) -> bool:
+    """Whether missing LLM configuration should be treated as an error.
+
+    Default behavior (especially under tests/CI) is to stay deterministic and
+    return an offline-safe response.
+    """
+
+    strict_env = (os.getenv("CEO_ADVISOR_STRICT_LLM") or "").strip().lower()
+    if strict_env in {"1", "true", "yes", "on"}:
+        return True
+
+    if isinstance(meta, dict):
+        # Allow callers to request strict behavior per-request.
+        if meta.get("strict_llm") is True or meta.get("require_llm") is True:
+            return True
+
+    return False
 
 
 def _is_empty_state_kickoff_prompt(user_text: str) -> bool:
@@ -455,11 +476,36 @@ def _is_fact_sensitive_query(user_text: str) -> bool:
     if any(s in t for s in risk_terms):
         return True
 
+    # KPI/finance terms are assumed to be business-fact sensitive in CEO context.
+    # Without SSOT snapshot, we must not assert values or status.
+    kpi_terms = (
+        "revenue",
+        "prihod",
+        "mrr",
+        "arr",
+        "profit",
+        "dobit",
+        "margin",
+        "marža",
+        "ebitda",
+        "cash",
+        "gotovina",
+        "burn",
+        "runway",
+        "churn",
+        "ltv",
+        "cac",
+        "gmv",
+        "arpu",
+    )
+    if any(s in t for s in kpi_terms):
+        return True
+
     # "status/stanje" questions become fact-sensitive when tied to goals/tasks/KPIs.
     wants_status = bool(re.search(r"(?i)\b(status|stanje|progress|napredak)\b", t))
     wants_target = bool(
         re.search(
-            r"(?i)\b(cilj\w*|goal\w*|task\w*|zadat\w*|zadac\w*|kpi\w*|project\w*|projekat\w*)\b",
+            r"(?i)\b(cilj\w*|goal\w*|task\w*|zadat\w*|zadac\w*|kpi\w*|project\w*|projekat\w*|revenue|prihod|profit|dobit|margin|marža|ebitda)\b",
             t,
         )
     )
@@ -1214,6 +1260,17 @@ def _snapshot_trace(
 async def create_ceo_advisor_agent(
     agent_input: AgentInput, ctx: Dict[str, Any]
 ) -> AgentOutput:
+    import logging
+
+    logger = logging.getLogger(__name__)
+    logger.warning(
+        "[DEBUG] Pozvan je create_ceo_advisor_agent! agent_input=%s", agent_input
+    )
+
+    # --- LLM GATE LOGGING ---
+    allow_general_raw = os.getenv("CEO_ADVISOR_ALLOW_GENERAL_KNOWLEDGE", "0")
+    allow_general = allow_general_raw == "1"
+
     base_text = (agent_input.message or "").strip()
     if not base_text:
         base_text = "Reci ukratko šta možeš i kako mogu tražiti akciju."
@@ -1232,6 +1289,23 @@ async def create_ceo_advisor_agent(
 
     # Inicijalizacija goals i tasks
     goals, tasks = _extract_goals_tasks(snapshot_payload)
+
+    # LLM gate variables and logging
+    propose_only = _is_propose_only_request(base_text)
+    use_llm = not propose_only
+    fact_sensitive = _is_fact_sensitive_query(base_text)
+    snapshot_has_facts = _snapshot_has_business_facts(snapshot_payload)
+
+    logger.info(
+        f"[LLM-GATE] allow_general_raw={allow_general_raw} allow_general={allow_general} (source=env)"
+    )
+    logger.info(f"[LLM-GATE] use_llm={use_llm} (propose_only={propose_only})")
+    logger.info(
+        f"[LLM-GATE] fact_sensitive={fact_sensitive} snapshot_has_facts={snapshot_has_facts}"
+    )
+
+    llm_configured = _llm_is_configured()
+    logger.info(f"[LLM-GATE] _llm_is_configured={llm_configured}")
 
     snap_trace = _snapshot_trace(
         raw_snapshot=raw_snapshot,
@@ -1407,19 +1481,31 @@ async def create_ceo_advisor_agent(
         and (not snapshot_has_facts)
         and (not _should_use_kickoff_in_offline_mode(t0))
     ):
-        # default KB-only; enable general knowledge via CEO_ADVISOR_ALLOW_GENERAL_KNOWLEDGE=1
-        import logging
-
-        logger = logging.getLogger("ceo_advisor_agent")
-        allow_general_raw = os.getenv("CEO_ADVISOR_ALLOW_GENERAL_KNOWLEDGE", "0")
-        allow_general = allow_general_raw == "1"
-        logger.warning(
-            f"[DEBUG] CEO_ADVISOR_ALLOW_GENERAL_KNOWLEDGE={allow_general_raw} allow_general={allow_general} (trigger fallback={not allow_general})"
+        effective_allow_general = bool(allow_general and llm_configured)
+        logger.info(
+            f"[LLM-GATE] unknown_mode: allow_general={allow_general} llm_configured={llm_configured} effective_allow_general={effective_allow_general}"
         )
-        if not allow_general:
-            logger.warning(
-                "[DEBUG] Fallback triggered: returning KB-only fallback for unknown_mode."
-            )
+        if not effective_allow_general:
+            if not allow_general:
+                logger.warning(
+                    "[LLM-GATE] Blocked: allow_general is False, returning KB-only fallback."
+                )
+            else:
+                # Strict mode takes precedence: if the caller explicitly requires
+                # LLM execution, surface a typed configuration error instead of
+                # silently falling back.
+                if _strict_llm_required(meta):
+                    logger.error(
+                        "[LLM-GATE] Blocked (strict): allow_general is True but LLM is not configured; raising LLMNotConfiguredError."
+                    )
+                    logger.error("[CEO_ADVISOR_EXIT] error.llm_not_configured")
+                    raise LLMNotConfiguredError(
+                        "error.llm_not_configured: CEO Advisor LLM path blocked: allow_general is True but _llm_is_configured() is False. "
+                        "Check OPENAI_API_KEY and LLM configuration."
+                    )
+                logger.warning(
+                    "[LLM-GATE] Blocked: allow_general is True but LLM is not configured; returning offline-safe unknown_mode fallback."
+                )
             return AgentOutput(
                 text=(
                     "Trenutno nemam to znanje (nije u kuriranom KB-u / trenutnom snapshotu).\n\n"
@@ -1445,9 +1531,14 @@ async def create_ceo_advisor_agent(
                     "intent": "unknown_mode",
                     "kb_used_entry_ids": kb_used_ids,
                     "snapshot": snap_trace,
+                    "exit_reason": (
+                        "fallback.allow_general_false"
+                        if not allow_general
+                        else "offline.llm_not_configured"
+                    ),
                 },
             )
-        # else: allow_general==True, nastavi do LLM path-a (ne vraćaj fallback)
+        # else: allow_general==True, nastavi do LLM path-a
     if fact_sensitive and not snapshot_has_facts:
         trace = ctx.get("trace") if isinstance(ctx, dict) else {}
         if not isinstance(trace, dict):
@@ -1457,6 +1548,8 @@ async def create_ceo_advisor_agent(
             "reason": "fact_sensitive_query_without_snapshot",
             "snapshot": snap_trace,
         }
+        trace["exit_reason"] = "fallback.fact_sensitive_no_snapshot"
+        logger.info("[CEO_ADVISOR_EXIT] fallback.fact_sensitive_no_snapshot")
         return AgentOutput(
             text=(
                 "Ne mogu potvrditi poslovno stanje iz ovog upita jer u READ kontekstu nemam učitan SSOT snapshot. "
@@ -1585,7 +1678,21 @@ async def create_ceo_advisor_agent(
     # deployments), we must NOT default to the GOALS/TASKS dashboard for unrelated
     # knowledge/system questions. Instead, use unknown-mode and/or approval-gated
     # proposals for explicit "remember/expand knowledge" requests.
-    if use_llm and not _llm_is_configured():
+    if use_llm and allow_general and not llm_configured:
+        logger.error(
+            "[LLM-GATE] Blocked: allow_general is True but _llm_is_configured is False (missing OPENAI_API_KEY or misconfiguration)."
+        )
+        logger.error("[CEO_ADVISOR_EXIT] offline.llm_not_configured")
+        if _strict_llm_required(meta):
+            raise LLMNotConfiguredError(
+                "error.llm_not_configured: CEO Advisor LLM path blocked: allow_general is True but _llm_is_configured() is False. "
+                "Check OPENAI_API_KEY and LLM configuration."
+            )
+
+    if use_llm and not llm_configured:
+        logger.warning(
+            "[LLM-GATE] Blocked: use_llm is True but _llm_is_configured is False. Returning deterministic fallback."
+        )
         t0 = (base_text or "").strip().lower()
 
         # Prompt-template intent should return a copy/paste template even offline.
@@ -1672,7 +1779,8 @@ async def create_ceo_advisor_agent(
                 },
             )
 
-        # For goal/task planning prompts, keep the existing deterministic kickoff.
+        # In offline mode (no LLM configured), always return a deterministic response.
+        # Tests/CI enforce this to avoid external network IO.
         if not snapshot_has_facts and _should_use_kickoff_in_offline_mode(t0):
             return AgentOutput(
                 text=_default_kickoff_text(),
@@ -1692,6 +1800,7 @@ async def create_ceo_advisor_agent(
                     "offline_mode": True,
                     "deterministic": True,
                     "intent": "kickoff",
+                    "exit_reason": "offline.llm_not_configured",
                     "snapshot": snap_trace,
                 },
             )
@@ -1705,6 +1814,7 @@ async def create_ceo_advisor_agent(
                 "offline_mode": True,
                 "deterministic": True,
                 "intent": "unknown_mode",
+                "exit_reason": "offline.llm_not_configured",
                 "snapshot": snap_trace,
             },
         )
@@ -1728,6 +1838,9 @@ async def create_ceo_advisor_agent(
     else:
         prompt_text = (
             f"{base_text}\n\n"
+            "Return only valid json (a single JSON object). "
+            'Required keys: "text" (string) and "proposed_commands" (array; can be empty). '
+            "Do not wrap the json in markdown code fences.\n"
             "Ako predlaže akciju, vrati je u proposed_commands. "
             "Ne izvršavaj ništa."
         )
@@ -1765,6 +1878,7 @@ async def create_ceo_advisor_agent(
     proposed_items: Any = None
     proposed: List[ProposedCommand] = []
     text_out: str = ""
+    llm_exit_reason: Optional[str] = None
 
     # Deterministic, enterprise-safe: if user asks for a prompt template for Notion Ops,
     # return it even in offline/CI mode (no LLM), and do not emit write proposals.
@@ -1795,12 +1909,23 @@ async def create_ceo_advisor_agent(
             from services.agent_router.executor_factory import get_executor
 
             executor = get_executor(purpose="ceo_advisor")
+            logger.info(f"[LLM-GATE] executor selection: {executor.__class__.__name__}")
+            prompt_text += (
+                "\n\nReturn only valid json (a single JSON object). "
+                'Required keys: "text" (string) and "proposed_commands" (array; can be empty). '
+                "Do not wrap the json in markdown code fences."
+            )
             raw = await executor.ceo_command(text=prompt_text, context=safe_context)
             if isinstance(raw, dict):
                 result = raw
             else:
                 result = {"text": str(raw)}
+            llm_exit_reason = "llm.success"
+            logger.info("[CEO_ADVISOR_EXIT] llm.success")
         except Exception:
+            logger.exception("[LLM-GATE] Exception in LLM execution")
+            llm_exit_reason = "offline.executor_error"
+            logger.info("[CEO_ADVISOR_EXIT] offline.executor_error")
             # Enterprise fail-soft: do not dump LLM errors; return deterministic unknown-mode.
             t0 = (base_text or "").strip().lower()
             if _is_memory_capability_question(t0):
@@ -1920,6 +2045,13 @@ async def create_ceo_advisor_agent(
     trace["wants_notion"] = wants_notion
     trace["llm_used"] = use_llm
     trace["snapshot"] = snap_trace
+
+    if llm_exit_reason:
+        trace.setdefault("exit_reason", llm_exit_reason)
+
+    if propose_only:
+        trace.setdefault("exit_reason", "fallback.propose_only")
+        logger.info("[CEO_ADVISOR_EXIT] deterministic.propose_only")
 
     return AgentOutput(
         text=text_out,

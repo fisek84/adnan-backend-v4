@@ -91,15 +91,79 @@ class OpenAIResponsesExecutor:
 
         raise ExecutorOutputError("Responses API returned no output_text")
 
-    def _parse_json(self, text: str) -> Dict[str, Any]:
+    def _extract_chat_text(self, resp: Any) -> str:
+        # Chat Completions style: resp.choices[0].message.content
+        choices = getattr(resp, "choices", None) or []
+        if not choices:
+            raise ExecutorOutputError("Chat Completions returned no choices")
+        msg = getattr(choices[0], "message", None)
+        if msg is None:
+            raise ExecutorOutputError("Chat Completions returned no message")
+
+        # Block tool calls if the SDK supports them.
+        tool_calls = getattr(msg, "tool_calls", None)
+        if tool_calls:
+            raise ExecutorToolCallAttempt(
+                "Chat Completions output contained tool calls"
+            )
+
+        content = getattr(msg, "content", None)
+        if isinstance(content, str) and content.strip():
+            return content.strip()
+        raise ExecutorOutputError("Chat Completions returned empty content")
+
+    def _parse_json(
+        self, text: str, *, force_text_contract: bool = False
+    ) -> Dict[str, Any]:
         cleaned = _strip_code_fences(text)
         try:
             obj = json.loads(cleaned)
-        except Exception as e:  # noqa: BLE001
-            raise ExecutorOutputError(f"Invalid JSON from model: {e}") from e
+        except Exception:
+            # Fail-soft: output might be plain text.
+            return {"text": cleaned}
+
+        if not force_text_contract:
+            if isinstance(obj, dict):
+                return obj
+            return {"raw": obj}
+
+        # CEO advisor contract normalization.
         if isinstance(obj, dict):
-            return obj
-        return {"raw": obj}
+            v = obj.get("text")
+            if isinstance(v, str) and v.strip():
+                return obj
+
+            # If dict has exactly one non-empty string value (e.g. {"answer": "Pariz"}),
+            # map it into the contract.
+            if len(obj) == 1:
+                only_val = next(iter(obj.values()))
+                if isinstance(only_val, str) and only_val.strip():
+                    return {"text": only_val.strip()}
+
+            return {"text": cleaned}
+
+        return {"text": cleaned}
+
+    async def ceo_command(
+        self, text: str, context: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Compatibility wrapper (CEO advisor expects executor.ceo_command).
+        Delegates to `execute()` which uses Responses API with strict JSON output.
+        """
+        ctx = context if isinstance(context, dict) else {}
+
+        schema_hint = 'Vrati TAČNO JSON oblika {"text":"..."} (samo taj ključ), bez drugih ključeva.'
+
+        task: Dict[str, Any] = {
+            "input": f"{schema_hint}\n\n{text}",
+            # Optional knobs (best-effort) — safe even if caller doesn't provide them.
+            "instructions": ctx.get("instructions"),
+            "temperature": ctx.get("temperature"),
+            "allow_tools": bool(ctx.get("allow_tools") is True),
+            "ceo_contract": True,
+        }
+        return await self.execute(task)
 
     async def execute(self, task: Dict[str, Any]) -> Dict[str, Any]:
         """Execute a JSON-only request.
@@ -127,35 +191,86 @@ class OpenAIResponsesExecutor:
         if allow_tools:
             raise ExecutorToolCallAttempt("Tools are not allowed in this executor")
 
-        kwargs: Dict[str, Any] = {
-            "model": self._model(),
-            "input": user_input,
-            # Strict JSON-only output.
-            "text": {"format": {"type": "json_object"}},
-        }
-
-        if instructions:
-            kwargs["instructions"] = instructions
-
-        # Temperature is accepted by responses.create in this SDK.
-        if task.get("temperature") is not None:
-            kwargs["temperature"] = task.get("temperature")
-
-        # Best-effort: disallow tools explicitly when supported.
-        kwargs["tool_choice"] = "none"
-        kwargs["tools"] = []
-
-        resp = await __import__("asyncio").to_thread(
-            self.client.responses.create, **kwargs
+        # Prefer Responses API when available; fall back to Chat Completions for
+        # older SDKs/environments (pre-responses).
+        has_responses = bool(
+            getattr(self.client, "responses", None)
+            and hasattr(getattr(self.client, "responses", None), "create")
         )
 
-        # Reject any tool/function call output items.
-        output = getattr(resp, "output", None) or []
-        for item in output:
-            if _looks_like_tool_output_item(item):
-                raise ExecutorToolCallAttempt(
-                    "Responses output contained a tool/function call"
-                )
+        if has_responses:
+            kwargs: Dict[str, Any] = {
+                "model": self._model(),
+                "input": user_input,
+                # Strict JSON-only output.
+                "text": {"format": {"type": "json_object"}},
+            }
 
-        text = self._extract_output_text(resp)
-        return self._parse_json(text)
+            if instructions:
+                kwargs["instructions"] = instructions
+
+            # Temperature is accepted by responses.create in this SDK.
+            if task.get("temperature") is not None:
+                kwargs["temperature"] = task.get("temperature")
+
+            # Best-effort: disallow tools explicitly when supported.
+            kwargs["tool_choice"] = "none"
+            kwargs["tools"] = []
+
+            resp = await __import__("asyncio").to_thread(
+                self.client.responses.create, **kwargs
+            )
+
+            # Reject any tool/function call output items.
+            output = getattr(resp, "output", None) or []
+            for item in output:
+                if _looks_like_tool_output_item(item):
+                    raise ExecutorToolCallAttempt(
+                        "Responses output contained a tool/function call"
+                    )
+
+            text = self._extract_output_text(resp)
+            return self._parse_json(
+                text, force_text_contract=bool(task.get("ceo_contract") is True)
+            )
+
+        # Fallback: Chat Completions.
+        # NOTE: We keep the same JSON-only request and still block tool calls.
+        chat = getattr(self.client, "chat", None)
+        completions = getattr(chat, "completions", None) if chat is not None else None
+        create = (
+            getattr(completions, "create", None) if completions is not None else None
+        )
+        if not callable(create):
+            raise ExecutorOutputError(
+                "OpenAI client does not support responses.create or chat.completions.create"
+            )
+
+        msgs = []
+        # OpenAI requires the word 'json' to appear in messages when using
+        # response_format={type: json_object}.
+        json_rule = "Return only valid json (a single JSON object)."
+        if instructions:
+            msgs.append(
+                {
+                    "role": "system",
+                    "content": f"{instructions}\n\n{json_rule}",
+                }
+            )
+        else:
+            msgs.append({"role": "system", "content": json_rule})
+        msgs.append({"role": "user", "content": user_input})
+
+        ck: Dict[str, Any] = {
+            "model": self._model(),
+            "messages": msgs,
+            "response_format": {"type": "json_object"},
+        }
+        if task.get("temperature") is not None:
+            ck["temperature"] = task.get("temperature")
+
+        resp = await __import__("asyncio").to_thread(create, **ck)
+        text = self._extract_chat_text(resp)
+        return self._parse_json(
+            text, force_text_contract=bool(task.get("ceo_contract") is True)
+        )
