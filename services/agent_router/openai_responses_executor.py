@@ -13,7 +13,9 @@ from services.agent_router.executor_errors import (
 )
 
 
-_CODE_FENCE_RE = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", flags=re.DOTALL | re.IGNORECASE)
+_CODE_FENCE_RE = re.compile(
+    r"^```(?:json)?\s*(.*?)\s*```$", flags=re.DOTALL | re.IGNORECASE
+)
 
 
 def _strip_code_fences(text: str) -> str:
@@ -143,13 +145,17 @@ class OpenAIResponsesExecutor:
         kwargs["tool_choice"] = "none"
         kwargs["tools"] = []
 
-        resp = await __import__("asyncio").to_thread(self.client.responses.create, **kwargs)
+        resp = await __import__("asyncio").to_thread(
+            self.client.responses.create, **kwargs
+        )
 
         # Reject any tool/function call output items.
         output = getattr(resp, "output", None) or []
         for item in output:
             if _looks_like_tool_output_item(item):
-                raise ExecutorToolCallAttempt("Responses output contained a tool/function call")
+                raise ExecutorToolCallAttempt(
+                    "Responses output contained a tool/function call"
+                )
 
         text = self._extract_output_text(resp)
         return self._parse_json(text)

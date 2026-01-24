@@ -40,7 +40,7 @@ def test_responses_executor_calls_json_object_and_parses_dict(monkeypatch):
 
     ex = OpenAIResponsesExecutor(client=client)
 
-    out = asyncio.run(ex.execute({"input": "{\"x\": 1}", "instructions": "Return JSON"}))
+    out = asyncio.run(ex.execute({"input": '{"x": 1}', "instructions": "Return JSON"}))
 
     assert out == {"ok": True, "value": 123}
 
@@ -64,4 +64,4 @@ def test_responses_executor_rejects_tool_calls(monkeypatch):
     ex = OpenAIResponsesExecutor(client=client)
 
     with pytest.raises(ExecutorToolCallAttempt):
-        asyncio.run(ex.execute({"input": "{\"x\": 1}", "instructions": "Return JSON"}))
+        asyncio.run(ex.execute({"input": '{"x": 1}', "instructions": "Return JSON"}))

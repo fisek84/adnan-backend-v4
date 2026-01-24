@@ -16,7 +16,9 @@ from services.agent_router.executor_errors import (
 )
 
 
-_CODE_FENCE_RE = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", flags=re.DOTALL | re.IGNORECASE)
+_CODE_FENCE_RE = re.compile(
+    r"^```(?:json)?\s*(.*?)\s*```$", flags=re.DOTALL | re.IGNORECASE
+)
 
 
 def _strip_code_fences(text: str) -> str:
@@ -61,12 +63,16 @@ class OpenAIAssistantsExecutor:
                 raise ExecutorTimeout("run timed out")
 
             run_status = await self._to_thread(
-                self.client.beta.threads.runs.retrieve, thread_id=thread_id, run_id=run_id
+                self.client.beta.threads.runs.retrieve,
+                thread_id=thread_id,
+                run_id=run_id,
             )
             status = getattr(run_status, "status", None)
 
             if status == "requires_action":
-                raise ExecutorToolCallAttempt("run attempted tool calls (requires_action)")
+                raise ExecutorToolCallAttempt(
+                    "run attempted tool calls (requires_action)"
+                )
 
             if status == "completed":
                 return
@@ -86,7 +92,9 @@ class OpenAIAssistantsExecutor:
             return obj
         return {"raw": obj}
 
-    async def _get_latest_assistant_text_json(self, *, thread_id: str, limit: int = 10) -> Dict[str, Any]:
+    async def _get_latest_assistant_text_json(
+        self, *, thread_id: str, limit: int = 10
+    ) -> Dict[str, Any]:
         messages = await self._to_thread(
             self.client.beta.threads.messages.list, thread_id=thread_id, limit=limit
         )
@@ -116,7 +124,9 @@ class OpenAIAssistantsExecutor:
 
         return self._parse_json(joined)
 
-    async def _get_first_output_json(self, *, thread_id: str, limit: int = 1) -> Dict[str, Any]:
+    async def _get_first_output_json(
+        self, *, thread_id: str, limit: int = 1
+    ) -> Dict[str, Any]:
         messages = await self._to_thread(
             self.client.beta.threads.messages.list, thread_id=thread_id, limit=limit
         )
@@ -192,7 +202,9 @@ class OpenAIAssistantsExecutor:
             run_kwargs["response_format"] = task.get("response_format")
 
         try:
-            run = await self._to_thread(self.client.beta.threads.runs.create, **run_kwargs)
+            run = await self._to_thread(
+                self.client.beta.threads.runs.create, **run_kwargs
+            )
         except TypeError:
             # Compatibility fallback
             run = await self._to_thread(
@@ -209,4 +221,6 @@ class OpenAIAssistantsExecutor:
         if parse_mode == "output_json":
             return await self._get_first_output_json(thread_id=thread.id, limit=limit)
 
-        return await self._get_latest_assistant_text_json(thread_id=thread.id, limit=limit)
+        return await self._get_latest_assistant_text_json(
+            thread_id=thread.id, limit=limit
+        )
