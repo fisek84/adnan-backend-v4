@@ -1408,8 +1408,13 @@ async def create_ceo_advisor_agent(
         and (not _should_use_kickoff_in_offline_mode(t0))
     ):
         # default KB-only; enable general knowledge via CEO_ADVISOR_ALLOW_GENERAL_KNOWLEDGE=1
-        allow_general = os.getenv("CEO_ADVISOR_ALLOW_GENERAL_KNOWLEDGE", "0") == "1"
+        import logging
+        logger = logging.getLogger("ceo_advisor_agent")
+        allow_general_raw = os.getenv("CEO_ADVISOR_ALLOW_GENERAL_KNOWLEDGE", "0")
+        allow_general = allow_general_raw == "1"
+        logger.warning(f"[DEBUG] CEO_ADVISOR_ALLOW_GENERAL_KNOWLEDGE={allow_general_raw} allow_general={allow_general} (trigger fallback={not allow_general})")
         if not allow_general:
+            logger.warning("[DEBUG] Fallback triggered: returning KB-only fallback for unknown_mode.")
             return AgentOutput(
                 text=(
                     "Trenutno nemam to znanje (nije u kuriranom KB-u / trenutnom snapshotu).\n\n"
