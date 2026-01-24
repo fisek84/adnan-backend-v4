@@ -17,13 +17,21 @@ def _clone_agent_input_with_prefix(
     msg = f"{message_prefix}{base}" if base else message_prefix.strip()
 
     identity_pack = (
-        agent_input.identity_pack if isinstance(getattr(agent_input, "identity_pack", None), dict) else {}
+        agent_input.identity_pack
+        if isinstance(getattr(agent_input, "identity_pack", None), dict)
+        else {}
     )
     snapshot = (
-        agent_input.snapshot if isinstance(getattr(agent_input, "snapshot", None), dict) else {}
+        agent_input.snapshot
+        if isinstance(getattr(agent_input, "snapshot", None), dict)
+        else {}
     )
 
-    md0 = agent_input.metadata if isinstance(getattr(agent_input, "metadata", None), dict) else {}
+    md0 = (
+        agent_input.metadata
+        if isinstance(getattr(agent_input, "metadata", None), dict)
+        else {}
+    )
     md = dict(md0)
     md.setdefault("department_agent", True)
     md["department_agent_id"] = agent_id
@@ -49,8 +57,16 @@ def _evidence_lines_from_inputs(
 ) -> List[str]:
     lines: List[str] = []
 
-    ip = agent_input.identity_pack if isinstance(getattr(agent_input, "identity_pack", None), dict) else {}
-    snap = agent_input.snapshot if isinstance(getattr(agent_input, "snapshot", None), dict) else {}
+    ip = (
+        agent_input.identity_pack
+        if isinstance(getattr(agent_input, "identity_pack", None), dict)
+        else {}
+    )
+    snap = (
+        agent_input.snapshot
+        if isinstance(getattr(agent_input, "snapshot", None), dict)
+        else {}
+    )
 
     lines.append(f"identity_pack.keys={sorted(list(ip.keys()))[:24]}")
     lines.append(f"snapshot.keys={sorted(list(snap.keys()))[:24]}")
@@ -59,15 +75,25 @@ def _evidence_lines_from_inputs(
     gp = gp if isinstance(gp, dict) else {}
     if gp:
         try:
-            ip2 = gp.get("identity_pack") if isinstance(gp.get("identity_pack"), dict) else {}
+            ip2 = (
+                gp.get("identity_pack")
+                if isinstance(gp.get("identity_pack"), dict)
+                else {}
+            )
             identity_hash = ip2.get("hash")
             if isinstance(identity_hash, str) and identity_hash.strip():
-                lines.append(f"grounding_pack.identity_pack.hash={identity_hash.strip()}")
+                lines.append(
+                    f"grounding_pack.identity_pack.hash={identity_hash.strip()}"
+                )
         except Exception:
             pass
 
         try:
-            kb = gp.get("kb_retrieved") if isinstance(gp.get("kb_retrieved"), dict) else {}
+            kb = (
+                gp.get("kb_retrieved")
+                if isinstance(gp.get("kb_retrieved"), dict)
+                else {}
+            )
             used = kb.get("used_entry_ids")
             used_ids = [x for x in (used or []) if isinstance(x, str) and x.strip()]
             if used_ids:
@@ -104,7 +130,11 @@ def _format_dept_text(
             pcs.append(
                 f"- {str(cmd or '').strip() or 'unknown'}"
                 + (f" (risk={risk})" if risk else "")
-                + (f": {str(reason).strip()}" if isinstance(reason, str) and reason.strip() else "")
+                + (
+                    f": {str(reason).strip()}"
+                    if isinstance(reason, str) and reason.strip()
+                    else ""
+                )
             )
         pa = "\n".join(pcs)
     else:
@@ -145,7 +175,9 @@ def _normalize_proposals_for_dept(
                 risk=item.get("risk"),
                 dry_run=True,
                 scope=item.get("scope"),
-                payload_summary=item.get("payload_summary") if isinstance(item.get("payload_summary"), dict) else None,
+                payload_summary=item.get("payload_summary")
+                if isinstance(item.get("payload_summary"), dict)
+                else None,
             )
         else:
             continue
@@ -232,7 +264,9 @@ async def _dept_entrypoint(
     return out
 
 
-async def dept_growth_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> AgentOutput:
+async def dept_growth_agent(
+    agent_input: AgentInput, ctx: Dict[str, Any]
+) -> AgentOutput:
     return await _dept_entrypoint(
         agent_input,
         ctx,
@@ -241,7 +275,9 @@ async def dept_growth_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> Age
     )
 
 
-async def dept_product_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> AgentOutput:
+async def dept_product_agent(
+    agent_input: AgentInput, ctx: Dict[str, Any]
+) -> AgentOutput:
     return await _dept_entrypoint(
         agent_input,
         ctx,
@@ -250,7 +286,9 @@ async def dept_product_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> Ag
     )
 
 
-async def dept_finance_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> AgentOutput:
+async def dept_finance_agent(
+    agent_input: AgentInput, ctx: Dict[str, Any]
+) -> AgentOutput:
     return await _dept_entrypoint(
         agent_input,
         ctx,

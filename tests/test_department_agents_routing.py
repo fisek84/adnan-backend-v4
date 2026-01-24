@@ -83,7 +83,10 @@ async def test_preferred_agent_id_selects_enabled_dept_agent_deterministically()
     assert isinstance(out.trace, dict)
     assert out.trace.get("selected_by") == "preferred_agent_id"
     assert out.trace.get("selected_agent_id") == "dept_growth"
-    assert out.trace.get("selected_entrypoint") == "services.department_agents:dept_growth_agent"
+    assert (
+        out.trace.get("selected_entrypoint")
+        == "services.department_agents:dept_growth_agent"
+    )
 
 
 @pytest.mark.anyio
