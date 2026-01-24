@@ -80,6 +80,38 @@
         "coordination",
         "orchestrator"
       ]
+    },
+    {
+      "id": "dept_growth",
+      "name": "Department Agent — Growth",
+      "enabled": false,
+      "priority": 30,
+      "entrypoint": "services.department_agents:dept_growth_agent",
+      "keywords": []
+    },
+    {
+      "id": "dept_product",
+      "name": "Department Agent — Product",
+      "enabled": false,
+      "priority": 30,
+      "entrypoint": "services.department_agents:dept_product_agent",
+      "keywords": []
+    },
+    {
+      "id": "dept_finance",
+      "name": "Department Agent — Finance",
+      "enabled": false,
+      "priority": 30,
+      "entrypoint": "services.department_agents:dept_finance_agent",
+      "keywords": []
+    },
+    {
+      "id": "dept_ops",
+      "name": "Department Agent — Ops",
+      "enabled": false,
+      "priority": 30,
+      "entrypoint": "services.department_agents:dept_ops_agent",
+      "keywords": []
     }
   ]
 }
