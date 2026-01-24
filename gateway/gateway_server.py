@@ -9,6 +9,7 @@ import inspect
 import logging
 import os
 import re
+import traceback
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -1361,6 +1362,22 @@ app = FastAPI(
 
 @app.on_event("startup")
 async def _startup_event() -> None:
+    # Minimal diagnostics for staging: do NOT log secret values.
+    try:
+        import openai  # type: ignore
+
+        openai_ver = getattr(openai, "__version__", "unknown")
+    except Exception:
+        openai_ver = "unavailable"
+
+    logger.info(
+        "STARTUP_DIAG openai_version=%s env_present={OPENAI_API_KEY:%s,CEO_ADVISOR_ASSISTANT_ID:%s,NOTION_OPS_ASSISTANT_ID:%s} OPENAI_API_MODE=%s",
+        openai_ver,
+        bool((os.getenv("OPENAI_API_KEY") or "").strip()),
+        bool((os.getenv("CEO_ADVISOR_ASSISTANT_ID") or "").strip()),
+        bool((os.getenv("NOTION_OPS_ASSISTANT_ID") or "").strip()),
+        (os.getenv("OPENAI_API_MODE") or "").strip() or "(unset)",
+    )
     await _boot_once()
 
 
@@ -4887,11 +4904,19 @@ async def http_exception_handler(_: Request, exc: StarletteHTTPException):
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    logger.exception("GLOBAL ERROR")
+    err_id = str(uuid.uuid4())
     req_id = getattr(getattr(request, "state", None), "req_id", None)
+    path = getattr(getattr(request, "url", None), "path", None)
+
+    # Log full traceback with a stable error id for correlating Render logs.
+    logger.exception(
+        "UNHANDLED_EXCEPTION err_id=%s req_id=%s path=%s", err_id, req_id, path
+    )
+    logger.error("TRACEBACK err_id=%s\n%s", err_id, traceback.format_exc())
+
     return JSONResponse(
         status_code=500,
-        content={"status": "error", "message": str(exc), "req_id": req_id},
+        content={"ok": False, "error": "internal_error", "error_id": err_id},
     )
 
 
