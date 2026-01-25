@@ -4,12 +4,187 @@ import os
 import re
 import hashlib
 import json
+import logging
 from typing import Any, Dict, List, Optional, Tuple
 
 from models.agent_contract import AgentInput, AgentOutput, ProposedCommand
 from models.canon import PROPOSAL_WRAPPER_INTENT
 
 # PHASE 6: Import shared Notion Ops state management
+
+
+_CEO_INSTRUCTIONS_PREFIX = "CEO ADVISOR — RESPONSES SYSTEM INSTRUCTIONS (READ-ONLY)"
+
+
+def _sha256_prefix(text: str, *, limit: int = 1000) -> str:
+    s = (text or "")[: max(0, int(limit))]
+    return hashlib.sha256(s.encode("utf-8")).hexdigest()
+
+
+def _truncate(text: str, *, max_chars: int) -> str:
+    t = text or ""
+    if max_chars <= 0:
+        return "[TRUNCATED]"
+    if len(t) <= max_chars:
+        return t
+    keep = max(0, max_chars - len("[TRUNCATED]"))
+    return t[:keep] + "[TRUNCATED]"
+
+
+def build_ceo_instructions(
+    grounding_pack: Dict[str, Any],
+    *,
+    kb_max_entries: int = 8,
+    total_max_chars: int = 9000,
+    section_max_chars: int = 2600,
+    kb_entry_max_chars: int = 800,
+) -> str:
+    """Build deterministic, budgeted system-equivalent instructions for CEO Advisor.
+
+    Invariants:
+    - Deterministic (no LLM).
+    - Budgeted and safe (no raw huge dumps).
+    - Explicit governance: answer ONLY from provided context.
+    """
+
+    gp = grounding_pack if isinstance(grounding_pack, dict) else {}
+
+    def _dump(obj: Any, *, max_chars: int) -> str:
+        try:
+            raw = json.dumps(obj, ensure_ascii=False, sort_keys=True)
+        except Exception:
+            raw = str(obj)
+        return _truncate(raw, max_chars=max_chars)
+
+    identity_payload = None
+    kb_entries: list[dict[str, Any]] = []
+    notion_snapshot = None
+    memory_payload = None
+
+    ip = gp.get("identity_pack") if isinstance(gp.get("identity_pack"), dict) else {}
+    if isinstance(ip, dict):
+        identity_payload = ip.get("payload")
+
+    kb = gp.get("kb_retrieved") if isinstance(gp.get("kb_retrieved"), dict) else {}
+    if isinstance(kb, dict):
+        entries = kb.get("entries")
+        if isinstance(entries, list):
+            for it in entries:
+                if isinstance(it, dict):
+                    kb_entries.append(it)
+
+    ns = gp.get("notion_snapshot")
+    if isinstance(ns, dict):
+        notion_snapshot = ns
+
+    ms = (
+        gp.get("memory_snapshot") if isinstance(gp.get("memory_snapshot"), dict) else {}
+    )
+    if isinstance(ms, dict):
+        mp = ms.get("payload")
+        if isinstance(mp, dict):
+            memory_payload = mp
+
+    # Governance / hard constraints.
+    governance = (
+        "GOVERNANCE (non-negotiable):\n"
+        "- READ-ONLY: no tool calls, no side effects, no external writes.\n"
+        "- Answer ONLY from the provided context sections below (IDENTITY, KB_HITS, NOTION_SNAPSHOT, MEMORY).\n"
+        "- DO NOT use general world knowledge. If the answer is not in the provided context, say: 'Nemam u KB/Memory/Snapshot'.\n"
+        "- If you propose actions, put them into proposed_commands but do not execute anything.\n"
+    )
+
+    # IDENTITY section (budgeted dump).
+    identity_txt = "(missing)"
+    if identity_payload is not None:
+        identity_txt = _dump(identity_payload, max_chars=section_max_chars)
+
+    # KB_HITS section: top N, budgeted per-entry.
+    kb_lines: list[str] = []
+    for it in kb_entries[: max(0, int(kb_max_entries))]:
+        kid = it.get("id")
+        title = it.get("title")
+        content = it.get("content")
+        line_obj = {
+            "id": kid,
+            "title": title,
+            "tags": it.get("tags"),
+            "priority": it.get("priority"),
+            "content": content,
+        }
+        kb_lines.append(_dump(line_obj, max_chars=kb_entry_max_chars))
+    kb_txt = "(none)" if not kb_lines else "\n".join(kb_lines)
+    kb_txt = _truncate(kb_txt, max_chars=section_max_chars)
+
+    # NOTION snapshot (budgeted dump).
+    notion_txt = "(missing)"
+    if notion_snapshot is not None:
+        notion_txt = _dump(notion_snapshot, max_chars=section_max_chars)
+
+    # MEMORY snapshot payload (budgeted dump).
+    memory_txt = "(missing)"
+    if memory_payload is not None:
+        memory_txt = _dump(memory_payload, max_chars=section_max_chars)
+
+    parts = [
+        _CEO_INSTRUCTIONS_PREFIX,
+        governance.strip(),
+        "IDENTITY:\n" + identity_txt,
+        "KB_HITS:\n" + kb_txt,
+        "NOTION_SNAPSHOT:\n" + notion_txt,
+        "MEMORY:\n" + memory_txt,
+    ]
+
+    joined = "\n\n".join(parts).strip() + "\n"
+    joined = _truncate(joined, max_chars=total_max_chars)
+    return joined
+
+
+def _responses_mode_enabled() -> bool:
+    return (os.getenv("OPENAI_API_MODE") or "assistants").strip().lower() == "responses"
+
+
+def _grounding_sufficient_for_responses_llm(gp: Any) -> bool:
+    if not isinstance(gp, dict) or not gp:
+        return False
+    if gp.get("enabled") is False:
+        return False
+
+    ip = gp.get("identity_pack") if isinstance(gp.get("identity_pack"), dict) else {}
+    if not isinstance(ip, dict) or not ip:
+        return False
+    if ip.get("payload") is None:
+        return False
+
+    kb = gp.get("kb_retrieved") if isinstance(gp.get("kb_retrieved"), dict) else None
+    if not isinstance(kb, dict):
+        return False
+    if not isinstance(kb.get("entries"), list):
+        return False
+
+    if not isinstance(gp.get("notion_snapshot"), dict):
+        return False
+
+    ms = (
+        gp.get("memory_snapshot")
+        if isinstance(gp.get("memory_snapshot"), dict)
+        else None
+    )
+    if not isinstance(ms, dict):
+        return False
+    if not isinstance(ms.get("payload"), dict):
+        return False
+
+    return True
+
+
+def _responses_missing_grounding_text(*, english_output: bool) -> str:
+    if english_output:
+        return (
+            "I don't have the required grounding context (KB/Memory/Snapshot) in this request. "
+            "Nemam u KB/Memory/Snapshot."
+        )
+    return "Nemam u KB/Memory/Snapshot za ovaj upit (u ovom READ kontekstu nije dostavljen grounding)."
 
 
 # -----------------------------------
@@ -1260,8 +1435,6 @@ def _snapshot_trace(
 async def create_ceo_advisor_agent(
     agent_input: AgentInput, ctx: Dict[str, Any]
 ) -> AgentOutput:
-    import logging
-
     logger = logging.getLogger(__name__)
     logger.warning(
         "[DEBUG] Pozvan je create_ceo_advisor_agent! agent_input=%s", agent_input
@@ -1832,6 +2005,89 @@ async def create_ceo_advisor_agent(
     gp = ctx.get("grounding_pack") if isinstance(ctx, dict) else None
     if isinstance(gp, dict) and gp:
         safe_context["grounding_pack"] = gp
+
+    # RESPONSES MODE: enforce system-equivalent instructions (identity + governance + budgeted grounding).
+    if _responses_mode_enabled():
+        if not _grounding_sufficient_for_responses_llm(gp):
+            logger.warning(
+                "[CEO_ADVISOR_RESPONSES_GUARD] blocked: missing/insufficient grounding_pack"
+            )
+            return AgentOutput(
+                text=_responses_missing_grounding_text(english_output=english_output),
+                proposed_commands=[],
+                agent_id="ceo_advisor",
+                read_only=True,
+                trace={
+                    "deterministic": True,
+                    "intent": "missing_grounding",
+                    "exit_reason": "blocked.missing_grounding",
+                    "snapshot": snap_trace,
+                },
+            )
+
+        instructions = build_ceo_instructions(gp)
+        safe_context["instructions"] = instructions
+
+        # Local hard-guard (no guessing): never call LLM without non-empty instructions.
+        if not isinstance(instructions, str) or not instructions.strip():
+            logger.error("[CEO_ADVISOR_RESPONSES_GUARD] blocked: instructions empty")
+            return AgentOutput(
+                text=_responses_missing_grounding_text(english_output=english_output),
+                proposed_commands=[],
+                agent_id="ceo_advisor",
+                read_only=True,
+                trace={
+                    "deterministic": True,
+                    "intent": "missing_instructions",
+                    "exit_reason": "blocked.missing_instructions",
+                    "snapshot": snap_trace,
+                },
+            )
+
+        # DEBUG (no sensitive content): section lengths + hashes
+        try:
+            identity_i = instructions.find("\n\nIDENTITY:\n")
+            kb_i = instructions.find("\n\nKB_HITS:\n")
+            notion_i = instructions.find("\n\nNOTION_SNAPSHOT:\n")
+            mem_i = instructions.find("\n\nMEMORY:\n")
+            # Best-effort extraction
+            sec_identity = (
+                instructions[identity_i:kb_i] if identity_i != -1 and kb_i != -1 else ""
+            )
+            sec_kb = (
+                instructions[kb_i:notion_i] if kb_i != -1 and notion_i != -1 else ""
+            )
+            sec_notion = (
+                instructions[notion_i:mem_i] if notion_i != -1 and mem_i != -1 else ""
+            )
+            sec_mem = instructions[mem_i:] if mem_i != -1 else ""
+            kb_entries = 0
+            try:
+                kb_retrieved = gp.get("kb_retrieved") if isinstance(gp, dict) else None
+                if isinstance(kb_retrieved, dict):
+                    kb_entries = len(kb_retrieved.get("entries") or [])
+            except Exception:
+                kb_entries = 0
+            logger.info(
+                "[CEO_ADVISOR_RESPONSES_INSTRUCTIONS] total_len=%s total_hash=%s kb_entries=%s identity_len=%s identity_hash=%s kb_len=%s kb_hash=%s notion_len=%s notion_hash=%s memory_len=%s memory_hash=%s",
+                len(instructions),
+                _sha256_prefix(instructions),
+                kb_entries,
+                len(sec_identity),
+                _sha256_prefix(sec_identity),
+                len(sec_kb),
+                _sha256_prefix(sec_kb),
+                len(sec_notion),
+                _sha256_prefix(sec_notion),
+                len(sec_mem),
+                _sha256_prefix(sec_mem),
+            )
+        except Exception:
+            logger.info(
+                "[CEO_ADVISOR_RESPONSES_INSTRUCTIONS] total_len=%s total_hash=%s",
+                len(instructions),
+                _sha256_prefix(instructions),
+            )
 
     if structured_mode:
         prompt_text = _format_enforcer(base_text, english_output)

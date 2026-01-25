@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from typing import Any, Dict, Optional
@@ -11,6 +12,9 @@ from services.agent_router.executor_errors import (
     ExecutorOutputError,
     ExecutorToolCallAttempt,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 _CODE_FENCE_RE = re.compile(
@@ -153,12 +157,16 @@ class OpenAIResponsesExecutor:
         """
         ctx = context if isinstance(context, dict) else {}
 
+        instructions = ctx.get("instructions")
+        if not isinstance(instructions, str) or not instructions.strip():
+            raise ValueError("Blocked: missing ctx.instructions for CEO Responses call")
+
         schema_hint = 'Vrati TAČNO JSON oblika {"text":"..."} (samo taj ključ), bez drugih ključeva.'
 
         task: Dict[str, Any] = {
             "input": f"{schema_hint}\n\n{text}",
             # Optional knobs (best-effort) — safe even if caller doesn't provide them.
-            "instructions": ctx.get("instructions"),
+            "instructions": instructions,
             "temperature": ctx.get("temperature"),
             "allow_tools": bool(ctx.get("allow_tools") is True),
             "ceo_contract": True,
@@ -187,6 +195,11 @@ class OpenAIResponsesExecutor:
         if instructions is not None and not isinstance(instructions, str):
             instructions = str(instructions)
 
+        if bool(task.get("ceo_contract") is True) and (
+            not isinstance(instructions, str) or not instructions.strip()
+        ):
+            raise ValueError("Blocked: missing ctx.instructions for CEO Responses call")
+
         allow_tools = bool(task.get("allow_tools") is True)
         if allow_tools:
             raise ExecutorToolCallAttempt("Tools are not allowed in this executor")
@@ -199,6 +212,11 @@ class OpenAIResponsesExecutor:
         )
 
         if has_responses:
+            logger.debug(
+                "[OPENAI_RESPONSES_EXECUTOR] mode=responses instructions_len=%s input_len=%s",
+                len(instructions or ""),
+                len(user_input or ""),
+            )
             kwargs: Dict[str, Any] = {
                 "model": self._model(),
                 "input": user_input,
@@ -236,6 +254,11 @@ class OpenAIResponsesExecutor:
 
         # Fallback: Chat Completions.
         # NOTE: We keep the same JSON-only request and still block tool calls.
+        logger.debug(
+            "[OPENAI_RESPONSES_EXECUTOR] mode=chat_completions instructions_len=%s input_len=%s",
+            len(instructions or ""),
+            len(user_input or ""),
+        )
         chat = getattr(self.client, "chat", None)
         completions = getattr(chat, "completions", None) if chat is not None else None
         create = (

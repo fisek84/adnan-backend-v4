@@ -8,6 +8,10 @@ def _run(coro):
 def test_unknown_mode_does_not_block_llm_when_allow_general_true(monkeypatch):
     """Regression: when allow_general=1 and LLM is configured, unknown_mode gate must not return fallback."""
 
+    # This regression test is for legacy (Assistants-mode) behavior.
+    # In Responses mode, LLM calls require grounding_pack-backed instructions.
+    monkeypatch.setenv("OPENAI_API_MODE", "assistants")
+
     monkeypatch.setenv("CEO_ADVISOR_ALLOW_GENERAL_KNOWLEDGE", "1")
 
     # Force LLM configured.
@@ -43,6 +47,7 @@ def test_unknown_mode_does_not_block_llm_when_allow_general_true(monkeypatch):
 
 
 def test_unknown_mode_fallback_when_allow_general_false(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_MODE", "assistants")
     monkeypatch.setenv("CEO_ADVISOR_ALLOW_GENERAL_KNOWLEDGE", "0")
     monkeypatch.setattr("services.ceo_advisor_agent._llm_is_configured", lambda: True)
 
