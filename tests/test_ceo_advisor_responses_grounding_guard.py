@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-import pytest
 from fastapi.testclient import TestClient
 
 
@@ -46,7 +45,9 @@ def test_responses_mode_calls_executor_with_non_empty_instructions(monkeypatch):
     # Force grounding_pack to be present
     from services.grounding_pack_service import GroundingPackService
 
-    monkeypatch.setattr(GroundingPackService, "build", lambda **kwargs: _grounding_pack_full())
+    monkeypatch.setattr(
+        GroundingPackService, "build", lambda **kwargs: _grounding_pack_full()
+    )
 
     captured: Dict[str, Any] = {}
 
@@ -65,7 +66,11 @@ def test_responses_mode_calls_executor_with_non_empty_instructions(monkeypatch):
     client = TestClient(app)
     resp = client.post(
         "/api/chat",
-        json={"message": "What is AI?", "metadata": {"include_debug": True}, "snapshot": {}},
+        json={
+            "message": "What is AI?",
+            "metadata": {"include_debug": True},
+            "snapshot": {},
+        },
     )
     assert resp.status_code == 200
 
@@ -84,7 +89,9 @@ def test_responses_mode_blocks_executor_when_grounding_missing(monkeypatch):
 
     from services.grounding_pack_service import GroundingPackService
 
-    monkeypatch.setattr(GroundingPackService, "build", lambda **kwargs: {"enabled": False})
+    monkeypatch.setattr(
+        GroundingPackService, "build", lambda **kwargs: {"enabled": False}
+    )
 
     def _boom(*args, **kwargs):
         raise AssertionError("executor must not be called when grounding is missing")
@@ -95,7 +102,11 @@ def test_responses_mode_blocks_executor_when_grounding_missing(monkeypatch):
     client = TestClient(app)
     resp = client.post(
         "/api/chat",
-        json={"message": "What is AI?", "metadata": {"include_debug": True}, "snapshot": {}},
+        json={
+            "message": "What is AI?",
+            "metadata": {"include_debug": True},
+            "snapshot": {},
+        },
     )
     assert resp.status_code == 200
     data = resp.json()
