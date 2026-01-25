@@ -37,7 +37,9 @@ def _grounding_pack_full() -> Dict[str, Any]:
     }
 
 
-def test_conversation_state_is_injected_into_responses_instructions(monkeypatch, tmp_path):
+def test_conversation_state_is_injected_into_responses_instructions(
+    monkeypatch, tmp_path
+):
     monkeypatch.setenv("OPENAI_API_MODE", "responses")
     monkeypatch.setenv("CEO_ADVISOR_ALLOW_GENERAL_KNOWLEDGE", "1")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-live-local")
@@ -47,7 +49,9 @@ def test_conversation_state_is_injected_into_responses_instructions(monkeypatch,
 
     from services.grounding_pack_service import GroundingPackService
 
-    monkeypatch.setattr(GroundingPackService, "build", lambda **kwargs: _grounding_pack_full())
+    monkeypatch.setattr(
+        GroundingPackService, "build", lambda **kwargs: _grounding_pack_full()
+    )
 
     captured: Dict[str, Any] = {}
 
@@ -70,7 +74,13 @@ def test_conversation_state_is_injected_into_responses_instructions(monkeypatch,
         json={
             "message": "Ovo je test kontekst: Fokus mi je Project Alpha.",
             "session_id": "session_conv_1",
-            "snapshot": {"payload": {"tasks": [], "projects": [{"title": "Project Alpha"}], "goals": []}},
+            "snapshot": {
+                "payload": {
+                    "tasks": [],
+                    "projects": [{"title": "Project Alpha"}],
+                    "goals": [],
+                }
+            },
         },
     )
     assert r1.status_code == 200
@@ -81,7 +91,9 @@ def test_conversation_state_is_injected_into_responses_instructions(monkeypatch,
         json={
             "message": "What is AI?",
             "session_id": "session_conv_1",
-            "snapshot": {"payload": {"tasks": [{"title": "t1"}], "projects": [], "goals": []}},
+            "snapshot": {
+                "payload": {"tasks": [{"title": "t1"}], "projects": [], "goals": []}
+            },
             "metadata": {"include_debug": True},
         },
     )
