@@ -1,71 +1,110 @@
 # gateway/gateway_server.py
+
 # ruff: noqa: E402
-# FULL FILE — replace the whole gateway_server.py with this.
+
+# FULL FILE â€” replace the whole gateway_server.py with this.
+
 
 from __future__ import annotations
 
+
 import asyncio
+
 import inspect
+
 import logging
+
 import os
+
 import re
+
 import threading
+
 import traceback
+
 import uuid
+
 from contextlib import asynccontextmanager
+
 from pathlib import Path
+
 from typing import Any, Dict, List, Optional, Tuple
 
+
 from fastapi import Body, FastAPI, HTTPException, Request, Response
+
 from fastapi.encoders import jsonable_encoder
+
 from fastapi.middleware.cors import CORSMiddleware
+
 from fastapi.responses import JSONResponse
+
 from fastapi.staticfiles import StaticFiles
+
 from pydantic import BaseModel, Field
+
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+
 from system_version import ARCH_LOCK, RELEASE_CHANNEL, SYSTEM_NAME, VERSION
+
 from models.canon import PROPOSAL_WRAPPER_INTENT
+
 from models.ceo_console_snapshot import CeoConsoleSnapshotResponse
 
 
 # ================================================================
+
 # GATEWAY FALLBACK: MINIMAL 2-TURN MEMORY (DEV)
+
 #
+
 # This is intentionally in-memory and only applied when
+
 # router_version == "gateway-fallback-proposals-disabled-for-nonwrite-v1".
+
 # ================================================================
+
 _FALLBACK_WEEKLY_FOCUS_BY_SESSION_ID: Dict[str, str] = {}
+
 _FALLBACK_WEEKLY_FOCUS_LOCK = threading.Lock()
 
+
 _ZAPAMTI_RE = re.compile(r"^\s*zapamti\s*:\s*(.+?)\s*$", re.IGNORECASE)
+
 _FOKUS_SEDMICE_Q_RE = re.compile(r"koji\s+fokus\s+sedmic", re.IGNORECASE)
+
+
+def _set_readonly_text(result: Dict[str, Any], text_out: str) -> None:
+    # Keep response consistent for UI/clients: text + summary.
+
+    result["text"] = text_out
+
+    result["summary"] = text_out
+
+    result["read_only"] = True
+
+    result["proposed_commands"] = []
 
 
 def _apply_gateway_fallback_memory_patch(
     result: Dict[str, Any], *, prompt: str, session_id: Optional[str]
-) -> None:
-    def _set_readonly_text(text_out: str) -> None:
-        # Keep response consistent for UI/clients: text + summary.
-        result["text"] = text_out
-        result["summary"] = text_out
-        result["read_only"] = True
-        result["proposed_commands"] = []
-
+) -> bool:
     if not (isinstance(session_id, str) and session_id.strip()):
-        return
+        return False
 
-    text = (prompt or "").strip()
-    if not text:
-        return
+    text_in = (prompt or "").strip()
 
-    m = _ZAPAMTI_RE.match(text)
+    if not text_in:
+        return False
+
+    m = _ZAPAMTI_RE.match(text_in)
+
     if m:
         focus_raw = (m.group(1) or "").strip()
+
         focus = focus_raw
 
-        # If the user phrase includes an explicit marker like "fokus je ...",
-        # store just the focus part.
         m2 = re.search(r"\bfokus\s+je\s+(.+)$", focus_raw, flags=re.IGNORECASE)
         if m2:
             focus = (m2.group(1) or "").strip()
@@ -76,37 +115,318 @@ def _apply_gateway_fallback_memory_patch(
             with _FALLBACK_WEEKLY_FOCUS_LOCK:
                 _FALLBACK_WEEKLY_FOCUS_BY_SESSION_ID[session_id.strip()] = focus
 
-        # Read-only confirmation; never emit proposals.
-        _set_readonly_text("Zapam7eno.")
+        _set_readonly_text(result, "Zapamćeno.")
 
         tr = _ensure_dict(result.get("trace"))
-        tr["gateway_fallback_memory"] = True
-        tr["gateway_fallback_memory_action"] = "store"
-        result["trace"] = tr
-        return
 
-    if _FOKUS_SEDMICE_Q_RE.search(text):
+        tr["gateway_fallback_memory"] = True
+
+        tr["gateway_fallback_memory_action"] = "store"
+
+        result["trace"] = tr
+
+        return True
+
+    if _FOKUS_SEDMICE_Q_RE.search(text_in):
         with _FALLBACK_WEEKLY_FOCUS_LOCK:
             focus = _FALLBACK_WEEKLY_FOCUS_BY_SESSION_ID.get(session_id.strip())
+
         if isinstance(focus, str) and focus.strip():
-            _set_readonly_text(focus.strip())
+            _set_readonly_text(result, focus.strip())
 
             tr = _ensure_dict(result.get("trace"))
+
             tr["gateway_fallback_memory"] = True
+
             tr["gateway_fallback_memory_action"] = "recall"
+
             result["trace"] = tr
 
+            return True
+
+    return False
+
+
+def _build_ceo_read_context(
+    *, prompt: str, session_id: Optional[str], request_headers: Optional[Dict[str, str]]
+) -> Dict[str, Any]:
+    out: Dict[str, Any] = {
+        "identity_json": {},
+        "snapshot": {},
+        "kb_hits": None,
+        "memory_stm": {},
+        "missing": [],
+        "trace": {
+            "service": "gateway_fallback_context_bridge",
+            "headers_present": bool(request_headers),
+            "session_id_present": bool(
+                isinstance(session_id, str) and session_id.strip()
+            ),
+        },
+    }
+
+    mem_public: Dict[str, Any] = {}
+
+    try:
+        from services.memory_read_only import ReadOnlyMemoryService  # type: ignore
+
+        mem_public = ReadOnlyMemoryService().export_public_snapshot()
+
+        if not isinstance(mem_public, dict):
+            mem_public = {}
+
+    except Exception as e:  # noqa: BLE001
+        out["trace"]["memory_error"] = str(e)
+
+        mem_public = {}
+
+    out["memory_stm"] = mem_public
+
+    sys_snap: Dict[str, Any] = {}
+
+    try:
+        from services.system_read_executor import SystemReadExecutor  # type: ignore
+
+        sys_snap = SystemReadExecutor().snapshot()
+
+        if not isinstance(sys_snap, dict):
+            sys_snap = {"available": False}
+
+    except Exception as e:  # noqa: BLE001
+        out["trace"]["system_snapshot_error"] = str(e)
+
+        sys_snap = {"available": False}
+
+    identity_pack = sys_snap.get("identity_pack") if isinstance(sys_snap, dict) else {}
+
+    if not isinstance(identity_pack, dict):
+        identity_pack = {}
+
+    out["identity_json"] = identity_pack
+
+    knowledge_snapshot = (
+        sys_snap.get("knowledge_snapshot") if isinstance(sys_snap, dict) else {}
+    )
+
+    if not isinstance(knowledge_snapshot, dict):
+        knowledge_snapshot = {}
+
+    out["snapshot"] = knowledge_snapshot
+
+    gp: Dict[str, Any] = {}
+
+    try:
+        from services.grounding_pack_service import GroundingPackService  # type: ignore
+
+        gp = GroundingPackService.build(
+            prompt=(prompt or "").strip(),
+            knowledge_snapshot=knowledge_snapshot,
+            memory_public_snapshot=mem_public,
+            legacy_trace=None,
+            agent_id="ceo_advisor",
+        )
+
+        if not isinstance(gp, dict):
+            gp = {}
+
+    except Exception as e:  # noqa: BLE001
+        out["trace"]["grounding_pack_error"] = str(e)
+
+        gp = {}
+
+    out["grounding_pack"] = gp
+
+    kb_hits = None
+
+    try:
+        kb_retrieved = gp.get("kb_retrieved") if isinstance(gp, dict) else None
+
+        if isinstance(kb_retrieved, dict):
+            kb_hits = kb_retrieved.get("entries")
+
+    except Exception:
+        kb_hits = None
+
+    out["kb_hits"] = kb_hits
+
+    missing = []
+
+    if not (
+        isinstance(identity_pack, dict) and identity_pack.get("available") is not False
+    ):
+        missing.append("identity_json")
+
+    ready = (
+        knowledge_snapshot.get("ready")
+        if isinstance(knowledge_snapshot, dict)
+        else None
+    )
+
+    if ready is not True:
+        missing.append("snapshot")
+
+    if (
+        not isinstance(kb_hits, list)
+        or len([x for x in kb_hits if isinstance(x, dict)]) == 0
+    ):
+        missing.append("kb_hits")
+
+    if not isinstance(mem_public, dict) or not mem_public:
+        missing.append("memory_stm")
+
+    missing.append("memory_ltm")
+
+    out["missing"] = sorted(
+        set([m for m in missing if isinstance(m, str) and m.strip()])
+    )
+
+    out["trace"]["system_snapshot_available"] = bool(sys_snap.get("available") is True)
+
+    out["trace"]["knowledge_ready"] = bool(ready is True)
+
+    out["trace"]["grounding_pack_enabled"] = (
+        bool(gp.get("enabled") is True) if isinstance(gp, dict) else False
+    )
+
+    out["trace"]["kb_hits_count"] = len(kb_hits) if isinstance(kb_hits, list) else 0
+
+    out["trace"]["missing"] = out["missing"]
+
+    return out
+
+
+async def _generate_ceo_readonly_answer(
+    *, prompt: str, session_id: Optional[str], context: Dict[str, Any]
+) -> Dict[str, Any]:
+    prompt_in = (prompt or "").strip()
+
+    missing = context.get("missing") if isinstance(context.get("missing"), list) else []
+
+    missing = [x for x in missing if isinstance(x, str) and x.strip()]
+
+    if "snapshot" in missing:
+        txt = (
+            "Snapshot nije dostavljen/učitan (READ). Pošalji Notion snapshot ili pokreni refresh snapshot, "
+            "pa ponovi pitanje."
+        )
+
+        return {
+            "text": txt,
+            "summary": txt,
+            "trace": {"exit_reason": "fallback.missing_snapshot"},
+        }
+
+    gp = (
+        context.get("grounding_pack")
+        if isinstance(context.get("grounding_pack"), dict)
+        else {}
+    )
+
+    instructions = None
+
+    try:
+        from services.ceo_advisor_agent import build_ceo_instructions  # type: ignore
+
+        instructions = build_ceo_instructions(gp)
+
+    except Exception:
+        instructions = None
+
+    safe_context: Dict[str, Any] = {
+        "canon": {"read_only": True, "no_tools": True, "no_side_effects": True},
+        "snapshot": context.get("snapshot")
+        if isinstance(context.get("snapshot"), dict)
+        else {},
+        "metadata": {
+            "initiator": "gateway_fallback",
+            "read_only": True,
+            "session_id": session_id,
+            "gateway_fallback": True,
+        },
+        "grounding_pack": gp,
+    }
+
+    if isinstance(instructions, str) and instructions.strip():
+        safe_context["instructions"] = instructions
+
+    if missing:
+        prompt_in = (
+            prompt_in
+            + "\n\nMISSING_INPUTS: "
+            + ", ".join(sorted(set(missing)))
+            + ". Ako ti fali neki od ovih inputa, eksplicitno traži baš taj input."
+        )
+
+    prompt_text = (
+        prompt_in
+        + "\n\nReturn only valid json (a single JSON object). "
+        + 'Required keys: "text" (string) and "proposed_commands" (array; can be empty). '
+        + "Do not wrap the json in markdown code fences."
+    )
+
+    try:
+        from services.agent_router.executor_factory import get_executor  # type: ignore
+
+        executor = get_executor(purpose="ceo_advisor")
+
+        raw = executor.ceo_command(text=prompt_text, context=safe_context)
+
+        if asyncio.iscoroutine(raw):
+            raw = await raw
+
+        if isinstance(raw, dict):
+            text_out = str(raw.get("text") or "").strip()
+
+        else:
+            text_out = str(raw).strip()
+
+        if not text_out:
+            text_out = (
+                "Treba mi više konkretnog konteksta (snapshot/KB/memory) da odgovorim."
+            )
+
+        return {
+            "text": text_out,
+            "summary": text_out,
+            "trace": {"exit_reason": "fallback.llm.success"},
+        }
+
+    except Exception as e:  # noqa: BLE001
+        parts = []
+
+        if missing:
+            parts.append("Nedostaje: " + ", ".join(sorted(set(missing))) + ".")
+
+        parts.append("Pošalji nedostajući READ kontekst pa ponovi pitanje.")
+
+        txt = " ".join(parts).strip()
+
+        if not txt:
+            txt = "Pošalji više konteksta (snapshot/KB/memory) pa ponovi pitanje."
+
+        return {
+            "text": txt,
+            "summary": txt,
+            "trace": {"exit_reason": "fallback.llm.error", "error": str(e)},
+        }
+
 
 # ================================================================
+
 # ENV / BOOTSTRAP
+
 # ================================================================
+
 try:
     from dotenv import load_dotenv  # type: ignore
+
 except Exception:  # noqa: BLE001
     load_dotenv = None  # type: ignore
 
+
 if os.getenv("RENDER") != "true" and load_dotenv:
     _env_path = Path(__file__).resolve().parents[1] / ".env"  # repo root .env
+
     load_dotenv(dotenv_path=_env_path, override=False)
 
 
@@ -124,11 +444,13 @@ def _ops_safe_mode() -> bool:
 
 def _enterprise_preview_editor_enabled() -> bool:
     # Default OFF.
+
     v = (
         os.getenv("ENTERPRISE_PREVIEW_EDITOR")
         or os.getenv("ENTERPRISE_PREVIEW_EDITOR_ENABLED")
         or ""
     )
+
     return (v or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
@@ -141,6 +463,7 @@ def _require_ceo_token_if_enforced(request: Request) -> None:
         return
 
     expected = (os.getenv("CEO_APPROVAL_TOKEN") or "").strip()
+
     if not expected:
         raise HTTPException(
             status_code=500,
@@ -151,6 +474,7 @@ def _require_ceo_token_if_enforced(request: Request) -> None:
 
     if not provided:
         auth = (request.headers.get("Authorization") or "").strip()
+
         if auth.lower().startswith("bearer "):
             provided = auth[7:].strip()
 
@@ -160,20 +484,31 @@ def _require_ceo_token_if_enforced(request: Request) -> None:
 
 def _is_ceo_request(request: Request) -> bool:
     """
+
     Check if the request is from a CEO user.
+
     CEO users are identified by:
+
     1. Valid X-CEO-Token header (if CEO_TOKEN_ENFORCEMENT is enabled)
+
     2. X-Initiator == "ceo_chat" or similar CEO indicators
+
     """
+
     # If enforcement is enabled, check for valid token
+
     if _ceo_token_enforcement_enabled():
         expected = (os.getenv("CEO_APPROVAL_TOKEN", "") or "").strip()
+
         provided = (request.headers.get("X-CEO-Token") or "").strip()
+
         if expected and provided == expected:
             return True
 
     # Check for CEO indicators in request (for non-enforced mode)
+
     initiator = (request.headers.get("X-Initiator") or "").strip().lower()
+
     if initiator in ("ceo_chat", "ceo_dashboard", "ceo"):
         return True
 
@@ -182,47 +517,63 @@ def _is_ceo_request(request: Request) -> bool:
 
 def _guard_write_bulk(request: Request) -> None:
     # CEO users bypass OPS_SAFE_MODE and approval checks
+
     if _is_ceo_request(request):
         _require_ceo_token_if_enforced(request)
+
         return
 
     if _ops_safe_mode():
         raise HTTPException(
             status_code=403, detail="OPS_SAFE_MODE enabled (writes blocked)"
         )
+
     _require_ceo_token_if_enforced(request)
 
 
 OS_ENABLED = _env_true("OS_ENABLED", "true")
 
+
 _BOOT_READY = False
+
 _BOOT_ERROR: Optional[str] = None
 
 
 def _append_boot_error(msg: str) -> None:
     global _BOOT_ERROR
+
     msg = (msg or "").strip()
+
     if not msg:
         return
+
     if not _BOOT_ERROR:
         _BOOT_ERROR = msg
+
         return
+
     _BOOT_ERROR = f"{_BOOT_ERROR}; {msg}"
 
 
 # ================================================================
+
 # PATHS (repo-root aware)
+
 # ================================================================
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
 FRONTEND_DIST_DIR = REPO_ROOT / "gateway" / "frontend" / "dist"
 
 
 def _agents_registry_path() -> Path:
     p = (os.getenv("AGENTS_JSON_PATH") or "").strip()
+
     if p:
         return Path(p)
 
     p2 = (os.getenv("AGENTS_REGISTRY_PATH") or "").strip()
+
     if p2:
         return Path(p2)
 
@@ -230,18 +581,25 @@ def _agents_registry_path() -> Path:
 
 
 # ================================================================
+
 # LOGGING
+
 # ================================================================
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
+
 logger = logging.getLogger("gateway")
 
 
 # ================================================================
+
 # RUNTIME ENV VALIDATION (SSOT when starting via gateway_server:app)
+
 # ================================================================
+
 REQUIRED_ENV_VARS = [
     "OPENAI_API_KEY",
     "NOTION_API_KEY",
@@ -253,6 +611,7 @@ REQUIRED_ENV_VARS = [
 
 def _is_test_mode() -> bool:
     # Pytest sets PYTEST_CURRENT_TEST; we also allow explicit TESTING=1.
+
     return (os.getenv("TESTING") or "").strip() == "1" or (
         "PYTEST_CURRENT_TEST" in os.environ
     )
@@ -260,16 +619,23 @@ def _is_test_mode() -> bool:
 
 def validate_runtime_env_or_raise() -> None:
     required = list(REQUIRED_ENV_VARS)
+
     # Tests run with network disabled; allow missing OpenAI key.
+
     if _is_test_mode() and "OPENAI_API_KEY" in required:
         required.remove("OPENAI_API_KEY")
 
     missing = [k for k in required if not (os.getenv(k) or "").strip()]
+
     if missing:
         logger.critical("Missing ENV vars: %s", ", ".join(missing))
+
         raise RuntimeError(f"Missing ENV vars: {', '.join(missing)}")
+
     logger.info("Environment variables validated.")
+
     # Helpful boot-time flags (do NOT print secrets).
+
     logger.info(
         "LLM flags: OPENAI_API_MODE=%s CEO_ADVISOR_ALLOW_GENERAL_KNOWLEDGE=%s CEO_ADVISOR_STRICT_LLM=%s",
         (os.getenv("OPENAI_API_MODE") or "").strip() or "(unset)",
@@ -279,94 +645,166 @@ def validate_runtime_env_or_raise() -> None:
 
 
 # ================================================================
+
 # CORE SERVICES
-# ================================================================
-from models.ai_command import AICommand
-from routers.chat_router import build_chat_router
-from routers.voice_router import router as voice_router
-from services.ai_command_service import AICommandService
-from services.approval_state_service import get_approval_state
-from services.coo_conversation_service import COOConversationService
-from services.coo_translation_service import COOTranslationService
-from services.execution_orchestrator import ExecutionOrchestrator
-from services.execution_registry import get_execution_registry
 
 # ================================================================
-# IDENTITY / MODE / STATE (READ-ONLY LOADS OK AT IMPORT)
+
+from models.ai_command import AICommand
+
+from routers.chat_router import build_chat_router
+
+from routers.voice_router import router as voice_router
+
+from services.ai_command_service import AICommandService
+
+from services.approval_state_service import get_approval_state
+
+from services.coo_conversation_service import COOConversationService
+
+from services.coo_translation_service import COOTranslationService
+
+from services.execution_orchestrator import ExecutionOrchestrator
+
+from services.execution_registry import get_execution_registry
+
+
 # ================================================================
+
+# IDENTITY / MODE / STATE (READ-ONLY LOADS OK AT IMPORT)
+
+# ================================================================
+
 from services.adnan_mode_service import load_mode
+
 from services.adnan_state_service import load_state
+
 from services.identity_loader import load_identity
+
 
 from services.ceo_console_snapshot_service import CEOConsoleSnapshotService
 
+
 # ================================================================
-# NOTION SERVICE (KANONSKI INIT) — NO SIDE EFFECTS AT IMPORT
+
+# NOTION SERVICE (KANONSKI INIT) â€” NO SIDE EFFECTS AT IMPORT
+
 # ================================================================
+
 from services.knowledge_snapshot_service import KnowledgeSnapshotService
+
 from services.notion_service import (
     init_notion_service_from_env_or_raise,
     try_get_notion_service,
 )
 
+
 # ================================================================
+
 # WEEKLY MEMORY SERVICE (CEO DASHBOARD)
+
 # ================================================================
+
 from services.ai_summary_service import get_ai_summary_service
+
 from services.weekly_memory_service import get_weekly_memory_service
 
+
 # ================================================================
+
 # AGENT REGISTRY + ROUTER + CHAT
+
 # ================================================================
+
 from services.agent_registry_service import get_agent_registry_service
+
 from services.agent_router_service import AgentRouterService
 
+
 _agent_registry = get_agent_registry_service()
+
 _agent_router = AgentRouterService(_agent_registry)
+
 _chat_router = build_chat_router(_agent_router)
 
+
 # ================================================================
+
 # ROUTERS (OTHER)
+
 # ================================================================
+
 from routers.adnan_ai_router import router as adnan_ai_router
+
 from routers.ai_ops_router import ai_ops_router
+
 from routers.alerting_router import router as alerting_router
+
 from routers.audit_router import router as audit_router
+
 from routers.goals_router import router as goals_router
+
 from routers.metrics_router import router as metrics_router
+
 from routers.notion_ops_router import router as notion_ops_router
+
 from routers.projects_router import router as projects_router
+
 from routers.sync_router import router as sync_router
+
 from routers.tasks_router import router as tasks_router
 
+
 import routers.ai_ops_router as ai_ops_router_module
+
 import routers.ai_router as ai_router_module
+
 import routers.ceo_console_router as ceo_console_module
 
+
 # ================================================================
+
 # APPLICATION BOOTSTRAP
+
 # ================================================================
+
 from services.app_bootstrap import bootstrap_application
 
+
 # ================================================================
+
 # INITIAL LOAD
+
 # ================================================================
+
 if not OS_ENABLED:
     logger.critical("OS_ENABLED=false - system will not start.")
+
     raise RuntimeError("OS is disabled by configuration.")
 
+
 identity = load_identity()
+
 mode = load_mode()
+
 state = load_state()
 
+
 # ================================================================
+
 # CANON: NO SERVICE CONSTRUCTION AT IMPORT TIME
+
 # ================================================================
+
 ai_command_service: Optional[AICommandService] = None
+
 coo_translation_service: Optional[COOTranslationService] = None
+
 coo_conversation_service: Optional[COOConversationService] = None
 
+
 _execution_registry = None  # type: ignore[assignment]
+
 _execution_orchestrator: Optional[ExecutionOrchestrator] = None
 
 
@@ -401,54 +839,77 @@ def _require_boot_services() -> (
 
 
 # ================================================================
+
 # HARD-BLOCK: ONLY NEXT_STEP MUST NEVER CREATE APPROVAL OR EXECUTE
+
 # ================================================================
+
 _HARD_READ_ONLY_INTENTS = {
     "ceo_console.next_step",
 }
 
 
 # ================================================================
+
 # META-COMMANDS MUST NOT ENTER EXECUTION/APPROVAL
+
 # ================================================================
+
+
 def _ai_command_field_names() -> set[str]:
     model_fields = getattr(AICommand, "model_fields", None)
+
     if isinstance(model_fields, dict):
         return set(model_fields.keys())
+
     v1_fields = getattr(AICommand, "__fields__", None)
+
     if isinstance(v1_fields, dict):
         return set(v1_fields.keys())
+
     return set()
 
 
 def _ensure_execution_id(ai_command: AICommand) -> str:
     existing = getattr(ai_command, "execution_id", None)
+
     if isinstance(existing, str) and existing.strip():
         return existing
 
     new_id = str(uuid.uuid4())
+
     try:
         ai_command.execution_id = new_id  # type: ignore[attr-defined]
+
     except Exception:
         md = getattr(ai_command, "metadata", None)
+
         if not isinstance(md, dict):
             md = {}
+
         md["execution_id"] = new_id
+
         ai_command.metadata = md
+
     return new_id
 
 
 def _ensure_trace_on_command(ai_command: AICommand, *, approval_id: str) -> None:
     md = getattr(ai_command, "metadata", None)
+
     if not isinstance(md, dict):
         md = {}
+
     md["approval_id"] = approval_id
+
     ai_command.metadata = md
 
     fields = _ai_command_field_names()
+
     if "approval_id" in fields:
         try:
             ai_command.approval_id = approval_id  # type: ignore[attr-defined]
+
         except Exception:
             pass
 
@@ -457,18 +918,25 @@ def _safe_command_summary(ai_command: AICommand) -> Dict[str, Any]:
     try:
         if hasattr(ai_command, "model_dump"):
             out = ai_command.model_dump()
+
             return out if isinstance(out, dict) else {}
+
     except Exception:
         pass
+
     try:
         if hasattr(ai_command, "dict"):
             out = ai_command.dict()
+
             return out if isinstance(out, dict) else {}
+
     except Exception:
         pass
 
     params = getattr(ai_command, "params", None)
+
     intent = getattr(ai_command, "intent", None)
+
     cmd = getattr(ai_command, "command", None)
 
     summary = {
@@ -478,6 +946,7 @@ def _safe_command_summary(ai_command: AICommand) -> Dict[str, Any]:
     }
 
     md = getattr(ai_command, "metadata", None)
+
     if isinstance(md, dict) and isinstance(md.get("confidence_risk"), dict):
         summary["confidence_risk"] = md.get("confidence_risk")
 
@@ -487,27 +956,37 @@ def _safe_command_summary(ai_command: AICommand) -> Dict[str, Any]:
 def _to_serializable(obj: Any) -> Any:
     if obj is None:
         return None
+
     if isinstance(obj, (str, int, float, bool)):
         return obj
+
     if isinstance(obj, dict):
         return {k: _to_serializable(v) for k, v in obj.items()}
+
     if isinstance(obj, (list, tuple)):
         return [_to_serializable(v) for v in obj]
+
     if hasattr(obj, "model_dump"):
         try:
             return obj.model_dump()
+
         except Exception:
             pass
+
     if hasattr(obj, "dict"):
         try:
             return obj.dict()
+
         except Exception:
             pass
+
     if hasattr(obj, "__dict__"):
         try:
             return {k: _to_serializable(v) for k, v in obj.__dict__.items()}
+
         except Exception:
             pass
+
     return str(obj)
 
 
@@ -520,12 +999,18 @@ def _noop_executable_from_wrapper(
     metadata: Dict[str, Any],
 ) -> AICommand:
     md = dict(metadata or {})
+
     md.setdefault("canon", "execute_raw_wrapper_noop")
+
     md.setdefault("endpoint", "/api/execute/raw")
+
     md.setdefault("wrapper", {})
+
     if isinstance(md.get("wrapper"), dict):
         md["wrapper"].setdefault("command", wrapper_command)
+
         md["wrapper"].setdefault("intent", wrapper_intent)
+
         md["wrapper"].setdefault("prompt", (prompt or "").strip())
 
     return AICommand(
@@ -539,19 +1024,30 @@ def _noop_executable_from_wrapper(
 
 
 # ================================================================
+
 # ? REPLACED FUNCTION (robust prompt extraction)
+
 # ================================================================
+
+
 def _extract_wrapper_patch_from_params(params: Dict[str, Any]) -> Dict[str, Any]:
     """Extract fill_missing patch from wrapper params.
 
+
+
     Canon: wrapper args/params contain prompt + optional fields (Status/Priority/Deadline/...).
+
     Gateway must ignore prompt and forward the rest as wrapper_patch.
+
     """
+
     if not isinstance(params, dict) or not params:
         return {}
 
     # Wrapper params often contain routing hints (intent/type/etc). We only want
+
     # user-fillable Notion field values.
+
     reserved = {
         "prompt",
         "intent",
@@ -568,16 +1064,22 @@ def _extract_wrapper_patch_from_params(params: Dict[str, Any]) -> Dict[str, Any]
     }
 
     patch: Dict[str, Any] = {}
+
     for k, v in params.items():
         if not isinstance(k, str) or not k.strip():
             continue
+
         if k in reserved:
             continue
+
         if v is None:
             continue
+
         if isinstance(v, str) and not v.strip():
             continue
+
         patch[k] = v
+
     return patch
 
 
@@ -586,92 +1088,127 @@ def _apply_wrapper_patch_to_ai_command(
 ) -> None:
     """Apply UI fill_missing patch to translated AICommand (post-translate).
 
+
+
     HARD RULES:
+
       - Only apply to notion_write/create_page.
+
       - Do not mutate prompt/title mapping except explicit patch overrides.
+
       - Use COOTranslationService normalizers.
+
       - If translation produced next_step/noop, caller must skip patch.
+
     """
+
     if not isinstance(wrapper_patch, dict) or not wrapper_patch:
         return
 
     if getattr(ai_command, "command", None) != "notion_write":
         return
+
     intent = getattr(ai_command, "intent", None)
+
     if intent not in {"create_page", "create_goal", "create_task", "create_project"}:
         return
 
     params = getattr(ai_command, "params", None)
+
     if not isinstance(params, dict):
         params = {}
+
         ai_command.params = params
 
     # For create_page we patch property_specs; for create_goal/task/project we patch params fields.
+
     property_specs = params.get("property_specs")
+
     if not isinstance(property_specs, dict):
         property_specs = {}
+
         params["property_specs"] = property_specs
 
     # Determine Status property type: goals use status, tasks use select.
+
     status_type = "select"
+
     db_key = params.get("db_key")
+
     if isinstance(db_key, str) and db_key.strip():
         lk = db_key.strip().lower()
+
         if lk in {"goals", "goal"}:
             status_type = "status"
+
         elif lk in {"tasks", "task"}:
             status_type = "select"
 
     if "Status" in wrapper_patch:
         raw = wrapper_patch.get("Status")
+
         if isinstance(raw, str) and raw.strip():
             name = COOTranslationService._normalize_status(raw)
+
             if intent == "create_page":
                 property_specs["Status"] = {"type": status_type, "name": name}
+
             else:
                 params["status"] = name
 
     if "Priority" in wrapper_patch:
         raw = wrapper_patch.get("Priority")
+
         if isinstance(raw, str) and raw.strip():
             name = COOTranslationService._normalize_priority(raw)
+
             if intent == "create_page":
                 property_specs["Priority"] = {"type": "select", "name": name}
+
             else:
                 params["priority"] = name
 
     if "Deadline" in wrapper_patch:
         raw = wrapper_patch.get("Deadline")
+
         if isinstance(raw, str) and raw.strip():
             iso = COOTranslationService._try_parse_date_to_iso(raw)
+
             if iso:
                 if intent == "create_page":
                     property_specs["Deadline"] = {"type": "date", "start": iso}
+
                 else:
                     params["deadline"] = iso
 
     if "Due Date" in wrapper_patch:
         raw = wrapper_patch.get("Due Date")
+
         if isinstance(raw, str) and raw.strip():
             iso = COOTranslationService._try_parse_date_to_iso(raw)
+
             if iso:
                 if intent == "create_page":
                     property_specs["Due Date"] = {"type": "date", "start": iso}
+
                 else:
                     params["deadline"] = iso
 
     if "Description" in wrapper_patch:
         raw = wrapper_patch.get("Description")
+
         if isinstance(raw, str) and raw.strip():
             if intent == "create_page":
                 property_specs["Description"] = {
                     "type": "rich_text",
                     "text": raw.strip(),
                 }
+
             else:
                 params["description"] = raw.strip()
 
     params["property_specs"] = property_specs
+
     ai_command.params = params
 
 
@@ -687,6 +1224,7 @@ def _unwrap_proposal_wrapper_or_raise(
     is_wrapper = (intent == PROPOSAL_WRAPPER_INTENT) or (
         command == PROPOSAL_WRAPPER_INTENT
     )
+
     if not is_wrapper:
         return AICommand(
             command=command,
@@ -702,11 +1240,16 @@ def _unwrap_proposal_wrapper_or_raise(
     )
 
     # ============================================================
+
     # CANON: memory_write.v1 proposals do NOT require prompt.
+
     # They are executable, strict JSON payloads.
+
     # ============================================================
+
     if isinstance(params, dict):
         sv = params.get("schema_version")
+
         if isinstance(sv, str) and sv.strip() == "memory_write.v1":
             return AICommand(
                 command="memory_write",
@@ -718,6 +1261,7 @@ def _unwrap_proposal_wrapper_or_raise(
             )
 
     # SSOT: prompt normalization + patch extraction lives in one place.
+
     from services.notion_write_intent_normalizer import (  # noqa: PLC0415
         coerce_create_page_name_from_prompt,
         normalize_prompt_for_property_parse,
@@ -726,29 +1270,38 @@ def _unwrap_proposal_wrapper_or_raise(
     )
 
     # ? Robust prompt extraction: params.prompt OR metadata.prompt OR metadata.wrapper.prompt
+
     prompt: Optional[str] = None
+
     if isinstance(params, dict):
         p0 = params.get("prompt")
+
         if isinstance(p0, str) and p0.strip():
             prompt = p0.strip()
 
     # Legacy/compat: some callers nest wrapper prompt under params.ai_command.prompt
+
     if prompt is None and isinstance(params, dict):
         ac0 = params.get("ai_command")
+
         if isinstance(ac0, dict):
             p_ac = ac0.get("prompt")
+
             if isinstance(p_ac, str) and p_ac.strip():
                 prompt = p_ac.strip()
 
     if prompt is None and isinstance(metadata, dict):
         p1 = metadata.get("prompt")
+
         if isinstance(p1, str) and p1.strip():
             prompt = p1.strip()
 
     if prompt is None and isinstance(metadata, dict):
         w = metadata.get("wrapper")
+
         if isinstance(w, dict):
             p2 = w.get("prompt")
+
             if isinstance(p2, str) and p2.strip():
                 prompt = p2.strip()
 
@@ -759,24 +1312,35 @@ def _unwrap_proposal_wrapper_or_raise(
         )
 
     # Merge prompt-derived patches with explicit UI patch (UI wins).
+
     try:
         _title0, merged = normalize_wrapper_prompt_and_patch(
             prompt=prompt, wrapper_patch=wrapper_patch
         )
+
         wrapper_patch = merged
+
     except Exception:
         pass
 
     # ============================================================
+
     # ENTERPRISE FAST-PATH: deterministic intent hints from NotionOpsAgent
+
     # ============================================================
+
     hint_intent: Optional[str] = None
+
     hint_type: Optional[str] = None
+
     if isinstance(params, dict):
         p_intent = params.get("intent") or params.get("intent_hint")
+
         if isinstance(p_intent, str) and p_intent.strip():
             hint_intent = p_intent.strip()
+
         p_type = params.get("type")
+
         if isinstance(p_type, str) and p_type.strip():
             hint_type = p_type.strip()
 
@@ -787,39 +1351,55 @@ def _unwrap_proposal_wrapper_or_raise(
     ) -> Optional[str]:
         """Best-effort extract of a relation target title from natural prompt.
 
+
+
         Examples (bs/en):
+
           - "povezi sa ciljem ADNAN RAMBO"
+
           - "sa ciljem: ADNAN RAMBO"
+
           - "with goal ADNAN RAMBO"
+
           - "goal: ADNAN RAMBO"
+
         """
+
         s = (prompt_text or "").strip()
+
         if not s:
             return None
 
         if kind == "goal":
             token = r"(?:ciljem|cilj|goal)"
+
         elif kind == "project":
             token = r"(?:projektom|projekat|projekt|project)"
+
         else:
             return None
 
         patterns = [
-            rf"(?i)\b(?:povezi|pove\u017ei|link(?:aj)?|connect|attach)\s+(?:sa|with)\s+{token}\s*[:\-–—]?\s*([^,;\n]+)",
-            rf"(?i)\b(?:sa|with)\s+{token}\s*[:\-–—]?\s*([^,;\n]+)",
+            rf"(?i)\b(?:povezi|pove\u017ei|link(?:aj)?|connect|attach)\s+(?:sa|with)\s+{token}\s*[:\-â€“â€”]?\s*([^,;\n]+)",
+            rf"(?i)\b(?:sa|with)\s+{token}\s*[:\-â€“â€”]?\s*([^,;\n]+)",
             rf"(?i)\b{token}\s*[:=]\s*([^,;\n]+)",
         ]
 
         for pat in patterns:
             m = re.search(pat, s)
+
             if not m:
                 continue
+
             val = (m.group(1) or "").strip().strip("\"'")
+
             if val:
                 return val
+
         return None
 
     # Branch/batch requests: build operations list deterministically.
+
     try:
         if (hint_type or "").lower() in {"branch_request", "batch_request"} or (
             isinstance(hint_intent, str)
@@ -827,7 +1407,9 @@ def _unwrap_proposal_wrapper_or_raise(
             in {"batch_request", "batch", "branch_request"}
         ):
             # UI/enterprise path: allow explicit operations list.
+
             ops_in = params.get("operations") if isinstance(params, dict) else None
+
             if isinstance(ops_in, list) and ops_in:
                 ai_command = AICommand(
                     command="notion_write",
@@ -852,9 +1434,11 @@ def _unwrap_proposal_wrapper_or_raise(
                 )
 
                 # Ensure downstream executor can apply schema-backed patches.
+
                 try:
                     if isinstance(ai_command.params, dict) and wrapper_patch:
                         ai_command.params["wrapper_patch"] = dict(wrapper_patch)
+
                 except Exception:
                     pass
 
@@ -863,7 +1447,9 @@ def _unwrap_proposal_wrapper_or_raise(
             from services.branch_request_handler import BranchRequestHandler  # noqa: PLC0415
 
             br = BranchRequestHandler.process_branch_request(prompt.strip())
+
             ops = br.get("operations") if isinstance(br, dict) else None
+
             if isinstance(ops, list) and ops:
                 ai_command = AICommand(
                     command="notion_write",
@@ -888,17 +1474,21 @@ def _unwrap_proposal_wrapper_or_raise(
                 )
 
                 # Ensure downstream executor can apply schema-backed patches.
+
                 try:
                     if isinstance(ai_command.params, dict) and wrapper_patch:
                         ai_command.params["wrapper_patch"] = dict(wrapper_patch)
+
                 except Exception:
                     pass
 
                 return ai_command
+
     except Exception:
         pass
 
     # Explicit goal + numbered task list (enterprise UX): convert to batch_request.
+
     try:
         from services.goal_task_batch_parser import (  # noqa: PLC0415
             build_batch_operations_from_parsed,
@@ -906,8 +1496,10 @@ def _unwrap_proposal_wrapper_or_raise(
         )
 
         parsed = parse_goal_with_explicit_tasks(prompt.strip())
+
         if parsed:
             ops = build_batch_operations_from_parsed(parsed)
+
             if ops:
                 ai_command = AICommand(
                     command="notion_write",
@@ -934,44 +1526,58 @@ def _unwrap_proposal_wrapper_or_raise(
                 try:
                     if isinstance(ai_command.params, dict) and wrapper_patch:
                         ai_command.params["wrapper_patch"] = dict(wrapper_patch)
+
                 except Exception:
                     pass
 
                 return ai_command
+
     except Exception:
         pass
 
     # If NotionOpsAgent didn't pass an explicit hint, try deterministic local detection.
+
     if not (isinstance(hint_intent, str) and hint_intent.strip()):
         try:
             from services.notion_keyword_mapper import NotionKeywordMapper  # noqa: PLC0415
 
             auto = NotionKeywordMapper.detect_intent(prompt.strip())
+
             if isinstance(auto, str) and auto.strip():
                 hint_intent = auto.strip()
+
         except Exception:
             pass
 
     # If this looks like a batch/branch request, force batch_request so we do NOT enter create_goal/create_task fast-path.
+
     try:
         from services.notion_keyword_mapper import NotionKeywordMapper  # noqa: PLC0415
 
         if NotionKeywordMapper.is_batch_request(prompt.strip()):
             hint_intent = "batch_request"
+
     except Exception:
         pass
 
     # Create intents with explicit/detected hint: build minimal executable without LLM translation.
+
     try:
         if isinstance(hint_intent, str) and hint_intent.strip():
             hi = hint_intent.strip().lower()
+
             if hi in {"create_task", "create_goal", "create_project", "create_page"}:
                 raw_prompt = prompt.strip()
+
                 norm_prompt = normalize_prompt_for_property_parse(raw_prompt)
+
                 title = strip_prefixes_for_title(norm_prompt)
+
                 if title:
                     # create_page uses property_specs, while create_* uses structured params.
+
                     extra_params: Dict[str, Any]
+
                     if hi == "create_page":
                         extra_params = {
                             "db_key": None,
@@ -981,31 +1587,42 @@ def _unwrap_proposal_wrapper_or_raise(
                         }
 
                         # Attempt to infer db_key (required for schema-backed fills).
+
                         dk0 = None
+
                         if isinstance(params, dict):
                             dk0 = params.get("db_key")
+
                         if isinstance(dk0, str) and dk0.strip():
                             extra_params["db_key"] = dk0.strip()
+
                         else:
                             ht = (hint_type or "").strip().lower()
+
                             if ht in {"tasks", "task"}:
                                 extra_params["db_key"] = "tasks"
+
                             elif ht in {"goals", "goal", "cilj", "ciljevi"}:
                                 extra_params["db_key"] = "goals"
+
                             elif ht in {"projects", "project", "projekat", "projekt"}:
                                 extra_params["db_key"] = "projects"
 
                         # If we still don't know db_key, skip this fast-path.
+
                         if (
                             not isinstance(extra_params.get("db_key"), str)
                             or not str(extra_params.get("db_key")).strip()
                         ):
                             raise RuntimeError("create_page fast-path requires db_key")
+
                     else:
                         extra_params = {"title": title}
 
                     # Reuse branch/property NLP so CEO Console single-input
+
                     # follows the same backend rules (status/priority/deadline, assignees).
+
                     try:
                         from services.branch_request_handler import (  # noqa: PLC0415
                             BranchRequestHandler,
@@ -1014,61 +1631,81 @@ def _unwrap_proposal_wrapper_or_raise(
                         props = BranchRequestHandler._extract_properties(  # type: ignore[attr-defined]
                             norm_prompt
                         )
+
                     except Exception:
                         props = {}
 
                     if isinstance(props, dict) and props:
                         # Map extracted properties into fast-path params.
+
                         prio = props.get("priority")
+
                         status = props.get("status")
+
                         deadline = props.get("deadline")
+
                         assignees = props.get("assignees")
 
                         if hi == "create_page":
                             ps = extra_params.get("property_specs")
+
                             ps = ps if isinstance(ps, dict) else {}
+
                             extra_params["property_specs"] = ps
 
                             if isinstance(status, str) and status.strip():
                                 ps.setdefault(
                                     "Status", {"type": "select", "name": status.strip()}
                                 )
+
                             if isinstance(prio, str) and prio.strip():
                                 ps.setdefault(
                                     "Priority",
                                     {"type": "select", "name": prio.strip()},
                                 )
+
                             if isinstance(deadline, str) and deadline.strip():
                                 # Prefer Due Date for tasks; schema-backed fill will reconcile.
+
                                 ps.setdefault(
                                     "Due Date",
                                     {"type": "date", "start": deadline.strip()},
                                 )
+
                             if isinstance(assignees, list) and assignees:
                                 # Store as wrapper_patch to resolve by schema (people/multi_select/etc)
+
                                 wrapper_patch.setdefault(
                                     "Assigned To", ", ".join(map(str, assignees))
                                 )
+
                         else:
                             if isinstance(prio, str) and prio.strip():
                                 extra_params.setdefault("priority", prio.strip())
+
                             if isinstance(status, str) and status.strip():
                                 extra_params.setdefault("status", status.strip())
+
                             if isinstance(deadline, str) and deadline.strip():
                                 extra_params.setdefault("deadline", deadline.strip())
+
                             if isinstance(assignees, list) and assignees:
                                 extra_params.setdefault("assignees", assignees)
 
                     # Preserve relation intent if user specified it by title.
+
                     if hi == "create_task":
                         goal_title = _extract_relation_title_from_prompt(
                             raw_prompt, kind="goal"
                         )
+
                         if goal_title:
                             extra_params["goal_title"] = goal_title
+
                         project_title = _extract_relation_title_from_prompt(
                             raw_prompt, kind="project"
                         )
+
                         if project_title:
                             extra_params["project_title"] = project_title
 
@@ -1076,6 +1713,7 @@ def _unwrap_proposal_wrapper_or_raise(
                         goal_title = _extract_relation_title_from_prompt(
                             raw_prompt, kind="goal"
                         )
+
                         if goal_title:
                             extra_params["primary_goal_title"] = goal_title
 
@@ -1100,17 +1738,21 @@ def _unwrap_proposal_wrapper_or_raise(
                     try:
                         if isinstance(ai_command.params, dict) and wrapper_patch:
                             ai_command.params["wrapper_patch"] = dict(wrapper_patch)
+
                     except Exception:
                         pass
 
                     return ai_command
+
     except Exception:
         pass
 
     # require translation service to exist (booted)
+
     _, trans, _, _, _ = _require_boot_services()
 
     ai_command = None
+
     try:
         ai_command = trans.translate(
             raw_input=prompt.strip(),
@@ -1121,10 +1763,12 @@ def _unwrap_proposal_wrapper_or_raise(
                 "wrapper_patch": wrapper_patch,
             },
         )
+
     except Exception:
         ai_command = None
 
     # Never allow wrapper to remain wrapper after translate (avoid loops)
+
     if ai_command and getattr(ai_command, "intent", None) == PROPOSAL_WRAPPER_INTENT:
         ai_command = None
 
@@ -1138,40 +1782,56 @@ def _unwrap_proposal_wrapper_or_raise(
         )
 
     # Pass wrapper_patch through so execution can apply schema-backed patching.
+
     if (
         isinstance(wrapper_patch, dict)
         and wrapper_patch
         and getattr(ai_command, "command", None) == "notion_write"
     ):
         p0 = getattr(ai_command, "params", None)
+
         if not isinstance(p0, dict):
             p0 = {}
+
         p0["wrapper_patch"] = dict(wrapper_patch)
+
         ai_command.params = p0
 
     ai_command.initiator = initiator
+
     ai_command.read_only = False
 
     md = getattr(ai_command, "metadata", None)
+
     if not isinstance(md, dict):
         md = {}
+
     md.setdefault("canon", "execute_raw_unwrap")
+
     md.setdefault("endpoint", "/api/execute/raw")
+
     md.setdefault("wrapper", {})
+
     if isinstance(md.get("wrapper"), dict):
         md["wrapper"].setdefault("command", command)
+
         md["wrapper"].setdefault("intent", intent)
+
         md["wrapper"].setdefault("prompt", prompt.strip())
+
         if isinstance(wrapper_patch, dict) and wrapper_patch:
             md["wrapper"].setdefault("patch", dict(wrapper_patch))
 
     if isinstance(metadata, dict):
         for k, v in metadata.items():
             md[k] = v
+
     ai_command.metadata = md
 
     # Safety net (SSOT): if translation produced a polluted Name for create_page,
+
     # rewrite it from wrapper prompt.
+
     try:
         if (
             getattr(ai_command, "command", None) == "notion_write"
@@ -1180,16 +1840,23 @@ def _unwrap_proposal_wrapper_or_raise(
             and prompt.strip()
         ):
             p0 = getattr(ai_command, "params", None)
+
             p0 = p0 if isinstance(p0, dict) else {}
+
             ps0 = p0.get("property_specs")
+
             if isinstance(ps0, dict) and ps0:
                 ps1 = coerce_create_page_name_from_prompt(
                     prompt=prompt.strip(), property_specs=ps0
                 )
+
                 if ps1 is not ps0:
                     p0 = dict(p0)
+
                     p0["property_specs"] = ps1
+
                     ai_command.params = p0
+
     except Exception:
         pass
 
@@ -1197,14 +1864,19 @@ def _unwrap_proposal_wrapper_or_raise(
 
 
 # ================================================================
+
 # BOOT/SHUTDOWN ROUTINES (SINGLE SSOT)
+
 # ================================================================
+
 _boot_lock = asyncio.Lock()
 
 
 async def _boot_once() -> None:
     global _BOOT_READY, _BOOT_ERROR
+
     global ai_command_service, coo_translation_service, coo_conversation_service
+
     global _execution_registry, _execution_orchestrator
 
     async with _boot_lock:
@@ -1212,25 +1884,36 @@ async def _boot_once() -> None:
             return
 
         _BOOT_READY = False
+
         _BOOT_ERROR = None
 
         # ensure globals start clean (reload-safe)
+
         ai_command_service = None
+
         coo_translation_service = None
+
         coo_conversation_service = None
+
         _execution_registry = None
+
         _execution_orchestrator = None
 
         try:
             try:
                 validate_runtime_env_or_raise()
+
             except Exception as exc:  # noqa: BLE001
                 _append_boot_error(f"env_invalid:{exc}")
+
                 logger.critical("Boot aborted due to invalid env: %s", exc)
+
                 raise
 
             # Legacy domain DI (goals/tasks/projects/sync) uses dependencies.py globals.
+
             # Ensure they are initialized before routers are exercised in minimal uvicorn runs.
+
             try:
                 from dependencies import (
                     get_sync_service,
@@ -1241,6 +1924,7 @@ async def _boot_once() -> None:
                 init_services()
 
                 # Optional verification hook: proves idempotency in logs without adding new call sites.
+
                 if os.getenv("SSOT_DI_VERIFY", "false").strip().lower() == "true":
                     init_services()
 
@@ -1248,68 +1932,95 @@ async def _boot_once() -> None:
                     from routers import sync_router as _sync_router_module
 
                     _sync_router_module.set_sync_service(get_sync_service())
+
                 except Exception:
                     # Best-effort: sync/status already has a safe fallback.
+
                     pass
+
                 logger.info(
                     "Legacy dependencies initialized (goals/tasks/projects/sync)"
                 )
 
                 st = services_status()
+
                 missing = [
                     k for k in ("goals", "tasks", "projects", "sync") if not st.get(k)
                 ]
+
                 if missing:
                     logger.warning("Legacy DI missing services: %s", ",".join(missing))
+
             except Exception as exc:  # noqa: BLE001
                 _append_boot_error(f"dependencies_init_failed:{exc}")
+
                 logger.critical("Legacy dependencies init failed: %s", exc)
+
                 raise
 
             # SSOT: init NotionService singleton here
+
             try:
                 init_notion_service_from_env_or_raise()
+
                 logger.info("NotionService singleton initialized (SSOT via env)")
+
             except Exception as exc:  # noqa: BLE001
                 _append_boot_error(f"notion_init_failed:{exc}")
+
                 logger.critical("NotionService init failed: %s", exc)
+
                 raise
 
             # BOOTSTRAP app wiring (safe after Notion init)
+
             bootstrap_application()
 
             # construct all dependent services AFTER Notion init
+
             try:
                 ai_command_service = AICommandService()
+
                 coo_translation_service = COOTranslationService()
+
                 coo_conversation_service = COOConversationService()
 
                 _execution_registry = get_execution_registry()
+
                 _execution_orchestrator = ExecutionOrchestrator()
 
                 logger.info(
                     "Boot services initialized (orchestrator/translation/command)"
                 )
+
             except Exception as exc:  # noqa: BLE001
                 _append_boot_error(f"boot_services_init_failed:{exc}")
+
                 logger.critical("Boot services init failed: %s", exc)
+
                 raise
 
             # agent registry load (best-effort)
+
             try:
                 p = _agents_registry_path()
+
                 load_result = _agent_registry.load_from_agents_json(str(p), clear=True)
+
                 logger.info(
                     "Agent registry loaded (SSOT): path=%s loaded=%s version=%s",
                     load_result.get("path"),
                     load_result.get("loaded"),
                     load_result.get("version"),
                 )
+
             except Exception as exc:  # noqa: BLE001
                 _append_boot_error(f"agents_registry_load_failed:{exc}")
+
                 logger.warning("Agent registry load failed: %s", exc)
 
             # inject AI router services (now guaranteed initialized)
+
             try:
                 if not hasattr(ai_router_module, "set_ai_services"):
                     raise RuntimeError("ai_router_init_hook_not_found")
@@ -1319,96 +2030,133 @@ async def _boot_once() -> None:
                     conversation_service=coo_conversation_service,
                     translation_service=coo_translation_service,
                 )
+
                 logger.info("AI router services initialized")
+
             except Exception as exc:  # noqa: BLE001
                 _append_boot_error(f"ai_router_init_failed:{exc}")
+
                 logger.warning("AI router init failed: %s", exc)
 
             # inject AI ops services (best-effort)
+
             try:
                 hook = getattr(ai_ops_router_module, "set_ai_ops_services", None)
+
                 if callable(hook):
                     hook(
                         orchestrator=_execution_orchestrator,
                         approvals=get_approval_state(),
                     )
+
                     logger.info(
                         "AI Ops router services injected (shared orchestrator/approvals)"
                     )
+
             except Exception as exc:  # noqa: BLE001
                 _append_boot_error(f"ai_ops_injection_failed:{exc}")
+
                 logger.warning("AI Ops services injection failed: %s", exc)
 
             # best-effort knowledge sync
+
             try:
                 try:
                     from dependencies import get_sync_service  # type: ignore
 
                     sync_service = get_sync_service()
+
                     await sync_service.sync_knowledge_snapshot()
+
                 except Exception as exc:
                     _append_boot_error(f"knowledge_snapshot_sync_failed:{exc}")
+
                     logger.warning(
                         "Knowledge snapshot sync failed (best-effort): %s", exc
                     )
+
             except Exception as exc:  # noqa: BLE001
                 _append_boot_error(f"notion_sync_failed:{exc}")
+
                 logger.warning("Notion knowledge snapshot sync failed: %s", exc)
 
             _BOOT_READY = True
+
             logger.info("System boot completed. READY.")
+
             logger.info("SSOT boot complete")
+
         except Exception:
             _BOOT_READY = False
+
             raise
 
 
 async def _shutdown_best_effort() -> None:
     global _BOOT_READY
+
     global ai_command_service, coo_translation_service, coo_conversation_service
+
     global _execution_registry, _execution_orchestrator
 
     try:
         ns = try_get_notion_service()
+
         if ns is not None:
             close_fn = getattr(ns, "aclose", None)
+
             if callable(close_fn):
                 await close_fn()
+
     except Exception as exc:  # noqa: BLE001
         logger.warning("NotionService shutdown close failed: %s", exc)
 
     ai_command_service = None
+
     coo_translation_service = None
+
     coo_conversation_service = None
+
     _execution_registry = None
+
     _execution_orchestrator = None
 
     _BOOT_READY = False
-    logger.info("System shutdown — boot_ready=False.")
+
+    logger.info("System shutdown â€” boot_ready=False.")
 
 
 def _is_boot_exempt_path(path: str) -> bool:
     p = (path or "").strip()
+
     if not p:
         return True
+
     if p in {"/health", "/health/services", "/ready", "/", "/favicon.ico"}:
         return True
+
     if p.startswith("/docs") or p.startswith("/openapi") or p.startswith("/redoc"):
         return True
+
     if p.startswith("/assets") or p.startswith("/static"):
         return True
+
     if p in {"/api/ceo-console/status", "/ceo-console/status"}:
         return True
+
     return False
 
 
 async def _ensure_boot_if_needed(request: Request) -> None:
     if _BOOT_READY:
         return
+
     if _is_boot_exempt_path(request.url.path):
         return
+
     try:
         await _boot_once()
+
     except Exception:
         raise HTTPException(
             status_code=503, detail=_BOOT_ERROR or "System not ready"
@@ -1416,20 +2164,29 @@ async def _ensure_boot_if_needed(request: Request) -> None:
 
 
 # ================================================================
+
 # LIFESPAN
+
 # ================================================================
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     await _boot_once()
+
     try:
         yield
+
     finally:
         await _shutdown_best_effort()
 
 
 # ================================================================
+
 # APP INIT
+
 # ================================================================
+
 app = FastAPI(
     title=SYSTEM_NAME,
     version=VERSION,
@@ -1440,10 +2197,12 @@ app = FastAPI(
 @app.on_event("startup")
 async def _startup_event() -> None:
     # Minimal diagnostics for staging: do NOT log secret values.
+
     try:
         import openai  # type: ignore
 
         openai_ver = getattr(openai, "__version__", "unknown")
+
     except Exception:
         openai_ver = "unavailable"
 
@@ -1455,6 +2214,7 @@ async def _startup_event() -> None:
         bool((os.getenv("NOTION_OPS_ASSISTANT_ID") or "").strip()),
         (os.getenv("OPENAI_API_MODE") or "").strip() or "(unset)",
     )
+
     await _boot_once()
 
 
@@ -1464,27 +2224,40 @@ async def _shutdown_event() -> None:
 
 
 # ================================================================
+
 # REQUEST TRACE
+
 # ================================================================
+
+
 @app.middleware("http")
 async def request_trace_middleware(request: Request, call_next):
     req_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+
     request.state.req_id = req_id
 
     await _ensure_boot_if_needed(request)
 
     try:
         resp = await call_next(request)
+
         resp.headers["X-Request-ID"] = req_id
+
         return resp
+
     except Exception:
         logger.exception("REQ_FAIL req_id=%s path=%s", req_id, request.url.path)
+
         raise
 
 
 # ================================================================
+
 # CORS
+
 # ================================================================
+
+
 def _parse_origins(env_value: str) -> List[str]:
     return [o.strip() for o in (env_value or "").split(",") if o.strip()]
 
@@ -1493,7 +2266,9 @@ cors_origins: List[str] = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
 ]
+
 cors_origins += _parse_origins(os.getenv("CORS_ORIGINS", ""))
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -1505,84 +2280,120 @@ app.add_middleware(
 
 
 # ================================================================
+
 # REQUEST MODELS
+
 # ================================================================
+
+
 class ExecuteInput(BaseModel):
     text: str
 
 
 class ExecuteRawInput(BaseModel):
     command: str
+
     intent: str
+
     params: Dict[str, Any] = Field(default_factory=dict)
 
 
 class CeoCommandInput(BaseModel):
     input_text: str
+
     smart_context: Optional[Dict[str, Any]] = None
+
     source: str = "ceo_dashboard"
 
 
 class ProposalExecuteInput(BaseModel):
     proposal: Any
+
     initiator: str = "ceo"
+
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 class ExecuteRawInput2(BaseModel):
     command: str
+
     intent: str
+
     params: Dict[str, Any] = Field(default_factory=dict)
+
     initiator: str = "ceo"
+
     read_only: bool = False
+
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 class NotionReadResponse(BaseModel):
     ok: bool
+
     title: Optional[str] = None
+
     notion_url: Optional[str] = None
+
     content_markdown: Optional[str] = None
+
     error: Optional[str] = None
 
 
 # ================================================================
+
 # HELPERS
+
 # ================================================================
+
+
 def _preprocess_ceo_nl_input(
     raw_text: str, smart_context: Optional[Dict[str, Any]]
 ) -> str:
     text = (raw_text or "").strip()
+
     if not text:
         return text
 
     if smart_context:
         command_type = smart_context.get("command_type")
+
         goal_ctx = smart_context.get("goal") or {}
+
         goal_name = (goal_ctx.get("name") or "").strip()
+
         priority = (goal_ctx.get("priority") or "").strip()
+
         status = (goal_ctx.get("status") or "").strip()
+
         due = (goal_ctx.get("due") or "").strip()
+
         project = (goal_ctx.get("project") or "").strip()
 
         if command_type == "create_goal" and goal_name:
             parts: List[str] = [goal_name]
+
             if priority:
                 parts.append(f"prioritet {priority}")
+
             if status:
                 parts.append(f"status {status}")
+
             if due:
                 parts.append(f"due {due}")
+
             if project:
                 parts.append(f"projekt {project}")
+
             return ", ".join(parts)
 
     cleaned = re.sub(
-        r"^(kreiraj|napravi|create)\s+cilj[a]?(?:\s+u\s+notionu)?\s*[:\-–—,;]?\s*",
+        r"^(kreiraj|napravi|create)\s+cilj[a]?(?:\s+u\s+notionu)?\s*[:\-â€“â€”,;]?\s*",
         "",
         text,
         flags=re.IGNORECASE,
     ).strip()
+
     return cleaned or text
 
 
@@ -1590,6 +2401,7 @@ def _derive_legacy_goal_task_summaries_from_ceo_snapshot(
     ceo_dash_snapshot: Dict[str, Any],
 ) -> Dict[str, List[Dict[str, Any]]]:
     goals_summary: List[Dict[str, Any]] = []
+
     tasks_summary: List[Dict[str, Any]] = []
 
     try:
@@ -1598,16 +2410,19 @@ def _derive_legacy_goal_task_summaries_from_ceo_snapshot(
             if isinstance(ceo_dash_snapshot, dict)
             else None
         )
+
         if not isinstance(dashboard, dict):
             return {"goals_summary": goals_summary, "tasks_summary": tasks_summary}
 
         goals = dashboard.get("goals") or []
+
         tasks = dashboard.get("tasks") or []
 
         if isinstance(goals, list):
             for g in goals:
                 if not isinstance(g, dict):
                     continue
+
                 goals_summary.append(
                     {
                         "name": g.get("name") or g.get("title") or "(bez naziva)",
@@ -1624,6 +2439,7 @@ def _derive_legacy_goal_task_summaries_from_ceo_snapshot(
             for t in tasks:
                 if not isinstance(t, dict):
                     continue
+
                 tasks_summary.append(
                     {
                         "title": t.get("title") or t.get("name") or "(bez naziva)",
@@ -1635,6 +2451,7 @@ def _derive_legacy_goal_task_summaries_from_ceo_snapshot(
                         or "-",
                     }
                 )
+
     except Exception:
         pass
 
@@ -1655,11 +2472,12 @@ def _ensure_str(x: Any) -> str:
 
 def _proposal_wrapper_dict(*, prompt: str, source: str) -> Dict[str, Any]:
     safe_prompt = (prompt or "").strip() or "noop"
+
     return {
         "command": PROPOSAL_WRAPPER_INTENT,  # ceo.command.propose
         "args": {"prompt": safe_prompt},
         "intent": PROPOSAL_WRAPPER_INTENT,
-        "reason": "Notion write intent ide kroz approval pipeline; predlažem komandu za promotion/execute.",
+        "reason": "Notion write intent ide kroz approval pipeline; predlaĹľem komandu za promotion/execute.",
         "dry_run": True,
         "requires_approval": True,
         "risk": "LOW",
@@ -1674,44 +2492,64 @@ def _proposal_wrapper_dict(*, prompt: str, source: str) -> Dict[str, Any]:
 
 def _normalize_gateway_proposed_commands(pcs: Any) -> List[Dict[str, Any]]:
     items = _ensure_list(pcs)
+
     out: List[Dict[str, Any]] = []
+
     for it in items:
         if isinstance(it, dict):
             out.append(it)
+
             continue
+
         if hasattr(it, "model_dump"):
             try:
                 d = it.model_dump(by_alias=False)  # type: ignore[attr-defined]
+
                 if isinstance(d, dict):
                     out.append(d)
+
                     continue
+
             except Exception:
                 pass
+
         if hasattr(it, "dict"):
             try:
                 d = it.dict()  # type: ignore[attr-defined]
+
                 if isinstance(d, dict):
                     out.append(d)
+
                     continue
+
             except Exception:
                 pass
+
     return out
 
 
 def _inject_fallback_proposed_commands(result: Dict[str, Any], *, prompt: str) -> None:
     pcs = result.get("proposed_commands")
+
     pcs_list = _normalize_gateway_proposed_commands(pcs)
 
     # If backend already provided proposals, just normalize and exit.
+
     if len(pcs_list) > 0:
         result["proposed_commands"] = pcs_list
+
         tr0 = _ensure_dict(result.get("trace"))
+
         tr0.setdefault("fallback_proposed_commands", False)
+
         tr0.setdefault("router_version", "gateway-proposed-commands-normalize-v1")
+
         result["trace"] = tr0
+
         return
 
     text = (prompt or "").strip().lower()
+
     write_like = any(
         k in text
         for k in [
@@ -1736,13 +2574,19 @@ def _inject_fallback_proposed_commands(result: Dict[str, Any], *, prompt: str) -
 
     if not write_like:
         result["proposed_commands"] = []
+
         tr = _ensure_dict(result.get("trace"))
+
         tr["fallback_proposed_commands"] = False
+
         tr["router_version"] = "gateway-fallback-proposals-disabled-for-nonwrite-v1"
+
         result["trace"] = tr
+
         return
 
     # CANON FALLBACK (SSOT): emit notion_write envelope directly (NO ceo.command.propose wrapper).
+
     pc = {
         "command": PROPOSAL_WRAPPER_INTENT,  # ceo.command.propose
         "intent": PROPOSAL_WRAPPER_INTENT,  # ceo.command.propose
@@ -1770,8 +2614,11 @@ def _inject_fallback_proposed_commands(result: Dict[str, Any], *, prompt: str) -
     result["proposed_commands"] = [pc]
 
     tr = _ensure_dict(result.get("trace"))
+
     tr["fallback_proposed_commands"] = True
+
     tr["router_version"] = "gateway-fallback-proposed-commands-writeonly-v2-canon"
+
     result["trace"] = tr
 
 
@@ -1782,6 +2629,7 @@ def _compute_confidence_risk_block(
     proposed_commands: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
     tr = trace if isinstance(trace, dict) else {}
+
     pcs = proposed_commands if isinstance(proposed_commands, list) else []
 
     fallback = bool(tr.get("fallback_proposed_commands") is True)
@@ -1789,18 +2637,23 @@ def _compute_confidence_risk_block(
     assumption_count = 1 if fallback else 0
 
     risk_level = "low"
+
     if len(pcs) > 0:
         risk_level = "medium"
 
     for p in pcs:
         if not isinstance(p, dict):
             continue
+
         r = (p.get("risk") or p.get("risk_hint") or "").strip().lower()
+
         if r in {"high", "critical"}:
             risk_level = "high"
+
             break
 
     confidence_score = 0.90
+
     if fallback:
         confidence_score = 0.60
 
@@ -1809,10 +2662,13 @@ def _compute_confidence_risk_block(
 
     try:
         confidence_score_f = float(confidence_score)
+
     except Exception:
         confidence_score_f = 0.50
+
     if confidence_score_f < 0.0:
         confidence_score_f = 0.0
+
     if confidence_score_f > 1.0:
         confidence_score_f = 1.0
 
@@ -1830,8 +2686,12 @@ def _compute_confidence_risk_block(
 
 
 # ===========================
+
 # PHASE A FIX: robust normalize
+
 # ===========================
+
+
 def _normalize_execute_raw_payload_dict(body: Dict[str, Any]) -> ExecuteRawInput2:
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="Body must be an object")
@@ -1843,56 +2703,75 @@ def _normalize_execute_raw_payload_dict(body: Dict[str, Any]) -> ExecuteRawInput
         or body.get("type")
         or ""
     )
+
     if not isinstance(cmd, str) or not cmd.strip():
         raise HTTPException(status_code=422, detail="Field 'command' is required")
+
     cmd = cmd.strip()
 
     intent_val = body.get("intent")
+
     if isinstance(intent_val, str) and intent_val.strip():
         intent = intent_val.strip()
+
     else:
         intent = cmd
 
     params = body.get("params")
+
     if not isinstance(params, dict):
         params = {}
 
     if not params:
         args0 = body.get("args")
+
         if isinstance(args0, dict):
             params = dict(args0)
 
     if not params:
         payload0 = body.get("payload")
+
         if isinstance(payload0, dict):
             params = dict(payload0)
 
     # Compatibility: some proposals wrap the real executable command under params.ai_command.
+
     # Example (observed from CEO Console proposals):
+
     #   { command: "notion_write", intent: "notion_write", params: { ai_command: { command:"notion_write", intent:"create_page", params:{...} } } }
+
     # If we don't unwrap, the orchestrator will attempt to execute intent="notion_write" and NotionService will reject it.
+
     if isinstance(params, dict):
         ac = params.get("ai_command")
+
         if isinstance(ac, dict):
             ac_cmd = ac.get("command")
+
             ac_intent = ac.get("intent")
+
             ac_params = ac.get("params")
+
             ac_args = ac.get("args")
 
             # Unwrap only when ai_command looks like an actual command envelope.
+
             if (
                 isinstance(ac_cmd, str)
                 and ac_cmd.strip()
                 and (isinstance(ac_params, dict) or isinstance(ac_args, dict))
             ):
                 cmd = ac_cmd.strip()
+
                 if isinstance(ac_intent, str) and ac_intent.strip():
                     intent = ac_intent.strip()
+
                 else:
                     intent = cmd
 
                 if isinstance(ac_params, dict):
                     params = dict(ac_params)
+
                 elif isinstance(ac_args, dict):
                     params = dict(ac_args)
 
@@ -1906,51 +2785,68 @@ def _normalize_execute_raw_payload_dict(body: Dict[str, Any]) -> ExecuteRawInput
         )
     ):
         args = body.get("args")
+
         if isinstance(args, dict):
             prompt = args.get("prompt")
+
             if isinstance(prompt, str) and prompt.strip():
                 params["prompt"] = prompt.strip()
 
         if "prompt" not in params:
             payload = body.get("payload")
+
             if isinstance(payload, dict):
                 prompt = payload.get("prompt")
+
                 if isinstance(prompt, str) and prompt.strip():
                     params["prompt"] = prompt.strip()
 
         if "prompt" not in params:
             prompt = body.get("prompt")
+
             if isinstance(prompt, str) and prompt.strip():
                 params["prompt"] = prompt.strip()
 
     initiator = body.get("initiator")
+
     if not isinstance(initiator, str) or not initiator.strip():
         initiator = "ceo"
+
     else:
         initiator = initiator.strip()
 
     read_only = bool(body.get("read_only") or False)
 
     metadata = body.get("metadata")
+
     if not isinstance(metadata, dict):
         metadata = {}
 
     # Merge envelope metadata if present.
+
     if isinstance(body.get("params"), dict):
         ac0 = body["params"].get("ai_command")
+
         if isinstance(ac0, dict) and isinstance(ac0.get("metadata"), dict):
             merged_md = dict(ac0.get("metadata") or {})
+
             merged_md.update(metadata)
+
             metadata = merged_md
 
     payload_summary = body.get("payload_summary")
+
     if isinstance(payload_summary, dict):
         merged = dict(payload_summary)
+
         merged.update(metadata)
+
         metadata = merged
 
     metadata.setdefault("canon", "CEO_CONSOLE_EXECUTION_FLOW")
+
     metadata.setdefault("endpoint", "/api/execute/raw")
+
     metadata.setdefault("source", metadata.get("source") or "ceo_console")
 
     return ExecuteRawInput2(
@@ -1968,125 +2864,177 @@ def _notion_properties_preview_from_property_specs(
 ) -> Dict[str, Any]:
     """Best-effort preview of the Notion `properties` payload.
 
+
+
     IMPORTANT:
+
       - No Notion schema lookups and no network calls.
+
       - Mirrors the core mapping logic in NotionService for common types.
+
       - Execution-time schema normalization (status vs select, option name
+
         resolution) may still adjust the final payload.
+
     """
+
     out: Dict[str, Any] = {}
+
     if not isinstance(property_specs, dict) or not property_specs:
         return out
 
     for prop_name, spec in property_specs.items():
         if not isinstance(prop_name, str) or not prop_name.strip():
             continue
+
         if not isinstance(spec, dict):
             continue
 
         pn = prop_name.strip()
+
         stype = _ensure_str(spec.get("type")).lower()
 
         if stype == "title":
             txt = _ensure_str(spec.get("text") or spec.get("value") or "")
+
             out[pn] = {"title": [{"text": {"content": txt.strip()}}]}
+
             continue
 
         if stype in ("rich_text", "text"):
             txt = _ensure_str(spec.get("text") or spec.get("value") or "")
+
             out[pn] = {"rich_text": [{"text": {"content": txt.strip()}}]}
+
             continue
 
         if stype == "select":
             name = _ensure_str(spec.get("name") or spec.get("value") or "").strip()
+
             out[pn] = {"select": {"name": name}} if name else {"select": None}
+
             continue
 
         if stype == "status":
             name = _ensure_str(spec.get("name") or spec.get("value") or "").strip()
+
             out[pn] = {"status": {"name": name}} if name else {"status": None}
+
             continue
 
         if stype == "date":
             date_str = _ensure_str(spec.get("start") or spec.get("value") or "").strip()
+
             out[pn] = {"date": {"start": date_str}} if date_str else {"date": None}
+
             continue
 
         if stype == "number":
             raw_n = spec.get("number")
+
             if raw_n is None:
                 raw_n = spec.get("value")
+
             try:
                 out[pn] = {"number": float(raw_n)}
+
             except Exception:
                 # ignore invalid
+
                 pass
+
             continue
 
         if stype == "checkbox":
             raw_v = spec.get("checkbox")
+
             if raw_v is None:
                 raw_v = spec.get("value")
+
             v = raw_v
+
             if isinstance(v, str):
                 sv = v.strip().lower()
+
                 if sv in {"true", "yes", "da", "1"}:
                     v = True
+
                 elif sv in {"false", "no", "ne", "0"}:
                     v = False
+
             if isinstance(v, bool):
                 out[pn] = {"checkbox": v}
+
             continue
 
         if stype == "multi_select":
             raw_names = spec.get("names")
+
             names: List[str] = []
+
             if isinstance(raw_names, list):
                 names = [
                     _ensure_str(x).strip() for x in raw_names if _ensure_str(x).strip()
                 ]
+
             else:
                 s_val = _ensure_str(spec.get("value") or "").strip()
+
                 if s_val:
                     names = [x.strip() for x in s_val.split(",") if x.strip()]
+
             out[pn] = (
                 {"multi_select": [{"name": n} for n in names]}
                 if names
                 else {"multi_select": []}
             )
+
             continue
 
         if stype == "relation":
             raw_ids = spec.get("ids")
+
             ids: List[str] = []
+
             if isinstance(raw_ids, list):
                 ids = [
                     _ensure_str(x).strip() for x in raw_ids if _ensure_str(x).strip()
                 ]
+
             else:
                 raw_one = spec.get("id") or spec.get("value") or ""
+
                 s_one = _ensure_str(raw_one).strip()
+
                 if s_one:
                     ids = [x.strip() for x in s_one.split(",") if x.strip()]
+
             out[pn] = (
                 {"relation": [{"id": x} for x in ids]} if ids else {"relation": []}
             )
+
             continue
 
         if stype == "people":
             raw_ids = spec.get("ids")
+
             ids: List[str] = []
+
             if isinstance(raw_ids, list):
                 ids = [
                     _ensure_str(x).strip() for x in raw_ids if _ensure_str(x).strip()
                 ]
+
             if ids:
                 out[pn] = {"people": [{"id": x} for x in ids]}
+
                 continue
 
             tokens: List[str] = []
+
             for key in ("emails", "names"):
                 raw_list = spec.get(key)
+
                 if isinstance(raw_list, list):
                     tokens.extend(
                         [
@@ -2095,18 +3043,23 @@ def _notion_properties_preview_from_property_specs(
                             if _ensure_str(x).strip()
                         ]
                     )
+
             if not tokens:
                 raw_value = spec.get("value") or spec.get("name") or ""
+
                 s_val = _ensure_str(raw_value).strip()
+
                 if s_val:
                     tokens = [t.strip() for t in s_val.split(",") if t.strip()]
 
             out[pn] = (
                 {"people": [{"name": t} for t in tokens]} if tokens else {"people": []}
             )
+
             continue
 
         # Unknown types ignored by design
+
         continue
 
     return out
@@ -2117,10 +3070,16 @@ def _sanitize_property_specs_for_preview(
 ) -> Dict[str, Any]:
     """Sanitize property_specs for preview UI.
 
+
+
     - Drops computed types (formula/rollup/etc.)
+
     - Drops registry read_only properties (local SSOT)
+
     - No network calls
+
     """
+
     if not isinstance(property_specs, dict) or not property_specs:
         return {}
 
@@ -2135,26 +3094,37 @@ def _sanitize_property_specs_for_preview(
     }
 
     read_only_cf: set[str] = set()
+
     try:
         from services.notion_schema_registry import (  # noqa: PLC0415
             NotionSchemaRegistry,
         )
 
         k = (db_key or "").strip().lower()
+
         if k:
             # tolerate singular/plural
+
             candidates = [k]
+
             if k.endswith("s"):
                 candidates.append(k[:-1])
+
             else:
                 candidates.append(k + "s")
+
             db_entry = None
+
             for cand in candidates:
                 v = NotionSchemaRegistry.DATABASES.get(cand)
+
                 if isinstance(v, dict):
                     db_entry = v
+
                     break
+
             props = db_entry.get("properties") if isinstance(db_entry, dict) else None
+
             if isinstance(props, dict):
                 for pn, meta in props.items():
                     if (
@@ -2163,17 +3133,21 @@ def _sanitize_property_specs_for_preview(
                         and meta.get("read_only") is True
                     ):
                         read_only_cf.add(pn.strip().casefold())
+
     except Exception:
         read_only_cf = set()
 
     out: Dict[str, Any] = {}
+
     for pn, spec in property_specs.items():
         if not isinstance(pn, str) or not pn.strip():
             continue
+
         if not isinstance(spec, dict):
             continue
 
         stype = _ensure_str(spec.get("type")).strip().lower()
+
         if stype in computed_types:
             continue
 
@@ -2188,18 +3162,28 @@ def _sanitize_property_specs_for_preview(
 def _notion_patch_validation_mode() -> str:
     """Global validation mode.
 
+
+
     - warn (default): surface warnings, never blocks.
+
     - strict: treat key validation issues as errors.
+
     """
 
     v = os.getenv("NOTION_PATCH_VALIDATION_MODE") or os.getenv("NOTION_VALIDATION_MODE")
+
     v = (v or "").strip().lower()
+
     return "strict" if v == "strict" else "warn"
 
 
 # ================================================================
-# /api/execute — EXECUTION PATH (NL INPUT)
+
+# /api/execute â€” EXECUTION PATH (NL INPUT)
+
 # ================================================================
+
+
 @app.post("/api/execute")
 async def execute_command(payload: ExecuteInput):
     cleaned_text = _preprocess_ceo_nl_input(payload.text, smart_context=None)
@@ -2236,6 +3220,7 @@ async def execute_command(payload: ExecuteInput):
     execution_id = _ensure_execution_id(ai_command)
 
     approval_state = get_approval_state()
+
     approval = approval_state.create(
         command=getattr(ai_command, "command", None) or "execute",
         payload_summary=_safe_command_summary(ai_command),
@@ -2243,7 +3228,9 @@ async def execute_command(payload: ExecuteInput):
         risk_level="unknown",
         execution_id=execution_id,
     )
+
     approval_id = approval.get("approval_id")
+
     if not approval_id:
         raise HTTPException(
             status_code=500, detail="Approval create failed: missing approval_id"
@@ -2252,12 +3239,14 @@ async def execute_command(payload: ExecuteInput):
     _ensure_trace_on_command(ai_command, approval_id=approval_id)
 
     orchestrator.registry.register(ai_command)
+
     registry.register(ai_command)
 
     result = await orchestrator.execute(ai_command)
 
     if isinstance(result, dict):
         result.setdefault("approval_id", approval_id)
+
         result.setdefault("execution_id", execution_id)
 
     return result
@@ -2269,19 +3258,24 @@ async def execute_raw_command(payload: Dict[str, Any] = Body(...)):
         raise HTTPException(status_code=400, detail="Body must be an object")
 
     enterprise_enabled = _enterprise_preview_editor_enabled()
+
     patches_in = payload.get("patches") if isinstance(payload, dict) else None
 
     normalized = _normalize_execute_raw_payload_dict(payload)
 
     # Read-only directive: refresh_snapshot should execute immediately and return
+
     # deterministic meta so UI can refresh without going through approvals.
+
     if (normalized.intent == "refresh_snapshot") or (
         normalized.command == "refresh_snapshot"
     ):
         try:
             _, _, _, registry, orchestrator = _require_boot_services()
+
         except HTTPException as exc:
             ks = KnowledgeSnapshotService.get_snapshot()
+
             snapshot_meta = {
                 "schema_version": ks.get("schema_version"),
                 "status": ks.get("status"),
@@ -2294,6 +3288,7 @@ async def execute_raw_command(payload: Dict[str, Any] = Body(...)):
             }
 
             # Contract: never return result:null; include deterministic error object.
+
             return {
                 "status": "FAILED",
                 "execution_state": "FAILED",
@@ -2330,15 +3325,19 @@ async def execute_raw_command(payload: Dict[str, Any] = Body(...)):
             if isinstance(normalized.metadata, dict)
             else {},
         )
+
         ai_command.read_only = True
+
         _ensure_execution_id(ai_command)
 
         orchestrator.registry.register(ai_command)
+
         registry.register(ai_command)
 
         out = await orchestrator.execute(ai_command)
 
         ks = KnowledgeSnapshotService.get_snapshot()
+
         snapshot_meta = {
             "schema_version": ks.get("schema_version"),
             "status": ks.get("status"),
@@ -2370,11 +3369,14 @@ async def execute_raw_command(payload: Dict[str, Any] = Body(...)):
             }
 
         out.setdefault("result", {})
+
         if isinstance(out.get("result"), dict):
             out["result"].setdefault("snapshot_meta", snapshot_meta)
+
             out["result"].setdefault("knowledge_snapshot", ks)
 
         exec_state = out.get("execution_state")
+
         status = (
             "COMPLETED" if exec_state == "COMPLETED" else (exec_state or "COMPLETED")
         )
@@ -2400,6 +3402,7 @@ async def execute_raw_command(payload: Dict[str, Any] = Body(...)):
         normalized.command in _HARD_READ_ONLY_INTENTS
     ):
         execution_id = str(uuid.uuid4())
+
         return {
             "status": "COMPLETED",
             "execution_state": "COMPLETED",
@@ -2431,9 +3434,12 @@ async def execute_raw_command(payload: Dict[str, Any] = Body(...)):
     )
 
     # Enterprise preview editor: apply the same server-side patches at execution creation time.
+
     # This guarantees the registered canonical command (later resumed by approval) is 1:1.
+
     if enterprise_enabled and patches_in is not None:
         patch_issues_by_op_id: Dict[str, List[Dict[str, Any]]] = {}
+
         patch_global_issues: List[Dict[str, Any]] = []
 
         if not (
@@ -2463,8 +3469,11 @@ async def execute_raw_command(payload: Dict[str, Any] = Body(...)):
             )
 
         params0 = getattr(ai_command, "params", None)
+
         params0 = params0 if isinstance(params0, dict) else {}
+
         ops0 = params0.get("operations")
+
         if not isinstance(ops0, list) or not ops0:
             raise HTTPException(
                 status_code=400,
@@ -2491,34 +3500,47 @@ async def execute_raw_command(payload: Dict[str, Any] = Body(...)):
             from services.enterprise_preview_patches import (  # noqa: PLC0415
                 apply_patches_to_batch_operations,
             )
+
             from services.notion_schema_registry import (  # noqa: PLC0415
                 NotionSchemaRegistry,
             )
+
             from services.notion_patch_validation import (  # noqa: PLC0415
                 merge_validation_reports,
                 validate_notion_payload,
             )
 
             db_keys0: List[str] = []
+
             for op0 in ops0:
                 if not isinstance(op0, dict):
                     continue
+
                 pl0 = op0.get("payload")
+
                 pl0 = pl0 if isinstance(pl0, dict) else {}
+
                 dk0 = pl0.get("db_key")
+
                 if isinstance(dk0, str) and dk0.strip():
                     db_keys0.append(dk0.strip())
+
                 else:
                     oi0 = (op0.get("intent") or "").strip().lower()
+
                     if oi0 == "create_goal":
                         db_keys0.append("goals")
+
                     elif oi0 == "create_task":
                         db_keys0.append("tasks")
+
                     elif oi0 == "create_project":
                         db_keys0.append("projects")
 
             db_keys0 = [k for k in [str(x).strip() for x in db_keys0] if k]
+
             db_keys0 = list(dict.fromkeys(db_keys0))
+
             schema_by_db_key = {
                 dk: NotionSchemaRegistry.offline_validation_schema(dk)
                 for dk in db_keys0
@@ -2535,38 +3557,53 @@ async def execute_raw_command(payload: Dict[str, Any] = Body(...)):
             patch_issues_by_op_id = (
                 issues_by_op if isinstance(issues_by_op, dict) else {}
             )
+
             patch_global_issues = (
                 global_issues if isinstance(global_issues, list) else []
             )
 
             # Install patched operations as the canonical executable command.
+
             params_new = dict(params0)
+
             params_new["operations"] = patched_ops
+
             ai_command.params = params_new
 
             # Fail-closed strict validation for patched operations.
+
             per_op_reports: List[Dict[str, Any]] = []
+
             for op1 in patched_ops:
                 if not isinstance(op1, dict):
                     continue
+
                 op_id1 = op1.get("op_id") if isinstance(op1.get("op_id"), str) else None
+
                 op_intent1 = (op1.get("intent") or "").strip()
+
                 pl1 = op1.get("payload")
+
                 pl1 = pl1 if isinstance(pl1, dict) else {}
 
                 db_key1 = (
                     pl1.get("db_key") if isinstance(pl1.get("db_key"), str) else None
                 )
+
                 if not db_key1:
                     oi1 = op_intent1.strip().lower()
+
                     if oi1 == "create_goal":
                         db_key1 = "goals"
+
                     elif oi1 == "create_task":
                         db_key1 = "tasks"
+
                     elif oi1 == "create_project":
                         db_key1 = "projects"
 
                 schema1 = schema_by_db_key.get(db_key1 or "") if db_key1 else {}
+
                 if not isinstance(schema1, dict) or not schema1:
                     schema1 = (
                         NotionSchemaRegistry.offline_validation_schema(db_key1 or "")
@@ -2575,6 +3612,7 @@ async def execute_raw_command(payload: Dict[str, Any] = Body(...)):
                     )
 
                 ps1 = pl1.get("property_specs")
+
                 ps1 = ps1 if isinstance(ps1, dict) else {}
 
                 base_report = validate_notion_payload(
@@ -2586,19 +3624,23 @@ async def execute_raw_command(payload: Dict[str, Any] = Body(...)):
                 )
 
                 extra = None
+
                 if op_id1 and op_id1 in patch_issues_by_op_id:
                     extra_issues = patch_issues_by_op_id.get(op_id1)
+
                     if isinstance(extra_issues, list) and extra_issues:
                         errs = sum(
                             1
                             for it in extra_issues
                             if isinstance(it, dict) and it.get("severity") == "error"
                         )
+
                         warns = sum(
                             1
                             for it in extra_issues
                             if isinstance(it, dict) and it.get("severity") == "warning"
                         )
+
                         extra = {
                             "mode": "strict",
                             "db_key": (db_key1 or "").strip() or None,
@@ -2614,20 +3656,25 @@ async def execute_raw_command(payload: Dict[str, Any] = Body(...)):
                 )
 
             merged = merge_validation_reports(*per_op_reports)
+
             if patch_global_issues:
                 its = (
                     merged.get("issues")
                     if isinstance(merged.get("issues"), list)
                     else []
                 )
+
                 its = list(its) + [
                     x for x in patch_global_issues if isinstance(x, dict)
                 ]
+
                 merged["issues"] = its
+
                 merged["summary"] = {
                     "errors": sum(1 for it in its if it.get("severity") == "error"),
                     "warnings": sum(1 for it in its if it.get("severity") == "warning"),
                 }
+
                 merged["can_approve"] = merged["summary"].get("errors", 0) == 0
 
             if merged.get("can_approve") is False:
@@ -2639,8 +3686,10 @@ async def execute_raw_command(payload: Dict[str, Any] = Body(...)):
                         "validation": merged,
                     },
                 )
+
         except HTTPException:
             raise
+
         except Exception:
             raise HTTPException(
                 status_code=400,
@@ -2664,70 +3713,95 @@ async def execute_raw_command(payload: Dict[str, Any] = Body(...)):
             )
 
     # Strict-mode validation: block creation of executions that would be rejected later.
+
     # Default is warn-only (no blocking) unless NOTION_PATCH_VALIDATION_MODE=strict.
+
     try:
         if (
             _notion_patch_validation_mode() == "strict"
             and getattr(ai_command, "command", None) == "notion_write"
         ):
             intent0 = getattr(ai_command, "intent", None)
+
             params0 = getattr(ai_command, "params", None)
+
             params0 = params0 if isinstance(params0, dict) else {}
 
             db_key0: Optional[str] = None
+
             if intent0 in {"create_goal"}:
                 db_key0 = "goals"
+
             elif intent0 in {"create_task"}:
                 db_key0 = "tasks"
+
             elif intent0 in {"create_project"}:
                 db_key0 = "projects"
+
             elif intent0 in {"create_page", "update_page"}:
                 dk = params0.get("db_key")
+
                 if isinstance(dk, str) and dk.strip():
                     db_key0 = dk.strip()
 
             if db_key0:
                 wrapper_patch0 = params0.get("wrapper_patch")
+
                 wrapper_patch0 = (
                     wrapper_patch0 if isinstance(wrapper_patch0, dict) else None
                 )
 
                 property_specs0: Dict[str, Any] = {}
+
                 if intent0 in {"create_page", "update_page"}:
                     raw_specs0 = (
                         params0.get("property_specs")
                         or params0.get("properties")
                         or params0.get("notion_properties")
                     )
+
                     if isinstance(raw_specs0, dict):
                         property_specs0 = dict(raw_specs0)
+
                 else:
                     # Mirror preview mapping for create_goal/create_task/create_project.
+
                     title0 = _ensure_str(params0.get("title")).strip()
+
                     desc0 = _ensure_str(params0.get("description")).strip()
+
                     deadline0 = _ensure_str(params0.get("deadline")).strip()
+
                     priority0 = _ensure_str(params0.get("priority")).strip()
+
                     status0 = _ensure_str(params0.get("status")).strip()
+
                     if title0:
                         property_specs0["Name"] = {"type": "title", "text": title0}
+
                     if desc0:
                         property_specs0["Description"] = {
                             "type": "rich_text",
                             "text": desc0,
                         }
+
                     if deadline0:
                         property_specs0["Deadline"] = {
                             "type": "date",
                             "start": deadline0,
                         }
+
                     if priority0:
                         property_specs0["Priority"] = {
                             "type": "select",
                             "name": priority0,
                         }
+
                     if status0:
                         property_specs0["Status"] = {"type": "status", "name": status0}
+
                     extra0 = params0.get("property_specs")
+
                     if isinstance(extra0, dict) and extra0:
                         property_specs0.update(extra0)
 
@@ -2735,11 +3809,13 @@ async def execute_raw_command(payload: Dict[str, Any] = Body(...)):
                     from services.notion_service import get_or_init_notion_service  # noqa: PLC0415
 
                     svc0 = get_or_init_notion_service()
+
                     schema0 = (
                         await svc0.get_fields_schema(db_key0)
                         if svc0 is not None
                         else {}
                     )
+
                 except Exception:
                     schema0 = {}
 
@@ -2759,6 +3835,7 @@ async def execute_raw_command(payload: Dict[str, Any] = Body(...)):
                         property_specs=property_specs0,
                         mode="strict",
                     )
+
                     if (
                         isinstance(report0, dict)
                         and report0.get("can_approve") is False
@@ -2771,22 +3848,30 @@ async def execute_raw_command(payload: Dict[str, Any] = Body(...)):
                                 "validation": report0,
                             },
                         )
+
                 except HTTPException:
                     raise
+
                 except Exception:
                     # Do not fail hard on validator errors.
+
                     pass
+
     except HTTPException:
         raise
+
     except Exception:
         pass
 
     # CRITICAL: wrapper unwrapping may yield a meta-command (next_step).
+
     # Hard-block those *after* unwrap so they never enter approval/execution.
+
     if (getattr(ai_command, "intent", None) in _HARD_READ_ONLY_INTENTS) or (
         getattr(ai_command, "command", None) in _HARD_READ_ONLY_INTENTS
     ):
         execution_id = _ensure_execution_id(ai_command)
+
         return {
             "status": "COMPLETED",
             "execution_state": "COMPLETED",
@@ -2813,7 +3898,9 @@ async def execute_raw_command(payload: Dict[str, Any] = Body(...)):
     approval_state = get_approval_state()
 
     # PHASE A FIX: robust scope/risk extraction
+
     scope_val = payload.get("scope") or payload.get("scope_hint") or "api_execute_raw"
+
     risk_val = (
         payload.get("risk")
         or payload.get("risk_level")
@@ -2830,6 +3917,7 @@ async def execute_raw_command(payload: Dict[str, Any] = Body(...)):
     )
 
     approval_id = approval.get("approval_id")
+
     if not approval_id:
         raise HTTPException(
             status_code=500, detail="Approval create failed: missing approval_id"
@@ -2838,6 +3926,7 @@ async def execute_raw_command(payload: Dict[str, Any] = Body(...)):
     _ensure_trace_on_command(ai_command, approval_id=approval_id)
 
     orchestrator.registry.register(ai_command)
+
     registry.register(ai_command)
 
     return {
@@ -2859,24 +3948,32 @@ async def execute_preview_command(
 ):
     """Preview the *exact* command payload (no approvals, no execution).
 
+
+
     Intended for CEO Console UI so the user can confirm Notion mapping
+
     (property_specs -> properties) before hitting Approve.
+
     """
+
     if not _is_ceo_request(request):
         raise HTTPException(
             status_code=403, detail="This endpoint is restricted to CEO users only"
         )
+
     _require_ceo_token_if_enforced(request)
 
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Body must be an object")
 
     enterprise_enabled = _enterprise_preview_editor_enabled()
+
     patches_in = payload.get("patches") if isinstance(payload, dict) else None
 
     normalized = _normalize_execute_raw_payload_dict(payload)
 
     # Hard read-only intents stay read-only.
+
     if (normalized.intent in _HARD_READ_ONLY_INTENTS) or (
         normalized.command in _HARD_READ_ONLY_INTENTS
     ):
@@ -2902,6 +3999,7 @@ async def execute_preview_command(
         }
 
     # Read-only directive: refresh_snapshot preview
+
     if (normalized.intent == "refresh_snapshot") or (
         normalized.command == "refresh_snapshot"
     ):
@@ -2938,46 +4036,64 @@ async def execute_preview_command(
     )
 
     patch_issues_by_op_id: Dict[str, List[Dict[str, Any]]] = {}
+
     patch_global_issues: List[Dict[str, Any]] = []
+
     force_validation_mode: Optional[str] = None
 
     # Enterprise preview editor: optional patches applied server-side.
+
     if enterprise_enabled and patches_in is not None:
         try:
             if getattr(ai_command, "command", None) == "notion_write" and getattr(
                 ai_command, "intent", None
             ) in {"batch_request", "batch", "branch_request"}:
                 params0 = getattr(ai_command, "params", None)
+
                 params0 = params0 if isinstance(params0, dict) else {}
+
                 ops0 = params0.get("operations")
+
                 if isinstance(ops0, list) and ops0:
                     from services.enterprise_preview_patches import (  # noqa: PLC0415
                         apply_patches_to_batch_operations,
                     )
+
                     from services.notion_schema_registry import (  # noqa: PLC0415
                         NotionSchemaRegistry,
                     )
 
                     db_keys0: List[str] = []
+
                     for op0 in ops0:
                         if not isinstance(op0, dict):
                             continue
+
                         pl0 = op0.get("payload")
+
                         pl0 = pl0 if isinstance(pl0, dict) else {}
+
                         dk0 = pl0.get("db_key")
+
                         if isinstance(dk0, str) and dk0.strip():
                             db_keys0.append(dk0.strip())
+
                         else:
                             oi0 = (op0.get("intent") or "").strip().lower()
+
                             if oi0 == "create_goal":
                                 db_keys0.append("goals")
+
                             elif oi0 == "create_task":
                                 db_keys0.append("tasks")
+
                             elif oi0 == "create_project":
                                 db_keys0.append("projects")
 
                     db_keys0 = [k for k in [str(x).strip() for x in db_keys0] if k]
+
                     db_keys0 = list(dict.fromkeys(db_keys0))
+
                     schema_by_db_key = {
                         dk: NotionSchemaRegistry.offline_validation_schema(dk)
                         for dk in db_keys0
@@ -2994,14 +4110,19 @@ async def execute_preview_command(
                     patch_issues_by_op_id = (
                         issues_by_op if isinstance(issues_by_op, dict) else {}
                     )
+
                     patch_global_issues = (
                         global_issues if isinstance(global_issues, list) else []
                     )
+
                     force_validation_mode = "strict"
 
                     params_new = dict(params0)
+
                     params_new["operations"] = patched_ops
+
                     ai_command.params = params_new
+
                 else:
                     patch_global_issues.append(
                         {
@@ -3011,7 +4132,9 @@ async def execute_preview_command(
                             "message": "Patches are only supported for batch operations.",
                         }
                     )
+
                     force_validation_mode = "strict"
+
             else:
                 patch_global_issues.append(
                     {
@@ -3021,9 +4144,12 @@ async def execute_preview_command(
                         "message": "Patches are only supported for Notion batch proposals.",
                     }
                 )
+
                 force_validation_mode = "strict"
+
         except Exception:
             # Fail closed for approval: treat patch subsystem failure as a validation error.
+
             patch_global_issues.append(
                 {
                     "severity": "error",
@@ -3032,16 +4158,24 @@ async def execute_preview_command(
                     "message": "Failed to apply patches.",
                 }
             )
+
             force_validation_mode = "strict"
 
     # Preview should always be treated as read-only.
+
     ai_command.read_only = True
+
     md = getattr(ai_command, "metadata", None)
+
     if not isinstance(md, dict):
         md = {}
+
     md["canon"] = "execute_preview"
+
     md["endpoint"] = "/api/execute/preview"
+
     md["preview"] = True
+
     ai_command.metadata = md
 
     cmd_dump = (
@@ -3051,19 +4185,26 @@ async def execute_preview_command(
     )
 
     notion_block = None
+
     review_block = None
 
     # If this came from a proposal wrapper, we can deterministically provide a review schema
+
     # so UI can fill missing Status/Priority/Deadline/etc before approval.
+
     try:
         from services.review_contract import detect_write_create_review_contract  # noqa: PLC0415
 
         prompt = None
+
         md0 = getattr(ai_command, "metadata", None)
+
         if isinstance(md0, dict):
             w0 = md0.get("wrapper")
+
             if isinstance(w0, dict):
                 p0 = w0.get("prompt")
+
                 if isinstance(p0, str) and p0.strip():
                     prompt = p0.strip()
 
@@ -3071,6 +4212,7 @@ async def execute_preview_command(
             ok, intent_type, missing_fields, fields_schema = (
                 detect_write_create_review_contract(prompt)
             )
+
             if ok and isinstance(fields_schema, dict) and fields_schema:
                 review_block = {
                     "type": "command_review",
@@ -3080,12 +4222,15 @@ async def execute_preview_command(
                     "missing_fields": missing_fields,
                     "fields_schema": fields_schema,
                 }
+
     except Exception:
         review_block = None
 
     # Enterprise UX: always try to provide DB schema for table preview.
+
     async def _fallback_fields_schema(db_key: str) -> Dict[str, Any]:
         k = (db_key or "").strip().lower()
+
         base: Dict[str, Any] = {
             "Name": {"type": "title"},
             "Status": {"type": "status"},
@@ -3094,7 +4239,9 @@ async def execute_preview_command(
             "Due Date": {"type": "date"},
             "Description": {"type": "rich_text"},
         }
+
         # Deterministic options when we don't have live Notion schema.
+
         try:
             from services.review_contract import (  # noqa: PLC0415
                 GOAL_STATUS_OPTIONS,
@@ -3106,104 +4253,148 @@ async def execute_preview_command(
 
             if "Priority" in base:
                 base["Priority"].setdefault("options", list(PRIORITY_OPTIONS))
+
             if k in {"goals", "goal"}:
                 base["Status"].setdefault("options", list(GOAL_STATUS_OPTIONS))
+
             elif k in {"tasks", "task"}:
                 base["Status"].setdefault("options", list(TASK_STATUS_OPTIONS))
+
             elif k in {"projects", "project"}:
                 base["Status"].setdefault("options", list(PROJECT_STATUS_OPTIONS))
+
             elif k in {"kpi", "kpis"}:
                 base["Status"].setdefault("options", list(KPI_STATUS_OPTIONS))
+
         except Exception:
             pass
+
         if k in {"tasks", "task"}:
             base.setdefault("Goal", {"type": "relation"})
+
             base.setdefault("Project", {"type": "relation"})
+
             base.setdefault("Owner", {"type": "people"})
+
         if k in {"projects", "project"}:
             base.setdefault("Primary Goal", {"type": "relation"})
+
         return base
 
     async def _best_effort_fields_schema(db_key: str) -> Tuple[Dict[str, Any], str]:
         db_key = (db_key or "").strip()
+
         if not db_key:
             return {}, "none"
+
         try:
             from services.notion_service import get_or_init_notion_service  # noqa: PLC0415
 
             svc = get_or_init_notion_service()
+
             if svc is not None:
                 schema = await svc.get_fields_schema(db_key)
+
                 if isinstance(schema, dict) and schema:
                     return schema, "notion"
+
         except Exception:
             pass
 
         # Prefer offline SSOT schema when Notion schema can't be fetched.
+
         # This keeps preview/UI usable ("Show all" can list full field set) without new endpoints.
+
         try:
             from services.notion_schema_registry import (  # noqa: PLC0415
                 NotionSchemaRegistry,
             )
 
             off = NotionSchemaRegistry.offline_validation_schema(db_key)
+
             if isinstance(off, dict) and off:
                 return off, "offline"
+
         except Exception:
             pass
 
         fb = await _fallback_fields_schema(db_key)
+
         return (fb if isinstance(fb, dict) else {}), "fallback"
 
     # Determine DB keys involved so we can attach schema even if notion_block is empty.
+
     db_keys: List[str] = []
+
     try:
         if getattr(ai_command, "command", None) == "notion_write":
             intent0 = getattr(ai_command, "intent", None)
+
             params0 = getattr(ai_command, "params", None)
+
             params0 = params0 if isinstance(params0, dict) else {}
 
             if intent0 in {"create_goal"}:
                 db_keys = ["goals"]
+
             elif intent0 in {"create_task"}:
                 db_keys = ["tasks"]
+
             elif intent0 in {"create_project"}:
                 db_keys = ["projects"]
+
             elif intent0 in {"create_page", "update_page"}:
                 dk = params0.get("db_key")
+
                 if isinstance(dk, str) and dk.strip():
                     db_keys = [dk.strip()]
+
             elif intent0 in {"batch_request", "batch", "branch_request"}:
                 ops0 = params0.get("operations")
+
                 if isinstance(ops0, list):
                     for op in ops0:
                         if not isinstance(op, dict):
                             continue
+
                         payload0 = op.get("payload")
+
                         payload0 = payload0 if isinstance(payload0, dict) else {}
+
                         dk = payload0.get("db_key")
+
                         if isinstance(dk, str) and dk.strip():
                             db_keys.append(dk.strip())
+
                         else:
                             oi = (op.get("intent") or "").strip().lower()
+
                             if oi == "create_goal":
                                 db_keys.append("goals")
+
                             elif oi == "create_task":
                                 db_keys.append("tasks")
+
                             elif oi == "create_project":
                                 db_keys.append("projects")
+
     except Exception:
         db_keys = []
 
     # If we couldn't infer db keys from the translated command, infer from wrapper prompt.
+
     if not db_keys:
         try:
             prompt0 = None
+
             md0 = getattr(ai_command, "metadata", None)
+
             if isinstance(md0, dict):
                 w0 = md0.get("wrapper")
+
                 if isinstance(w0, dict):
                     p0 = w0.get("prompt")
+
                     if isinstance(p0, str) and p0.strip():
                         prompt0 = p0.strip()
 
@@ -3211,39 +4402,57 @@ async def execute_preview_command(
                 from services.notion_keyword_mapper import NotionKeywordMapper  # noqa: PLC0415
 
                 auto_intent = NotionKeywordMapper.detect_intent(prompt0)
+
                 ai = (auto_intent or "").strip().lower()
+
                 if ai == "create_goal":
                     db_keys = ["goals"]
+
                 elif ai == "create_task":
                     db_keys = ["tasks"]
+
                 elif ai == "create_project":
                     db_keys = ["projects"]
 
                 # Heuristic: if prompt mentions both goal and task, attach both schemas.
+
                 if not db_keys:
                     p_low = prompt0.lower()
+
                     has_goal = bool(re.search(r"\b(cilj\w*|goal\w*)\b", p_low))
+
                     has_task = bool(re.search(r"\b(zadat\w*|task\w*)\b", p_low))
+
                     if has_goal and has_task:
                         db_keys = ["goals", "tasks"]
+
         except Exception:
             pass
 
     # Normalize + de-dupe
+
     db_keys = [k for k in [str(x).strip() for x in db_keys] if k]
+
     db_keys = list(dict.fromkeys(db_keys))
 
     # Attach schema to review block (single union) and keep per-db map for debugging.
+
     try:
         if db_keys:
             union_schema: Dict[str, Any] = {}
+
             by_db: Dict[str, Any] = {}
+
             sources: Dict[str, str] = {}
+
             for dk in db_keys:
                 sch, src = await _best_effort_fields_schema(dk)
+
                 if isinstance(sch, dict) and sch:
                     by_db[dk] = sch
+
                     sources[dk] = src
+
                     for k, v in sch.items():
                         if k not in union_schema:
                             union_schema[k] = v
@@ -3258,32 +4467,47 @@ async def execute_preview_command(
                         "missing_fields": [],
                         "fields_schema": union_schema,
                     }
+
                 else:
                     fs0 = review_block.get("fields_schema")
+
                     # Merge (don't replace): review_contract may provide a minimal schema
+
                     # (e.g. Status/Priority only). For "Show all" UX, we want the full
+
                     # best-effort DB schema to be available while preserving any existing
+
                     # prompt-derived specs/options.
+
                     if not isinstance(fs0, dict) or not fs0:
                         review_block["fields_schema"] = union_schema
+
                     else:
                         merged: Dict[str, Any] = dict(fs0)
+
                         for k, v in union_schema.items():
                             if k not in merged:
                                 merged[k] = v
+
                         review_block["fields_schema"] = merged
+
                 review_block["fields_schema_by_db_key"] = by_db
+
                 review_block["schema_source_by_db_key"] = sources
+
     except Exception:
         pass
 
     try:
         if getattr(ai_command, "command", None) == "notion_write":
             intent = getattr(ai_command, "intent", None)
+
             params = getattr(ai_command, "params", None)
+
             params = params if isinstance(params, dict) else {}
 
             wrapper_patch0 = params.get("wrapper_patch")
+
             wrapper_patch0 = (
                 wrapper_patch0 if isinstance(wrapper_patch0, dict) else None
             )
@@ -3294,23 +4518,30 @@ async def execute_preview_command(
                 db_key: Optional[str],
             ) -> Dict[str, Any]:
                 dk = (db_key or "").strip()
+
                 if not dk:
                     return {}
+
                 # Prefer schema already attached to review block.
+
                 if isinstance(review_block, dict):
                     by_db0 = review_block.get("fields_schema_by_db_key")
+
                     if isinstance(by_db0, dict):
                         sch0 = by_db0.get(dk)
+
                         if isinstance(sch0, dict) and sch0:
                             return sch0
 
                 # Fallback to offline SSOT schema (no Notion API calls).
+
                 try:
                     from services.notion_schema_registry import (  # noqa: PLC0415
                         NotionSchemaRegistry,
                     )
 
                     return NotionSchemaRegistry.offline_validation_schema(dk)
+
                 except Exception:
                     return {}
 
@@ -3318,14 +4549,17 @@ async def execute_preview_command(
                 *, db_key: Optional[str], property_specs: Dict[str, Any]
             ) -> Optional[Dict[str, Any]]:
                 dk = (db_key or "").strip()
+
                 if not dk:
                     return None
+
                 try:
                     from services.notion_patch_validation import (  # noqa: PLC0415
                         validate_notion_payload,
                     )
 
                     schema0 = await _best_effort_schema_for_db_key(dk)
+
                     return validate_notion_payload(
                         db_key=dk,
                         schema=schema0 if isinstance(schema0, dict) else {},
@@ -3333,6 +4567,7 @@ async def execute_preview_command(
                         property_specs=property_specs,
                         mode=validation_mode,
                     )
+
                 except Exception:
                     return None
 
@@ -3342,6 +4577,7 @@ async def execute_preview_command(
                 property_specs: Dict[str, Any],
             ) -> Dict[str, Any]:
                 dk = (db_key or "").strip()
+
                 if not dk:
                     return {
                         "property_specs": property_specs,
@@ -3364,6 +4600,7 @@ async def execute_preview_command(
                         if isinstance(wrapper_patch0, dict)
                         else None,
                     )
+
                 except Exception:
                     return {
                         "property_specs": property_specs,
@@ -3378,61 +4615,79 @@ async def execute_preview_command(
                 payload: Dict[str, Any],
             ) -> Dict[str, Any]:
                 payload = payload if isinstance(payload, dict) else {}
+
                 title = _ensure_str(
                     payload.get("title") or payload.get("name") or payload.get("Name")
                 ).strip()
+
                 description = _ensure_str(
                     payload.get("description") or payload.get("Description")
                 ).strip()
+
                 deadline = _ensure_str(
                     payload.get("deadline")
                     or payload.get("due_date")
                     or payload.get("Deadline")
                     or payload.get("Due Date")
                 ).strip()
+
                 priority = _ensure_str(
                     payload.get("priority") or payload.get("Priority")
                 ).strip()
+
                 status = _ensure_str(
                     payload.get("status") or payload.get("Status")
                 ).strip()
 
                 ps: Dict[str, Any] = {}
+
                 if title:
                     ps["Name"] = {"type": "title", "text": title}
+
                 if description:
                     ps["Description"] = {"type": "rich_text", "text": description}
+
                 if deadline:
                     ps["Deadline"] = {"type": "date", "start": deadline}
+
                 if priority:
                     ps["Priority"] = {"type": "select", "name": priority}
+
                 if status:
                     ps["Status"] = {"type": "status", "name": status}
 
                 extra_specs = payload.get("property_specs")
+
                 if isinstance(extra_specs, dict) and extra_specs:
                     # Let explicit specs override derived ones.
+
                     ps.update(extra_specs)
+
                 return ps
 
             # create_page/update_page carry property_specs directly.
+
             if intent in {"create_page", "update_page"}:
                 db_key = params.get("db_key")
+
                 raw_specs = (
                     params.get("property_specs")
                     or params.get("properties")
                     or params.get("notion_properties")
                 )
+
                 if isinstance(raw_specs, dict):
                     property_specs = _sanitize_property_specs_for_preview(
                         db_key=db_key, property_specs=raw_specs
                     )
+
                 else:
                     property_specs = {}
 
                 built = _build_specs_for_preview(
                     db_key=db_key, property_specs=property_specs
                 )
+
                 property_specs = _sanitize_property_specs_for_preview(
                     db_key=db_key,
                     property_specs=built.get("property_specs")
@@ -3466,6 +4721,7 @@ async def execute_preview_command(
                 }
 
             # create_goal/create_task/create_project derive property_specs at execution time.
+
             elif intent in {"create_goal", "create_task", "create_project"}:
                 db_key = (
                     "goals"
@@ -3476,27 +4732,37 @@ async def execute_preview_command(
                 )
 
                 title = _ensure_str(params.get("title")).strip()
+
                 description = _ensure_str(params.get("description")).strip()
+
                 deadline = _ensure_str(params.get("deadline")).strip()
+
                 priority = _ensure_str(params.get("priority")).strip()
+
                 status = _ensure_str(params.get("status")).strip()
 
                 property_specs: Dict[str, Any] = {}
+
                 if title:
                     property_specs["Name"] = {"type": "title", "text": title}
+
                 if description:
                     property_specs["Description"] = {
                         "type": "rich_text",
                         "text": description,
                     }
+
                 if deadline:
                     property_specs["Deadline"] = {"type": "date", "start": deadline}
+
                 if priority:
                     property_specs["Priority"] = {"type": "select", "name": priority}
+
                 if status:
                     property_specs["Status"] = {"type": "status", "name": status}
 
                 extra_specs = params.get("property_specs")
+
                 if isinstance(extra_specs, dict) and extra_specs:
                     property_specs.update(extra_specs)
 
@@ -3537,8 +4803,10 @@ async def execute_preview_command(
                 }
 
             # batch_request: preview each operation as a table row
+
             elif intent in {"batch_request", "batch", "branch_request"}:
                 ops = params.get("operations")
+
                 if isinstance(ops, list) and ops:
                     rows: List[Dict[str, Any]] = []
 
@@ -3550,10 +4818,14 @@ async def execute_preview_command(
                     ) -> Optional[Dict[str, Any]]:
                         if not enterprise_enabled:
                             return base
+
                         oid = (op_id or "").strip()
+
                         if not oid:
                             return base
+
                         extra = patch_issues_by_op_id.get(oid)
+
                         if not isinstance(extra, list) or not extra:
                             return base
 
@@ -3568,12 +4840,14 @@ async def execute_preview_command(
                                 if isinstance(it, dict)
                                 and it.get("severity") == "error"
                             )
+
                             warns = sum(
                                 1
                                 for it in extra
                                 if isinstance(it, dict)
                                 and it.get("severity") == "warning"
                             )
+
                             extra_report = {
                                 "mode": "strict",
                                 "db_key": (db_key or "").strip() or None,
@@ -3581,40 +4855,56 @@ async def execute_preview_command(
                                 "can_approve": errs == 0,
                                 "summary": {"errors": errs, "warnings": warns},
                             }
+
                             if isinstance(base, dict):
                                 return merge_validation_reports(base, extra_report)
+
                             return merge_validation_reports(extra_report)
+
                         except Exception:
                             return base
 
                     def _format_ref(v: Any) -> Optional[str]:
                         if v is None:
                             return None
+
                         if isinstance(v, str):
                             s = v.strip()
+
                             if not s:
                                 return None
+
                             # Convention used by BranchRequestHandler: "$op_id" references.
+
                             if s.startswith("$") and len(s) > 1:
                                 return f"ref:{s[1:]}"
+
                             return s
+
                         # Keep non-string refs readable (numbers, dicts)
+
                         try:
                             return str(v)
+
                         except Exception:
                             return None
 
                     for idx, op in enumerate(ops):
                         if not isinstance(op, dict):
                             continue
+
                         op_id = op.get("op_id")
+
                         op_intent = (
                             _ensure_str(op.get("intent") or "").strip() or "unknown"
                         )
+
                         payload = op.get("payload")
+
                         payload = payload if isinstance(payload, dict) else {}
 
                         db_key = payload.get("db_key")
+
                         if not isinstance(db_key, str) or not db_key.strip():
                             db_key = (
                                 "goals"
@@ -3627,25 +4917,31 @@ async def execute_preview_command(
                             )
 
                         # Try to build a Notion-like properties preview for create intents.
+
                         ps: Dict[str, Any] = {}
+
                         if op_intent in {
                             "create_goal",
                             "create_task",
                             "create_project",
                         }:
                             ps = _build_property_specs_from_payload(payload)
+
                         elif op_intent in {"create_page", "update_page"}:
                             sp0 = payload.get("property_specs") or payload.get(
                                 "properties"
                             )
+
                             if isinstance(sp0, dict) and sp0:
                                 ps = dict(sp0)
 
                         built_row = None
+
                         if ps and isinstance(db_key, str) and db_key.strip():
                             built_row = _build_specs_for_preview(
                                 db_key=db_key, property_specs=ps
                             )
+
                             if isinstance(built_row, dict) and isinstance(
                                 built_row.get("property_specs"), dict
                             ):
@@ -3663,23 +4959,31 @@ async def execute_preview_command(
                         }
 
                         # Relationship hints (pre-execution): show readable refs even before Notion IDs exist.
+
                         goal_ref = _format_ref(
                             payload.get("goal_id") or payload.get("primary_goal_id")
                         )
+
                         project_ref = _format_ref(payload.get("project_id"))
+
                         parent_goal_ref = _format_ref(payload.get("parent_goal_id"))
+
                         if goal_ref:
                             row["Goal Ref"] = goal_ref
+
                         if project_ref:
                             row["Project Ref"] = project_ref
+
                         if parent_goal_ref:
                             row["Parent Goal Ref"] = parent_goal_ref
 
                         if ps:
                             row["property_specs"] = ps
+
                             row["properties_preview"] = (
                                 _notion_properties_preview_from_property_specs(ps)
                             )
+
                             if isinstance(built_row, dict):
                                 row["build"] = {
                                     "validated": bool(
@@ -3696,6 +5000,7 @@ async def execute_preview_command(
                                     )
                                     else {},
                                 }
+
                             row["validation"] = _merge_patch_issues(
                                 base=await _validation_for_preview(
                                     db_key=db_key, property_specs=ps
@@ -3703,34 +5008,48 @@ async def execute_preview_command(
                                 db_key=db_key,
                                 op_id=op_id if isinstance(op_id, str) else None,
                             )
+
                         rows.append(row)
 
                     # Summary for table UI.
+
                     errors = 0
+
                     warnings = 0
+
                     for r0 in rows:
                         v0 = r0.get("validation")
+
                         if not isinstance(v0, dict):
                             continue
+
                         s0 = v0.get("summary")
+
                         if isinstance(s0, dict):
                             try:
                                 errors += int(s0.get("errors") or 0)
+
                             except Exception:
                                 pass
+
                             try:
                                 warnings += int(s0.get("warnings") or 0)
+
                             except Exception:
                                 pass
 
                     global_errs = 0
+
                     global_warns = 0
+
                     if enterprise_enabled and patch_global_issues:
                         for it in patch_global_issues:
                             if not isinstance(it, dict):
                                 continue
+
                             if it.get("severity") == "warning":
                                 global_warns += 1
+
                             else:
                                 global_errs += 1
 
@@ -3757,10 +5076,13 @@ async def execute_preview_command(
                         notion_block["canonical_preview_operations"] = notion_block.get(
                             "operations"
                         )
+
                         if patch_global_issues:
                             notion_block["validation"]["issues"] = patch_global_issues
+
     except Exception:
         # Fail-closed: return a deterministic validation object so UI can block approval.
+
         notion_block = {
             "type": "preview_error",
             "validation": {
@@ -3795,19 +5117,28 @@ async def execute_preview_command(
 
 
 # ================================================================
+
 # /api/proposals/execute
+
 # ================================================================
+
+
 @app.post("/api/proposals/execute")
 async def execute_proposal(payload: ProposalExecuteInput):
     proposal = payload.proposal
+
     initiator = (payload.initiator or "ceo").strip() or "ceo"
+
     meta_in = payload.metadata if isinstance(payload.metadata, dict) else {}
 
     _, _, _, registry, orchestrator = _require_boot_services()
 
     proposal_cmd: Optional[str] = None
+
     proposal_intent: Optional[str] = None
+
     proposal_params: Dict[str, Any] = {}
+
     proposal_meta: Dict[str, Any] = {}
 
     if isinstance(proposal, dict):
@@ -3816,57 +5147,74 @@ async def execute_proposal(payload: ProposalExecuteInput):
             or proposal.get("command_type")
             or proposal.get("type")
         )
+
         proposal_intent = proposal.get("intent") or proposal_cmd
 
         p_params = proposal.get("params")
+
         if isinstance(p_params, dict):
             proposal_params = dict(p_params)
 
         if not proposal_params:
             p_args = proposal.get("args")
+
             if isinstance(p_args, dict):
                 proposal_params = dict(p_args)
+
         if not proposal_params:
             p_payload = proposal.get("payload")
+
             if isinstance(p_payload, dict):
                 proposal_params = dict(p_payload)
 
         p_md = proposal.get("metadata")
+
         if isinstance(p_md, dict):
             proposal_meta = dict(p_md)
 
         proposal_scope = proposal.get("scope")
+
         proposal_risk = proposal.get("risk") or proposal.get("risk_hint")
+
     else:
         proposal_cmd = (
             getattr(proposal, "command", None)
             or getattr(proposal, "command_type", None)
             or getattr(proposal, "type", None)
         )
+
         proposal_intent = getattr(proposal, "intent", None) or proposal_cmd
 
         p2 = getattr(proposal, "params", None)
+
         if isinstance(p2, dict):
             proposal_params = dict(p2)
+
         if not proposal_params:
             a2 = getattr(proposal, "args", None)
+
             if isinstance(a2, dict):
                 proposal_params = dict(a2)
+
         if not proposal_params:
             pl2 = getattr(proposal, "payload", None)
+
             if isinstance(pl2, dict):
                 proposal_params = dict(pl2)
 
         m2 = getattr(proposal, "metadata", None)
+
         if isinstance(m2, dict):
             proposal_meta = dict(m2)
 
         proposal_scope = getattr(proposal, "scope", None)
+
         proposal_risk = getattr(proposal, "risk", None) or getattr(
             proposal, "risk_hint", None
         )
 
     proposal_cmd = (proposal_cmd or "").strip() or None
+
     proposal_intent = (proposal_intent or "").strip() or None
 
     if not proposal_cmd or not proposal_intent:
@@ -3884,14 +5232,18 @@ async def execute_proposal(payload: ProposalExecuteInput):
         )
 
     merged_md: Dict[str, Any] = {}
+
     if isinstance(proposal_meta, dict):
         merged_md.update(proposal_meta)
+
     if isinstance(meta_in, dict):
         merged_md.update(meta_in)
 
     cr = None
+
     if isinstance(proposal_meta, dict):
         cr = proposal_meta.get("confidence_risk")
+
     if cr is None and isinstance(meta_in, dict):
         cr = meta_in.get("confidence_risk")
 
@@ -3908,10 +5260,12 @@ async def execute_proposal(payload: ProposalExecuteInput):
     )
 
     # Same post-unwrapping hard-block as /api/execute/raw.
+
     if (getattr(ai_command, "intent", None) in _HARD_READ_ONLY_INTENTS) or (
         getattr(ai_command, "command", None) in _HARD_READ_ONLY_INTENTS
     ):
         execution_id = _ensure_execution_id(ai_command)
+
         return {
             "status": "COMPLETED",
             "execution_state": "COMPLETED",
@@ -3932,22 +5286,33 @@ async def execute_proposal(payload: ProposalExecuteInput):
         }
 
     md = getattr(ai_command, "metadata", None)
+
     if not isinstance(md, dict):
         md = {}
+
     md.setdefault("promotion", {})
+
     if isinstance(md.get("promotion"), dict):
         md["promotion"].setdefault("source", "/api/proposals/execute")
+
         md["promotion"].setdefault("proposal_command", proposal_cmd)
+
         md["promotion"].setdefault("proposal_intent", proposal_intent)
+
         md["promotion"].setdefault("risk", proposal_risk)
+
         md["promotion"].setdefault("scope", proposal_scope)
+
     md.setdefault("endpoint", "/api/proposals/execute")
+
     md.setdefault("canon", "proposal_promotion_v2_execute_raw_unwrap")
+
     ai_command.metadata = md
 
     execution_id = _ensure_execution_id(ai_command)
 
     approval_state = get_approval_state()
+
     approval = approval_state.create(
         command=getattr(ai_command, "command", None) or "execute_proposal",
         payload_summary=_safe_command_summary(ai_command),
@@ -3955,39 +5320,56 @@ async def execute_proposal(payload: ProposalExecuteInput):
         risk_level=(proposal_risk or "UNKNOWN"),
         execution_id=execution_id,
     )
+
     approval_id = approval.get("approval_id")
+
     if not approval_id:
         raise HTTPException(
             status_code=500, detail="Approval create failed: missing approval_id"
         )
 
     _ensure_trace_on_command(ai_command, approval_id=approval_id)
+
     orchestrator.registry.register(ai_command)
+
     registry.register(ai_command)
 
     result = await orchestrator.execute(ai_command)
+
     if isinstance(result, dict):
         result.setdefault("approval_id", approval_id)
+
         result.setdefault("execution_id", execution_id)
+
         result.setdefault("status", "BLOCKED")
+
     return result
 
 
 # ================================================================
-# NOTION READ — READ ONLY (NO APPROVAL / NO EXECUTION)
+
+# NOTION READ â€” READ ONLY (NO APPROVAL / NO EXECUTION)
+
 # ================================================================
+
+
 @app.post("/api/notion/read", response_model=NotionReadResponse)
 async def notion_read(payload: Any = Body(None)) -> Any:
     def _model_to_dict(m: NotionReadResponse) -> Dict[str, Any]:
         if hasattr(m, "model_dump"):
             try:
                 d = m.model_dump()  # type: ignore[attr-defined]
+
                 return d if isinstance(d, dict) else {}
+
             except Exception:
                 pass
+
         try:
             d2 = m.dict()  # type: ignore[attr-defined]
+
             return d2 if isinstance(d2, dict) else {}
+
         except Exception:
             return {}
 
@@ -4010,31 +5392,39 @@ async def notion_read(payload: Any = Body(None)) -> Any:
 
     if payload is None:
         return _resp_err("Body must be an object")
+
     if not isinstance(payload, dict):
         return _resp_err("Body must be an object")
 
     mode0 = payload.get("mode")
+
     if not isinstance(mode0, str) or not mode0.strip():
         return _resp_err("Field 'mode' is required")
+
     mode0 = mode0.strip()
 
     if mode0 != "page_by_title":
         return _resp_err("Unsupported mode. Allowed: 'page_by_title'")
 
     query = payload.get("query")
+
     if not isinstance(query, str) or not query.strip():
         return _resp_err("Field 'query' is required")
+
     query = query.strip()
 
     try:
         from services.notion_read_service import read_page_as_markdown
 
         res = await read_page_as_markdown(query)
+
         if not isinstance(res, dict):
             return _resp_err("Notion read failed: invalid service response")
 
         title = res.get("title") if isinstance(res.get("title"), str) else ""
+
         url = res.get("url") if isinstance(res.get("url"), str) else ""
+
         md = (
             res.get("content_markdown")
             if isinstance(res.get("content_markdown"), str)
@@ -4042,7 +5432,9 @@ async def notion_read(payload: Any = Body(None)) -> Any:
         )
 
         title = (title or "").strip()
+
         url = (url or "").strip()
+
         md = (md or "").strip()
 
         if not title and not url and not md:
@@ -4065,13 +5457,18 @@ async def notion_read(payload: Any = Body(None)) -> Any:
                 error=None,
             )
         )
+
     except Exception as exc:  # noqa: BLE001
         return _resp_err(f"Notion read failed: {exc}")
 
 
 # ================================================================
-# NOTION OPS — LIST DATABASES (READ ONLY)
+
+# NOTION OPS â€” LIST DATABASES (READ ONLY)
+
 # ================================================================
+
+
 @app.get("/api/notion-ops/databases")
 @app.get("/notion-ops/databases")
 async def notion_ops_list_databases():
@@ -4080,11 +5477,14 @@ async def notion_ops_list_databases():
     ns = get_notion_service()
 
     dbs: Dict[str, str] = {}
+
     if isinstance(getattr(ns, "db_ids", None), dict):
         for k, v in ns.db_ids.items():
             if isinstance(k, str) and isinstance(v, str):
                 kk = k.strip()
+
                 vv = v.strip()
+
                 if kk and vv:
                     dbs[kk] = vv
 
@@ -4107,8 +5507,11 @@ async def databases_alias_api():
 
 
 # ================================================================
+
 # NOTION BULK OPS
+
 # ================================================================
+
 _ALLOWED_BULK_TYPES = {
     "goal",
     "goals",
@@ -4128,22 +5531,30 @@ _ALLOWED_BULK_TYPES = {
 def _validate_bulk_items(items: Any) -> List[Dict[str, Any]]:
     if items is None:
         return []
+
     if not isinstance(items, list):
         raise HTTPException(status_code=400, detail="items must be a list")
 
     out: List[Dict[str, Any]] = []
+
     for it in items:
         if not isinstance(it, dict):
             raise HTTPException(status_code=400, detail="each item must be an object")
+
         t = it.get("type")
+
         if not isinstance(t, str) or not t.strip():
             raise HTTPException(
                 status_code=400, detail="each item must have non-empty 'type'"
             )
+
         tt = t.strip().lower()
+
         if tt not in _ALLOWED_BULK_TYPES:
             raise HTTPException(status_code=400, detail=f"invalid type: {t}")
+
         out.append(it)
+
     return out
 
 
@@ -4155,6 +5566,7 @@ async def notion_bulk_create(request: Request, payload: Dict[str, Any] = Body(..
     items = _validate_bulk_items(payload.get("items"))
 
     created: List[Dict[str, Any]] = []
+
     for it in items:
         created.append(
             {
@@ -4177,6 +5589,7 @@ async def notion_bulk_update(request: Request, payload: Dict[str, Any] = Body(..
     items = _validate_bulk_items(payload.get("items"))
 
     updated: List[Dict[str, Any]] = []
+
     for it in items:
         updated.append(
             {
@@ -4193,31 +5606,40 @@ async def notion_bulk_update(request: Request, payload: Dict[str, Any] = Body(..
 
 def _normalize_notion_query_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     q = payload.get("query")
+
     if isinstance(q, dict):
         return dict(q)
 
     out: Dict[str, Any] = {}
+
     if isinstance(payload.get("filter"), dict):
         out["filter"] = payload["filter"]
+
     if isinstance(payload.get("sorts"), list):
         out["sorts"] = payload["sorts"]
+
     if isinstance(payload.get("start_cursor"), str) and payload["start_cursor"].strip():
         out["start_cursor"] = payload["start_cursor"].strip()
+
     if isinstance(payload.get("page_size"), int):
         out["page_size"] = int(payload["page_size"])
+
     return out
 
 
 def _looks_like_uuid(s: str) -> bool:
     try:
         uuid.UUID((s or "").strip())
+
         return True
+
     except Exception:
         return False
 
 
 def _resolve_db_id_from_service(notion_service: Any, db_key: str) -> str:
     key = (db_key or "").strip()
+
     if not key:
         raise HTTPException(status_code=400, detail="db_key is required")
 
@@ -4227,9 +5649,11 @@ def _resolve_db_id_from_service(notion_service: Any, db_key: str) -> str:
     lk = key.lower()
 
     db_ids = getattr(notion_service, "db_ids", None)
+
     if isinstance(db_ids, dict):
         for candidate in (lk, lk.rstrip("s"), lk + "s"):
             v = db_ids.get(candidate)
+
             if isinstance(v, str) and v.strip():
                 return v.strip()
 
@@ -4238,18 +5662,23 @@ def _resolve_db_id_from_service(notion_service: Any, db_key: str) -> str:
             v = getattr(notion_service, "goals_db_id", None) or getattr(
                 notion_service, "_goals_db_id", None
             )
+
             if isinstance(v, str) and v.strip():
                 return v.strip()
+
         if candidate == "tasks":
             v = getattr(notion_service, "tasks_db_id", None) or getattr(
                 notion_service, "_tasks_db_id", None
             )
+
             if isinstance(v, str) and v.strip():
                 return v.strip()
+
         if candidate == "projects":
             v = getattr(notion_service, "projects_db_id", None) or getattr(
                 notion_service, "_projects_db_id", None
             )
+
             if isinstance(v, str) and v.strip():
                 return v.strip()
 
@@ -4258,20 +5687,27 @@ def _resolve_db_id_from_service(notion_service: Any, db_key: str) -> str:
 
 def _extract_db_key_or_database_id(d: Dict[str, Any]) -> Optional[str]:
     v = d.get("db_key")
+
     if isinstance(v, str) and v.strip():
         return v.strip()
+
     v2 = d.get("database_id")
+
     if isinstance(v2, str) and v2.strip():
         return v2.strip()
+
     return None
 
 
 async def _call_maybe_async(fn: Any, *args: Any, **kwargs: Any) -> Any:
     if inspect.iscoroutinefunction(fn):
         return await fn(*args, **kwargs)
+
     out = fn(*args, **kwargs)
+
     if asyncio.iscoroutine(out):
         return await out
+
     return out
 
 
@@ -4282,28 +5718,38 @@ async def _query_notion_database(db_key: str, query: Dict[str, Any]) -> Dict[str
 
     for name in ("query_database", "database_query", "query_db", "query"):
         fn = getattr(notion_service, name, None)
+
         if callable(fn):
             try:
                 res = await _call_maybe_async(fn, db_key=db_key, query=query)
+
                 if isinstance(res, dict):
                     return res
+
             except TypeError:
                 pass
+
             try:
                 res = await _call_maybe_async(fn, db_key=db_key, **query)
+
                 if isinstance(res, dict):
                     return res
+
             except TypeError:
                 pass
+
             try:
                 res = await _call_maybe_async(fn, db_key, query)
+
                 if isinstance(res, dict):
                     return res
+
             except TypeError:
                 pass
 
     try:
         from notion_client import Client  # type: ignore
+
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(
             status_code=500,
@@ -4318,18 +5764,21 @@ async def _query_notion_database(db_key: str, query: Dict[str, Any]) -> Dict[str
         or getattr(notion_service, "_api_key", None)
         or (os.getenv("NOTION_API_KEY") or os.getenv("NOTION_TOKEN") or "").strip()
     )
+
     if not isinstance(api_key, str) or not api_key.strip():
         raise HTTPException(
             status_code=500, detail="NOTION_API_KEY/NOTION_TOKEN not set"
         )
 
     db_id = _resolve_db_id_from_service(notion_service, db_key)
+
     client = Client(auth=api_key.strip())
 
     try:
         res = await asyncio.to_thread(
             lambda: client.databases.query(database_id=db_id, **(query or {}))
         )
+
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(
             status_code=500, detail=f"Notion databases.query failed: {exc}"
@@ -4344,6 +5793,7 @@ async def _query_notion_database(db_key: str, query: Dict[str, Any]) -> Dict[str
         }
 
     res.setdefault("database_id", db_id)
+
     return res
 
 
@@ -4357,10 +5807,14 @@ async def notion_bulk_query(payload: Any = Body(None)):
         raise HTTPException(status_code=400, detail="payload must be an object")
 
     top_db_key = _extract_db_key_or_database_id(payload)
+
     if isinstance(top_db_key, str) and top_db_key.strip():
         q = _normalize_notion_query_payload(payload)
+
         res = await _query_notion_database(top_db_key.strip(), q)
+
         items = res.get("results") if isinstance(res.get("results"), list) else []
+
         return {
             "results": [
                 {
@@ -4374,8 +5828,10 @@ async def notion_bulk_query(payload: Any = Body(None)):
         }
 
     queries = payload.get("queries")
+
     if queries is None:
         queries = []
+
     if not isinstance(queries, list):
         raise HTTPException(status_code=400, detail="queries must be a list")
 
@@ -4383,11 +5839,13 @@ async def notion_bulk_query(payload: Any = Body(None)):
         return {"results": []}
 
     out: List[Dict[str, Any]] = []
+
     for q0 in queries:
         if not isinstance(q0, dict):
             raise HTTPException(status_code=400, detail="each query must be an object")
 
         db_key = _extract_db_key_or_database_id(q0)
+
         if not isinstance(db_key, str) or not db_key.strip():
             out.append(
                 {
@@ -4398,11 +5856,15 @@ async def notion_bulk_query(payload: Any = Body(None)):
                     "response": {"results": [], "has_more": False, "next_cursor": None},
                 }
             )
+
             continue
 
         nq = _normalize_notion_query_payload(q0)
+
         res = await _query_notion_database(db_key.strip(), nq)
+
         items = res.get("results") if isinstance(res.get("results"), list) else []
+
         out.append(
             {
                 "query": {"db_key": db_key.strip(), **nq},
@@ -4417,21 +5879,28 @@ async def notion_bulk_query(payload: Any = Body(None)):
 
 
 # ================================================================
+
 # LEGACY CEO COMMAND ENDPOINTS (READ-ONLY WRAPPERS)
+
 # ================================================================
+
+
 def _extract_text_from_payload(payload: Any) -> str:
     if not isinstance(payload, dict):
         return ""
 
     for key in ("input_text", "text", "message", "prompt"):
         v = payload.get(key)
+
         if isinstance(v, str) and v.strip():
             return v.strip()
 
     data = payload.get("data")
+
     if isinstance(data, dict):
         for key in ("input_text", "text", "message", "prompt"):
             v = data.get(key)
+
             if isinstance(v, str) and v.strip():
                 return v.strip()
 
@@ -4449,13 +5918,16 @@ def _extract_smart_context(payload: Any) -> Optional[Dict[str, Any]]:
             or d.get("context_hint")
             or d.get("ui_context_hint")
         )
+
         return sc if isinstance(sc, dict) else None
 
     sc = _pick(payload)
+
     if sc is not None:
         return sc
 
     data = payload.get("data")
+
     if isinstance(data, dict):
         return _pick(data)
 
@@ -4465,15 +5937,22 @@ def _extract_smart_context(payload: Any) -> Optional[Dict[str, Any]]:
 def _extract_source(payload: Any) -> str:
     if not isinstance(payload, dict):
         return "ceo_dashboard"
+
     s = payload.get("source") or payload.get("initiator")
+
     if isinstance(s, str) and s.strip():
         return s.strip()
+
     return "ceo_dashboard"
 
 
-async def _ceo_command_core(payload_dict: Dict[str, Any]) -> JSONResponse:
+async def _ceo_command_core(
+    payload_dict: Dict[str, Any], request: Optional[Request] = None
+) -> JSONResponse:
     raw_text = _extract_text_from_payload(payload_dict)
+
     smart_context = _extract_smart_context(payload_dict)
+
     source = _extract_source(payload_dict)
 
     cleaned_text = _preprocess_ceo_nl_input(raw_text, smart_context)
@@ -4485,6 +5964,7 @@ async def _ceo_command_core(payload_dict: Dict[str, Any]) -> JSONResponse:
         )
 
     session_id = payload_dict.get("session_id")
+
     if session_id is None and isinstance(payload_dict.get("data"), dict):
         session_id = payload_dict["data"].get("session_id")
 
@@ -4502,8 +5982,10 @@ async def _ceo_command_core(payload_dict: Dict[str, Any]) -> JSONResponse:
     try:
         if hasattr(result_obj, "model_dump"):
             result = result_obj.model_dump(by_alias=False)  # type: ignore[attr-defined]
+
         else:
             result = jsonable_encoder(result_obj, by_alias=False)
+
     except Exception:
         result = jsonable_encoder(result_obj)
 
@@ -4516,44 +5998,59 @@ async def _ceo_command_core(payload_dict: Dict[str, Any]) -> JSONResponse:
         result["text"] = result.get("summary") or ""
 
     tr = result.get("trace")
+
     if isinstance(tr, dict):
         tr["normalized_input_text"] = cleaned_text.strip()
+
         tr["normalized_input_source"] = source
+
         tr["normalized_input_has_smart_context"] = bool(smart_context)
+
         tr["normalized_input_session_id_present"] = bool(session_id)
+
         if result.get("text"):
             tr["agent_router_empty_text"] = False
+
             tr["agent_output_text_len"] = len(str(result.get("text") or ""))
 
     if not isinstance(result.get("proposed_commands"), list):
         result["proposed_commands"] = []
 
     tr2 = _ensure_dict(result.get("trace"))
+
     if not isinstance(tr2.get("confidence_risk"), dict):
         tr2["confidence_risk"] = _compute_confidence_risk_block(
             prompt=cleaned_text.strip(),
             trace=tr2,
             proposed_commands=_ensure_list(result.get("proposed_commands")),
         )
+
     result["trace"] = tr2
 
     # === CANON PATCH: propagate confidence/risk into proposal payloads ===
+
     cr = tr2.get("confidence_risk")
+
     if isinstance(cr, dict):
         for pc in result.get("proposed_commands", []):
             if not isinstance(pc, dict):
                 continue
 
             ps = pc.get("payload_summary")
+
             if not isinstance(ps, dict):
                 ps = {}
+
                 pc["payload_summary"] = ps
 
             ps.setdefault("confidence_score", cr.get("confidence_score"))
+
             ps.setdefault("assumption_count", cr.get("assumption_count", 0))
+
             ps.setdefault("recommendation_type", "OPERATIONAL")
 
             rl = cr.get("risk_level")
+
             if isinstance(rl, str):
                 pc.setdefault(
                     "risk",
@@ -4561,31 +6058,43 @@ async def _ceo_command_core(payload_dict: Dict[str, Any]) -> JSONResponse:
                 )
 
             # PHASE A FIX: also propagate to proposal metadata
+
             md0 = pc.get("metadata")
+
             if not isinstance(md0, dict):
                 md0 = {}
+
                 pc["metadata"] = md0
+
             md0.setdefault("confidence_risk", cr)
+
     # === END CANON PATCH ===
 
     # === CANON STABILITY PATCH: ensure args.prompt exists ===
+
     for pc in result.get("proposed_commands", []):
         if not isinstance(pc, dict):
             continue
 
         if pc.get("command") == "ceo.command.propose":
             args = pc.get("args")
+
             if not isinstance(args, dict):
                 args = {}
+
                 pc["args"] = args
 
             if "prompt" not in args or not isinstance(args.get("prompt"), str):
                 args["prompt"] = cleaned_text.strip()
+
     # === END CANON STABILITY PATCH ===
 
     # ? PATCH: fallback proposal injection when write-like but proposed_commands empty
+
     # If ceo-console agent says "I propose approval" but returns no proposed_commands,
+
     # inject a canonical proposal wrapper so UI can execute it via /api/execute/raw.
+
     if (
         isinstance(result.get("proposed_commands"), list)
         and len(result.get("proposed_commands")) == 0
@@ -4593,142 +6102,260 @@ async def _ceo_command_core(payload_dict: Dict[str, Any]) -> JSONResponse:
         _inject_fallback_proposed_commands(result, prompt=cleaned_text.strip())
 
     # Minimal 2-turn memory ONLY in nonwrite gateway fallback.
+
     tr_gw = _ensure_dict(result.get("trace"))
+
     if (
         tr_gw.get("router_version")
         == "gateway-fallback-proposals-disabled-for-nonwrite-v1"
     ):
-        _apply_gateway_fallback_memory_patch(
+        did_mem = _apply_gateway_fallback_memory_patch(
             result,
             prompt=cleaned_text.strip(),
             session_id=session_id if isinstance(session_id, str) else None,
         )
 
+        # If not handled by the Zapamti/prisjeti se micro-patch, bridge to CEO read-only LLM.
+
+        if not did_mem:
+            try:
+                headers_dict: Optional[Dict[str, str]] = None
+
+                if request is not None:
+                    headers_dict = {k: v for k, v in request.headers.items()}
+
+                ctx_bridge = _build_ceo_read_context(
+                    prompt=cleaned_text.strip(),
+                    session_id=session_id if isinstance(session_id, str) else None,
+                    request_headers=headers_dict,
+                )
+
+                llm_ans = await _generate_ceo_readonly_answer(
+                    prompt=cleaned_text.strip(),
+                    session_id=session_id if isinstance(session_id, str) else None,
+                    context=ctx_bridge,
+                )
+
+                _set_readonly_text(result, str(llm_ans.get("text") or "").strip())
+
+                tr3 = _ensure_dict(result.get("trace"))
+
+                tr3["gateway_fallback_context_bridge"] = {
+                    "used_sources": {
+                        "system_read_executor": True,
+                        "grounding_pack": bool(
+                            isinstance(ctx_bridge.get("grounding_pack"), dict)
+                            and ctx_bridge.get("grounding_pack", {}).get("enabled")
+                            is True
+                        ),
+                        "memory_read_only": True,
+                        "executor": True,
+                    },
+                    "missing": ctx_bridge.get("missing")
+                    if isinstance(ctx_bridge.get("missing"), list)
+                    else [],
+                    "trace": ctx_bridge.get("trace")
+                    if isinstance(ctx_bridge.get("trace"), dict)
+                    else {},
+                    "llm": llm_ans.get("trace")
+                    if isinstance(llm_ans.get("trace"), dict)
+                    else {},
+                }
+
+                result["trace"] = tr3
+
+            except Exception as e:  # noqa: BLE001
+                tr3 = _ensure_dict(result.get("trace"))
+
+                tr3["gateway_fallback_context_bridge"] = {
+                    "error": str(e),
+                    "used_sources": {"executor": False},
+                }
+
+                result["trace"] = tr3
+
     # === POST-FALLBACK STABILITY PATCH: ensure args.prompt exists ===
+
     for pc in result.get("proposed_commands", []):
         if not isinstance(pc, dict):
             continue
+
         if pc.get("command") == "ceo.command.propose":
             args = pc.get("args")
+
             if not isinstance(args, dict):
                 args = {}
+
                 pc["args"] = args
+
             if (
                 "prompt" not in args
                 or not isinstance(args.get("prompt"), str)
                 or not args.get("prompt")
             ):
                 args["prompt"] = cleaned_text.strip()
+
     # === END POST-FALLBACK STABILITY PATCH ===
+
     # === POST-FALLBACK EXECUTION PATCH: ensure params.prompt + metadata.wrapper.prompt ===
+
     for pc in result.get("proposed_commands", []):
         if not isinstance(pc, dict):
             continue
+
         if pc.get("command") != "ceo.command.propose":
             continue
 
         # ensure args.prompt (already for happy-path script)
+
         args = pc.get("args")
+
         if not isinstance(args, dict):
             args = {}
+
             pc["args"] = args
+
         if not isinstance(args.get("prompt"), str) or not args.get("prompt"):
             args["prompt"] = cleaned_text.strip()
 
         # ensure params.prompt (required by /api/proposals/execute)
+
         params = pc.get("params")
+
         if not isinstance(params, dict):
             params = {}
+
             pc["params"] = params
+
         if not isinstance(params.get("prompt"), str) or not params.get("prompt"):
             params["prompt"] = args.get("prompt") or cleaned_text.strip()
 
         # ensure metadata.wrapper.prompt (also accepted by gateway)
+
         md = pc.get("metadata")
+
         if not isinstance(md, dict):
             md = {}
+
             pc["metadata"] = md
+
         wrapper = md.get("wrapper")
+
         if not isinstance(wrapper, dict):
             wrapper = {}
+
             md["wrapper"] = wrapper
+
         if not isinstance(wrapper.get("prompt"), str) or not wrapper.get("prompt"):
             wrapper["prompt"] = (
                 params.get("prompt") or args.get("prompt") or cleaned_text.strip()
             )
+
     # === END POST-FALLBACK EXECUTION PATCH ===
 
     # === POST-FALLBACK CANON PATCH: ensure payload_summary fields on injected proposals ===
+
     cr2 = _ensure_dict(_ensure_dict(result.get("trace")).get("confidence_risk"))
+
     if isinstance(cr2, dict):
         for pc in result.get("proposed_commands", []):
             if not isinstance(pc, dict):
                 continue
 
             ps = pc.get("payload_summary")
+
             if not isinstance(ps, dict):
                 ps = {}
+
                 pc["payload_summary"] = ps
 
             cs = ps.get("confidence_score", None)
+
             if cs is None:
                 cs2 = cr2.get("confidence_score")
+
                 cs = float(cs2) if isinstance(cs2, (int, float)) else 0.50
+
             if cs < 0.0:
                 cs = 0.0
+
             if cs > 1.0:
                 cs = 1.0
+
             ps["confidence_score"] = float(cs)
 
             ac = ps.get("assumption_count", None)
+
             if not isinstance(ac, int) or ac < 0:
                 ac2 = cr2.get("assumption_count")
+
                 ac = int(ac2) if isinstance(ac2, int) and ac2 >= 0 else 0
+
             ps["assumption_count"] = ac
 
             rt = ps.get("recommendation_type")
+
             if not isinstance(rt, str) or not rt.strip():
                 ps["recommendation_type"] = "OPERATIONAL"
+
     # === END POST-FALLBACK CANON PATCH ===
+
     return JSONResponse(content=result, media_type="application/json; charset=utf-8")
 
 
 @app.post("/api/ceo/command")
-async def ceo_dashboard_command_api(payload: Dict[str, Any] = Body(...)):
-    return await _ceo_command_core(payload)
+async def ceo_dashboard_command_api(
+    request: Request, payload: Dict[str, Any] = Body(...)
+):
+    return await _ceo_command_core(payload, request)
 
 
 @app.post("/api/ceo-console/command")
-async def ceo_console_command_api(payload: Dict[str, Any] = Body(...)):
-    return await _ceo_command_core(payload)
+async def ceo_console_command_api(
+    request: Request, payload: Dict[str, Any] = Body(...)
+):
+    return await _ceo_command_core(payload, request)
 
 
 @app.post("/api/ceo-console/command/internal")
-async def ceo_console_command_api_internal(payload: Dict[str, Any] = Body(...)):
-    return await _ceo_command_core(payload)
+async def ceo_console_command_api_internal(
+    request: Request, payload: Dict[str, Any] = Body(...)
+):
+    return await _ceo_command_core(payload, request)
 
 
 @app.post("/ceo/command")
-async def ceo_dashboard_command_public(payload: Dict[str, Any] = Body(...)):
-    return await _ceo_command_core(payload)
+async def ceo_dashboard_command_public(
+    request: Request, payload: Dict[str, Any] = Body(...)
+):
+    return await _ceo_command_core(payload, request)
 
 
 @app.post("/ceo-console/command")
-async def ceo_console_command_public(payload: Dict[str, Any] = Body(...)):
-    return await _ceo_command_core(payload)
+async def ceo_console_command_public(
+    request: Request, payload: Dict[str, Any] = Body(...)
+):
+    return await _ceo_command_core(payload, request)
 
 
 @app.post("/ceo-console/command/internal")
-async def ceo_console_command_public_internal(payload: Dict[str, Any] = Body(...)):
-    return await _ceo_command_core(payload)
+async def ceo_console_command_public_internal(
+    request: Request, payload: Dict[str, Any] = Body(...)
+):
+    return await _ceo_command_core(payload, request)
 
 
 # ================================================================
+
 # CEO CONSOLE STATUS
+
 # ================================================================
+
+
 @app.get("/api/ceo-console/status")
 async def ceo_console_status_api():
     ops_safe = _ops_safe_mode()
+
     return {
         "ok": True,
         "read_only": True,
@@ -4752,18 +6379,28 @@ async def ceo_console_status_public():
 
 
 # ================================================================
+
 # CEO CONSOLE SNAPSHOT
+
 # ================================================================
+
+
 @app.get("/api/ceo/console/snapshot")
 async def ceo_console_snapshot() -> CeoConsoleSnapshotResponse:
     approval_state = get_approval_state()
+
     approvals_map: Dict[str, Dict[str, Any]] = getattr(approval_state, "_approvals", {})
+
     approvals_list = list(approvals_map.values())
 
     pending = [a for a in approvals_list if a.get("status") == "pending"]
+
     approved = [a for a in approvals_list if a.get("status") == "approved"]
+
     rejected = [a for a in approvals_list if a.get("status") == "rejected"]
+
     failed = [a for a in approvals_list if a.get("status") == "failed"]
+
     completed = [a for a in approvals_list if a.get("status") == "completed"]
 
     ks = KnowledgeSnapshotService.get_snapshot()
@@ -4777,9 +6414,11 @@ async def ceo_console_snapshot() -> CeoConsoleSnapshotResponse:
     }
 
     # Expose full knowledge snapshot (payload included, even when expired).
+
     knowledge_snapshot = ks
 
     ceo_dash = CEOConsoleSnapshotService().snapshot()
+
     legacy = _derive_legacy_goal_task_summaries_from_ceo_snapshot(ceo_dash)
 
     snapshot: Dict[str, Any] = {
@@ -4813,13 +6452,16 @@ async def ceo_console_snapshot() -> CeoConsoleSnapshotResponse:
     }
 
     # Grounding Pack (additive; does not break legacy contract)
+
     try:
         from dependencies import get_memory_read_only_service  # noqa: PLC0415
+
         from services.grounding_pack_service import (  # noqa: PLC0415
             GroundingPackService,
         )
 
         mem_ro = get_memory_read_only_service()
+
         mem_snapshot = mem_ro.export_public_snapshot() if mem_ro else {}
 
         gp = GroundingPackService.build(
@@ -4831,6 +6473,7 @@ async def ceo_console_snapshot() -> CeoConsoleSnapshotResponse:
             legacy_trace={"source": "ceo_console_snapshot"},
             agent_id="ceo_console_snapshot",
         )
+
     except Exception:
         gp = {"enabled": False, "feature_flags": {"CEO_GROUNDING_PACK_ENABLED": False}}
 
@@ -4839,6 +6482,7 @@ async def ceo_console_snapshot() -> CeoConsoleSnapshotResponse:
         "diagnostics": gp.get("diagnostics") if isinstance(gp, dict) else None,
         "trace_v2": gp.get("trace") if isinstance(gp, dict) else None,
     }
+
     return snapshot  # type: ignore[return-value]
 
 
@@ -4850,6 +6494,7 @@ async def ceo_console_snapshot_public():
 @app.get("/api/ceo/console/weekly-memory")
 async def ceo_weekly_memory():
     wm_snapshot = get_weekly_memory_service().get_snapshot()
+
     return {"weekly_memory": _to_serializable(wm_snapshot)}
 
 
@@ -4857,18 +6502,25 @@ async def ceo_weekly_memory():
 async def ceo_weekly_priority_memory():
     try:
         items = get_ai_summary_service().get_this_week_priorities()
+
     except Exception as exc:
         logger.exception("Failed to load Weekly Priority Memory from AI SUMMARY DB")
+
         raise HTTPException(
             status_code=500,
             detail=f"Failed to load Weekly Priority Memory from AI SUMMARY DB: {exc}",
         ) from exc
+
     return {"items": [i.model_dump() for i in items]}
 
 
 # ================================================================
+
 # HEALTH / READY
+
 # ================================================================
+
+
 @app.get("/health")
 async def health_check():
     return {
@@ -4885,10 +6537,12 @@ async def health_services():
     from dependencies import services_status
 
     st = services_status()
+
     core = {
         k: ("OK" if st.get(k) else "NOT_CONFIGURED")
         for k in ("goals", "tasks", "projects", "sync")
     }
+
     return {
         "ok": True,
         "boot_ready": _BOOT_READY,
@@ -4901,6 +6555,7 @@ async def health_services():
 async def ready_check():
     if not _BOOT_READY:
         raise HTTPException(status_code=503, detail=_BOOT_ERROR or "System not ready")
+
     return {
         "status": "ready",
         "version": VERSION,
@@ -4910,58 +6565,84 @@ async def ready_check():
 
 
 # ================================================================
+
 # INCLUDE ROUTERS
+
 # ================================================================
+
 app.include_router(audit_router, prefix="/api")
+
 app.include_router(voice_router, prefix="/api")
+
 app.include_router(adnan_ai_router, prefix="/api")
+
 app.include_router(ai_router_module.router, prefix="/api")
+
 app.include_router(ai_ops_router, prefix="/api")
+
 app.include_router(notion_ops_router, prefix="/api")
+
 app.include_router(metrics_router, prefix="/api")
+
 app.include_router(alerting_router, prefix="/api")
+
 app.include_router(goals_router, prefix="/api")
+
 app.include_router(tasks_router, prefix="/api")
+
 app.include_router(projects_router, prefix="/api")
+
 app.include_router(sync_router, prefix="/api")
 
+
 # Extra routers (feature-flagged)
+
 if _extra_routers_enabled():
     enabled: List[str] = []
+
     failed: List[str] = []
 
     try:
         from routers.sop_query_router import router as sop_query_router
 
         app.include_router(sop_query_router, prefix="/api")
+
         enabled.append("routers.sop_query_router")
+
     except Exception as exc:  # noqa: BLE001
         logger.exception(
             "ENABLE_EXTRA_ROUTERS: failed to include sop_query_router: %s", exc
         )
+
         failed.append("routers.sop_query_router")
 
     try:
         from routers.adnan_ai_action_router import router as adnan_ai_action_router
 
         app.include_router(adnan_ai_action_router, prefix="/api")
+
         enabled.append("routers.adnan_ai_action_router")
+
     except Exception as exc:  # noqa: BLE001
         logger.exception(
             "ENABLE_EXTRA_ROUTERS: failed to include adnan_ai_action_router: %s",
             exc,
         )
+
         failed.append("routers.adnan_ai_action_router")
 
     try:
         from routers.adnan_ai_data_router import router as adnan_ai_data_router
 
         app.include_router(adnan_ai_data_router, prefix="/api")
+
         enabled.append("routers.adnan_ai_data_router")
+
     except Exception as exc:  # noqa: BLE001
         logger.exception(
             "ENABLE_EXTRA_ROUTERS: failed to include adnan_ai_data_router: %s", exc
         )
+
         failed.append("routers.adnan_ai_data_router")
 
     logger.info(
@@ -4969,23 +6650,33 @@ if _extra_routers_enabled():
         ",".join(enabled) if enabled else "-",
         ",".join(failed) if failed else "-",
     )
+
 if _chat_router is not None:
     app.include_router(_chat_router, prefix="/api")  # /api/chat
+
     app.include_router(_chat_router, prefix="")  # /chat alias
+
 else:
-    logger.warning("chat_router is None — chat endpoints disabled")
+    logger.warning("chat_router is None â€” chat endpoints disabled")
+
 app.include_router(ceo_console_module.router, prefix="/api/internal")
 
 
 # ================================================================
+
 # GLOBAL ERROR HANDLER
+
 # ================================================================
+
+
 @app.exception_handler(StarletteHTTPException)
 async def http_exception_handler(_: Request, exc: StarletteHTTPException):
     detail = getattr(exc, "detail", None)
 
     content: Dict[str, Any] = {"detail": detail}
+
     content["status"] = "error"
+
     content["message"] = detail
 
     return JSONResponse(status_code=exc.status_code, content=content)
@@ -4994,13 +6685,17 @@ async def http_exception_handler(_: Request, exc: StarletteHTTPException):
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     err_id = str(uuid.uuid4())
+
     req_id = getattr(getattr(request, "state", None), "req_id", None)
+
     path = getattr(getattr(request, "url", None), "path", None)
 
     # Log full traceback with a stable error id for correlating Render logs.
+
     logger.exception(
         "UNHANDLED_EXCEPTION err_id=%s req_id=%s path=%s", err_id, req_id, path
     )
+
     logger.error("TRACEBACK err_id=%s\n%s", err_id, traceback.format_exc())
 
     return JSONResponse(
@@ -5010,10 +6705,14 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 
 # ================================================================
-# REACT FRONTEND (PROD BUILD) — SERVE dist/
+
+# REACT FRONTEND (PROD BUILD) â€” SERVE dist/
+
 # ================================================================
+
 if not FRONTEND_DIST_DIR.is_dir():
     logger.warning("React dist directory not found: %s", FRONTEND_DIST_DIR)
+
 else:
 
     @app.head("/", include_in_schema=False)
