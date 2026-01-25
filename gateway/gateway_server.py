@@ -9,6 +9,7 @@ import inspect
 import logging
 import os
 import re
+import threading
 import traceback
 import uuid
 from contextlib import asynccontextmanager
@@ -26,6 +27,75 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from system_version import ARCH_LOCK, RELEASE_CHANNEL, SYSTEM_NAME, VERSION
 from models.canon import PROPOSAL_WRAPPER_INTENT
 from models.ceo_console_snapshot import CeoConsoleSnapshotResponse
+
+
+# ================================================================
+# GATEWAY FALLBACK: MINIMAL 2-TURN MEMORY (DEV)
+#
+# This is intentionally in-memory and only applied when
+# router_version == "gateway-fallback-proposals-disabled-for-nonwrite-v1".
+# ================================================================
+_FALLBACK_WEEKLY_FOCUS_BY_SESSION_ID: Dict[str, str] = {}
+_FALLBACK_WEEKLY_FOCUS_LOCK = threading.Lock()
+
+_ZAPAMTI_RE = re.compile(r"^\s*zapamti\s*:\s*(.+?)\s*$", re.IGNORECASE)
+_FOKUS_SEDMICE_Q_RE = re.compile(r"koji\s+fokus\s+sedmic", re.IGNORECASE)
+
+
+def _apply_gateway_fallback_memory_patch(
+    result: Dict[str, Any], *, prompt: str, session_id: Optional[str]
+) -> None:
+    def _set_readonly_text(text_out: str) -> None:
+        # Keep response consistent for UI/clients: text + summary.
+        result["text"] = text_out
+        result["summary"] = text_out
+        result["read_only"] = True
+        result["proposed_commands"] = []
+
+    if not (isinstance(session_id, str) and session_id.strip()):
+        return
+
+    text = (prompt or "").strip()
+    if not text:
+        return
+
+    m = _ZAPAMTI_RE.match(text)
+    if m:
+        focus_raw = (m.group(1) or "").strip()
+        focus = focus_raw
+
+        # If the user phrase includes an explicit marker like "fokus je ...",
+        # store just the focus part.
+        m2 = re.search(r"\bfokus\s+je\s+(.+)$", focus_raw, flags=re.IGNORECASE)
+        if m2:
+            focus = (m2.group(1) or "").strip()
+
+        focus = focus.strip().rstrip(".?!")
+
+        if focus:
+            with _FALLBACK_WEEKLY_FOCUS_LOCK:
+                _FALLBACK_WEEKLY_FOCUS_BY_SESSION_ID[session_id.strip()] = focus
+
+        # Read-only confirmation; never emit proposals.
+        _set_readonly_text("Zapam7eno.")
+
+        tr = _ensure_dict(result.get("trace"))
+        tr["gateway_fallback_memory"] = True
+        tr["gateway_fallback_memory_action"] = "store"
+        result["trace"] = tr
+        return
+
+    if _FOKUS_SEDMICE_Q_RE.search(text):
+        with _FALLBACK_WEEKLY_FOCUS_LOCK:
+            focus = _FALLBACK_WEEKLY_FOCUS_BY_SESSION_ID.get(session_id.strip())
+        if isinstance(focus, str) and focus.strip():
+            _set_readonly_text(focus.strip())
+
+            tr = _ensure_dict(result.get("trace"))
+            tr["gateway_fallback_memory"] = True
+            tr["gateway_fallback_memory_action"] = "recall"
+            result["trace"] = tr
+
 
 # ================================================================
 # ENV / BOOTSTRAP
@@ -4521,6 +4591,18 @@ async def _ceo_command_core(payload_dict: Dict[str, Any]) -> JSONResponse:
         and len(result.get("proposed_commands")) == 0
     ):
         _inject_fallback_proposed_commands(result, prompt=cleaned_text.strip())
+
+    # Minimal 2-turn memory ONLY in nonwrite gateway fallback.
+    tr_gw = _ensure_dict(result.get("trace"))
+    if (
+        tr_gw.get("router_version")
+        == "gateway-fallback-proposals-disabled-for-nonwrite-v1"
+    ):
+        _apply_gateway_fallback_memory_patch(
+            result,
+            prompt=cleaned_text.strip(),
+            session_id=session_id if isinstance(session_id, str) else None,
+        )
 
     # === POST-FALLBACK STABILITY PATCH: ensure args.prompt exists ===
     for pc in result.get("proposed_commands", []):
