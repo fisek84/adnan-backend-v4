@@ -12,11 +12,15 @@ class _StubKBStore:
         self._search_calls = 0
         self._last_meta: Dict[str, Any] = {"source": "notion", "cache_hit": False}
 
-    async def get_entries(self, ctx: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    async def get_entries(
+        self, ctx: Optional[Dict[str, Any]] = None
+    ) -> List[Dict[str, Any]]:
         # Provide a deterministic loaded KB size.
         return [{"id": f"E{i}", "title": f"T{i}", "content": "x"} for i in range(46)]
 
-    async def search(self, query: str, *, top_k: int = 8, force: bool = False) -> Dict[str, Any]:
+    async def search(
+        self, query: str, *, top_k: int = 8, force: bool = False
+    ) -> Dict[str, Any]:
         self._search_calls += 1
         # /api/chat builds grounding_pack twice per request (pre_grounding + grounding).
         # So we only flip cache_hit after the first *request* has completed.
@@ -65,7 +69,9 @@ def test_chat_trace_includes_kb_meta_passthrough(monkeypatch) -> None:
     import routers.chat_router as chat_router  # noqa: PLC0415
 
     async def _fake_agent(*args: Any, **kwargs: Any) -> AgentOutput:
-        return AgentOutput(text="ok", proposed_commands=[], agent_id="ceo_advisor", trace={})
+        return AgentOutput(
+            text="ok", proposed_commands=[], agent_id="ceo_advisor", trace={}
+        )
 
     monkeypatch.setattr(chat_router, "create_ceo_advisor_agent", _fake_agent)
 

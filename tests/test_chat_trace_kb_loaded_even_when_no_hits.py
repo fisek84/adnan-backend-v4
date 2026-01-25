@@ -57,7 +57,11 @@ def test_chat_trace_shows_kb_loaded_even_when_no_hits(monkeypatch):
             }
 
         def get_meta(self):
-            return {"source": "notion", "cache_hit": True, "last_sync": "2026-01-01T00:00:00Z"}
+            return {
+                "source": "notion",
+                "cache_hit": True,
+                "last_sync": "2026-01-01T00:00:00Z",
+            }
 
     monkeypatch.setattr("services.kb_get_store.get_kb_store", lambda: FakeKBStore())
 
@@ -66,7 +70,11 @@ def test_chat_trace_shows_kb_loaded_even_when_no_hits(monkeypatch):
 
     r = client.post(
         "/api/chat",
-        json={"message": "unmatched query", "metadata": {"include_debug": True}, "snapshot": {}},
+        json={
+            "message": "unmatched query",
+            "metadata": {"include_debug": True},
+            "snapshot": {},
+        },
     )
     assert r.status_code == 200, r.text
     body = r.json()

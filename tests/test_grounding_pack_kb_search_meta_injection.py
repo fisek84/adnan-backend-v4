@@ -12,7 +12,9 @@ class _DummyKBStore:
         self._entries = entries
         self._used_ids = used_ids
 
-    async def search(self, query: str, *, top_k: int = 8, force: bool = False) -> Dict[str, Any]:
+    async def search(
+        self, query: str, *, top_k: int = 8, force: bool = False
+    ) -> Dict[str, Any]:
         # Simulate a store implementation that returns hits/ids but forgets to emit `meta`.
         # This previously caused grounding_pack.kb_retrieved.meta (and downstream trace.kb_meta)
         # to be empty.
@@ -54,11 +56,15 @@ def test_grounding_pack_kb_search_meta_falls_back_to_loader_meta(
         "cache_hit": True,
     }
 
-    def _fake_load_kb_file(*, ctx: Optional[Dict[str, Any]] = None) -> Tuple[Dict[str, Any], Dict[str, Any], Any]:
+    def _fake_load_kb_file(
+        *, ctx: Optional[Dict[str, Any]] = None
+    ) -> Tuple[Dict[str, Any], Dict[str, Any], Any]:
         return kb_file, kb_meta, kb_store
 
     monkeypatch.setattr(GroundingPackService, "_load_kb_file", _fake_load_kb_file)
-    monkeypatch.setattr(GroundingPackService, "_load_identity_pack", lambda: {"available": True})
+    monkeypatch.setattr(
+        GroundingPackService, "_load_identity_pack", lambda: {"available": True}
+    )
 
     out = GroundingPackService.build(
         prompt="test prompt",

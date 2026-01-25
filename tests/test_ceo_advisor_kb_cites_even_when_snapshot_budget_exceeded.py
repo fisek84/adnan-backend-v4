@@ -18,9 +18,15 @@ def test_ceo_advisor_cites_kb_even_when_snapshot_budget_exceeded(monkeypatch):
             gp = context.get("grounding_pack") if isinstance(context, dict) else None
             assert isinstance(gp, dict)
 
-            kb = gp.get("kb_retrieved") if isinstance(gp.get("kb_retrieved"), dict) else {}
+            kb = (
+                gp.get("kb_retrieved")
+                if isinstance(gp.get("kb_retrieved"), dict)
+                else {}
+            )
             entries = kb.get("entries") if isinstance(kb.get("entries"), list) else []
-            assert entries, "KB entries must be present even when snapshot is budget-exceeded"
+            assert (
+                entries
+            ), "KB entries must be present even when snapshot is budget-exceeded"
 
             e0 = entries[0]
             assert isinstance(e0, dict)
