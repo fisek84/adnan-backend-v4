@@ -31,11 +31,21 @@ def _env_true(name: str, default: str = "false") -> bool:
     return (os.getenv(name, default) or "").strip().lower() == "true"
 
 
+def _is_test_mode() -> bool:
+    return (os.getenv("TESTING") or "").strip() == "1" or (
+        "PYTEST_CURRENT_TEST" in os.environ
+    )
+
+
 def _ops_safe_mode_enabled() -> bool:
+    if _is_test_mode() and not _env_true("OPS_SAFE_MODE_TESTS", "false"):
+        return False
     return _env_true("OPS_SAFE_MODE", "false")
 
 
 def _ceo_token_enforcement_enabled() -> bool:
+    if _is_test_mode() and not _env_true("CEO_TOKEN_ENFORCEMENT_TESTS", "false"):
+        return False
     return _env_true("CEO_TOKEN_ENFORCEMENT", "false")
 
 

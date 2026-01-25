@@ -40,7 +40,11 @@ class TestCEONotionOpsActivation(unittest.TestCase):
         # Store original env vars
         self.original_env = {
             "OPS_SAFE_MODE": os.environ.get("OPS_SAFE_MODE"),
+            "OPS_SAFE_MODE_TESTS": os.environ.get("OPS_SAFE_MODE_TESTS"),
             "CEO_TOKEN_ENFORCEMENT": os.environ.get("CEO_TOKEN_ENFORCEMENT"),
+            "CEO_TOKEN_ENFORCEMENT_TESTS": os.environ.get(
+                "CEO_TOKEN_ENFORCEMENT_TESTS"
+            ),
             "CEO_APPROVAL_TOKEN": os.environ.get("CEO_APPROVAL_TOKEN"),
             # Prevent accidental live OpenAI calls in unit tests.
             "OPENAI_API_KEY": os.environ.get("OPENAI_API_KEY"),
@@ -59,6 +63,7 @@ class TestCEONotionOpsActivation(unittest.TestCase):
     def test_toggle_api_with_ceo_token(self):
         """Test that CEO can toggle Notion Ops via /api/notion-ops/toggle with valid token."""
         # Enable CEO token enforcement
+        os.environ["CEO_TOKEN_ENFORCEMENT_TESTS"] = "true"
         os.environ["CEO_TOKEN_ENFORCEMENT"] = "true"
         os.environ["CEO_APPROVAL_TOKEN"] = "test_secret_123"
 
@@ -90,6 +95,7 @@ class TestCEONotionOpsActivation(unittest.TestCase):
 
     def test_toggle_api_without_ceo_token_fails(self):
         """Test that non-CEO users cannot use the toggle API."""
+        os.environ["CEO_TOKEN_ENFORCEMENT_TESTS"] = "true"
         os.environ["CEO_TOKEN_ENFORCEMENT"] = "true"
         os.environ["CEO_APPROVAL_TOKEN"] = "test_secret_123"
 
@@ -159,6 +165,7 @@ class TestCEONotionOpsActivation(unittest.TestCase):
     def test_ceo_bypasses_ops_safe_mode(self):
         """Test that CEO users bypass OPS_SAFE_MODE when using write endpoints."""
         # Enable safe mode
+        os.environ["OPS_SAFE_MODE_TESTS"] = "true"
         os.environ["OPS_SAFE_MODE"] = "true"
         os.environ["CEO_TOKEN_ENFORCEMENT"] = "false"
 
@@ -176,7 +183,9 @@ class TestCEONotionOpsActivation(unittest.TestCase):
     def test_ceo_write_operations_with_safe_mode(self):
         """Test that CEO can perform write operations even with OPS_SAFE_MODE enabled."""
         # Enable safe mode
+        os.environ["OPS_SAFE_MODE_TESTS"] = "true"
         os.environ["OPS_SAFE_MODE"] = "true"
+        os.environ["CEO_TOKEN_ENFORCEMENT_TESTS"] = "true"
         os.environ["CEO_TOKEN_ENFORCEMENT"] = "true"
         os.environ["CEO_APPROVAL_TOKEN"] = "test_secret_123"
 
@@ -197,6 +206,7 @@ class TestCEONotionOpsActivation(unittest.TestCase):
     def test_non_ceo_blocked_by_safe_mode(self):
         """Test that non-CEO users are blocked by OPS_SAFE_MODE."""
         # Enable safe mode
+        os.environ["OPS_SAFE_MODE_TESTS"] = "true"
         os.environ["OPS_SAFE_MODE"] = "true"
         os.environ["CEO_TOKEN_ENFORCEMENT"] = "false"
 

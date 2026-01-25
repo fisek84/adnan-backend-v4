@@ -36,6 +36,12 @@ def _disable_external_network(monkeypatch: pytest.MonkeyPatch):
     """Fail-fast on any external HTTP request during tests."""
     os.environ.setdefault("TESTING", "1")
 
+    # Keep tests stable even if developer shell exports prod write-guards.
+    # Individual tests that validate enforcement/safe-mode explicitly set these env vars.
+    monkeypatch.setenv("CEO_TOKEN_ENFORCEMENT", "false")
+    monkeypatch.setenv("OPS_SAFE_MODE", "false")
+    monkeypatch.delenv("CEO_APPROVAL_TOKEN", raising=False)
+
     # Test-safe memory storage: isolate file backend into a temp folder (Windows-safe).
     # This avoids cross-test contention and reduces the chance of file locking issues.
     # (If MEMORY_PATH is already set by the caller, respect it.)

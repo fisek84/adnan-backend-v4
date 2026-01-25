@@ -39,6 +39,11 @@ def test_gateway_fallback_zapamti_prisjeti_two_turn(monkeypatch):
     assert d1.get("proposed_commands") == []
     assert d1.get("read_only") is True
     assert d1.get("summary") == d1.get("text")
+    tr1 = d1.get("trace") or {}
+    assert isinstance(tr1.get("used_sources"), list)
+    assert isinstance(tr1.get("missing_inputs"), list)
+    assert isinstance(tr1.get("notion_ops"), dict)
+    assert isinstance(tr1.get("kb_ids_used"), list)
 
     # Turn 2: recall focus
     r2 = client.post(
@@ -53,5 +58,10 @@ def test_gateway_fallback_zapamti_prisjeti_two_turn(monkeypatch):
     assert d2.get("proposed_commands") == []
     assert d2.get("read_only") is True
     assert d2.get("summary") == d2.get("text")
+    tr2 = d2.get("trace") or {}
+    assert isinstance(tr2.get("used_sources"), list)
+    assert isinstance(tr2.get("missing_inputs"), list)
+    assert isinstance(tr2.get("notion_ops"), dict)
+    assert isinstance(tr2.get("kb_ids_used"), list)
 
     assert d2.get("text") == "FLP landing + 10 leadova"

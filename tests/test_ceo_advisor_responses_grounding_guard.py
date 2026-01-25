@@ -77,9 +77,9 @@ def test_responses_mode_calls_executor_with_non_empty_instructions(monkeypatch):
     instr = captured.get("instructions")
     assert isinstance(instr, str) and instr.strip()
     assert "IDENTITY:" in instr
-    assert "KB_HITS:" in instr
+    assert "KB_CONTEXT:" in instr
     assert "NOTION_SNAPSHOT:" in instr
-    assert "MEMORY:" in instr
+    assert "MEMORY_CONTEXT:" in instr
 
 
 def test_responses_mode_blocks_executor_when_grounding_missing(monkeypatch):

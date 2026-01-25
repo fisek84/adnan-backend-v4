@@ -40,9 +40,9 @@ def test_build_ceo_instructions_contains_all_sections_and_governance():
     assert instructions.strip()
 
     assert "IDENTITY:" in instructions
-    assert "KB_HITS:" in instructions
+    assert "KB_CONTEXT:" in instructions
     assert "NOTION_SNAPSHOT:" in instructions
-    assert "MEMORY:" in instructions
+    assert "MEMORY_CONTEXT:" in instructions
 
     # Governance: explicit no-general-knowledge rule
     assert "DO NOT use general world knowledge" in instructions
@@ -69,6 +69,6 @@ def test_build_ceo_instructions_handles_empty_grounding_pack():
     assert isinstance(instructions, str)
     # Builder is deterministic; even empty input yields a minimal scaffold.
     assert "IDENTITY:" in instructions
-    assert "KB_HITS:" in instructions
+    assert "KB_CONTEXT:" in instructions
     assert "NOTION_SNAPSHOT:" in instructions
-    assert "MEMORY:" in instructions
+    assert "MEMORY_CONTEXT:" in instructions

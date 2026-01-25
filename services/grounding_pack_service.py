@@ -137,7 +137,22 @@ class GroundingPackService:
     - stable meta + hashes for drift detection
     """
 
-    KB_MAX_ENTRIES = 6
+    KB_MAX_ENTRIES = 12
+
+    @classmethod
+    def _kb_max_entries(cls) -> int:
+        # Allow tuning without code changes; keep within a safe, budgeted range.
+        # Requested minimal standard is 5–20; default is 12.
+        v = cls._env_int("CEO_KB_MAX_ENTRIES", cls.KB_MAX_ENTRIES)
+        try:
+            v = int(v)
+        except Exception:
+            v = cls.KB_MAX_ENTRIES
+        if v < 1:
+            v = 1
+        if v > 20:
+            v = 20
+        return v
 
     @classmethod
     def _env_int(cls, name: str, default: int) -> int:
@@ -308,7 +323,7 @@ class GroundingPackService:
             )
         )
 
-        selected = [e for _, e in scored[: cls.KB_MAX_ENTRIES]]
+        selected = [e for _, e in scored[: cls._kb_max_entries()]]
         used_ids: List[str] = []
         for e in selected:
             _id = e.get("id")
@@ -438,7 +453,7 @@ class GroundingPackService:
                 ),
                 "max_latency_ms": cls._env_int("CEO_NOTION_MAX_LATENCY_MS", 1500),
             },
-            "kb": {"max_entries": cls.KB_MAX_ENTRIES},
+            "kb": {"max_entries": cls._kb_max_entries()},
         }
 
         # Payload bytes (used for budget enforcement)
@@ -701,7 +716,7 @@ class GroundingPackService:
                 "used_entry_ids": kb_retrieval.used_entry_ids,
             },
             "kb_retrieved": {
-                "max_entries": cls.KB_MAX_ENTRIES,
+                "max_entries": cls._kb_max_entries(),
                 "used_entry_ids": kb_retrieval.used_entry_ids,
                 "entries": kb_retrieval.selected_entries,
                 "refs": [

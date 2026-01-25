@@ -11,6 +11,8 @@ from models.agent_contract import AgentInput, AgentOutput, ProposedCommand
 from models.canon import PROPOSAL_WRAPPER_INTENT
 
 # PHASE 6: Import shared Notion Ops state management
+from services.notion_ops_state import get_state as get_notion_ops_state
+from services.notion_ops_state import is_armed as notion_ops_is_armed
 
 
 _CEO_INSTRUCTIONS_PREFIX = "CEO ADVISOR — RESPONSES SYSTEM INSTRUCTIONS (READ-ONLY)"
@@ -34,6 +36,7 @@ def _truncate(text: str, *, max_chars: int) -> str:
 def build_ceo_instructions(
     grounding_pack: Dict[str, Any],
     conversation_state: Optional[str] = None,
+    notion_ops: Optional[Dict[str, Any]] = None,
     *,
     kb_max_entries: int = 8,
     total_max_chars: int = 9000,
@@ -91,10 +94,15 @@ def build_ceo_instructions(
     governance = (
         "GOVERNANCE (non-negotiable):\n"
         "- READ-ONLY: no tool calls, no side effects, no external writes.\n"
-        "- Answer ONLY from the provided context sections below (IDENTITY, KB_HITS, NOTION_SNAPSHOT, MEMORY).\n"
+        "- Answer ONLY from the provided context sections below (IDENTITY, KB_CONTEXT, NOTION_SNAPSHOT, MEMORY_CONTEXT).\n"
         "- DO NOT use general world knowledge. If the answer is not in the provided context, say: 'Nemam u KB/Memory/Snapshot'.\n"
         "- If you propose actions, put them into proposed_commands but do not execute anything.\n"
+        "- NOTION WRITES: Only propose Notion write commands when NOTION_OPS_STATE.armed == true. If armed==false, ask the user to arm Notion Ops ('notion ops aktiviraj') instead of proposing writes.\n"
     )
+
+    notion_ops_txt = "(missing)"
+    if isinstance(notion_ops, dict) and notion_ops:
+        notion_ops_txt = _dump(notion_ops, max_chars=1200)
 
     # IDENTITY section (budgeted dump).
     identity_txt = "(missing)"
@@ -136,11 +144,12 @@ def build_ceo_instructions(
     parts = [
         _CEO_INSTRUCTIONS_PREFIX,
         governance.strip(),
+        "NOTION_OPS_STATE:\n" + notion_ops_txt,
         "IDENTITY:\n" + identity_txt,
-        "KB_HITS:\n" + kb_txt,
+        "KB_CONTEXT:\n" + kb_txt,
         "CONVERSATION_STATE:\n" + (conv_state_txt or "(none)"),
         "NOTION_SNAPSHOT:\n" + notion_txt,
-        "MEMORY:\n" + memory_txt,
+        "MEMORY_CONTEXT:\n" + memory_txt,
     ]
 
     joined = "\n\n".join(parts).strip() + "\n"
@@ -1688,6 +1697,175 @@ async def create_ceo_advisor_agent(
     )
     snapshot_payload = _unwrap_snapshot(raw_snapshot)
 
+    # -------------------------------
+    # Notion Ops ARMED state (SSOT)
+    # -------------------------------
+    session_id = None
+    try:
+        for k in ("session_id", "sessionId", "sid"):
+            v = meta.get(k)
+            if isinstance(v, str) and v.strip():
+                session_id = v.strip()
+                break
+    except Exception:
+        session_id = None
+
+    conv_id = getattr(agent_input, "conversation_id", None)
+    if not session_id and isinstance(conv_id, str) and conv_id.strip():
+        session_id = conv_id.strip()
+
+    notion_ops_state: Dict[str, Any] = {"armed": False, "armed_at": None}
+    notion_ops_armed = False
+    if isinstance(session_id, str) and session_id.strip():
+        try:
+            notion_ops_state = await get_notion_ops_state(session_id)
+            notion_ops_armed = await notion_ops_is_armed(session_id)
+        except Exception:
+            notion_ops_state = {"armed": False, "armed_at": None}
+            notion_ops_armed = False
+
+    def _sources_trace() -> Tuple[List[str], List[str]]:
+        used: List[str] = []
+        missing: List[str] = []
+
+        ip0 = getattr(agent_input, "identity_pack", None)
+        ip = ip0 if isinstance(ip0, dict) else {}
+        if ip:
+            used.append("identity_pack")
+        else:
+            missing.append("identity_pack")
+
+        # Snapshot from request (Notion read snapshot wrapper/payload).
+        if isinstance(snapshot_payload, dict) and snapshot_payload:
+            used.append("notion_snapshot")
+        else:
+            missing.append("notion_snapshot")
+
+        gp0 = ctx.get("grounding_pack") if isinstance(ctx, dict) else None
+        gp0 = gp0 if isinstance(gp0, dict) else {}
+
+        kb0 = (
+            gp0.get("kb_retrieved") if isinstance(gp0.get("kb_retrieved"), dict) else {}
+        )
+        entries0 = kb0.get("entries") if isinstance(kb0, dict) else None
+        if isinstance(entries0, list) and entries0:
+            used.append("kb")
+        else:
+            missing.append("kb")
+
+        ms0 = (
+            gp0.get("memory_snapshot")
+            if isinstance(gp0.get("memory_snapshot"), dict)
+            else {}
+        )
+        mp0 = ms0.get("payload") if isinstance(ms0, dict) else None
+        if isinstance(mp0, dict) and mp0:
+            used.append("memory")
+        else:
+            # Some deterministic paths pass memory directly in ctx.
+            m1 = ctx.get("memory") if isinstance(ctx, dict) else None
+            if isinstance(m1, dict) and m1:
+                used.append("memory")
+            else:
+                missing.append("memory")
+
+        return used, missing
+
+    used_sources, missing_inputs = _sources_trace()
+
+    def _should_gate_proposal(pc: Any) -> bool:
+        cmd = str(getattr(pc, "command", None) or "").strip()
+        if cmd == "notion_write":
+            return True
+
+        if cmd != PROPOSAL_WRAPPER_INTENT:
+            return False
+
+        # Memory writes are allowed even when Notion Ops is disarmed.
+        intent = getattr(pc, "intent", None)
+        if isinstance(intent, str) and intent.strip() == "memory_write":
+            return False
+
+        args = getattr(pc, "args", None)
+        if isinstance(args, dict):
+            if args.get("schema_version") == "memory_write.v1":
+                return False
+
+        # Default: wrapper proposals are treated as Notion write intent.
+        return True
+
+    def _final(out: AgentOutput) -> AgentOutput:
+        # Attach notion ops state consistently.
+        try:
+            setattr(
+                out,
+                "notion_ops",
+                {
+                    "armed": bool(notion_ops_armed is True),
+                    "armed_at": notion_ops_state.get("armed_at"),
+                    "session_id": session_id,
+                    "armed_state": notion_ops_state,
+                },
+            )
+        except Exception:
+            pass
+
+        tr = out.trace if isinstance(out.trace, dict) else {}
+        tr.setdefault("snapshot", snap_trace)
+        tr.setdefault("used_sources", list(used_sources))
+        tr.setdefault("missing_inputs", list(missing_inputs))
+        tr.setdefault(
+            "notion_ops",
+            {"armed": bool(notion_ops_armed is True), "session_id": session_id},
+        )
+
+        # KB trace (required for Responses API debugging): always emit a list.
+        kb_ids_used: List[str] = []
+        kb_entries_injected = 0
+        try:
+            gp0 = ctx.get("grounding_pack") if isinstance(ctx, dict) else None
+            gp0 = gp0 if isinstance(gp0, dict) else {}
+            kb0 = (
+                gp0.get("kb_retrieved")
+                if isinstance(gp0.get("kb_retrieved"), dict)
+                else {}
+            )
+            if isinstance(kb0, dict):
+                kb_entries = kb0.get("entries")
+                if isinstance(kb_entries, list):
+                    kb_entries_injected = len(kb_entries)
+                kb_ids_used = list(kb0.get("used_entry_ids") or [])
+        except Exception:
+            kb_ids_used = []
+            kb_entries_injected = 0
+
+        kb_ids_used = [x for x in kb_ids_used if isinstance(x, str) and x.strip()]
+        tr["kb_ids_used"] = kb_ids_used
+        tr.setdefault("kb_used_entry_ids", kb_ids_used)
+        tr["kb_entries_injected"] = int(kb_entries_injected)
+
+        removed = 0
+        if not notion_ops_armed:
+            kept: List[ProposedCommand] = []
+            for pc in out.proposed_commands or []:
+                if _should_gate_proposal(pc):
+                    removed += 1
+                    continue
+                kept.append(pc)
+            if removed:
+                out.proposed_commands = kept
+                tr["notion_ops_gate"] = {
+                    "applied": True,
+                    "removed_write_proposals": removed,
+                    "reason": "notion_ops_disarmed",
+                }
+                note = "\n\nNotion Ops nije aktiviran — ne vraćam write-proposals. Ako želiš, napiši: 'notion ops aktiviraj'."
+                if isinstance(out.text, str) and note.strip() not in out.text:
+                    out.text = (out.text or "").rstrip() + note
+
+        out.trace = tr
+        return out
+
     # Inicijalizacija goals i tasks
     goals, tasks = _extract_goals_tasks(snapshot_payload)
 
@@ -1751,16 +1929,18 @@ async def create_ceo_advisor_agent(
         and isinstance(snapshot_payload, dict)
         and ("tasks" in snapshot_payload)
     ):
-        return _empty_tasks_fallback_output(
-            base_text=base_text,
-            goals=goals,
-            projects=projects,
-            memory_snapshot=ctx.get("memory") if isinstance(ctx, dict) else None,
-            conversation_state=ctx.get("conversation_state")
-            if isinstance(ctx, dict)
-            else None,
-            english_output=english_output,
-            snap_trace=snap_trace,
+        return _final(
+            _empty_tasks_fallback_output(
+                base_text=base_text,
+                goals=goals,
+                projects=projects,
+                memory_snapshot=ctx.get("memory") if isinstance(ctx, dict) else None,
+                conversation_state=ctx.get("conversation_state")
+                if isinstance(ctx, dict)
+                else None,
+                english_output=english_output,
+                snap_trace=snap_trace,
+            )
         )
 
     structured_mode = _needs_structured_snapshot_answer(base_text)
@@ -1799,33 +1979,37 @@ async def create_ceo_advisor_agent(
 
         tr2 = tr2 if isinstance(tr2, dict) else {}
         txt = _build_trace_status_text(trace_v2=tr2, english_output=english_output)
-        return AgentOutput(
-            text=txt,
-            proposed_commands=[],
-            agent_id="ceo_advisor",
-            read_only=True,
-            trace={
-                "deterministic": True,
-                "intent": "trace_status",
-                "kb_used_entry_ids": kb_used_ids,
-                "snapshot": snap_trace,
-            },
+        return _final(
+            AgentOutput(
+                text=txt,
+                proposed_commands=[],
+                agent_id="ceo_advisor",
+                read_only=True,
+                trace={
+                    "deterministic": True,
+                    "intent": "trace_status",
+                    "kb_used_entry_ids": kb_used_ids,
+                    "snapshot": snap_trace,
+                },
+            )
         )
 
     # Deterministic capability Q&A for memory (never needs LLM).
     t0 = (base_text or "").strip().lower()
     if (not fact_sensitive) and _is_memory_capability_question(t0):
-        return AgentOutput(
-            text=_memory_capability_text(english_output=english_output),
-            proposed_commands=[],
-            agent_id="ceo_advisor",
-            read_only=True,
-            trace={
-                "deterministic": True,
-                "intent": "memory_capability",
-                "kb_used_entry_ids": kb_used_ids,
-                "snapshot": snap_trace,
-            },
+        return _final(
+            AgentOutput(
+                text=_memory_capability_text(english_output=english_output),
+                proposed_commands=[],
+                agent_id="ceo_advisor",
+                read_only=True,
+                trace={
+                    "deterministic": True,
+                    "intent": "memory_capability",
+                    "kb_used_entry_ids": kb_used_ids,
+                    "snapshot": snap_trace,
+                },
+            )
         )
 
     # Deterministic: explicit user choice to persist/expand knowledge should
@@ -1885,38 +2069,40 @@ async def create_ceo_advisor_agent(
             )
         )
 
-        return AgentOutput(
-            text=txt,
-            proposed_commands=[
-                ProposedCommand(
-                    command=PROPOSAL_WRAPPER_INTENT,
-                    intent="memory_write",
-                    args=memory_write_payload,
-                    reason="Approval-gated memory/knowledge write proposal.",
-                    requires_approval=True,
-                    risk="LOW",
-                    dry_run=True,
-                    scope="api_execute_raw",
-                    payload_summary={
-                        "schema_version": "memory_write.v1",
-                        "identity_id": identity_hash,
-                        "grounded_on": grounded_on,
-                        "idempotency_key": idem,
-                    },
-                )
-            ],
-            agent_id="ceo_advisor",
-            read_only=True,
-            trace={
-                "deterministic": True,
-                "intent": "memory_or_expand_knowledge",
-                "kb_used_entry_ids": kb_used_ids,
-                "proposal_kind": "memory_write",
-                "schema_version": "memory_write.v1",
-                "idempotency_key": idem,
-                "grounded_on_count": len(grounded_on),
-                "snapshot": snap_trace,
-            },
+        return _final(
+            AgentOutput(
+                text=txt,
+                proposed_commands=[
+                    ProposedCommand(
+                        command=PROPOSAL_WRAPPER_INTENT,
+                        intent="memory_write",
+                        args=memory_write_payload,
+                        reason="Approval-gated memory/knowledge write proposal.",
+                        requires_approval=True,
+                        risk="LOW",
+                        dry_run=True,
+                        scope="api_execute_raw",
+                        payload_summary={
+                            "schema_version": "memory_write.v1",
+                            "identity_id": identity_hash,
+                            "grounded_on": grounded_on,
+                            "idempotency_key": idem,
+                        },
+                    )
+                ],
+                agent_id="ceo_advisor",
+                read_only=True,
+                trace={
+                    "deterministic": True,
+                    "intent": "memory_or_expand_knowledge",
+                    "kb_used_entry_ids": kb_used_ids,
+                    "proposal_kind": "memory_write",
+                    "schema_version": "memory_write.v1",
+                    "idempotency_key": idem,
+                    "grounded_on_count": len(grounded_on),
+                    "snapshot": snap_trace,
+                },
+            )
         )
 
     # Enterprise unknown-mode: if the grounding layer retrieved no curated KB
@@ -1953,37 +2139,39 @@ async def create_ceo_advisor_agent(
                 logger.warning(
                     "[LLM-GATE] Blocked: allow_general is True but LLM is not configured; returning offline-safe unknown_mode fallback."
                 )
-            return AgentOutput(
-                text=(
-                    "Trenutno nemam to znanje (nije u kuriranom KB-u / trenutnom snapshotu).\n\n"
-                    "Opcije:\n"
-                    "1) Razjasni: odgovori na 1–3 pitanja i daću najbolji mogući odgovor (jasno ću označiti pretpostavke).\n"
-                    "2) Proširi znanje: napiši 'Proširi znanje: ...' i pripremiću approval-gated prijedlog za upis.\n\n"
-                    "Brza pitanja:\n"
-                    "- Šta ti tačno treba: definicija, odluka ili plan implementacije?\n"
-                    "- Koji je kontekst/domena (biz/tech/legal)?\n"
-                    "- Koja su ograničenja (vrijeme, alati, scope)?"
-                ),
-                proposed_commands=[],
-                agent_id="ceo_advisor",
-                read_only=True,
-                notion_ops={
-                    "armed": False,
-                    "armed_at": None,
-                    "session_id": None,
-                    "armed_state": {"armed": False, "armed_at": None},
-                },
-                trace={
-                    "deterministic": True,
-                    "intent": "unknown_mode",
-                    "kb_used_entry_ids": kb_used_ids,
-                    "snapshot": snap_trace,
-                    "exit_reason": (
-                        "fallback.allow_general_false"
-                        if not allow_general
-                        else "offline.llm_not_configured"
+            return _final(
+                AgentOutput(
+                    text=(
+                        "Trenutno nemam to znanje (nije u kuriranom KB-u / trenutnom snapshotu).\n\n"
+                        "Opcije:\n"
+                        "1) Razjasni: odgovori na 1–3 pitanja i daću najbolji mogući odgovor (jasno ću označiti pretpostavke).\n"
+                        "2) Proširi znanje: napiši 'Proširi znanje: ...' i pripremiću approval-gated prijedlog za upis.\n\n"
+                        "Brza pitanja:\n"
+                        "- Šta ti tačno treba: definicija, odluka ili plan implementacije?\n"
+                        "- Koji je kontekst/domena (biz/tech/legal)?\n"
+                        "- Koja su ograničenja (vrijeme, alati, scope)?"
                     ),
-                },
+                    proposed_commands=[],
+                    agent_id="ceo_advisor",
+                    read_only=True,
+                    notion_ops={
+                        "armed": False,
+                        "armed_at": None,
+                        "session_id": None,
+                        "armed_state": {"armed": False, "armed_at": None},
+                    },
+                    trace={
+                        "deterministic": True,
+                        "intent": "unknown_mode",
+                        "kb_used_entry_ids": kb_used_ids,
+                        "snapshot": snap_trace,
+                        "exit_reason": (
+                            "fallback.allow_general_false"
+                            if not allow_general
+                            else "offline.llm_not_configured"
+                        ),
+                    },
+                )
             )
         # else: allow_general==True, nastavi do LLM path-a
     if fact_sensitive and not snapshot_has_facts:
@@ -1997,24 +2185,26 @@ async def create_ceo_advisor_agent(
         }
         trace["exit_reason"] = "fallback.fact_sensitive_no_snapshot"
         logger.info("[CEO_ADVISOR_EXIT] fallback.fact_sensitive_no_snapshot")
-        return AgentOutput(
-            text=(
-                "Ne mogu potvrditi poslovno stanje iz ovog upita jer u READ kontekstu nemam učitan SSOT snapshot. "
-                "Predlog: pokreni 'refresh snapshot' ili otvori CEO Console snapshot pa ponovi pitanje."
-            ),
-            proposed_commands=[
-                ProposedCommand(
-                    command="refresh_snapshot",
-                    args={"source": "ceo_advisory"},
-                    reason="SSOT snapshot nije prisutan za fact-sensitive pitanje.",
-                    requires_approval=True,
-                    risk="LOW",
-                    dry_run=True,
-                )
-            ],
-            agent_id="ceo_advisor",
-            read_only=True,
-            trace=trace,
+        return _final(
+            AgentOutput(
+                text=(
+                    "Ne mogu potvrditi poslovno stanje iz ovog upita jer u READ kontekstu nemam učitan SSOT snapshot. "
+                    "Predlog: pokreni 'refresh snapshot' ili otvori CEO Console snapshot pa ponovi pitanje."
+                ),
+                proposed_commands=[
+                    ProposedCommand(
+                        command="refresh_snapshot",
+                        args={"source": "ceo_advisory"},
+                        reason="SSOT snapshot nije prisutan za fact-sensitive pitanje.",
+                        requires_approval=True,
+                        risk="LOW",
+                        dry_run=True,
+                    )
+                ],
+                agent_id="ceo_advisor",
+                read_only=True,
+                trace=trace,
+            )
         )
 
     # Deterministic: for show/list requests, never rely on LLM.
@@ -2026,25 +2216,27 @@ async def create_ceo_advisor_agent(
             and snapshot_payload.get("available") is False
         ):
             err = str(snapshot_payload.get("error") or "snapshot_unavailable").strip()
-            return AgentOutput(
-                text=(
-                    "Ne mogu učitati Notion read snapshot (read-only). "
-                    f"Detalj: {err}\n\n"
-                    "Pokušaj: 'refresh snapshot' ili provjeri Notion konfiguraciju (DB IDs/token)."
-                ),
-                proposed_commands=[
-                    ProposedCommand(
-                        command="refresh_snapshot",
-                        args={"source": "ceo_dashboard"},
-                        reason="Snapshot nije dostupan ili nije konfigurisan.",
-                        requires_approval=True,
-                        risk="LOW",
-                        dry_run=True,
-                    )
-                ],
-                agent_id="ceo_advisor",
-                read_only=True,
-                trace={"snapshot": snap_trace},
+            return _final(
+                AgentOutput(
+                    text=(
+                        "Ne mogu učitati Notion read snapshot (read-only). "
+                        f"Detalj: {err}\n\n"
+                        "Pokušaj: 'refresh snapshot' ili provjeri Notion konfiguraciju (DB IDs/token)."
+                    ),
+                    proposed_commands=[
+                        ProposedCommand(
+                            command="refresh_snapshot",
+                            args={"source": "ceo_dashboard"},
+                            reason="Snapshot nije dostupan ili nije konfigurisan.",
+                            requires_approval=True,
+                            risk="LOW",
+                            dry_run=True,
+                        )
+                    ],
+                    agent_id="ceo_advisor",
+                    read_only=True,
+                    trace={"snapshot": snap_trace},
+                )
             )
 
         if (tgt in {"goals", "both"} and goals) or (tgt in {"tasks", "both"} and tasks):
@@ -2055,34 +2247,38 @@ async def create_ceo_advisor_agent(
             else:
                 text_out = _render_snapshot_summary(goals, tasks)
 
-            return AgentOutput(
-                text=text_out,
-                proposed_commands=[],
+            return _final(
+                AgentOutput(
+                    text=text_out,
+                    proposed_commands=[],
+                    agent_id="ceo_advisor",
+                    read_only=True,
+                    trace={"snapshot": snap_trace},
+                )
+            )
+
+        # No data: give a precise read-path message instead of generic coaching.
+        return _final(
+            AgentOutput(
+                text=(
+                    "Trenutni snapshot nema učitane ciljeve/taskove. "
+                    "Ovo je READ problem (nije blokada Notion Ops).\n\n"
+                    "Predlog: pokreni refresh snapshot ili koristi 'Search Notion' panel da potvrdiš da DB sadrži stavke."
+                ),
+                proposed_commands=[
+                    ProposedCommand(
+                        command="refresh_snapshot",
+                        args={"source": "ceo_dashboard"},
+                        reason="Snapshot je prazan ili nedostaje.",
+                        requires_approval=True,
+                        risk="LOW",
+                        dry_run=True,
+                    )
+                ],
                 agent_id="ceo_advisor",
                 read_only=True,
                 trace={"snapshot": snap_trace},
             )
-
-        # No data: give a precise read-path message instead of generic coaching.
-        return AgentOutput(
-            text=(
-                "Trenutni snapshot nema učitane ciljeve/taskove. "
-                "Ovo je READ problem (nije blokada Notion Ops).\n\n"
-                "Predlog: pokreni refresh snapshot ili koristi 'Search Notion' panel da potvrdiš da DB sadrži stavke."
-            ),
-            proposed_commands=[
-                ProposedCommand(
-                    command="refresh_snapshot",
-                    args={"source": "ceo_dashboard"},
-                    reason="Snapshot je prazan ili nedostaje.",
-                    requires_approval=True,
-                    risk="LOW",
-                    dry_run=True,
-                )
-            ],
-            agent_id="ceo_advisor",
-            read_only=True,
-            trace={"snapshot": snap_trace},
         )
 
     # Continue processing normally...
@@ -2097,25 +2293,27 @@ async def create_ceo_advisor_agent(
         and (_is_empty_state_kickoff_prompt(base_text) or not _llm_is_configured())
     ):
         kickoff = _default_kickoff_text()
-        return AgentOutput(
-            text=kickoff,
-            proposed_commands=[
-                ProposedCommand(
-                    command="refresh_snapshot",
-                    args={"source": "ceo_dashboard"},
-                    reason="Snapshot nije prisutan u requestu (offline/CI).",
-                    requires_approval=True,
-                    risk="LOW",
-                    dry_run=True,
-                )
-            ],
-            agent_id="ceo_advisor",
-            read_only=True,
-            trace={
-                "empty_snapshot": True,
-                "llm_configured": False,
-                "snapshot": snap_trace,
-            },
+        return _final(
+            AgentOutput(
+                text=kickoff,
+                proposed_commands=[
+                    ProposedCommand(
+                        command="refresh_snapshot",
+                        args={"source": "ceo_dashboard"},
+                        reason="Snapshot nije prisutan u requestu (offline/CI).",
+                        requires_approval=True,
+                        risk="LOW",
+                        dry_run=True,
+                    )
+                ],
+                agent_id="ceo_advisor",
+                read_only=True,
+                trace={
+                    "empty_snapshot": True,
+                    "llm_configured": False,
+                    "snapshot": snap_trace,
+                },
+            )
         )
 
     # -------------------------------
@@ -2252,24 +2450,33 @@ async def create_ceo_advisor_agent(
                 },
             )
 
-        return AgentOutput(
-            text=_unknown_mode_text(english_output=english_output),
-            proposed_commands=[],
-            agent_id="ceo_advisor",
-            read_only=True,
-            trace={
-                "offline_mode": True,
-                "deterministic": True,
-                "intent": "unknown_mode",
-                "exit_reason": "offline.llm_not_configured",
-                "snapshot": snap_trace,
-            },
+        return _final(
+            AgentOutput(
+                text=_unknown_mode_text(english_output=english_output),
+                proposed_commands=[],
+                agent_id="ceo_advisor",
+                read_only=True,
+                trace={
+                    "offline_mode": True,
+                    "deterministic": True,
+                    "intent": "unknown_mode",
+                    "exit_reason": "offline.llm_not_configured",
+                    "snapshot": snap_trace,
+                },
+            )
         )
 
     # Nastavi sa ostatkom koda...
     safe_context: Dict[str, Any] = {
         "canon": {"read_only": True, "no_tools": True, "no_side_effects": True},
         "snapshot": snapshot_payload,
+        "identity_pack": getattr(agent_input, "identity_pack", {})
+        if isinstance(getattr(agent_input, "identity_pack", None), dict)
+        else {},
+        "memory": ctx.get("memory") if isinstance(ctx, dict) else None,
+        "conversation_state": ctx.get("conversation_state")
+        if isinstance(ctx, dict)
+        else None,
         "metadata": {
             **(agent_input.metadata if isinstance(agent_input.metadata, dict) else {}),
             "structured_mode": bool(structured_mode),
@@ -2286,45 +2493,63 @@ async def create_ceo_advisor_agent(
             logger.warning(
                 "[CEO_ADVISOR_RESPONSES_GUARD] blocked: missing/insufficient grounding_pack"
             )
-            return AgentOutput(
-                text=_responses_missing_grounding_text(english_output=english_output),
-                proposed_commands=[],
-                agent_id="ceo_advisor",
-                read_only=True,
-                trace={
-                    "deterministic": True,
-                    "intent": "missing_grounding",
-                    "exit_reason": "blocked.missing_grounding",
-                    "snapshot": snap_trace,
-                },
+            return _final(
+                AgentOutput(
+                    text=_responses_missing_grounding_text(
+                        english_output=english_output
+                    ),
+                    proposed_commands=[],
+                    agent_id="ceo_advisor",
+                    read_only=True,
+                    trace={
+                        "deterministic": True,
+                        "intent": "missing_grounding",
+                        "exit_reason": "blocked.missing_grounding",
+                        "snapshot": snap_trace,
+                    },
+                )
             )
 
         conv_state = ctx.get("conversation_state") if isinstance(ctx, dict) else None
-        instructions = build_ceo_instructions(gp, conversation_state=conv_state)
+        instructions = build_ceo_instructions(
+            gp,
+            conversation_state=conv_state,
+            notion_ops={
+                "armed": bool(notion_ops_armed is True),
+                "armed_at": notion_ops_state.get("armed_at")
+                if isinstance(notion_ops_state, dict)
+                else None,
+                "session_id": session_id,
+            },
+        )
         safe_context["instructions"] = instructions
 
         # Local hard-guard (no guessing): never call LLM without non-empty instructions.
         if not isinstance(instructions, str) or not instructions.strip():
             logger.error("[CEO_ADVISOR_RESPONSES_GUARD] blocked: instructions empty")
-            return AgentOutput(
-                text=_responses_missing_grounding_text(english_output=english_output),
-                proposed_commands=[],
-                agent_id="ceo_advisor",
-                read_only=True,
-                trace={
-                    "deterministic": True,
-                    "intent": "missing_instructions",
-                    "exit_reason": "blocked.missing_instructions",
-                    "snapshot": snap_trace,
-                },
+            return _final(
+                AgentOutput(
+                    text=_responses_missing_grounding_text(
+                        english_output=english_output
+                    ),
+                    proposed_commands=[],
+                    agent_id="ceo_advisor",
+                    read_only=True,
+                    trace={
+                        "deterministic": True,
+                        "intent": "missing_instructions",
+                        "exit_reason": "blocked.missing_instructions",
+                        "snapshot": snap_trace,
+                    },
+                )
             )
 
         # DEBUG (no sensitive content): section lengths + hashes
         try:
             identity_i = instructions.find("\n\nIDENTITY:\n")
-            kb_i = instructions.find("\n\nKB_HITS:\n")
+            kb_i = instructions.find("\n\nKB_CONTEXT:\n")
             notion_i = instructions.find("\n\nNOTION_SNAPSHOT:\n")
-            mem_i = instructions.find("\n\nMEMORY:\n")
+            mem_i = instructions.find("\n\nMEMORY_CONTEXT:\n")
             # Best-effort extraction
             sec_identity = (
                 instructions[identity_i:kb_i] if identity_i != -1 and kb_i != -1 else ""
@@ -2427,12 +2652,14 @@ async def create_ceo_advisor_agent(
         trace["llm_used"] = False
         trace["snapshot"] = snap_trace
         trace["prompt_template"] = True
-        return AgentOutput(
-            text=text_out,
-            proposed_commands=[],
-            agent_id="ceo_advisor",
-            read_only=True,
-            trace=trace,
+        return _final(
+            AgentOutput(
+                text=text_out,
+                proposed_commands=[],
+                agent_id="ceo_advisor",
+                read_only=True,
+                trace=trace,
+            )
         )
 
     if use_llm:
@@ -2584,10 +2811,12 @@ async def create_ceo_advisor_agent(
         trace.setdefault("exit_reason", "fallback.propose_only")
         logger.info("[CEO_ADVISOR_EXIT] deterministic.propose_only")
 
-    return AgentOutput(
-        text=text_out,
-        proposed_commands=proposed,
-        agent_id="ceo_advisor",
-        read_only=True,
-        trace=trace,
+    return _final(
+        AgentOutput(
+            text=text_out,
+            proposed_commands=proposed,
+            agent_id="ceo_advisor",
+            read_only=True,
+            trace=trace,
+        )
     )

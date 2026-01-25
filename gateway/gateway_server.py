@@ -122,7 +122,15 @@ def _apply_gateway_fallback_memory_patch(
         tr["gateway_fallback_memory"] = True
 
         tr["gateway_fallback_memory_action"] = "store"
+        if not isinstance(tr.get("used_sources"), list):
+            tr["used_sources"] = ["memory"]
+        if not isinstance(tr.get("missing_inputs"), list):
+            tr["missing_inputs"] = ["identity_pack", "notion_snapshot", "kb"]
 
+        if not isinstance(tr.get("notion_ops"), dict):
+            tr["notion_ops"] = {"armed": False, "session_id": session_id}
+        if not isinstance(tr.get("kb_ids_used"), list):
+            tr["kb_ids_used"] = []
         result["trace"] = tr
 
         return True
@@ -139,7 +147,15 @@ def _apply_gateway_fallback_memory_patch(
             tr["gateway_fallback_memory"] = True
 
             tr["gateway_fallback_memory_action"] = "recall"
+            if not isinstance(tr.get("used_sources"), list):
+                tr["used_sources"] = ["memory"]
+            if not isinstance(tr.get("missing_inputs"), list):
+                tr["missing_inputs"] = ["identity_pack", "notion_snapshot", "kb"]
 
+            if not isinstance(tr.get("notion_ops"), dict):
+                tr["notion_ops"] = {"armed": False, "session_id": session_id}
+            if not isinstance(tr.get("kb_ids_used"), list):
+                tr["kb_ids_used"] = []
             result["trace"] = tr
 
             return True
@@ -298,23 +314,13 @@ def _build_ceo_read_context(
 async def _generate_ceo_readonly_answer(
     *, prompt: str, session_id: Optional[str], context: Dict[str, Any]
 ) -> Dict[str, Any]:
+    """Gateway fallback CEO answer.
+
+    - Under tests/offline (AgentRouter disabled), use the local executor path (patchable).
+    - Otherwise, delegate to the canonical CEO Advisor agent (keeps governance aligned).
+    """
+
     prompt_in = (prompt or "").strip()
-
-    missing = context.get("missing") if isinstance(context.get("missing"), list) else []
-
-    missing = [x for x in missing if isinstance(x, str) and x.strip()]
-
-    if "snapshot" in missing:
-        txt = (
-            "Snapshot nije dostavljen/učitan (READ). Pošalji Notion snapshot ili pokreni refresh snapshot, "
-            "pa ponovi pitanje."
-        )
-
-        return {
-            "text": txt,
-            "summary": txt,
-            "trace": {"exit_reason": "fallback.missing_snapshot"},
-        }
 
     gp = (
         context.get("grounding_pack")
@@ -322,92 +328,103 @@ async def _generate_ceo_readonly_answer(
         else {}
     )
 
-    instructions = None
-
     try:
-        from services.ceo_advisor_agent import build_ceo_instructions  # type: ignore
-
-        instructions = build_ceo_instructions(gp)
-
-    except Exception:
-        instructions = None
-
-    safe_context: Dict[str, Any] = {
-        "canon": {"read_only": True, "no_tools": True, "no_side_effects": True},
-        "snapshot": context.get("snapshot")
-        if isinstance(context.get("snapshot"), dict)
-        else {},
-        "metadata": {
-            "initiator": "gateway_fallback",
-            "read_only": True,
-            "session_id": session_id,
-            "gateway_fallback": True,
-        },
-        "grounding_pack": gp,
-    }
-
-    if isinstance(instructions, str) and instructions.strip():
-        safe_context["instructions"] = instructions
-
-    if missing:
-        prompt_in = (
-            prompt_in
-            + "\n\nMISSING_INPUTS: "
-            + ", ".join(sorted(set(missing)))
-            + ". Ako ti fali neki od ovih inputa, eksplicitno traži baš taj input."
+        # Mirror dependencies._is_test_mode() so pytest runs stay deterministic.
+        is_test_mode = (os.getenv("TESTING") or "").strip() == "1" or (
+            "PYTEST_CURRENT_TEST" in os.environ
         )
 
-    prompt_text = (
-        prompt_in
-        + "\n\nReturn only valid json (a single JSON object). "
-        + 'Required keys: "text" (string) and "proposed_commands" (array; can be empty). '
-        + "Do not wrap the json in markdown code fences."
-    )
+        from services.ceo_advisor_agent import _llm_is_configured  # type: ignore
 
-    try:
-        from services.agent_router.executor_factory import get_executor  # type: ignore
+        if is_test_mode or not _llm_is_configured():
+            from services.agent_router.executor_factory import get_executor  # type: ignore
 
-        executor = get_executor(purpose="ceo_advisor")
+            executor = get_executor(purpose="ceo_advisor")
+            ex_ctx: Dict[str, Any] = {
+                "grounding_pack": gp,
+                "identity_pack": context.get("identity_json")
+                if isinstance(context.get("identity_json"), dict)
+                else {},
+                "snapshot": context.get("snapshot")
+                if isinstance(context.get("snapshot"), dict)
+                else {},
+                "memory": context.get("memory_stm")
+                if isinstance(context.get("memory_stm"), dict)
+                else {},
+                "metadata": {"session_id": session_id, "initiator": "gateway_fallback"},
+            }
 
-        raw = executor.ceo_command(text=prompt_text, context=safe_context)
+            ex_out = await executor.ceo_command(prompt_in, ex_ctx)
+            ex_text = str((ex_out or {}).get("text") or "").strip()
+            if not ex_text:
+                ex_text = "Pošalji više READ konteksta (snapshot/KB/memory) pa ponovi pitanje."
 
-        if asyncio.iscoroutine(raw):
-            raw = await raw
+            ex_pcs = (ex_out or {}).get("proposed_commands")
+            ex_pcs_list = ex_pcs if isinstance(ex_pcs, list) else []
 
-        if isinstance(raw, dict):
-            text_out = str(raw.get("text") or "").strip()
+            return {
+                "text": ex_text,
+                "summary": ex_text,
+                "proposed_commands": ex_pcs_list,
+                "trace": {
+                    "deterministic": True,
+                    "exit_reason": "fallback.offline_executor",
+                },
+                "notion_ops": None,
+            }
 
-        else:
-            text_out = str(raw).strip()
+        from models.agent_contract import AgentInput  # type: ignore
+        from services.ceo_advisor_agent import create_ceo_advisor_agent  # type: ignore
 
-        if not text_out:
-            text_out = (
-                "Treba mi više konkretnog konteksta (snapshot/KB/memory) da odgovorim."
-            )
+        agent_in = AgentInput(
+            message=prompt_in,
+            snapshot=context.get("snapshot")
+            if isinstance(context.get("snapshot"), dict)
+            else {},
+            identity_pack=context.get("identity_json")
+            if isinstance(context.get("identity_json"), dict)
+            else {},
+            metadata={"session_id": session_id, "initiator": "gateway_fallback"},
+        )
+
+        agent_ctx: Dict[str, Any] = {
+            "grounding_pack": gp,
+            "memory": context.get("memory_stm")
+            if isinstance(context.get("memory_stm"), dict)
+            else {},
+        }
+
+        out = await create_ceo_advisor_agent(agent_in, agent_ctx)
+        out_dict = (
+            out.model_dump(by_alias=True)
+            if hasattr(out, "model_dump")
+            else out.dict(by_alias=True)
+        )
+
+        text_out = str(out_dict.get("text") or "").strip()
+        pcs = out_dict.get("proposed_commands")
+        pcs_list = pcs if isinstance(pcs, list) else []
 
         return {
             "text": text_out,
             "summary": text_out,
-            "trace": {"exit_reason": "fallback.llm.success"},
+            "proposed_commands": pcs_list,
+            "trace": out_dict.get("trace")
+            if isinstance(out_dict.get("trace"), dict)
+            else {},
+            "notion_ops": out_dict.get("notion_ops")
+            if isinstance(out_dict.get("notion_ops"), dict)
+            else None,
         }
 
     except Exception as e:  # noqa: BLE001
-        parts = []
-
-        if missing:
-            parts.append("Nedostaje: " + ", ".join(sorted(set(missing))) + ".")
-
-        parts.append("Pošalji nedostajući READ kontekst pa ponovi pitanje.")
-
-        txt = " ".join(parts).strip()
-
-        if not txt:
-            txt = "Pošalji više konteksta (snapshot/KB/memory) pa ponovi pitanje."
-
+        txt = "Pošalji više READ konteksta (snapshot/KB/memory) pa ponovi pitanje."
         return {
             "text": txt,
             "summary": txt,
-            "trace": {"exit_reason": "fallback.llm.error", "error": str(e)},
+            "proposed_commands": [],
+            "trace": {"exit_reason": "fallback.agent_error", "error": str(e)},
+            "notion_ops": None,
         }
 
 
@@ -6109,6 +6126,28 @@ async def _ceo_command_core(
         tr_gw.get("router_version")
         == "gateway-fallback-proposals-disabled-for-nonwrite-v1"
     ):
+        notion_ops_state = {"armed": False, "armed_at": None}
+        notion_ops_armed = False
+        if isinstance(session_id, str) and session_id.strip():
+            try:
+                from services.notion_ops_state import get_state as _get_notion_ops_state  # type: ignore
+                from services.notion_ops_state import is_armed as _notion_ops_is_armed  # type: ignore
+
+                notion_ops_state = await _get_notion_ops_state(session_id.strip())
+                notion_ops_armed = await _notion_ops_is_armed(session_id.strip())
+            except Exception:
+                notion_ops_state = {"armed": False, "armed_at": None}
+                notion_ops_armed = False
+
+        result["notion_ops"] = {
+            "armed": bool(notion_ops_armed is True),
+            "armed_at": notion_ops_state.get("armed_at")
+            if isinstance(notion_ops_state, dict)
+            else None,
+            "session_id": session_id,
+            "armed_state": notion_ops_state,
+        }
+
         did_mem = _apply_gateway_fallback_memory_patch(
             result,
             prompt=cleaned_text.strip(),
@@ -6136,9 +6175,109 @@ async def _ceo_command_core(
                     context=ctx_bridge,
                 )
 
-                _set_readonly_text(result, str(llm_ans.get("text") or "").strip())
+                text_out = str(llm_ans.get("text") or "").strip()
+                result["text"] = text_out
+                result["summary"] = text_out
+                result["read_only"] = True
+                pcs_out = llm_ans.get("proposed_commands")
+                result["proposed_commands"] = (
+                    pcs_out if isinstance(pcs_out, list) else []
+                )
 
+                if not bool(notion_ops_armed is True) and isinstance(
+                    result.get("proposed_commands"), list
+                ):
+                    kept = []
+                    removed = 0
+                    for pc in result.get("proposed_commands", []):
+                        if not isinstance(pc, dict):
+                            kept.append(pc)
+                            continue
+                        cmd = str(pc.get("command") or "").strip()
+                        if cmd == "notion_write":
+                            removed += 1
+                            continue
+                        if cmd == "ceo.command.propose":
+                            intent = pc.get("intent")
+                            if (
+                                isinstance(intent, str)
+                                and intent.strip() == "memory_write"
+                            ):
+                                kept.append(pc)
+                            else:
+                                removed += 1
+                            continue
+                        kept.append(pc)
+                    if removed:
+                        result["proposed_commands"] = kept
+                        tr_gate = _ensure_dict(result.get("trace"))
+                        tr_gate["notion_ops_gate"] = {
+                            "applied": True,
+                            "removed_write_proposals": removed,
+                            "reason": "notion_ops_disarmed",
+                        }
+                        result["trace"] = tr_gate
                 tr3 = _ensure_dict(result.get("trace"))
+
+                # Derive simple provenance for fallback responses.
+                used_sources = []
+                if isinstance(ctx_bridge.get("identity_json"), dict) and ctx_bridge.get(
+                    "identity_json"
+                ):
+                    used_sources.append("identity_pack")
+                if isinstance(ctx_bridge.get("snapshot"), dict) and ctx_bridge.get(
+                    "snapshot"
+                ):
+                    used_sources.append("notion_snapshot")
+                if isinstance(ctx_bridge.get("kb_hits"), list) and any(
+                    isinstance(x, dict) for x in (ctx_bridge.get("kb_hits") or [])
+                ):
+                    used_sources.append("kb")
+                if isinstance(ctx_bridge.get("memory_stm"), dict) and ctx_bridge.get(
+                    "memory_stm"
+                ):
+                    used_sources.append("memory")
+
+                missing_inputs = []
+                missing_raw = (
+                    ctx_bridge.get("missing")
+                    if isinstance(ctx_bridge.get("missing"), list)
+                    else []
+                )
+                if "identity_json" in missing_raw:
+                    missing_inputs.append("identity_pack")
+                if "snapshot" in missing_raw:
+                    missing_inputs.append("notion_snapshot")
+                if "kb_hits" in missing_raw:
+                    missing_inputs.append("kb")
+                if "memory_stm" in missing_raw:
+                    missing_inputs.append("memory")
+
+                gp = (
+                    ctx_bridge.get("grounding_pack")
+                    if isinstance(ctx_bridge.get("grounding_pack"), dict)
+                    else {}
+                )
+                kb_ids_used = []
+                if isinstance(gp, dict):
+                    kb = (
+                        gp.get("kb_retrieved")
+                        if isinstance(gp.get("kb_retrieved"), dict)
+                        else {}
+                    )
+                    raw_ids = kb.get("used_entry_ids") if isinstance(kb, dict) else None
+                    if isinstance(raw_ids, list):
+                        kb_ids_used = [
+                            x for x in raw_ids if isinstance(x, str) and x.strip()
+                        ]
+
+                tr3.setdefault("used_sources", sorted(set(used_sources)))
+                tr3.setdefault("missing_inputs", sorted(set(missing_inputs)))
+                tr3.setdefault("kb_ids_used", kb_ids_used)
+                tr3.setdefault(
+                    "notion_ops",
+                    {"armed": bool(notion_ops_armed is True), "session_id": session_id},
+                )
 
                 tr3["gateway_fallback_context_bridge"] = {
                     "used_sources": {

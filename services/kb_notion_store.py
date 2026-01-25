@@ -48,6 +48,46 @@ def _get_notion_token() -> Optional[str]:
     return None
 
 
+def _env_allowed_sources() -> Optional[set[str]]:
+    """Optional allowlist for KB 'Source' property.
+
+    If KB_ALLOWED_SOURCES is unset/empty -> allow all sources.
+    If set -> only entries whose Source (case-insensitive) is in the allowlist pass.
+    """
+
+    raw = (os.getenv("KB_ALLOWED_SOURCES") or "").strip()
+    if not raw:
+        return None
+    out: set[str] = set()
+    for part in raw.split(","):
+        p = part.strip().lower()
+        if p:
+            out.add(p)
+    return out or None
+
+
+def _extract_source(props: Dict[str, Any]) -> Optional[str]:
+    src = props.get("Source")
+    if not isinstance(src, dict):
+        return None
+
+    sel = src.get("select")
+    if isinstance(sel, dict) and isinstance(sel.get("name"), str):
+        return sel.get("name")
+
+    ms = src.get("multi_select")
+    if isinstance(ms, list) and ms:
+        first = ms[0]
+        if isinstance(first, dict) and isinstance(first.get("name"), str):
+            return first.get("name")
+
+    rt = src.get("rich_text")
+    if isinstance(rt, list) and rt:
+        return _rt_concat(rt)
+
+    return None
+
+
 def _rt_concat(rt: Any) -> str:
     if not isinstance(rt, list):
         return ""
@@ -80,6 +120,14 @@ def map_notion_page_to_kb_entry(page: Dict[str, Any]) -> Optional[KBEntry]:
 
         if isinstance(name, str) and name.strip() and name.strip().lower() != "active":
             return None
+
+    # Optional allowlist for Source property (case-insensitive).
+    allowed_sources = _env_allowed_sources()
+    if allowed_sources is not None:
+        src_name = _extract_source(props)
+        if isinstance(src_name, str) and src_name.strip():
+            if src_name.strip().lower() not in allowed_sources:
+                return None
 
     title_prop = props.get("Name")
     title = ""
