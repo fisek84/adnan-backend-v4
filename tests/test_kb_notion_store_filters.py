@@ -33,12 +33,18 @@ def test_kb_notion_store_status_filter_is_case_insensitive(monkeypatch):
 def test_kb_notion_store_source_allowlist_is_case_insensitive(monkeypatch):
     monkeypatch.setenv("KB_ALLOWED_SOURCES", "book,system")
 
-    assert map_notion_page_to_kb_entry(_page(status="active", source="system")) is not None
-    assert map_notion_page_to_kb_entry(_page(status="active", source="BOOK")) is not None
+    assert (
+        map_notion_page_to_kb_entry(_page(status="active", source="system")) is not None
+    )
+    assert (
+        map_notion_page_to_kb_entry(_page(status="active", source="BOOK")) is not None
+    )
     assert map_notion_page_to_kb_entry(_page(status="active", source="manual")) is None
 
 
 def test_kb_notion_store_source_allowlist_can_include_manual(monkeypatch):
     monkeypatch.setenv("KB_ALLOWED_SOURCES", "book,system,manual")
 
-    assert map_notion_page_to_kb_entry(_page(status="active", source="manual")) is not None
+    assert (
+        map_notion_page_to_kb_entry(_page(status="active", source="manual")) is not None
+    )

@@ -18,13 +18,32 @@ def _mk_ctx_bridge(*, kb_ids: list[str] | None = None) -> Dict[str, Any]:
                 "entries": [{"id": kb_ids[0], "title": "T", "content": "C"}],
                 "used_entry_ids": kb_ids,
             },
-            "notion_snapshot": {"ready": True, "payload": {"projects": [{"title": "FLP"}]}},
-            "memory_snapshot": {"payload": {"active_decision": {"title": "zadnja odluka"}}},
-            "trace": {"used_sources": ["identity_pack", "notion_snapshot", "kb_snapshot", "memory_snapshot"]},
+            "notion_snapshot": {
+                "ready": True,
+                "payload": {"projects": [{"title": "FLP"}]},
+            },
+            "memory_snapshot": {
+                "payload": {"active_decision": {"title": "zadnja odluka"}}
+            },
+            "trace": {
+                "used_sources": [
+                    "identity_pack",
+                    "notion_snapshot",
+                    "kb_snapshot",
+                    "memory_snapshot",
+                ]
+            },
         },
         "conversation_state": {"turn": 1},
         "missing": [],
-        "trace": {"used_sources": ["identity_pack", "notion_snapshot", "kb_snapshot", "memory_snapshot"]},
+        "trace": {
+            "used_sources": [
+                "identity_pack",
+                "notion_snapshot",
+                "kb_snapshot",
+                "memory_snapshot",
+            ]
+        },
     }
 
 
@@ -67,7 +86,11 @@ def test_gateway_fallback_bridge_injects_context_and_trace_contract(monkeypatch)
                 "text": "Predlažem dvije akcije.",
                 "proposed_commands": [
                     {"command": "notion_write", "args": {"title": "X"}},
-                    {"command": gw.PROPOSAL_WRAPPER_INTENT, "intent": "memory_write", "args": {"k": "v"}},
+                    {
+                        "command": gw.PROPOSAL_WRAPPER_INTENT,
+                        "intent": "memory_write",
+                        "args": {"k": "v"},
+                    },
                 ],
                 "trace": {"intent": "status", "exit_reason": "ok"},
             }
@@ -76,7 +99,9 @@ def test_gateway_fallback_bridge_injects_context_and_trace_contract(monkeypatch)
         captured["purpose"] = purpose
         return _FakeExecutor()
 
-    monkeypatch.setattr("services.agent_router.executor_factory.get_executor", _fake_get_executor)
+    monkeypatch.setattr(
+        "services.agent_router.executor_factory.get_executor", _fake_get_executor
+    )
 
     client = TestClient(gw.app)
     r = client.post(
@@ -89,7 +114,9 @@ def test_gateway_fallback_bridge_injects_context_and_trace_contract(monkeypatch)
     j: Dict[str, Any] = r.json()
 
     # Fallback route selected.
-    assert (j.get("trace") or {}).get("router_version") == "gateway-fallback-proposals-disabled-for-nonwrite-v1"
+    assert (j.get("trace") or {}).get(
+        "router_version"
+    ) == "gateway-fallback-proposals-disabled-for-nonwrite-v1"
     assert j.get("read_only") is True
 
     # Executor got the governed context packs.
@@ -131,7 +158,13 @@ def test_gateway_fallback_bridge_allows_notion_write_when_armed(monkeypatch):
     import gateway.gateway_server as gw
 
     async def _fake_backend_ceo_command(_req):
-        return {"ok": True, "text": "noop", "summary": "noop", "proposed_commands": [], "trace": {}}
+        return {
+            "ok": True,
+            "text": "noop",
+            "summary": "noop",
+            "proposed_commands": [],
+            "trace": {},
+        }
 
     monkeypatch.setattr(gw.ceo_console_module, "ceo_command", _fake_backend_ceo_command)
 
@@ -145,7 +178,9 @@ def test_gateway_fallback_bridge_allows_notion_write_when_armed(monkeypatch):
     monkeypatch.setattr("services.notion_ops_state.get_state", _fake_get_state)
     monkeypatch.setattr("services.notion_ops_state.is_armed", _fake_is_armed)
 
-    monkeypatch.setattr(gw, "_build_ceo_read_context", lambda *a, **k: _mk_ctx_bridge(kb_ids=["KB-900"]))
+    monkeypatch.setattr(
+        gw, "_build_ceo_read_context", lambda *a, **k: _mk_ctx_bridge(kb_ids=["KB-900"])
+    )
 
     class _FakeExecutor:
         async def ceo_command(self, prompt: str, ctx: Dict[str, Any]):  # noqa: ANN001
@@ -153,7 +188,11 @@ def test_gateway_fallback_bridge_allows_notion_write_when_armed(monkeypatch):
                 "text": "OK",
                 "proposed_commands": [
                     {"command": "notion_write", "args": {"title": "X"}},
-                    {"command": gw.PROPOSAL_WRAPPER_INTENT, "intent": "memory_write", "args": {"k": "v"}},
+                    {
+                        "command": gw.PROPOSAL_WRAPPER_INTENT,
+                        "intent": "memory_write",
+                        "args": {"k": "v"},
+                    },
                 ],
                 "trace": {"intent": "status", "exit_reason": "ok"},
             }
@@ -166,7 +205,10 @@ def test_gateway_fallback_bridge_allows_notion_write_when_armed(monkeypatch):
     client = TestClient(gw.app)
     r = client.post(
         "/api/ceo/command",
-        json={"text": "Daj mi kratko stanje.", "data": {"session_id": "conv-e2e-armed-001"}},
+        json={
+            "text": "Daj mi kratko stanje.",
+            "data": {"session_id": "conv-e2e-armed-001"},
+        },
     )
 
     assert r.status_code == 200

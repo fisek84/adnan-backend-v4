@@ -16,7 +16,10 @@ def test_ceo_advisor_emits_kb_ids_used_in_trace(monkeypatch):
     inp = AgentInput(
         message="Možeš li objasniti kako radi memorija?",  # triggers deterministic memory capability path
         snapshot={"payload": {"goals": [], "tasks": [], "projects": []}},
-        identity_pack={"schema_version": "identity_pack.v1", "identity": {"name": "Adnan"}},
+        identity_pack={
+            "schema_version": "identity_pack.v1",
+            "identity": {"name": "Adnan"},
+        },
         metadata={"session_id": "t-1"},
     )
 
