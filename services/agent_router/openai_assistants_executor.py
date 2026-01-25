@@ -14,6 +14,7 @@ from services.agent_router.executor_errors import (
     ExecutorTimeout,
     ExecutorToolCallAttempt,
 )
+from services.agent_router.openai_key_diag import get_openai_key_diag
 
 
 _CODE_FENCE_RE = re.compile(
@@ -52,6 +53,19 @@ class OpenAIAssistantsExecutor:
         if not api_key:
             raise RuntimeError("OPENAI_API_KEY is missing")
         self.client = OpenAI(api_key=api_key)
+
+        d = get_openai_key_diag()
+        logger = __import__("logging").getLogger(__name__)
+        logger.info(
+            "[OPENAI_KEY_DIAG] present=%s len=%s prefix=%s fp=%s source=%s mode=%s base_url=%s",
+            d.get("present"),
+            d.get("len"),
+            d.get("prefix"),
+            d.get("fingerprint"),
+            d.get("source"),
+            d.get("mode"),
+            d.get("base_url"),
+        )
 
     async def _to_thread(self, fn, *args, **kwargs):
         return await asyncio.to_thread(fn, *args, **kwargs)

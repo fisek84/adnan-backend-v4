@@ -20,6 +20,11 @@ from services.agent_registry_service import AgentRegistryService
 from services.agent_router_service import AgentRouterService
 from services.knowledge_snapshot_service import KnowledgeSnapshotService
 
+try:
+    from services.identity_resolver import lookup_identity_id as _lookup_identity_id  # type: ignore
+except Exception:  # pragma: no cover
+    _lookup_identity_id = None  # type: ignore
+
 ROUTER_VERSION = "2026-01-06-canon-read-propose-only-v1"
 
 router = APIRouter(prefix="/ceo-console", tags=["CEO Console"])
@@ -153,6 +158,89 @@ def _inject_confidence_risk(resp: CEOCommandResponse) -> None:
         pc.setdefault("risk", risk_level.upper())
 
 
+def _attach_trace_contract_fields(
+    resp: CEOCommandResponse,
+    *,
+    grounding_pack: Dict[str, Any],
+    identity_pack: Dict[str, Any],
+    knowledge_snapshot: Dict[str, Any],
+    memory_public: Dict[str, Any],
+) -> None:
+    tr = resp.trace if isinstance(resp.trace, dict) else {}
+
+    gp_trace = (
+        grounding_pack.get("trace")
+        if isinstance(grounding_pack.get("trace"), dict)
+        else {}
+    )
+    used_raw = (
+        gp_trace.get("used_sources")
+        if isinstance(gp_trace.get("used_sources"), list)
+        else []
+    )
+    used_raw = [x for x in used_raw if isinstance(x, str) and x.strip()]
+
+    mapping = {
+        "kb_snapshot": "kb",
+        "memory_snapshot": "memory",
+    }
+    used_sources = sorted({mapping.get(x, x) for x in used_raw})
+
+    # Optional read-only DB identity signal: only mark as used when we
+    # successfully resolved a DB identity id (no implicit writes).
+    try:
+        iid = (
+            identity_pack.get("identity_id_db")
+            if isinstance(identity_pack, dict)
+            else None
+        )
+        if isinstance(iid, str) and iid.strip():
+            used_sources = sorted({*used_sources, "identity_root"})
+    except Exception:
+        pass
+
+    missing_inputs: List[str] = []
+
+    if not (
+        isinstance(identity_pack, dict) and identity_pack.get("available") is not False
+    ):
+        missing_inputs.append("identity_pack")
+
+    if not (
+        isinstance(knowledge_snapshot, dict) and knowledge_snapshot.get("ready") is True
+    ):
+        missing_inputs.append("notion_snapshot")
+
+    gp_enabled = (
+        grounding_pack.get("enabled") is True
+        if isinstance(grounding_pack, dict)
+        else False
+    )
+    if not gp_enabled:
+        missing_inputs.append("kb")
+
+    if not (isinstance(memory_public, dict) and memory_public):
+        missing_inputs.append("memory")
+
+    kb_ids_used: List[str] = []
+    kb = (
+        grounding_pack.get("kb_retrieved")
+        if isinstance(grounding_pack.get("kb_retrieved"), dict)
+        else {}
+    )
+    raw_ids = kb.get("used_entry_ids") if isinstance(kb, dict) else None
+    if isinstance(raw_ids, list):
+        kb_ids_used = [x for x in raw_ids if isinstance(x, str) and x.strip()]
+
+    tr["used_sources"] = used_sources
+    tr["missing_inputs"] = sorted(
+        {x for x in missing_inputs if isinstance(x, str) and x.strip()}
+    )
+    tr["kb_ids_used"] = kb_ids_used
+
+    resp.trace = tr
+
+
 @router.post("/command/internal")
 async def ceo_command(req: CEOCommandRequest = Body(...)) -> CEOCommandResponse:
     _ensure_registry_loaded()
@@ -179,6 +267,15 @@ async def ceo_command(req: CEOCommandRequest = Body(...)) -> CEOCommandResponse:
         identity_pack = ip if isinstance(ip, dict) else {}
     except Exception:
         identity_pack = {}
+
+    # Read-only Postgres lookup (no INSERT). Fail-safe if DB/migrations missing.
+    try:
+        if callable(_lookup_identity_id) and isinstance(identity_pack, dict):
+            iid = _lookup_identity_id("CEO")
+            if isinstance(iid, str) and iid.strip():
+                identity_pack.setdefault("identity_id_db", iid)
+    except Exception:
+        pass
 
     memory_public: Dict[str, Any] = {}
     try:
@@ -220,6 +317,39 @@ async def ceo_command(req: CEOCommandRequest = Body(...)) -> CEOCommandResponse:
     except Exception:
         grounding_pack = {}
 
+    # Normalize KB payload presence (runtime contract): even if empty, provide a
+    # stable kb object so downstream trace semantics can distinguish
+    # "provided but empty" from "missing".
+    kb_payload: Dict[str, Any] = {}
+    try:
+        gp_kb = (
+            grounding_pack.get("kb_retrieved")
+            if isinstance(grounding_pack.get("kb_retrieved"), dict)
+            else None
+        )
+
+        if not isinstance(gp_kb, dict):
+            gp_kb = {"used_entry_ids": [], "entries": [], "refs": []}
+            grounding_pack["kb_retrieved"] = gp_kb
+
+        used_ids = gp_kb.get("used_entry_ids")
+        if not isinstance(used_ids, list):
+            used_ids = []
+            gp_kb["used_entry_ids"] = used_ids
+
+        entries = gp_kb.get("entries")
+        if not isinstance(entries, list):
+            entries = []
+            gp_kb["entries"] = entries
+
+        kb_payload = {
+            "used_entry_ids": [x for x in used_ids if isinstance(x, str) and x.strip()],
+            "entries": [e for e in entries if isinstance(e, dict)],
+            "refs": gp_kb.get("refs") if isinstance(gp_kb.get("refs"), list) else [],
+        }
+    except Exception:
+        kb_payload = {"used_entry_ids": [], "entries": [], "refs": []}
+
     agent_input = AgentInput(
         message=req.text,
         snapshot=knowledge_snapshot,
@@ -235,6 +365,7 @@ async def ceo_command(req: CEOCommandRequest = Body(...)) -> CEOCommandResponse:
                 "grounding_pack": grounding_pack,
                 "memory": memory_public,
                 "conversation_state": conversation_state,
+                "kb": kb_payload,
             },
         },
     )
@@ -254,7 +385,25 @@ async def ceo_command(req: CEOCommandRequest = Body(...)) -> CEOCommandResponse:
         summary=summary,
         proposed_commands=proposed,
         context={"canon": "read_propose_only"},
-        trace={},
+        trace=(
+            agent_out.get("trace", {})
+            if isinstance(agent_out, dict)
+            else (
+                getattr(agent_out, "trace", {})
+                if isinstance(getattr(agent_out, "trace", None), dict)
+                else {}
+            )
+        ),
+    )
+
+    _attach_trace_contract_fields(
+        resp,
+        grounding_pack=grounding_pack,
+        identity_pack=identity_pack,
+        knowledge_snapshot=knowledge_snapshot
+        if isinstance(knowledge_snapshot, dict)
+        else {},
+        memory_public=memory_public,
     )
 
     _inject_confidence_risk(resp)

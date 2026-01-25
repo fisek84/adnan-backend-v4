@@ -12,6 +12,7 @@ from services.agent_router.executor_errors import (
     ExecutorOutputError,
     ExecutorToolCallAttempt,
 )
+from services.agent_router.openai_key_diag import get_openai_key_diag
 
 
 logger = logging.getLogger(__name__)
@@ -65,6 +66,18 @@ class OpenAIResponsesExecutor:
         if not api_key:
             raise RuntimeError("OPENAI_API_KEY is missing")
         self.client = OpenAI(api_key=api_key)
+
+        d = get_openai_key_diag()
+        logger.info(
+            "[OPENAI_KEY_DIAG] present=%s len=%s prefix=%s fp=%s source=%s mode=%s base_url=%s",
+            d.get("present"),
+            d.get("len"),
+            d.get("prefix"),
+            d.get("fingerprint"),
+            d.get("source"),
+            d.get("mode"),
+            d.get("base_url"),
+        )
 
     def _model(self) -> str:
         m = (os.getenv(self._model_env) or "").strip()

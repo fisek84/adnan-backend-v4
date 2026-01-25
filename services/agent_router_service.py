@@ -11,6 +11,22 @@ from services.agent_registry_service import AgentRegistryEntry, AgentRegistrySer
 AgentCallable = Callable[[AgentInput, Dict[str, Any]], Any]
 
 
+def _deep_merge_dicts(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
+    """Deep-merge incoming into base and return base.
+
+    - Dicts are merged recursively.
+    - Non-dicts replace.
+    """
+
+    for key, incoming_value in incoming.items():
+        base_value = base.get(key)
+        if isinstance(base_value, dict) and isinstance(incoming_value, dict):
+            _deep_merge_dicts(base_value, incoming_value)
+        else:
+            base[key] = incoming_value
+    return base
+
+
 class AgentRouterService:
     """
     Deterministički router preko registry-ja (SSOT via AgentRegistryService).
@@ -122,11 +138,13 @@ class AgentRouterService:
             "trace": trace,
         }
         if isinstance(ctx_extra, dict):
-            for k, v in ctx_extra.items():
-                # Do not allow clobbering router-provided keys.
-                if k in {"registry_entry", "trace"}:
-                    continue
-                ctx_for_agent[k] = v
+            # Do not allow clobbering router-provided keys.
+            safe_extra = {
+                k: v
+                for k, v in ctx_extra.items()
+                if k not in {"registry_entry", "trace"}
+            }
+            _deep_merge_dicts(ctx_for_agent, safe_extra)
 
         try:
             routed = callable_fn(agent_input, ctx_for_agent)

@@ -18,6 +18,7 @@ from services.ceo_alignment_engine import CEOAlignmentEngine  # <-- already pres
 from services.identity_loader import load_ceo_identity_pack
 from services.knowledge_service import KnowledgeService
 from services.world_state_engine import WorldStateEngine  # <-- already present
+from services.agent_router.openai_key_diag import get_openai_key_diag
 
 # OPTION C (Behaviour router) - best-effort import (FAIL-SOFT, enterprise)
 try:
@@ -778,6 +779,18 @@ class OpenAIAssistantExecutor:
         self._max_wait_s = float(max_wait_s)
 
         self.client = OpenAI(api_key=api_key)
+
+        d = get_openai_key_diag()
+        logger.info(
+            "[OPENAI_KEY_DIAG] present=%s len=%s prefix=%s fp=%s source=%s mode=%s base_url=%s",
+            d.get("present"),
+            d.get("len"),
+            d.get("prefix"),
+            d.get("fingerprint"),
+            d.get("source"),
+            d.get("mode"),
+            d.get("base_url"),
+        )
 
     async def _to_thread(self, fn, *args, **kwargs):
         return await asyncio.to_thread(fn, *args, **kwargs)

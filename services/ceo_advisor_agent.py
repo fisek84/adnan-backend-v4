@@ -1421,9 +1421,34 @@ def _snapshot_trace(
         # If payload has content, treat it as available.
         available = bool(snapshot_payload)
 
+    # Normalize payload lists to avoid null semantics in consumers (e.g. PowerShell).
+    payload_norm: Dict[str, Any] = (
+        snapshot_payload if isinstance(snapshot_payload, dict) else {}
+    )
+    payload_norm = dict(payload_norm)
+    for k in ("goals", "tasks", "projects"):
+        if not isinstance(payload_norm.get(k), list):
+            payload_norm[k] = []
+
+    ready_raw = None
+    try:
+        v = raw_snapshot.get("ready") if isinstance(raw_snapshot, dict) else None
+        if isinstance(v, bool):
+            ready_raw = v
+        elif v is not None:
+            ready_raw = bool(v)
+    except Exception:
+        ready_raw = None
+
+    if ready_raw is None:
+        # If snapshot wrapper exists, treat it as ready (even if lists are empty).
+        ready_raw = bool(raw_snapshot)
+
     out: Dict[str, Any] = {
         "present_in_request": bool(raw_snapshot),
         "available": bool(available is True),
+        "ready": bool(ready_raw is True),
+        "payload": payload_norm,
         "source": src,
         "goals_count": int(len(goals or [])),
         "tasks_count": int(len(tasks or [])),
@@ -1744,11 +1769,16 @@ async def create_ceo_advisor_agent(
         gp0 = ctx.get("grounding_pack") if isinstance(ctx, dict) else None
         gp0 = gp0 if isinstance(gp0, dict) else {}
 
-        kb0 = (
-            gp0.get("kb_retrieved") if isinstance(gp0.get("kb_retrieved"), dict) else {}
+        # KB is considered "present" if the caller provided a kb payload OR a
+        # grounding pack includes kb_retrieved, even if entries are empty.
+        kb_ctx = ctx.get("kb") if isinstance(ctx, dict) else None
+        kb_ctx = kb_ctx if isinstance(kb_ctx, dict) else None
+        kb_gp = (
+            gp0.get("kb_retrieved")
+            if isinstance(gp0.get("kb_retrieved"), dict)
+            else None
         )
-        entries0 = kb0.get("entries") if isinstance(kb0, dict) else None
-        if isinstance(entries0, list) and entries0:
+        if isinstance(kb_ctx, dict) or isinstance(kb_gp, dict):
             used.append("kb")
         else:
             missing.append("kb")
@@ -1812,8 +1842,45 @@ async def create_ceo_advisor_agent(
 
         tr = out.trace if isinstance(out.trace, dict) else {}
         tr.setdefault("snapshot", snap_trace)
-        tr.setdefault("used_sources", list(used_sources))
-        tr.setdefault("missing_inputs", list(missing_inputs))
+
+        # Enforce/merge trace contract fields (last-write-wins, but stable):
+        # some upstream layers may already provide used_sources/missing_inputs.
+        used_existing = (
+            tr.get("used_sources") if isinstance(tr.get("used_sources"), list) else []
+        )
+        missing_existing = (
+            tr.get("missing_inputs")
+            if isinstance(tr.get("missing_inputs"), list)
+            else []
+        )
+
+        used_merged = [
+            x
+            for x in (used_existing + list(used_sources))
+            if isinstance(x, str) and x.strip()
+        ]
+        missing_merged = [
+            x
+            for x in (missing_existing + list(missing_inputs))
+            if isinstance(x, str) and x.strip()
+        ]
+
+        # De-dup while preserving order.
+        used_dedup: List[str] = []
+        for x in used_merged:
+            if x not in used_dedup:
+                used_dedup.append(x)
+
+        missing_dedup: List[str] = []
+        for x in missing_merged:
+            if x not in missing_dedup:
+                missing_dedup.append(x)
+
+        # If we consider a source "used", it cannot also be "missing".
+        missing_dedup = [x for x in missing_dedup if x not in used_dedup]
+
+        tr["used_sources"] = used_dedup
+        tr["missing_inputs"] = missing_dedup
         tr.setdefault(
             "notion_ops",
             {"armed": bool(notion_ops_armed is True), "session_id": session_id},
@@ -1825,11 +1892,19 @@ async def create_ceo_advisor_agent(
         try:
             gp0 = ctx.get("grounding_pack") if isinstance(ctx, dict) else None
             gp0 = gp0 if isinstance(gp0, dict) else {}
-            kb0 = (
+
+            kb0 = None
+            kb_gp = (
                 gp0.get("kb_retrieved")
                 if isinstance(gp0.get("kb_retrieved"), dict)
-                else {}
+                else None
             )
+            if isinstance(kb_gp, dict):
+                kb0 = kb_gp
+            else:
+                kb_ctx = ctx.get("kb") if isinstance(ctx, dict) else None
+                kb0 = kb_ctx if isinstance(kb_ctx, dict) else None
+
             if isinstance(kb0, dict):
                 kb_entries = kb0.get("entries")
                 if isinstance(kb_entries, list):
@@ -1959,14 +2034,32 @@ async def create_ceo_advisor_agent(
     gp_ctx = ctx.get("grounding_pack") if isinstance(ctx, dict) else None
     gp_ctx = gp_ctx if isinstance(gp_ctx, dict) else {}
     kb_used_ids: List[str] = []
+    kb_entries_effective: List[Dict[str, Any]] = []
+    kb_hits: int = 0
+    kb_mode: str = "none"  # stable diagnostic: where KB was read from
     try:
         kb_retrieved = gp_ctx.get("kb_retrieved") if isinstance(gp_ctx, dict) else None
         if isinstance(kb_retrieved, dict):
+            kb_mode = "grounding_pack.kb_retrieved"
+        else:
+            # Back-compat: some bridges provide KB retrieval as ctx["kb"].
+            kb_retrieved = ctx.get("kb") if isinstance(ctx, dict) else None
+            if isinstance(kb_retrieved, dict):
+                kb_mode = "ctx.kb"
+
+        if isinstance(kb_retrieved, dict):
             kb_used_ids = list(kb_retrieved.get("used_entry_ids") or [])
+            entries0 = kb_retrieved.get("entries")
+            if isinstance(entries0, list):
+                kb_entries_effective = [x for x in entries0 if isinstance(x, dict)]
+                kb_hits = len(kb_entries_effective)
     except Exception:
         kb_used_ids = []
+        kb_entries_effective = []
+        kb_hits = 0
+        kb_mode = "none"
     kb_used_ids = [x for x in kb_used_ids if isinstance(x, str) and x.strip()]
-    kb_has_coverage = bool(kb_used_ids)
+    kb_ids_used_count = len(kb_used_ids)
 
     # TRACE_STATUS / provenance query: answer from grounding trace, never from memory governance.
     t_prompt0 = (base_text or "").strip().lower()
@@ -2110,13 +2203,20 @@ async def create_ceo_advisor_agent(
     # Keep the chat going with clarifying questions and an explicit expand-knowledge option.
     if (
         (not fact_sensitive)
-        and (not kb_has_coverage)
+        and (kb_ids_used_count == 0)
+        and (kb_hits == 0)
         and (not snapshot_has_facts)
         and (not _should_use_kickoff_in_offline_mode(t0))
     ):
         effective_allow_general = bool(allow_general and llm_configured)
         logger.info(
-            f"[LLM-GATE] unknown_mode: allow_general={allow_general} llm_configured={llm_configured} effective_allow_general={effective_allow_general}"
+            "[LLM-GATE] unknown_mode: allow_general=%s llm_configured=%s effective_allow_general=%s kb_ids_used_count=%s kb_hits=%s kb_mode=%s",
+            allow_general,
+            llm_configured,
+            effective_allow_general,
+            kb_ids_used_count,
+            kb_hits,
+            kb_mode,
         )
         if not effective_allow_general:
             if not allow_general:
@@ -2139,6 +2239,11 @@ async def create_ceo_advisor_agent(
                 logger.warning(
                     "[LLM-GATE] Blocked: allow_general is True but LLM is not configured; returning offline-safe unknown_mode fallback."
                 )
+            fallback_reason = (
+                "fallback.allow_general_false"
+                if not allow_general
+                else "offline.llm_not_configured"
+            )
             return _final(
                 AgentOutput(
                     text=(
@@ -2165,11 +2270,13 @@ async def create_ceo_advisor_agent(
                         "intent": "unknown_mode",
                         "kb_used_entry_ids": kb_used_ids,
                         "snapshot": snap_trace,
-                        "exit_reason": (
-                            "fallback.allow_general_false"
-                            if not allow_general
-                            else "offline.llm_not_configured"
-                        ),
+                        "exit_reason": fallback_reason,
+                        "llm_gate_diag": {
+                            "kb_ids_used_count": int(kb_ids_used_count),
+                            "kb_hits": int(kb_hits),
+                            "kb_mode": kb_mode,
+                            "fallback_reason": fallback_reason,
+                        },
                     },
                 )
             )
@@ -2338,6 +2445,65 @@ async def create_ceo_advisor_agent(
         logger.warning(
             "[LLM-GATE] Blocked: use_llm is True but _llm_is_configured is False. Returning deterministic fallback."
         )
+        # If KB retrieval returned hits/ids, do NOT claim "no curated knowledge".
+        # Return a deterministic grounded response using the retrieved KB snippets.
+        if kb_ids_used_count > 0 or kb_hits > 0:
+            kb_lines: List[str] = []
+            for it in kb_entries_effective[:8]:
+                kid = (it.get("id") if isinstance(it, dict) else None) or "(missing_id)"
+                title = (it.get("title") if isinstance(it, dict) else None) or ""
+                content = (it.get("content") if isinstance(it, dict) else None) or ""
+                snippet = _truncate(str(content), max_chars=500)
+                if title:
+                    kb_lines.append(f"- [KB:{kid}] {title}: {snippet}")
+                else:
+                    kb_lines.append(f"- [KB:{kid}] {snippet}")
+
+            if english_output:
+                text_out = (
+                    "I found relevant curated KB entries for this request, but the LLM is not configured in this environment.\n"
+                    "Here are the retrieved KB snippets:\n\n"
+                    + (
+                        "\n".join(kb_lines)
+                        if kb_lines
+                        else "(KB hits present, but entries payload was empty)"
+                    )
+                )
+            else:
+                text_out = (
+                    "Imam relevantne unose iz kuriranog KB-a za ovaj upit, ali LLM nije konfigurisan u ovom okruženju.\n"
+                    "Evo izvučenih KB snippeta:\n\n"
+                    + (
+                        "\n".join(kb_lines)
+                        if kb_lines
+                        else "(KB hitovi postoje, ali payload entries je prazan)"
+                    )
+                )
+
+            fallback_reason = "offline.kb_grounded_no_llm"
+            return _final(
+                AgentOutput(
+                    text=text_out,
+                    proposed_commands=[],
+                    agent_id="ceo_advisor",
+                    read_only=True,
+                    trace={
+                        "offline_mode": True,
+                        "deterministic": True,
+                        "intent": "offline_kb_grounded",
+                        "exit_reason": fallback_reason,
+                        "kb_used_entry_ids": kb_used_ids,
+                        "snapshot": snap_trace,
+                        "llm_gate_diag": {
+                            "kb_ids_used_count": int(kb_ids_used_count),
+                            "kb_hits": int(kb_hits),
+                            "kb_mode": kb_mode,
+                            "fallback_reason": fallback_reason,
+                        },
+                    },
+                )
+            )
+
         t0 = (base_text or "").strip().lower()
 
         # Prompt-template intent should return a copy/paste template even offline.
@@ -2450,6 +2616,7 @@ async def create_ceo_advisor_agent(
                 },
             )
 
+        fallback_reason = "offline.llm_not_configured"
         return _final(
             AgentOutput(
                 text=_unknown_mode_text(english_output=english_output),
@@ -2460,8 +2627,14 @@ async def create_ceo_advisor_agent(
                     "offline_mode": True,
                     "deterministic": True,
                     "intent": "unknown_mode",
-                    "exit_reason": "offline.llm_not_configured",
+                    "exit_reason": fallback_reason,
                     "snapshot": snap_trace,
+                    "llm_gate_diag": {
+                        "kb_ids_used_count": int(kb_ids_used_count),
+                        "kb_hits": int(kb_hits),
+                        "kb_mode": kb_mode,
+                        "fallback_reason": fallback_reason,
+                    },
                 },
             )
         )
@@ -2486,6 +2659,15 @@ async def create_ceo_advisor_agent(
     gp = ctx.get("grounding_pack") if isinstance(ctx, dict) else None
     if isinstance(gp, dict) and gp:
         safe_context["grounding_pack"] = gp
+    else:
+        # Back-compat: when KB retrieval is bridged as ctx["kb"], inject it into
+        # synthesis context so LLM sees the snippets (not trace-only).
+        kb_ctx = ctx.get("kb") if isinstance(ctx, dict) else None
+        if isinstance(kb_ctx, dict) and (kb_ids_used_count > 0 or kb_hits > 0):
+            safe_context["grounding_pack"] = {
+                "enabled": True,
+                "kb_retrieved": kb_ctx,
+            }
 
     # RESPONSES MODE: enforce system-equivalent instructions (identity + governance + budgeted grounding).
     if _responses_mode_enabled():
@@ -2635,6 +2817,7 @@ async def create_ceo_advisor_agent(
     proposed: List[ProposedCommand] = []
     text_out: str = ""
     llm_exit_reason: Optional[str] = None
+    llm_executor_error_diag: Optional[Dict[str, Any]] = None
 
     # Deterministic, enterprise-safe: if user asks for a prompt template for Notion Ops,
     # return it even in offline/CI mode (no LLM), and do not emit write proposals.
@@ -2680,10 +2863,40 @@ async def create_ceo_advisor_agent(
                 result = {"text": str(raw)}
             llm_exit_reason = "llm.success"
             logger.info("[CEO_ADVISOR_EXIT] llm.success")
-        except Exception:
+        except Exception as exc:
             logger.exception("[LLM-GATE] Exception in LLM execution")
             llm_exit_reason = "offline.executor_error"
             logger.info("[CEO_ADVISOR_EXIT] offline.executor_error")
+
+            # Detect OpenAI authentication failure (401 invalid_api_key) so it can't
+            # be misdiagnosed as missing KB/snapshot knowledge.
+            try:
+                from openai import AuthenticationError  # type: ignore
+
+                if isinstance(exc, AuthenticationError):
+                    status = getattr(exc, "status_code", None)
+                    resp = getattr(exc, "response", None)
+                    if status is None and resp is not None:
+                        status = getattr(resp, "status_code", None)
+
+                    body = getattr(exc, "body", None)
+                    code = None
+                    if isinstance(body, dict):
+                        err0 = body.get("error")
+                        if isinstance(err0, dict):
+                            code = err0.get("code")
+                    if code is None and isinstance(body, dict):
+                        code = body.get("code")
+
+                    if int(status or 0) == 401 or str(code or "") == "invalid_api_key":
+                        llm_executor_error_diag = {
+                            "status": 401,
+                            "code": "invalid_api_key",
+                            "kind": "auth",
+                        }
+            except Exception:
+                llm_executor_error_diag = llm_executor_error_diag
+
             # Enterprise fail-soft: do not dump LLM errors; return deterministic unknown-mode.
             t0 = (base_text or "").strip().lower()
             if _is_memory_capability_question(t0):
@@ -2722,10 +2935,33 @@ async def create_ceo_advisor_agent(
             elif not snapshot_has_facts and _should_use_kickoff_in_offline_mode(t0):
                 result = {"text": _default_kickoff_text(), "proposed_commands": []}
             else:
-                result = {
-                    "text": _unknown_mode_text(english_output=english_output),
-                    "proposed_commands": [],
-                }
+                if (
+                    isinstance(llm_executor_error_diag, dict)
+                    and llm_executor_error_diag.get("kind") == "auth"
+                ):
+                    if english_output:
+                        txt = (
+                            "LLM authentication failed (401 invalid_api_key). "
+                            "Fix OPENAI_API_KEY / OPENAI_API_MODE configuration."
+                        )
+                    else:
+                        txt = (
+                            "LLM autentikacija nije uspjela (401 invalid_api_key). "
+                            "Provjeri OPENAI_API_KEY / OPENAI_API_MODE konfiguraciju."
+                        )
+                else:
+                    if english_output:
+                        txt = (
+                            "LLM execution failed (offline.executor_error). "
+                            "Check OPENAI_API_KEY / network / OpenAI configuration and retry."
+                        )
+                    else:
+                        txt = (
+                            "LLM izvršavanje nije uspjelo (offline.executor_error). "
+                            "Provjeri OPENAI_API_KEY / mrežu / OpenAI konfiguraciju i ponovi."
+                        )
+
+                result = {"text": txt, "proposed_commands": []}
 
         text_out = _pick_text(result) or "CEO advisor nije vratio tekstualni output."
         "- NE SMIJEŠ tvrditi status/rizik/blokade ili brojeve ciljeva/taskova ako to nije eksplicitno u snapshot-u; u tom slučaju reci da nije poznato iz snapshot-a i predloži refresh.\n"
@@ -2803,6 +3039,41 @@ async def create_ceo_advisor_agent(
     trace["wants_notion"] = wants_notion
     trace["llm_used"] = use_llm
     trace["snapshot"] = snap_trace
+
+    # Attach OpenAI key fingerprint diagnostics (never the raw key) to help
+    # debug reload/child-process env mismatches.
+    if use_llm:
+        try:
+            from services.agent_router.openai_key_diag import get_openai_key_diag
+
+            diag0 = (
+                trace.get("llm_gate_diag")
+                if isinstance(trace.get("llm_gate_diag"), dict)
+                else {}
+            )
+            diag0.setdefault("openai_key", get_openai_key_diag())
+            trace["llm_gate_diag"] = diag0
+        except Exception:
+            pass
+
+    if (
+        isinstance(llm_executor_error_diag, dict)
+        and llm_exit_reason == "offline.executor_error"
+    ):
+        diag = (
+            trace.get("llm_gate_diag")
+            if isinstance(trace.get("llm_gate_diag"), dict)
+            else {}
+        )
+        # Keep stable keys for debugging this decision point.
+        diag.setdefault("kb_ids_used_count", int(kb_ids_used_count))
+        diag.setdefault("kb_hits", int(kb_hits))
+        diag.setdefault("kb_mode", kb_mode)
+        diag.setdefault("fallback_reason", "offline.executor_error")
+        for k in ("status", "code", "kind"):
+            if k in llm_executor_error_diag:
+                diag[k] = llm_executor_error_diag.get(k)
+        trace["llm_gate_diag"] = diag
 
     if llm_exit_reason:
         trace.setdefault("exit_reason", llm_exit_reason)

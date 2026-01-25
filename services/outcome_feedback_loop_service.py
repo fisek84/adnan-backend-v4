@@ -250,29 +250,67 @@ def _resolve_identity_id(
 
     itype = _normalize_identity_type(owner)
 
-    row = conn.execute(
-        sa.text(
-            "SELECT identity_id FROM identity_root WHERE identity_type = :t LIMIT 1"
-        ),
-        {"t": itype},
-    ).fetchone()
+    def _is_missing_identity_root_error(exc: BaseException) -> bool:
+        s = str(exc).lower()
+        return "identity_root" in s and (
+            "does not exist" in s
+            or "undefinedtable" in s
+            or "undefined table" in s
+            or "relation" in s
+        )
+
+    def _is_on_conflict_missing_constraint_error(exc: BaseException) -> bool:
+        s = str(exc).lower()
+        return "on conflict" in s and "no unique" in s and "constraint" in s
+
+    try:
+        row = conn.execute(
+            sa.text(
+                "SELECT identity_id FROM identity_root WHERE identity_type = :t LIMIT 1"
+            ),
+            {"t": itype},
+        ).fetchone()
+    except (sa.exc.ProgrammingError, sa.exc.DBAPIError):
+        # Fail-safe: if migrations were not applied, do not crash OFL writes.
+        return None
     if row and row[0]:
         return str(row[0])
 
-    # NOTE: identity_type nema UNIQUE constraint u prikazanom migrationu (NIJE POZNATO da li postoji u DB),
-    # pa ne koristimo ON CONFLICT. Insert pa select je deterministički i radi.
-    conn.execute(
-        sa.text("INSERT INTO identity_root (identity_type) VALUES (:t)"),
-        {"t": itype},
-    )
+    # Best-effort deterministic insert:
+    # - prefer ON CONFLICT if UNIQUE exists
+    # - fall back to plain INSERT on older schemas
+    try:
+        conn.execute(
+            sa.text(
+                "INSERT INTO identity_root (identity_type) VALUES (:t) "
+                "ON CONFLICT (identity_type) DO NOTHING"
+            ),
+            {"t": itype},
+        )
+    except (sa.exc.ProgrammingError, sa.exc.DBAPIError) as e:
+        if _is_missing_identity_root_error(e):
+            return None
+        if _is_on_conflict_missing_constraint_error(e):
+            try:
+                conn.execute(
+                    sa.text("INSERT INTO identity_root (identity_type) VALUES (:t)"),
+                    {"t": itype},
+                )
+            except (sa.exc.ProgrammingError, sa.exc.DBAPIError):
+                return None
+        else:
+            return None
 
-    row2 = conn.execute(
-        sa.text(
-            "SELECT identity_id FROM identity_root WHERE identity_type = :t "
-            "ORDER BY created_at DESC LIMIT 1"
-        ),
-        {"t": itype},
-    ).fetchone()
+    try:
+        row2 = conn.execute(
+            sa.text(
+                "SELECT identity_id FROM identity_root WHERE identity_type = :t "
+                "ORDER BY created_at DESC LIMIT 1"
+            ),
+            {"t": itype},
+        ).fetchone()
+    except (sa.exc.ProgrammingError, sa.exc.DBAPIError):
+        return None
     if row2 and row2[0]:
         return str(row2[0])
 

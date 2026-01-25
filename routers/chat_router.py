@@ -51,6 +51,75 @@ _DEACTIVATE_KEYWORDS = (
 def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
     router = APIRouter()
 
+    def _deep_merge_dicts(
+        base: Dict[str, Any], incoming: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Re-export the existing deep-merge util (keeps behavior aligned across routes)."""
+
+        try:
+            from services.agent_router_service import _deep_merge_dicts as _dm  # noqa: PLC0415
+
+            return _dm(base, incoming)
+        except Exception:
+            # Minimal fallback (only used if import fails unexpectedly)
+            for key, incoming_value in (incoming or {}).items():
+                base_value = base.get(key)
+                if isinstance(base_value, dict) and isinstance(incoming_value, dict):
+                    _deep_merge_dicts(base_value, incoming_value)
+                else:
+                    base[key] = incoming_value
+            return base
+
+    def _normalize_snapshot_wrapper(raw: Any) -> Dict[str, Any]:
+        """Normalize snapshot wrapper so payload lists are never null.
+
+        Required for Windows PowerShell semantics: @($null).Count == 1.
+        We guarantee payload.{goals,tasks,projects} are lists (possibly empty).
+        """
+
+        snap = raw if isinstance(raw, dict) else {}
+        payload0 = (
+            snap.get("payload") if isinstance(snap.get("payload"), dict) else None
+        )
+        payload = (
+            payload0
+            if isinstance(payload0, dict)
+            else (snap if isinstance(snap, dict) else {})
+        )
+        if not isinstance(payload, dict):
+            payload = {}
+
+        payload_norm: Dict[str, Any] = dict(payload)
+
+        # Normalize canonical collections (never null).
+        for k in ("goals", "tasks", "projects"):
+            if not isinstance(payload_norm.get(k), list):
+                payload_norm[k] = []
+
+        # Back-compat: some producers provide collections under dashboard.
+        try:
+            dash = payload_norm.get("dashboard")
+            if isinstance(dash, dict):
+                for k in ("goals", "tasks", "projects"):
+                    if payload_norm.get(k) == [] and isinstance(dash.get(k), list):
+                        payload_norm[k] = dash.get(k) or []
+        except Exception:
+            pass
+
+        out = dict(snap)
+        out["payload"] = payload_norm
+
+        # Ensure ready is a stable boolean.
+        ready_raw = out.get("ready")
+        if isinstance(ready_raw, bool):
+            out["ready"] = bool(ready_raw)
+        elif ready_raw is None:
+            out["ready"] = bool(out)
+        else:
+            out["ready"] = bool(ready_raw)
+
+        return out
+
     def _grounding_bundle(
         *,
         prompt: str,
@@ -212,7 +281,55 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         if isinstance(intent, str) and intent.strip():
             out["intent"] = intent.strip()
 
+        used = trace_obj.get("used_sources")
+        if isinstance(used, list):
+            out["used_sources"] = [x for x in used if isinstance(x, str) and x.strip()]
+
+        snap = trace_obj.get("snapshot")
+        if isinstance(snap, dict) and snap:
+            out["snapshot"] = snap
+
         return out
+
+    def _ensure_trace_snapshot_and_sources(
+        trace_obj: Any,
+        *,
+        grounding_pack: Dict[str, Any],
+        snapshot: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        tr = trace_obj if isinstance(trace_obj, dict) else {}
+
+        # Mirror snapshot into trace (stable, non-null payload lists).
+        try:
+            tr["snapshot"] = _normalize_snapshot_wrapper(snapshot)
+        except Exception:
+            tr["snapshot"] = snapshot if isinstance(snapshot, dict) else {}
+
+        # Derive used_sources from grounding_pack trace_v2, plus notion_snapshot.
+        used_existing = (
+            tr.get("used_sources") if isinstance(tr.get("used_sources"), list) else []
+        )
+        used_set = {x for x in used_existing if isinstance(x, str) and x.strip()}
+
+        gp_trace = (
+            grounding_pack.get("trace")
+            if isinstance(grounding_pack.get("trace"), dict)
+            else {}
+        )
+        used_raw = (
+            gp_trace.get("used_sources")
+            if isinstance(gp_trace.get("used_sources"), list)
+            else []
+        )
+        used_raw = [x for x in used_raw if isinstance(x, str) and x.strip()]
+        mapping = {"kb_snapshot": "kb", "memory_snapshot": "memory"}
+        used_set |= {mapping.get(x, x) for x in used_raw}
+
+        # Always include notion_snapshot when we injected a snapshot.
+        used_set.add("notion_snapshot")
+
+        tr["used_sources"] = sorted(used_set)
+        return tr
 
     def _normalize_proposed_commands(raw: Any) -> List[ProposedCommand]:
         if raw is None:
@@ -567,6 +684,9 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         if not isinstance(ks_for_gp, dict):
             ks_for_gp = {}
 
+        # Preserve server SSOT knowledge snapshot for the response contract.
+        ks_ssot = ks_for_gp
+
         # ------------------------------------------------------------
         # READ SNAPSHOT INJECTION (CANON)
         # The UI may send an empty snapshot; for dashboard/show *and* planning/advisory
@@ -751,6 +871,46 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             # Fail-soft: never break /api/chat because snapshot hydration failed.
             pass
 
+        # ------------------------------------------------------------
+        # Snapshot normalization + propagation into agent/grounding
+        # - keep response knowledge_snapshot as server SSOT (schema_version v1)
+        # - but ensure the agent + grounding_pack get an SSOT-shaped snapshot
+        #   with payload lists never null (PowerShell count bug).
+        # ------------------------------------------------------------
+        try:
+            snap_in3 = getattr(payload, "snapshot", None)
+
+            # Some upstream producers wrap the SSOT snapshot under `knowledge_snapshot`.
+            if isinstance(snap_in3, dict) and isinstance(
+                snap_in3.get("knowledge_snapshot"), dict
+            ):
+                snap_in3 = snap_in3.get("knowledge_snapshot")
+
+            # If client provided a non-SSOT stub (e.g. {"now": ...}), fall back to server SSOT.
+            is_ssot_like = False
+            if isinstance(snap_in3, dict):
+                if isinstance(snap_in3.get("schema_version"), str) and snap_in3.get(
+                    "schema_version"
+                ):
+                    is_ssot_like = True
+                elif isinstance(snap_in3.get("payload"), dict):
+                    is_ssot_like = True
+                elif isinstance(snap_in3.get("dashboard"), dict):
+                    is_ssot_like = True
+                elif any(k in snap_in3 for k in ("goals", "tasks", "projects")):
+                    is_ssot_like = True
+
+            snap_src = (
+                snap_in3 if (is_ssot_like and isinstance(snap_in3, dict)) else ks_ssot
+            )
+            snap_norm = _normalize_snapshot_wrapper(snap_src)
+
+            payload.snapshot = snap_norm
+            ks_for_gp = snap_norm
+        except Exception:
+            # Fail-soft: do not break chat on snapshot normalization.
+            ks_for_gp = ks_ssot
+
         # PHASE 6: Notion Ops ARMED Gate (activation/deactivation)
         if session_id and _is_activate(prompt):
             st = await _set_armed(session_id, True, prompt=prompt)
@@ -838,17 +998,79 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         )
         gp_for_agent = gp_for_agent if isinstance(gp_for_agent, dict) else {}
 
+        # Ensure grounding pack notion_snapshot matches the snapshot the agent received.
+        try:
+            snap_for_agent = getattr(payload, "snapshot", None)
+            if isinstance(snap_for_agent, dict):
+                gp_for_agent["notion_snapshot"] = snap_for_agent
+        except Exception:
+            pass
+
         # Call advisor agent
         try:
+            # Allow callers to provide additional agent context via metadata.agent_ctx.
+            md0 = getattr(payload, "metadata", None)
+            ctx_extra = md0.get("agent_ctx") if isinstance(md0, dict) else None
+
+            # Router-provided SSOT context (must not be dropped).
+            router_ctx: Dict[str, Any] = {
+                "memory": mem_snapshot,
+                "grounding_pack": gp_for_agent,
+                # Parity with /api/ceo/command: provide notion snapshot explicitly.
+                "notion_snapshot": getattr(payload, "snapshot", None)
+                if isinstance(getattr(payload, "snapshot", None), dict)
+                else {},
+                "snapshot": getattr(payload, "snapshot", None)
+                if isinstance(getattr(payload, "snapshot", None), dict)
+                else {},
+                "conversation_id": conversation_id,
+                "conversation_state": conv_summary,
+            }
+
+            # Deep-merge metadata.agent_ctx with router_ctx so nested objects aren't overwritten/dropped.
+            ctx_for_agent: Dict[str, Any] = (
+                dict(ctx_extra) if isinstance(ctx_extra, dict) else {}
+            )
+            _deep_merge_dicts(ctx_for_agent, router_ctx)
+
+            # Also persist into metadata.agent_ctx for route parity / traceability.
+            if isinstance(md0, dict):
+                md0.setdefault(
+                    "snapshot_source", "KnowledgeSnapshotService.get_snapshot"
+                )
+                md0.setdefault("agent_ctx", {})
+                if isinstance(md0.get("agent_ctx"), dict):
+                    _deep_merge_dicts(
+                        md0["agent_ctx"],
+                        {
+                            "notion_snapshot": router_ctx.get("notion_snapshot"),
+                            "grounding_pack": gp_for_agent,
+                        },
+                    )
+                payload.metadata = md0  # type: ignore[assignment]
+
             out = await create_ceo_advisor_agent(
                 payload,
-                {
-                    "memory": mem_snapshot,
-                    "grounding_pack": gp_for_agent,
-                    "conversation_id": conversation_id,
-                    "conversation_state": conv_summary,
-                },
+                ctx_for_agent,
             )
+
+            # Ensure /api/chat always returns trace.snapshot + used_sources, even when
+            # include_debug is off (minimal trace mode).
+            try:
+                snap_for_trace = getattr(payload, "snapshot", None)
+                snap_for_trace = (
+                    snap_for_trace if isinstance(snap_for_trace, dict) else {}
+                )
+
+                tr0 = out.trace if hasattr(out, "trace") else {}
+                tr0 = tr0 if isinstance(tr0, dict) else {}
+                out.trace = _ensure_trace_snapshot_and_sources(
+                    tr0,
+                    grounding_pack=gp_for_agent,
+                    snapshot=snap_for_trace,
+                )
+            except Exception:
+                pass
         except LLMNotConfiguredError as e:
             return JSONResponse(
                 status_code=500,

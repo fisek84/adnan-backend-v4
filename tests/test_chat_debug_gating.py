@@ -51,7 +51,7 @@ def test_chat_is_minimal_by_default(monkeypatch):
     tr = body.get("trace")
     if tr is not None:
         assert isinstance(tr, dict)
-        assert set(tr.keys()) <= {"intent"}
+        assert set(tr.keys()) <= {"intent", "snapshot", "used_sources"}
         assert isinstance(tr.get("intent"), str)
 
 
