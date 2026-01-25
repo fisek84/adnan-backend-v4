@@ -33,6 +33,7 @@ def _truncate(text: str, *, max_chars: int) -> str:
 
 def build_ceo_instructions(
     grounding_pack: Dict[str, Any],
+    conversation_state: Optional[str] = None,
     *,
     kb_max_entries: int = 8,
     total_max_chars: int = 9000,
@@ -60,6 +61,7 @@ def build_ceo_instructions(
     kb_entries: list[dict[str, Any]] = []
     notion_snapshot = None
     memory_payload = None
+    conv_state_txt = None
 
     ip = gp.get("identity_pack") if isinstance(gp.get("identity_pack"), dict) else {}
     if isinstance(ip, dict):
@@ -126,11 +128,17 @@ def build_ceo_instructions(
     if memory_payload is not None:
         memory_txt = _dump(memory_payload, max_chars=section_max_chars)
 
+    if isinstance(conversation_state, str) and conversation_state.strip():
+        conv_state_txt = _truncate(
+            conversation_state.strip(), max_chars=section_max_chars
+        )
+
     parts = [
         _CEO_INSTRUCTIONS_PREFIX,
         governance.strip(),
         "IDENTITY:\n" + identity_txt,
         "KB_HITS:\n" + kb_txt,
+        "CONVERSATION_STATE:\n" + (conv_state_txt or "(none)"),
         "NOTION_SNAPSHOT:\n" + notion_txt,
         "MEMORY:\n" + memory_txt,
     ]
@@ -1429,6 +1437,226 @@ def _snapshot_trace(
     return out
 
 
+def _empty_tasks_fallback_output(
+    *,
+    base_text: str,
+    goals: Any,
+    projects: Any,
+    memory_snapshot: Any,
+    conversation_state: Any,
+    english_output: bool,
+    snap_trace: Dict[str, Any],
+) -> AgentOutput:
+    def _safe_list(x: Any) -> List[Dict[str, Any]]:
+        if isinstance(x, list):
+            return [i for i in x if isinstance(i, dict)]
+        return []
+
+    def _title(it: Dict[str, Any]) -> str:
+        for k in ("title", "name", "Name"):
+            v = it.get(k)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+        return ""
+
+    def _time_key(it: Dict[str, Any]) -> str:
+        v = it.get("last_edited_time")
+        return v.strip() if isinstance(v, str) else ""
+
+    g = _safe_list(goals)
+    p = _safe_list(projects)
+
+    items: List[Dict[str, Any]] = []
+    for it in p:
+        t = _title(it)
+        if t:
+            items.append({"kind": "project", "title": t, "t": _time_key(it)})
+    for it in g:
+        t = _title(it)
+        if t:
+            items.append({"kind": "goal", "title": t, "t": _time_key(it)})
+
+    active_decision_title = ""
+    if isinstance(memory_snapshot, dict):
+        ad = memory_snapshot.get("active_decision")
+        if isinstance(ad, dict):
+            v = ad.get("title") or ad.get("name")
+            if isinstance(v, str) and v.strip():
+                active_decision_title = v.strip()
+
+    if not items and not active_decision_title:
+        txt = (
+            "Nemam dovoljno signala u goals/projects/memory/snapshot da bih dao sedmične prioritete. "
+            "TASKS snapshot je prazan, a nemam ni ciljeve/projekte ili aktivnu odluku. "
+            "Predlog: uradi 'refresh snapshot' ili mi reci 12 konkretna fokusa za sedmicu."
+            if not english_output
+            else "I don't have enough signals in goals/projects/memory/snapshot to produce weekly priorities. "
+            "TASKS snapshot is empty and there are no goals/projects or active decision context. "
+            "Suggestion: refresh snapshot or tell me 12 concrete weekly focuses."
+        )
+        return AgentOutput(
+            text=txt,
+            proposed_commands=[],
+            agent_id="ceo_advisor",
+            read_only=True,
+            trace={
+                "deterministic": True,
+                "intent": "empty_tasks_fallback_refusal",
+                "exit_reason": "refusal.insufficient_signals",
+                "snapshot": snap_trace,
+                "signals": {
+                    "goals": len(g),
+                    "projects": len(p),
+                    "active_decision_title": bool(active_decision_title),
+                    "conversation_state_present": bool(
+                        isinstance(conversation_state, str)
+                        and conversation_state.strip()
+                    ),
+                },
+            },
+        )
+
+    items.sort(key=lambda x: (x.get("t") or "", x.get("title") or ""), reverse=True)
+
+    priorities: List[str] = []
+    if active_decision_title:
+        priorities.append(active_decision_title)
+    for it in items:
+        t = it.get("title")
+        if isinstance(t, str) and t.strip() and t.strip() not in priorities:
+            priorities.append(t.strip())
+        if len(priorities) >= 3:
+            break
+
+    priorities = priorities[:3]
+    while len(priorities) < 3:
+        priorities.append("(needs input)")
+
+    if english_output:
+        header = "TASKS snapshot is empty. Based on goals/projects (and memory when available), here are 3 weekly priorities:\n"
+        next_step_label = "Next step"
+        goal_title = f"Weekly focus: {priorities[0] if priorities[0] != '(needs input)' else 'Planning'}"
+    else:
+        header = "TASKS snapshot je prazan. Na osnovu goals/projects (i memory gdje postoji signal), evo 3 sedmična prioriteta:\n"
+        next_step_label = "Sljedeći korak"
+        goal_title = f"Sedmični fokus: {priorities[0] if priorities[0] != '(needs input)' else 'Planiranje'}"
+
+    lines: List[str] = [header.strip(), ""]
+    for i, pr in enumerate(priorities, 1):
+        if pr == "(needs input)":
+            ns = "Potrebno: napiši 1 rečenicu šta znači uspjeh za ovaj fokus."
+            if english_output:
+                ns = "Needed: one sentence on what success means for this focus."
+        else:
+            ns = (
+                "Napiši 3-5 bullet-a: scope, vlasnik, prvi deliverable."
+                if not english_output
+                else "Write 35 bullets: scope, owner, first deliverable."
+            )
+        lines.append(f"{i}) {pr}")
+        lines.append(f"   {next_step_label}: {ns}")
+        lines.append("")
+
+    ops: List[Dict[str, Any]] = []
+    goal_desc = (
+        "Auto-draft jer je TASKS snapshot prazan. Izvor: goals/projects snapshot (+ memory signal ako postoji)."
+        if not english_output
+        else "Auto-draft because TASKS snapshot is empty. Source: goals/projects snapshot (+ memory signal if present)."
+    )
+    ops.append(
+        {
+            "op_id": "goal_1",
+            "intent": "create_goal",
+            "payload": {
+                "title": goal_title,
+                "description": goal_desc,
+                "priority": "high",
+                "status": "pending",
+            },
+        }
+    )
+
+    for i, pr in enumerate(priorities[:3], 1):
+        title = f"Next action  {pr}" if english_output else f"Sljedeća akcija  {pr}"
+        desc = (
+            "Draft task (approval-gated). Define the first deliverable and owner."
+            if english_output
+            else "Draft task (traži odobrenje). Definiši prvi deliverable i vlasnika."
+        )
+        ops.append(
+            {
+                "op_id": f"task_{i}",
+                "intent": "create_task",
+                "payload": {
+                    "title": title,
+                    "description": desc,
+                    "priority": "high" if i == 1 else "medium",
+                    "status": "pending",
+                    "goal_id": "$goal_1",
+                },
+            }
+        )
+
+    proposed = ProposedCommand(
+        command="notion_write",
+        intent="notion_write",
+        args={
+            "ai_command": {
+                "command": "notion_write",
+                "intent": "batch_request",
+                "params": {
+                    "operations": ops,
+                    "source_prompt": "auto_draft_empty_tasks_fallback",
+                },
+            },
+            "draft": {
+                "title": goal_title,
+                "description": goal_desc,
+                "kpi": None,
+                "due_date": None,
+                "priority": "high",
+                "status": "proposed",
+                "needs_approval": True,
+            },
+        },
+        reason=(
+            "Auto-draft: create 1 goal + 3 tasks (approval required)."
+            if english_output
+            else "Auto-draft: kreiraj 1 cilj + 3 taska (traži odobrenje)."
+        ),
+        requires_approval=True,
+        risk="LOW",
+        dry_run=True,
+        scope="api_execute_raw",
+        payload_summary={
+            "endpoint": "/api/execute/raw",
+            "canon": "CEO_CONSOLE_EXECUTION_FLOW",
+            "source": "empty_tasks_fallback",
+        },
+    )
+
+    return AgentOutput(
+        text="\n".join(lines).strip(),
+        proposed_commands=[proposed],
+        agent_id="ceo_advisor",
+        read_only=True,
+        trace={
+            "deterministic": True,
+            "intent": "empty_tasks_fallback_priorities",
+            "exit_reason": "deterministic.empty_tasks_fallback",
+            "snapshot": snap_trace,
+            "signals": {
+                "goals": len(g),
+                "projects": len(p),
+                "active_decision_title": bool(active_decision_title),
+                "conversation_state_present": bool(
+                    isinstance(conversation_state, str) and conversation_state.strip()
+                ),
+            },
+        },
+    )
+
+
 # -------------------------------
 # Main agent entrypoint
 # -------------------------------
@@ -1488,8 +1716,54 @@ async def create_ceo_advisor_agent(
         meta=meta,
     )
 
-    structured_mode = _needs_structured_snapshot_answer(base_text)
+    # Deterministic fallback when tasks are empty for planning/help prompts.
+    # Keep this BEFORE Responses-mode grounding guard; it must not call LLM/executor.
+    projects = None
+    try:
+        projects = (
+            snapshot_payload.get("projects")
+            if isinstance(snapshot_payload, dict)
+            else None
+        )
+    except Exception:
+        projects = None
 
+    t_fallback = (base_text or "").strip().lower()
+    wants_weekly_plan = (
+        "sedmic" in t_fallback
+        or "weekly" in t_fallback
+        or "7 dana" in t_fallback
+        or "7day" in t_fallback
+        or "7-day" in t_fallback
+        or (
+            "plan" in t_fallback
+            and ("cilj" in t_fallback or "task" in t_fallback or "zadat" in t_fallback)
+        )
+        or "pomozi" in t_fallback
+        or "help" in t_fallback
+        or _is_planning_or_help_request(base_text)
+    )
+
+    # Only trigger when snapshot explicitly contains a tasks list.
+    if (
+        (not tasks)
+        and wants_weekly_plan
+        and isinstance(snapshot_payload, dict)
+        and ("tasks" in snapshot_payload)
+    ):
+        return _empty_tasks_fallback_output(
+            base_text=base_text,
+            goals=goals,
+            projects=projects,
+            memory_snapshot=ctx.get("memory") if isinstance(ctx, dict) else None,
+            conversation_state=ctx.get("conversation_state")
+            if isinstance(ctx, dict)
+            else None,
+            english_output=english_output,
+            snap_trace=snap_trace,
+        )
+
+    structured_mode = _needs_structured_snapshot_answer(base_text)
     propose_only = _is_propose_only_request(base_text)
     wants_notion = _wants_notion_task_or_goal(base_text)
     wants_prompt_template = _is_prompt_preparation_request(base_text)
@@ -2025,7 +2299,8 @@ async def create_ceo_advisor_agent(
                 },
             )
 
-        instructions = build_ceo_instructions(gp)
+        conv_state = ctx.get("conversation_state") if isinstance(ctx, dict) else None
+        instructions = build_ceo_instructions(gp, conversation_state=conv_state)
         safe_context["instructions"] = instructions
 
         # Local hard-guard (no guessing): never call LLM without non-empty instructions.

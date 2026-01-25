@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse
 from models.agent_contract import AgentInput, AgentOutput, ProposedCommand
 from services.ceo_advisor_agent import create_ceo_advisor_agent, LLMNotConfiguredError
 from dependencies import get_memory_read_only_service
+from services.ceo_conversation_state_store import ConversationStateStore
 
 # Must match gateway_server.PROPOSAL_WRAPPER_INTENT
 from models.canon import PROPOSAL_WRAPPER_INTENT
@@ -142,6 +143,21 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 return v.strip()
 
         return None
+
+    def _extract_conversation_id(payload: AgentInput) -> Optional[str]:
+        v = getattr(payload, "conversation_id", None)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+        return None
+
+    def _responses_mode_enabled() -> bool:
+        return (
+            os.getenv("OPENAI_API_MODE") or "assistants"
+        ).strip().lower() == "responses"
+
+    def _require_conversation_id() -> bool:
+        v = (os.getenv("CEO_RESPONSES_REQUIRE_CONVERSATION_ID") or "").strip().lower()
+        return v in {"1", "true", "yes", "on"}
 
     def _norm_text(s: str) -> str:
         return " ".join((s or "").strip().lower().split())
@@ -488,6 +504,40 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
 
         prompt = _extract_prompt(payload)
         session_id = _extract_session_id(payload)
+        conversation_id = _extract_conversation_id(payload) or session_id
+        # Responses+CEO multi-turn can require a stable id when explicitly enabled.
+        if (
+            _responses_mode_enabled()
+            and _require_conversation_id()
+            and not (isinstance(conversation_id, str) and conversation_id.strip())
+        ):
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "text": "Missing conversation id. Provide 'session_id' (recommended) or 'conversation_id' for CEO Responses mode.",
+                    "proposed_commands": [],
+                    "agent_id": "ceo_advisor",
+                    "read_only": True,
+                    "error": {
+                        "code": "error.missing_conversation_id",
+                        "message": "Provide session_id or conversation_id.",
+                    },
+                },
+            )
+
+        # Ensure agent_input has conversation_id populated for downstream.
+        if isinstance(conversation_id, str) and conversation_id.strip():
+            try:
+                payload.conversation_id = conversation_id.strip()
+            except Exception:
+                pass
+
+        conv_summary = None
+        if isinstance(conversation_id, str) and conversation_id.strip():
+            s = ConversationStateStore.get_summary(
+                conversation_id=conversation_id.strip()
+            )
+            conv_summary = s.summary_text
         notion_calls_for_trace: Optional[int] = None
         debug_on = _debug_enabled(payload)
 
@@ -792,7 +842,12 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         try:
             out = await create_ceo_advisor_agent(
                 payload,
-                {"memory": mem_snapshot, "grounding_pack": gp_for_agent},
+                {
+                    "memory": mem_snapshot,
+                    "grounding_pack": gp_for_agent,
+                    "conversation_id": conversation_id,
+                    "conversation_state": conv_summary,
+                },
             )
         except LLMNotConfiguredError as e:
             return JSONResponse(
@@ -812,6 +867,17 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                     },
                 },
             )
+
+        # Persist bounded multi-turn context (never log content).
+        try:
+            if isinstance(conversation_id, str) and conversation_id.strip():
+                ConversationStateStore.append_turn(
+                    conversation_id=conversation_id.strip(),
+                    user_text=prompt or "",
+                    assistant_text=(getattr(out, "text", "") or ""),
+                )
+        except Exception:
+            pass
 
         legacy_trace = out.trace or {}
         if isinstance(legacy_trace, dict) and isinstance(notion_calls_for_trace, int):

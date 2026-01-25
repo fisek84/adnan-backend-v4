@@ -167,3 +167,5 @@ tools/ripgrep_audit*.py
 tools/generate_cleanup_plan*.py
 tools/evidence_top30*.ps1
 tools/capture_*.py
+
+_ceo_conversation_state.json
