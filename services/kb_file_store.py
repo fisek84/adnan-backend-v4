@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import hashlib
+import json
 from typing import Any, Dict, List, Optional
 
 from services.identity_loader import load_json_file, resolve_path
@@ -116,3 +118,83 @@ class FileKBStore(KBStore):
 
     def get_meta(self) -> Dict[str, Any]:
         return dict(self._last_meta)
+
+    @staticmethod
+    def _stable_json_dumps(obj: Any) -> str:
+        try:
+            return json.dumps(
+                obj, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            )
+        except Exception:
+            return json.dumps(str(obj), ensure_ascii=False)
+
+    @classmethod
+    def _sha256_hex(cls, obj: Any) -> str:
+        data = cls._stable_json_dumps(obj).encode("utf-8")
+        return hashlib.sha256(data).hexdigest()
+
+    @staticmethod
+    def _make_snippet(content: str, *, max_len: int = 280) -> str:
+        t = (content or "").strip()
+        if not t:
+            return ""
+        if len(t) <= max_len:
+            return t
+        return t[: max_len - 1].rstrip() + "…"
+
+    async def load_all(self, *, force: bool = False) -> Dict[str, Any]:
+        _, entries = self.load_payload_and_entries()
+        # File store is not TTL-cached (by design).
+        meta: Dict[str, Any] = {
+            "mode": "file",
+            "source": "file",
+            "cache_hit": False,
+            "last_sync": None,
+            "ttl_s": 0,
+            "fetched_at": 0.0,
+            "last_fetch_iso": None,
+            "total_entries": len(entries),
+            "hash": self._sha256_hex(entries),
+        }
+        self._last_meta = {"source": "file", "cache_hit": False, "last_sync": None}
+        return {"entries": entries, "meta": meta}
+
+    async def search(
+        self, query: str, *, top_k: int = 8, force: bool = False
+    ) -> Dict[str, Any]:
+        payload = self.load_payload()
+        # Use the exact same scoring/selection logic as the legacy grounding pack.
+        # This preserves determinism and keeps existing tests stable.
+        try:
+            from services.grounding_pack_service import GroundingPackService  # noqa: PLC0415
+
+            baseline = GroundingPackService._retrieve_kb(prompt=query, kb=payload)
+            selected = list(baseline.selected_entries)
+            used_ids = list(baseline.used_entry_ids)
+        except Exception:
+            selected = []
+            used_ids = []
+
+        top_k_i = int(top_k) if int(top_k) > 0 else 8
+        if len(selected) > top_k_i:
+            selected = selected[:top_k_i]
+            used_ids = used_ids[:top_k_i]
+
+        meta: Dict[str, Any] = {
+            "mode": "file",
+            "source": "file",
+            "cache_hit": False,
+            "last_sync": None,
+            "ttl_s": 0,
+            "fetched_at": 0.0,
+            "last_fetch_iso": None,
+            "total_entries": len(payload.get("entries") or [])
+            if isinstance(payload, dict)
+            else 0,
+            "hash": self._sha256_hex(
+                payload.get("entries") if isinstance(payload, dict) else []
+            ),
+            "hit_count": len(selected),
+        }
+        self._last_meta = {"source": "file", "cache_hit": False, "last_sync": None}
+        return {"entries": selected, "used_entry_ids": used_ids, "meta": meta}

@@ -1559,10 +1559,46 @@ class NotionService:
             max_calls=max_calls,
             max_latency_ms=max_latency_ms,
         ) as budget_state:
-            for db_key in keys:
+            for idx, db_key in enumerate(keys):
                 try:
                     db_id = self._resolve_db_id(db_key)
-                    title_prop = _title_prop_for_db_cached(db_id)
+
+                    # Discover true title property (schema-driven). Best-effort: if schema unavailable, default to "Name".
+                    title_prop = "Name"
+                    try:
+                        # Under strict budgets, reserve calls for the actual DB queries (one per db_key minimum).
+                        max_calls_total = budget_state.max_calls
+                        if max_calls_total is not None and int(max_calls_total) >= 0:
+                            remaining_budget = int(max_calls_total) - int(
+                                budget_state.calls
+                            )
+                            remaining_queries_min = int(len(keys) - int(idx))
+                            allow_schema_call = remaining_budget > remaining_queries_min
+                        else:
+                            allow_schema_call = True
+
+                        schema = (
+                            await self._get_database_schema(db_id)
+                            if allow_schema_call
+                            else {}
+                        )
+                        props = (
+                            schema.get("properties")
+                            if isinstance(schema, dict)
+                            else None
+                        )
+                        if isinstance(props, dict):
+                            for k, v in props.items():
+                                if (
+                                    isinstance(k, str)
+                                    and k.strip()
+                                    and isinstance(v, dict)
+                                    and v.get("type") == "title"
+                                ):
+                                    title_prop = k.strip()
+                                    break
+                    except Exception:
+                        title_prop = "Name"
 
                     max_items = limits.get(db_key)
                     try:

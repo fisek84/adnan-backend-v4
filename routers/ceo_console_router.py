@@ -188,16 +188,11 @@ def _attach_trace_contract_fields(
 
     # Optional read-only DB identity signal: only mark as used when we
     # successfully resolved a DB identity id (no implicit writes).
-    try:
-        iid = (
-            identity_pack.get("identity_id_db")
-            if isinstance(identity_pack, dict)
-            else None
-        )
-        if isinstance(iid, str) and iid.strip():
-            used_sources = sorted({*used_sources, "identity_root"})
-    except Exception:
-        pass
+    iid = (
+        identity_pack.get("identity_id_db") if isinstance(identity_pack, dict) else None
+    )
+    if isinstance(iid, str) and iid.strip():
+        used_sources = sorted({*used_sources, "identity_root"})
 
     missing_inputs: List[str] = []
 
@@ -269,13 +264,10 @@ async def ceo_command(req: CEOCommandRequest = Body(...)) -> CEOCommandResponse:
         identity_pack = {}
 
     # Read-only Postgres lookup (no INSERT). Fail-safe if DB/migrations missing.
-    try:
-        if callable(_lookup_identity_id) and isinstance(identity_pack, dict):
-            iid = _lookup_identity_id("CEO")
-            if isinstance(iid, str) and iid.strip():
-                identity_pack.setdefault("identity_id_db", iid)
-    except Exception:
-        pass
+    if callable(_lookup_identity_id) and isinstance(identity_pack, dict):
+        iid = _lookup_identity_id("CEO")
+        if isinstance(iid, str) and iid.strip():
+            identity_pack["identity_id_db"] = iid
 
     memory_public: Dict[str, Any] = {}
     try:
@@ -384,7 +376,7 @@ async def ceo_command(req: CEOCommandRequest = Body(...)) -> CEOCommandResponse:
         read_only=True,
         summary=summary,
         proposed_commands=proposed,
-        context={"canon": "read_propose_only"},
+        context={"canon": "read_propose_only", "identity_pack": identity_pack},
         trace=(
             agent_out.get("trace", {})
             if isinstance(agent_out, dict)

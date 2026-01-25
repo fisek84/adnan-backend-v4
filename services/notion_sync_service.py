@@ -171,7 +171,7 @@ class NotionSyncService:
 
             return None
 
-        title = safe("Project Name", "title")
+        title = safe("Name", "title") or safe("Project Name", "title")
         if not title:
             return None
 

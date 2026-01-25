@@ -202,7 +202,7 @@ class GroundingPackService:
     @classmethod
     def _load_kb_file(
         cls, *, ctx: Optional[Dict[str, Any]] = None
-    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    ) -> Tuple[Dict[str, Any], Dict[str, Any], Any]:
         """Load KB payload.
 
         Back-compat guarantee:
@@ -241,7 +241,7 @@ class GroundingPackService:
                 }
                 meta = store.get_meta()
 
-            return kb_file, (meta if isinstance(meta, dict) else {})
+            return kb_file, (meta if isinstance(meta, dict) else {}), store
         except Exception as exc:  # noqa: BLE001
             return (
                 {
@@ -256,6 +256,7 @@ class GroundingPackService:
                     "last_sync": None,
                     "error_code": getattr(exc, "error_code", None),
                 },
+                None,
             )
 
     @classmethod
@@ -362,12 +363,122 @@ class GroundingPackService:
                 ctx["request_id"] = rid.strip()
 
         t_kb_load0 = time.perf_counter()
-        kb_file, kb_meta = cls._load_kb_file(ctx=ctx)
+        kb_file, kb_meta, kb_store = cls._load_kb_file(ctx=ctx)
         t_kb_load1 = time.perf_counter()
         kb_hash = _sha256_hex(kb_file)
 
         t_kb0 = time.perf_counter()
-        kb_retrieval = cls._retrieve_kb(prompt=prompt, kb=kb_file)
+        kb_search: Dict[str, Any] = {}
+        search_attempted = False
+        try:
+            if kb_store is not None and hasattr(kb_store, "search"):
+                kb_search = _run_coro_in_worker(kb_store.search(prompt, top_k=8))
+                search_attempted = isinstance(kb_search, dict) and any(
+                    k in kb_search for k in ("entries", "used_entry_ids", "meta")
+                )
+        except Exception:
+            kb_search = {}
+            search_attempted = False
+
+        used_entry_ids: List[str] = []
+        selected_entries: List[Dict[str, Any]] = []
+        kb_search_meta: Dict[str, Any] = {}
+
+        if isinstance(kb_search, dict):
+            raw_entries = kb_search.get("entries")
+            raw_ids = kb_search.get("used_entry_ids")
+            raw_meta = kb_search.get("meta")
+
+            if isinstance(raw_entries, list):
+                selected_entries = [x for x in raw_entries if isinstance(x, dict)]
+            if isinstance(raw_ids, list):
+                used_entry_ids = [
+                    x for x in raw_ids if isinstance(x, str) and x.strip()
+                ]
+            if isinstance(raw_meta, dict):
+                kb_search_meta = raw_meta
+
+            # Back-compat fallback: some store.search() implementations may omit `meta`.
+            # We still want trace to show that KB was loaded even with 0 hits.
+            if not kb_search_meta:
+                kb_search_meta = kb_meta if isinstance(kb_meta, dict) else {}
+
+        # Back-compat fallback: if store.search isn't implemented or failed to return
+        # a structured response, fall back to deterministic token-overlap retrieval.
+        if not search_attempted:
+            kb_retrieval = cls._retrieve_kb(prompt=prompt, kb=kb_file)
+            used_entry_ids = list(kb_retrieval.used_entry_ids)
+            selected_entries = list(kb_retrieval.selected_entries)
+            kb_search_meta = kb_meta if isinstance(kb_meta, dict) else {}
+
+        # Normalize KB meta so trace/contracts remain stable regardless of store.
+        # Ensure required fields exist even when hits == 0.
+        kb_entries_all = kb_file.get("entries") if isinstance(kb_file, dict) else None
+        total_entries_loaded = (
+            len(kb_entries_all)
+            if isinstance(kb_entries_all, list)
+            else int(kb_search_meta.get("total_entries") or 0)
+            if isinstance(kb_search_meta, dict)
+            else 0
+        )
+
+        meta_norm: Dict[str, Any] = (
+            dict(kb_search_meta) if isinstance(kb_search_meta, dict) else {}
+        )
+        src0 = meta_norm.get("source")
+        if not isinstance(src0, str) or not src0.strip():
+            src0 = kb_meta.get("source") if isinstance(kb_meta, dict) else None
+        src = (src0 if isinstance(src0, str) and src0.strip() else None) or "file"
+        mode0 = meta_norm.get("mode")
+        if not isinstance(mode0, str) or not mode0.strip():
+            mode0 = "notion" if src == "notion" else "file"
+
+        hits = len([x for x in (selected_entries or []) if isinstance(x, dict)])
+        meta_norm.setdefault("mode", mode0)
+        meta_norm.setdefault("source", src)
+        meta_norm.setdefault(
+            "ttl_s",
+            kb_meta.get("ttl_s")
+            if isinstance(kb_meta, dict)
+            else meta_norm.get("ttl_s"),
+        )
+        meta_norm.setdefault(
+            "fetched_at",
+            kb_meta.get("fetched_at")
+            if isinstance(kb_meta, dict)
+            else meta_norm.get("fetched_at"),
+        )
+        meta_norm.setdefault(
+            "last_fetch_iso",
+            kb_meta.get("last_fetch_iso")
+            if isinstance(kb_meta, dict)
+            else meta_norm.get("last_fetch_iso"),
+        )
+        meta_norm.setdefault(
+            "cache_hit",
+            kb_meta.get("cache_hit")
+            if isinstance(kb_meta, dict)
+            else meta_norm.get("cache_hit"),
+        )
+        meta_norm["total_entries"] = int(
+            meta_norm.get("total_entries")
+            if isinstance(meta_norm.get("total_entries"), int)
+            else meta_norm.get("total_entries")
+            if isinstance(meta_norm.get("total_entries"), float)
+            else total_entries_loaded
+        )
+        meta_norm.setdefault("hit_count", hits)
+        meta_norm.setdefault("hits", hits)
+
+        kb_err2 = kb_file.get("_error") if isinstance(kb_file, dict) else None
+        if isinstance(kb_err2, str) and kb_err2.strip():
+            meta_norm.setdefault("kb_error", kb_err2.strip())
+
+        if isinstance(kb_meta, dict) and isinstance(kb_meta.get("error_code"), str):
+            meta_norm.setdefault("error_code", kb_meta.get("error_code"))
+
+        kb_search_meta = meta_norm
+
         t_kb1 = time.perf_counter()
 
         try:
@@ -399,9 +510,7 @@ class GroundingPackService:
         # a dedicated KB entry; otherwise we force unknown-mode downstream.
         business_plan_missing = False
         if _is_business_plan_query(prompt):
-            used = set(
-                [x for x in (kb_retrieval.used_entry_ids or []) if isinstance(x, str)]
-            )
+            used = set([x for x in (used_entry_ids or []) if isinstance(x, str)])
             if "plans_business_plan_001" not in used:
                 business_plan_missing = True
 
@@ -657,9 +766,13 @@ class GroundingPackService:
             "budget_exceeded_detail": budget_exceeded_detail,
             "read_ids": {
                 "notion": notion_read_ids,
-                "kb": list(kb_retrieval.used_entry_ids),
+                "kb": list(used_entry_ids),
                 "memory": [],
             },
+            # Contract/debug helpers (also surfaced by routers/chat_router.py)
+            "kb_meta": kb_search_meta,
+            "kb_used_entry_ids": list(used_entry_ids)[:16],
+            "kb_hits": int(len(selected_entries)),
             "stale_flags": {
                 "notion_snapshot_expired": bool(notion_snapshot.get("expired") is True),
                 "notion_snapshot_status": notion_snapshot.get("status"),
@@ -712,16 +825,17 @@ class GroundingPackService:
                 "description": kb_file.get("description"),
                 "payload": kb_file if kb_status == "ok" else None,
                 # Back-compat convenience (retrieval results live in kb_retrieved)
-                "selected_entries": kb_retrieval.selected_entries,
-                "used_entry_ids": kb_retrieval.used_entry_ids,
+                "selected_entries": selected_entries,
+                "used_entry_ids": used_entry_ids,
             },
             "kb_retrieved": {
                 "max_entries": cls._kb_max_entries(),
-                "used_entry_ids": kb_retrieval.used_entry_ids,
-                "entries": kb_retrieval.selected_entries,
+                "used_entry_ids": used_entry_ids,
+                "entries": selected_entries,
+                "meta": kb_search_meta,
                 "refs": [
                     {"kb_entry_id": _id, "path": f"entries[id={_id}]"}
-                    for _id in kb_retrieval.used_entry_ids
+                    for _id in used_entry_ids
                 ],
             },
             "notion_snapshot": notion_snapshot,

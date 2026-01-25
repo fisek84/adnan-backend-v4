@@ -424,6 +424,8 @@ def _compact_identity_pack(identity_pack: Any) -> Any:
             "content_raw",
             "blocks_raw",
         }
+        # NOTE: `identity_id_db` is a small, read-only lookup signal (UUID string)
+        # and must not be dropped by compaction.
         slim = {k: v for k, v in identity_pack.items() if k not in DROP_KEYS}
         return _compact_snapshot(slim)
 

@@ -13,7 +13,7 @@ def test_ceo_command_trace_includes_identity_root_when_lookup_succeeds(
     monkeypatch.setattr(
         ceo_console_router,
         "_lookup_identity_id",
-        lambda _owner: "00000000-0000-0000-0000-000000000000",
+        lambda _owner: "11111111-1111-1111-1111-111111111111",
     )
 
     client = TestClient(app)
@@ -26,6 +26,12 @@ def test_ceo_command_trace_includes_identity_root_when_lookup_succeeds(
     assert isinstance(used, list)
 
     assert "identity_root" in used
+
+    ctx = resp.json().get("context")
+    assert isinstance(ctx, dict)
+    ip = ctx.get("identity_pack")
+    assert isinstance(ip, dict)
+    assert ip.get("identity_id_db") == "11111111-1111-1111-1111-111111111111"
 
 
 def test_ceo_command_trace_omits_identity_root_when_lookup_returns_none(
@@ -45,3 +51,10 @@ def test_ceo_command_trace_omits_identity_root_when_lookup_returns_none(
     assert isinstance(used, list)
 
     assert "identity_root" not in used
+
+    ctx = resp.json().get("context")
+    assert isinstance(ctx, dict)
+    ip = ctx.get("identity_pack")
+    assert isinstance(ip, dict)
+    # Must be None/absent; never empty string.
+    assert ip.get("identity_id_db") is None

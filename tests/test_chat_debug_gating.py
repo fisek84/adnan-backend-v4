@@ -51,7 +51,16 @@ def test_chat_is_minimal_by_default(monkeypatch):
     tr = body.get("trace")
     if tr is not None:
         assert isinstance(tr, dict)
-        assert set(tr.keys()) <= {"intent", "snapshot", "used_sources"}
+        assert set(tr.keys()) <= {
+            "intent",
+            "snapshot",
+            "used_sources",
+            # Minimal trace still includes KB debug/meta passthrough,
+            # so API consumers can verify TTL/cache behavior.
+            "kb_meta",
+            "kb_hits",
+            "kb_used_entry_ids",
+        }
         assert isinstance(tr.get("intent"), str)
 
 

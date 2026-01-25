@@ -1956,20 +1956,35 @@ async def _boot_once() -> None:
                 logger.warning("AI Ops services injection failed: %s", exc)
 
             # best-effort knowledge sync
-            try:
+            # NOTE: For offline smoke verification (curl proof), allow explicitly skipping
+            # this boot-time Notion sync to avoid *any* network calls.
+            skip_knowledge_sync = (
+                os.getenv("GATEWAY_SKIP_KNOWLEDGE_SYNC") or ""
+            ).strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
+            if skip_knowledge_sync:
+                logger.info(
+                    "Skipping knowledge snapshot sync (GATEWAY_SKIP_KNOWLEDGE_SYNC=1)"
+                )
+            else:
                 try:
-                    from dependencies import get_sync_service  # type: ignore
+                    try:
+                        from dependencies import get_sync_service  # type: ignore
 
-                    sync_service = get_sync_service()
-                    await sync_service.sync_knowledge_snapshot()
-                except Exception as exc:
-                    _append_boot_error(f"knowledge_snapshot_sync_failed:{exc}")
-                    logger.warning(
-                        "Knowledge snapshot sync failed (best-effort): %s", exc
-                    )
-            except Exception as exc:  # noqa: BLE001
-                _append_boot_error(f"notion_sync_failed:{exc}")
-                logger.warning("Notion knowledge snapshot sync failed: %s", exc)
+                        sync_service = get_sync_service()
+                        await sync_service.sync_knowledge_snapshot()
+                    except Exception as exc:
+                        _append_boot_error(f"knowledge_snapshot_sync_failed:{exc}")
+                        logger.warning(
+                            "Knowledge snapshot sync failed (best-effort): %s", exc
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    _append_boot_error(f"notion_sync_failed:{exc}")
+                    logger.warning("Notion knowledge snapshot sync failed: %s", exc)
 
             _BOOT_READY = True
             logger.info("System boot completed. READY.")

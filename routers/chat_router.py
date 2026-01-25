@@ -154,6 +154,58 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 out["diagnostics"] = diag
             if isinstance(tr2, dict):
                 out["trace_v2"] = tr2
+
+            # Debug-only mirror used for strict API verification in tests.
+            # This is a *small* view (kb-only), not the full grounding_pack.
+            gp_trace = tr2 if isinstance(tr2, dict) else {}
+            gp_kb = (
+                gp.get("kb_retrieved")
+                if isinstance(gp.get("kb_retrieved"), dict)
+                else {}
+            )
+
+            kb_meta = (
+                gp_trace.get("kb_meta")
+                if isinstance(gp_trace.get("kb_meta"), dict)
+                else {}
+            )
+            kb_hits = (
+                gp_trace.get("kb_hits")
+                if isinstance(gp_trace.get("kb_hits"), int)
+                else None
+            )
+            kb_used_entry_ids = (
+                gp_trace.get("kb_used_entry_ids")
+                if isinstance(gp_trace.get("kb_used_entry_ids"), list)
+                else None
+            )
+
+            # Fallbacks (still grounded on GroundingPackService output).
+            if not kb_meta and isinstance(gp_kb.get("meta"), dict):
+                kb_meta = gp_kb.get("meta")  # type: ignore[assignment]
+            if kb_hits is None:
+                kb_hits = (
+                    int(kb_meta.get("hit_count"))
+                    if isinstance(kb_meta, dict)
+                    and isinstance(kb_meta.get("hit_count"), int)
+                    else 0
+                )
+            if kb_used_entry_ids is None:
+                kb_used_entry_ids = (
+                    gp_kb.get("used_entry_ids")
+                    if isinstance(gp_kb.get("used_entry_ids"), list)
+                    else []
+                )
+
+            out["context"] = {
+                "grounding_pack": {
+                    "kb_meta": kb_meta,
+                    "kb_hits": int(kb_hits),
+                    "kb_used_entry_ids": kb_used_entry_ids[:16]
+                    if isinstance(kb_used_entry_ids, list)
+                    else kb_used_entry_ids,
+                }
+            }
         return out
 
     def _knowledge_bundle() -> Dict[str, Any]:
@@ -289,6 +341,22 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         if isinstance(snap, dict) and snap:
             out["snapshot"] = snap
 
+        # KB debug/meta pass-through (required for TTL/cache verification in API smoke tests).
+        kb_meta = trace_obj.get("kb_meta")
+        if isinstance(kb_meta, dict):
+            out["kb_meta"] = kb_meta
+
+        kb_hits = trace_obj.get("kb_hits")
+        if isinstance(kb_hits, int):
+            out["kb_hits"] = int(kb_hits)
+
+        kb_used_entry_ids = trace_obj.get("kb_used_entry_ids")
+        if isinstance(kb_used_entry_ids, list):
+            out["kb_used_entry_ids"] = kb_used_entry_ids[:16]
+        elif kb_used_entry_ids is not None:
+            # Preserve non-list values verbatim (debug)
+            out["kb_used_entry_ids"] = kb_used_entry_ids
+
         return out
 
     def _ensure_trace_snapshot_and_sources(
@@ -330,6 +398,88 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
 
         tr["used_sources"] = sorted(used_set)
         return tr
+
+    def _apply_kb_trace_passthrough_from_context(
+        trace_obj: Any,
+        *,
+        grounding_bundle: Dict[str, Any],
+    ) -> None:
+        """Pass-through KB debug/meta fields into the API trace.
+
+        IMPORTANT:
+        - No new network calls: uses already-built grounding_bundle.
+        - Kept here (response-assembly path) so tests can prove it.
+        """
+
+        if not isinstance(trace_obj, dict):
+            return
+
+        ctx = (
+            grounding_bundle.get("context")
+            if isinstance(grounding_bundle, dict)
+            else None
+        )
+        ctx_gp = ctx.get("grounding_pack") if isinstance(ctx, dict) else None
+        if isinstance(ctx_gp, dict):
+            if isinstance(ctx_gp.get("kb_meta"), dict):
+                trace_obj["kb_meta"] = ctx_gp.get("kb_meta")
+            if isinstance(ctx_gp.get("kb_hits"), int):
+                trace_obj["kb_hits"] = int(ctx_gp.get("kb_hits"))
+            if "kb_used_entry_ids" in ctx_gp:
+                ids = ctx_gp.get("kb_used_entry_ids")
+                if isinstance(ids, list):
+                    trace_obj["kb_used_entry_ids"] = ids[:16]
+                else:
+                    trace_obj["kb_used_entry_ids"] = ids
+
+        # Keep existing derived fields stable for other tests.
+        gp = (
+            grounding_bundle.get("grounding_pack")
+            if isinstance(grounding_bundle, dict)
+            else None
+        )
+        gp_kb = (
+            gp.get("kb_retrieved")
+            if isinstance(gp, dict) and isinstance(gp.get("kb_retrieved"), dict)
+            else {}
+        )
+        kb_entries = (
+            gp_kb.get("entries") if isinstance(gp_kb.get("entries"), list) else []
+        )
+        kb_ids_used = (
+            [
+                x
+                for x in (gp_kb.get("used_entry_ids") or [])
+                if isinstance(x, str) and x.strip()
+            ]
+            if isinstance(gp_kb.get("used_entry_ids"), list)
+            else []
+        )
+
+        kb_meta = (
+            trace_obj.get("kb_meta")
+            if isinstance(trace_obj.get("kb_meta"), dict)
+            else {}
+        )
+        if isinstance(kb_meta, dict):
+            trace_obj.setdefault(
+                "kb_loaded_total",
+                kb_meta.get("total_entries")
+                if isinstance(kb_meta.get("total_entries"), int)
+                else None,
+            )
+
+        trace_obj.setdefault("kb_ids_used", kb_ids_used)
+        trace_obj.setdefault("kb_entries_injected", len(kb_entries))
+
+        # Back-compat fields (kept stable for downstream tooling).
+        trace_obj.setdefault("kb_used_entry_ids", kb_ids_used[:16])
+        trace_obj.setdefault(
+            "kb_hits",
+            kb_meta.get("hit_count")
+            if isinstance(kb_meta, dict) and isinstance(kb_meta.get("hit_count"), int)
+            else len(kb_entries),
+        )
 
     def _normalize_proposed_commands(raw: Any) -> List[ProposedCommand]:
         if raw is None:
@@ -1111,6 +1261,9 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             legacy_trace=legacy_trace if isinstance(legacy_trace, dict) else {},
             agent_id=getattr(out, "agent_id", None),
         )
+
+        # KB TRACE PASSTHROUGH (context -> trace)
+        _apply_kb_trace_passthrough_from_context(out.trace, grounding_bundle=grounding)
 
         pcs = getattr(out, "proposed_commands", None)
         normalized = _normalize_proposed_commands(pcs)
