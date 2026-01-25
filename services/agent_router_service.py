@@ -113,10 +113,23 @@ class AgentRouterService:
 
         callable_fn = self._load_callable(selected.entrypoint)
 
+        md = getattr(agent_input, "metadata", None)
+        if not isinstance(md, dict):
+            md = {}
+        ctx_extra = md.get("agent_ctx")
+        ctx_for_agent: Dict[str, Any] = {
+            "registry_entry": selected,
+            "trace": trace,
+        }
+        if isinstance(ctx_extra, dict):
+            for k, v in ctx_extra.items():
+                # Do not allow clobbering router-provided keys.
+                if k in {"registry_entry", "trace"}:
+                    continue
+                ctx_for_agent[k] = v
+
         try:
-            routed = callable_fn(
-                agent_input, {"registry_entry": selected, "trace": trace}
-            )
+            routed = callable_fn(agent_input, ctx_for_agent)
             if inspect.isawaitable(routed):
                 routed = await routed
             out = routed

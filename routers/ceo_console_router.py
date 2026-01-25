@@ -157,14 +157,85 @@ def _inject_confidence_risk(resp: CEOCommandResponse) -> None:
 async def ceo_command(req: CEOCommandRequest = Body(...)) -> CEOCommandResponse:
     _ensure_registry_loaded()
 
+    # ------------------------------------------------------------
+    # Build CEO Advisor intelligence context (runtime SSOT)
+    # - identity_pack (SystemReadExecutor)
+    # - memory snapshot (ReadOnlyMemoryService)
+    # - conversation_state (ConversationStateStore)
+    # - grounding_pack (GroundingPackService)
+    # ------------------------------------------------------------
+    session_id = (
+        req.session_id
+        if isinstance(req.session_id, str) and req.session_id.strip()
+        else None
+    )
+
+    identity_pack: Dict[str, Any] = {}
+    try:
+        from services.system_read_executor import SystemReadExecutor  # type: ignore
+
+        sys_snap = SystemReadExecutor().snapshot()
+        ip = sys_snap.get("identity_pack") if isinstance(sys_snap, dict) else None
+        identity_pack = ip if isinstance(ip, dict) else {}
+    except Exception:
+        identity_pack = {}
+
+    memory_public: Dict[str, Any] = {}
+    try:
+        from services.memory_read_only import ReadOnlyMemoryService  # type: ignore
+
+        memory_public = ReadOnlyMemoryService().export_public_snapshot()
+        if not isinstance(memory_public, dict):
+            memory_public = {}
+    except Exception:
+        memory_public = {}
+
+    conversation_state: Optional[str] = None
+    if session_id:
+        try:
+            from services.ceo_conversation_state_store import ConversationStateStore  # type: ignore
+
+            cs = ConversationStateStore.get_summary(conversation_id=session_id)
+            conversation_state = (
+                cs.summary_text if hasattr(cs, "summary_text") else None
+            )
+        except Exception:
+            conversation_state = None
+
+    knowledge_snapshot = KnowledgeSnapshotService.get_snapshot() or {}
+
+    grounding_pack: Dict[str, Any] = {}
+    try:
+        from services.grounding_pack_service import GroundingPackService  # type: ignore
+
+        grounding_pack = GroundingPackService.build(
+            prompt=req.text,
+            knowledge_snapshot=knowledge_snapshot,
+            memory_public_snapshot=memory_public,
+            legacy_trace={"source": "ceo_console_router"},
+            agent_id="ceo_advisor",
+        )
+        if not isinstance(grounding_pack, dict):
+            grounding_pack = {}
+    except Exception:
+        grounding_pack = {}
+
     agent_input = AgentInput(
         message=req.text,
-        snapshot=KnowledgeSnapshotService.get_snapshot() or {},
+        snapshot=knowledge_snapshot,
+        identity_pack=identity_pack,
+        preferred_agent_id=req.preferred_agent_id or "ceo_advisor",
         metadata={
             "initiator": req.initiator or "ceo",
             "read_only": True,
             "require_approval": bool(req.require_approval),
             "snapshot_source": "KnowledgeSnapshotService.get_snapshot",
+            "session_id": session_id,
+            "agent_ctx": {
+                "grounding_pack": grounding_pack,
+                "memory": memory_public,
+                "conversation_state": conversation_state,
+            },
         },
     )
 
