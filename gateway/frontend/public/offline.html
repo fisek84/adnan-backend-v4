@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0b1220" />
+    <title>Offline | Adnan.AI</title>
+    <style>
+      :root { color-scheme: dark; }
+      body {
+        margin: 0;
+        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+        background: #0b1220;
+        color: #e5e7eb;
+        display: grid;
+        place-items: center;
+        min-height: 100vh;
+      }
+      .card {
+        width: min(520px, calc(100vw - 32px));
+        border: 1px solid rgba(255,255,255,0.12);
+        border-radius: 16px;
+        padding: 20px;
+        background: rgba(255,255,255,0.04);
+      }
+      h1 { margin: 0 0 10px; font-size: 22px; }
+      p { margin: 0 0 14px; line-height: 1.5; color: rgba(229,231,235,0.9); }
+      .hint { font-size: 13px; opacity: 0.85; }
+      button {
+        cursor: pointer;
+        border-radius: 12px;
+        padding: 10px 14px;
+        border: 1px solid rgba(255,255,255,0.18);
+        background: rgba(255,255,255,0.08);
+        color: #fff;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>You’re offline</h1>
+      <p>Network connection isn’t available. Please reconnect and try again.</p>
+      <button onclick="location.reload()">Retry</button>
+      <p class="hint">Tip (iOS): if you installed the app, it will open in standalone mode once online.</p>
+    </div>
+  </body>
+</html>

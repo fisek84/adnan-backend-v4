@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "gen:pwa-icons": "node scripts/generate-pwa-icons.mjs",
+    "test:pwa": "node scripts/pwa-smoke-test.mjs"
   },
   "dependencies": {
     "react": "^19.0.0",
