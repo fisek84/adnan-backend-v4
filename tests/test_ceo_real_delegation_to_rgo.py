@@ -222,3 +222,78 @@ def test_weekly_explicit_does_not_call_rgo(monkeypatch, tmp_path):
 
     txt = data.get("text") or ""
     assert "TASKS snapshot" in txt
+
+
+def test_moze_phrase_is_not_treated_as_deliverable_confirm(monkeypatch, tmp_path):
+    """Regression: words like 'moze/može' must not trigger deliverable confirmation.
+
+    Otherwise any normal question ("da li mi agent moze...") would incorrectly execute
+    the pending deliverable delegation.
+    """
+
+    monkeypatch.setenv("OPENAI_API_MODE", "responses")
+    monkeypatch.setenv("CEO_ADVISOR_ALLOW_GENERAL_KNOWLEDGE", "1")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-local")
+    monkeypatch.setenv(
+        "CEO_CONVERSATION_STATE_PATH", str(tmp_path / "ceo_conv_state_moze.json")
+    )
+
+    from services.grounding_pack_service import GroundingPackService
+
+    monkeypatch.setattr(
+        GroundingPackService, "build", lambda **kwargs: {"enabled": False}
+    )
+
+    def _boom(*args, **kwargs):  # noqa: ANN001
+        raise AssertionError("executor must not be called")
+
+    monkeypatch.setattr("services.agent_router.executor_factory.get_executor", _boom)
+
+    calls: list[int] = []
+
+    async def _fake_growth_agent(_agent_in, _ctx):  # noqa: ANN001
+        calls.append(1)
+        from models.agent_contract import AgentOutput
+
+        return AgentOutput(
+            text="SHOULD_NOT_RUN",
+            proposed_commands=[],
+            agent_id="revenue_growth_operator",
+            read_only=True,
+            trace={"stub": True},
+        )
+
+    monkeypatch.setattr(
+        "services.revenue_growth_operator_agent.revenue_growth_operator_agent",
+        _fake_growth_agent,
+    )
+
+    app = _load_app()
+    client = TestClient(app)
+
+    session_id = "session_moze_not_confirm_1"
+    snap = {"payload": {"tasks": []}}
+
+    # Step 1: deliverable request -> proposal (no execution)
+    resp1 = client.post(
+        "/api/chat",
+        json={
+            "message": "Pripremi 2 follow-up poruke + 1 email.",
+            "session_id": session_id,
+            "snapshot": snap,
+        },
+    )
+    assert resp1.status_code == 200
+    assert calls == []
+
+    # Step 2: contains "moze" but is NOT a confirmation -> must not execute RGO
+    resp2 = client.post(
+        "/api/chat",
+        json={
+            "message": "Da li mi agent moze pomoci da napravim plan?",
+            "session_id": session_id,
+            "snapshot": snap,
+        },
+    )
+    assert resp2.status_code == 200
+    assert calls == []

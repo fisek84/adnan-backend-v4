@@ -1805,10 +1805,12 @@ async def create_ceo_advisor_agent(
         t = " ".join((text or "").strip().lower().split())
         if not t:
             return False
-        # Minimal, explicit confirmations.
+        # Minimal, explicit confirmations only.
+        # NOTE: Avoid ambiguous tokens like "ok" / "moze" which can appear in normal questions
+        # (e.g., "da li mi agent moze pomoci...") and would incorrectly trigger delegation.
         return bool(
             re.search(
-                r"(?i)\b(uradi\s+to|uradi|sla\u017eem\s+se|slazem\s+se|proceed|go\s+ahead|ok|okej|mo\u017ee|moze)\b",
+                r"(?i)\b(uradi\s+to|sla\u017eem\s+se|slazem\s+se|proceed|go\s+ahead)\b",
                 t,
             )
         )
