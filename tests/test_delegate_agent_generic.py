@@ -32,7 +32,9 @@ def test_delegate_to_named_agent_is_read_only_and_no_toggle(monkeypatch, tmp_pat
 
     from services.grounding_pack_service import GroundingPackService
 
-    monkeypatch.setattr(GroundingPackService, "build", lambda **kwargs: {"enabled": False})
+    monkeypatch.setattr(
+        GroundingPackService, "build", lambda **kwargs: {"enabled": False}
+    )
 
     calls: list[dict] = []
 
@@ -96,7 +98,9 @@ def test_delegate_unknown_agent_returns_read_only_no_proposals(monkeypatch, tmp_
 
     from services.grounding_pack_service import GroundingPackService
 
-    monkeypatch.setattr(GroundingPackService, "build", lambda **kwargs: {"enabled": False})
+    monkeypatch.setattr(
+        GroundingPackService, "build", lambda **kwargs: {"enabled": False}
+    )
 
     app = _load_app()
     client = TestClient(app)
@@ -130,7 +134,9 @@ def test_delegate_missing_target_prompts_agent_picker(monkeypatch, tmp_path):
 
     from services.grounding_pack_service import GroundingPackService
 
-    monkeypatch.setattr(GroundingPackService, "build", lambda **kwargs: {"enabled": False})
+    monkeypatch.setattr(
+        GroundingPackService, "build", lambda **kwargs: {"enabled": False}
+    )
 
     app = _load_app()
     client = TestClient(app)
@@ -166,7 +172,9 @@ def test_delegate_missing_target_with_comma_prompts_picker(monkeypatch, tmp_path
 
     from services.grounding_pack_service import GroundingPackService
 
-    monkeypatch.setattr(GroundingPackService, "build", lambda **kwargs: {"enabled": False})
+    monkeypatch.setattr(
+        GroundingPackService, "build", lambda **kwargs: {"enabled": False}
+    )
 
     app = _load_app()
     client = TestClient(app)
@@ -196,7 +204,9 @@ def test_delegate_to_rgo_without_colon_still_delegates(monkeypatch, tmp_path):
 
     from services.grounding_pack_service import GroundingPackService
 
-    monkeypatch.setattr(GroundingPackService, "build", lambda **kwargs: {"enabled": False})
+    monkeypatch.setattr(
+        GroundingPackService, "build", lambda **kwargs: {"enabled": False}
+    )
 
     calls: list[dict] = []
 
@@ -205,7 +215,10 @@ def test_delegate_to_rgo_without_colon_still_delegates(monkeypatch, tmp_path):
         from models.agent_contract import AgentOutput
 
         return AgentOutput(
-            text=json.dumps({"agent": "revenue_growth_operator", "echo": agent_in.message}, ensure_ascii=False),
+            text=json.dumps(
+                {"agent": "revenue_growth_operator", "echo": agent_in.message},
+                ensure_ascii=False,
+            ),
             proposed_commands=[],
             agent_id="revenue_growth_operator",
             read_only=True,
@@ -247,7 +260,9 @@ def test_delegate_target_before_word_agentu(monkeypatch, tmp_path):
 
     from services.grounding_pack_service import GroundingPackService
 
-    monkeypatch.setattr(GroundingPackService, "build", lambda **kwargs: {"enabled": False})
+    monkeypatch.setattr(
+        GroundingPackService, "build", lambda **kwargs: {"enabled": False}
+    )
 
     calls: list[dict] = []
 
@@ -256,7 +271,10 @@ def test_delegate_target_before_word_agentu(monkeypatch, tmp_path):
         from models.agent_contract import AgentOutput
 
         return AgentOutput(
-            text=json.dumps({"agent": "revenue_growth_operator", "echo": agent_in.message}, ensure_ascii=False),
+            text=json.dumps(
+                {"agent": "revenue_growth_operator", "echo": agent_in.message},
+                ensure_ascii=False,
+            ),
             proposed_commands=[],
             agent_id="revenue_growth_operator",
             read_only=True,

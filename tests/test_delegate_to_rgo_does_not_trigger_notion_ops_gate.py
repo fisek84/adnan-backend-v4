@@ -16,7 +16,9 @@ def _load_app():
         return app
 
 
-def test_explicit_delegate_to_rgo_is_read_only_and_no_notion_toggle(monkeypatch, tmp_path):
+def test_explicit_delegate_to_rgo_is_read_only_and_no_notion_toggle(
+    monkeypatch, tmp_path
+):
     monkeypatch.setenv("OPENAI_API_MODE", "responses")
     monkeypatch.setenv("CEO_ADVISOR_ALLOW_GENERAL_KNOWLEDGE", "1")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-local")
