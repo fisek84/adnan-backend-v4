@@ -5,6 +5,7 @@ import re
 import hashlib
 import json
 import logging
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from models.agent_contract import AgentInput, AgentOutput, ProposedCommand
@@ -1795,6 +1796,82 @@ async def create_ceo_advisor_agent(
     if not base_text:
         base_text = "Reci ukratko šta možeš i kako mogu tražiti akciju."
 
+    def _norm_bhs_ascii(text: str) -> str:
+        t = (text or "").strip().lower()
+        if not t:
+            return ""
+        return (
+            t.replace("č", "c")
+            .replace("ć", "c")
+            .replace("š", "s")
+            .replace("đ", "dj")
+            .replace("ž", "z")
+        )
+
+    def _is_deliverable_continue(text: str) -> bool:
+        # Explicit continuation phrases only (per spec).
+        t = _norm_bhs_ascii(text)
+        if not t:
+            return False
+        return bool(
+            re.search(
+                r"(?i)\b(nastavi|jos|prosiri|dodaj\s+jos|iteriraj)\b",
+                t,
+            )
+        )
+
+    def _deliverable_hash(text: str) -> str:
+        s = (text or "").strip()
+        if not s:
+            return ""
+        return _sha256_prefix(s)[:16]
+
+    def _conversation_id() -> Optional[str]:
+        cid0 = None
+        try:
+            cid0 = ctx.get("conversation_id") if isinstance(ctx, dict) else None
+        except Exception:
+            cid0 = None
+        if isinstance(cid0, str) and cid0.strip():
+            return cid0.strip()
+
+        cid1 = getattr(agent_input, "conversation_id", None)
+        if isinstance(cid1, str) and cid1.strip():
+            return cid1.strip()
+        return None
+
+    def _mark_deliverable_completed(*, conversation_id: str, task_text: str) -> None:
+        try:
+            from services.ceo_conversation_state_store import (  # noqa: PLC0415
+                ConversationStateStore,
+            )
+
+            ConversationStateStore.update_meta(
+                conversation_id=conversation_id,
+                updates={
+                    "deliverable_last_completed": True,
+                    "deliverable_last_completed_at": float(time.time()),
+                    "deliverable_last_completed_hash": _deliverable_hash(task_text),
+                },
+            )
+        except Exception:
+            pass
+
+    def _was_deliverable_completed(*, conversation_id: str, task_text: str) -> bool:
+        try:
+            from services.ceo_conversation_state_store import (  # noqa: PLC0415
+                ConversationStateStore,
+            )
+
+            meta = ConversationStateStore.get_meta(conversation_id=conversation_id)
+            if not isinstance(meta, dict):
+                return False
+            h = _deliverable_hash(task_text)
+            return bool(h) and (meta.get("deliverable_last_completed_hash") == h)
+        except Exception:
+            return False
+
+    continue_deliverable = _is_deliverable_continue(base_text)
     intent = classify_intent(base_text)
 
     def _debug_trace_enabled() -> bool:
@@ -2113,9 +2190,74 @@ async def create_ceo_advisor_agent(
     conv_state = ctx.get("conversation_state") if isinstance(ctx, dict) else None
     pending_deliverable = (
         _extract_last_deliverable_from_conversation_state(conv_state)
-        if is_confirm
+        if (is_confirm or continue_deliverable)
         else None
     )
+
+    # Explicit continuation keywords should resume the last deliverable even if
+    # the new user message does not contain deliverable keywords.
+    if continue_deliverable and pending_deliverable:
+        try:
+            from services.delegation_service import execute_delegation  # noqa: PLC0415
+            from services.output_presenters.revenue_growth_presenter import (  # noqa: PLC0415
+                to_ceo_report,
+            )
+
+            task_text = (
+                (pending_deliverable or "").strip()
+                + "\n\nKorisnik traži iteraciju/nastavak: "
+                + (base_text or "").strip()
+            ).strip()
+
+            child = await execute_delegation(
+                parent_ctx=ctx if isinstance(ctx, dict) else {},
+                target_agent_id="revenue_growth_operator",
+                task_text=task_text,
+                parent_agent_input=agent_input,
+                delegation_reason="deliverable_continue",
+            )
+
+            out = AgentOutput(
+                text=to_ceo_report(child),
+                proposed_commands=[],
+                agent_id="ceo_advisor",
+                read_only=True,
+                trace={
+                    "intent": "deliverable_continue",
+                    "delegated_to": "revenue_growth_operator",
+                    "delegation_reason": "deliverable_continue",
+                    "fallback_used": "none",
+                    "snapshot": snap_trace,
+                },
+            )
+
+            cid = _conversation_id()
+            if isinstance(cid, str) and cid.strip():
+                _mark_deliverable_completed(
+                    conversation_id=cid.strip(), task_text=pending_deliverable
+                )
+
+            return _final(out)
+        except Exception:
+            logger.exception(
+                "[CEO-ADVISOR] Deliverable continuation delegation failed; falling back to CEO Advisor flow."
+            )
+
+    # After a successful deliverable execution, do NOT keep re-executing the same
+    # deliverable on subsequent generic confirmations. Re-evaluate the message as
+    # a NEW intent (unless user explicitly asked to continue/iterate).
+    if is_confirm and pending_deliverable:
+        cid = _conversation_id()
+        if (
+            isinstance(cid, str)
+            and cid.strip()
+            and _was_deliverable_completed(
+                conversation_id=cid.strip(), task_text=pending_deliverable
+            )
+        ):
+            # Treat this as a normal message (ignore the old pending deliverable).
+            is_confirm = False
+            pending_deliverable = None
 
     if is_confirm and pending_deliverable:
         try:
@@ -2174,6 +2316,12 @@ async def create_ceo_advisor_agent(
                         "notion_snapshot_present": bool(notion_present),
                     },
                 }
+
+            cid = _conversation_id()
+            if isinstance(cid, str) and cid.strip():
+                _mark_deliverable_completed(
+                    conversation_id=cid.strip(), task_text=pending_deliverable
+                )
 
             return _final(out)
         except Exception:

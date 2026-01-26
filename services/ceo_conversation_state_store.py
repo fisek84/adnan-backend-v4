@@ -184,3 +184,42 @@ class ConversationStateStore:
             st["updated_at"] = _now_unix()
             db[cid] = st
             _save_db(db)
+
+    @staticmethod
+    def get_meta(*, conversation_id: str) -> Dict[str, Any]:
+        cid = (conversation_id or "").strip()
+        if not cid:
+            return {}
+
+        with _LOCK:
+            db = _load_db()
+            st = db.get(cid)
+            st = st if isinstance(st, dict) else {}
+            meta = st.get("meta")
+            meta = meta if isinstance(meta, dict) else {}
+            return dict(meta)
+
+    @staticmethod
+    def update_meta(*, conversation_id: str, updates: Dict[str, Any]) -> None:
+        cid = (conversation_id or "").strip()
+        if not cid:
+            return
+        if not isinstance(updates, dict) or not updates:
+            return
+
+        with _LOCK:
+            db = _load_db()
+            st = db.get(cid)
+            st = st if isinstance(st, dict) else {}
+            meta = st.get("meta")
+            meta = meta if isinstance(meta, dict) else {}
+
+            # Shallow merge is enough; keep minimal and predictable.
+            for k, v in updates.items():
+                if isinstance(k, str) and k.strip():
+                    meta[k.strip()] = v
+
+            st["meta"] = meta
+            st["updated_at"] = _now_unix()
+            db[cid] = st
+            _save_db(db)
