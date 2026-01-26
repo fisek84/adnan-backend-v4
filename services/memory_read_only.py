@@ -1,7 +1,7 @@
 # services/memory_read_only.py
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from services.memory_service import MemoryService
 
@@ -44,14 +44,23 @@ class ReadOnlyMemoryService:
     # Minimal read-only export (for LLM context)
     # ----------------------------
     def export_public_snapshot(self) -> Dict[str, Any]:
-        raw = getattr(self._mem, "memory", {})
+        try:
+            raw = getattr(self._mem, "memory", {})
+        except Exception:
+            # Fail-soft: storage may be unavailable (env/path/permission issues).
+            return {}
+
         if not isinstance(raw, dict):
             return {}
 
-        memory_items = raw.get("memory_items")
-        items_count = 0
-        if isinstance(memory_items, list):
-            items_count = len([x for x in memory_items if isinstance(x, dict)])
+        try:
+            memory_items = raw.get("memory_items")
+            items_count = 0
+            if isinstance(memory_items, list):
+                items_count = len([x for x in memory_items if isinstance(x, dict)])
+        except Exception:
+            # Defensive: corrupted underlying dict shape.
+            return {}
 
         return {
             "schema_version": raw.get("schema_version"),
@@ -62,6 +71,64 @@ class ReadOnlyMemoryService:
             "memory_items_count": items_count,
             "last_memory_write": raw.get("last_memory_write"),
         }
+
+    # ----------------------------
+    # Canonical memory_write.v1 read helper (safe subset)
+    # ----------------------------
+    def get_recent_memory_items(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """Returns a safe, compact list of the most recent canonical memory items.
+
+        This is intended for deterministic recall UX and debug surfaces.
+        It does NOT expose the raw underlying memory dict.
+        """
+
+        if not isinstance(limit, int) or limit <= 0:
+            return []
+
+        raw = getattr(self._mem, "memory", {})
+        if not isinstance(raw, dict):
+            return []
+
+        items0 = raw.get("memory_items")
+        if not isinstance(items0, list) or not items0:
+            return []
+
+        out: List[Dict[str, Any]] = []
+        for it in reversed(items0):
+            if not isinstance(it, dict):
+                continue
+
+            item0 = it.get("item")
+            if not isinstance(item0, dict):
+                continue
+
+            text = item0.get("text")
+            if not isinstance(text, str) or not text.strip():
+                continue
+
+            tags0 = item0.get("tags")
+            tags = (
+                [str(x).strip() for x in tags0 if isinstance(x, str) and x.strip()]
+                if isinstance(tags0, list)
+                else []
+            )
+
+            out.append(
+                {
+                    "stored_id": it.get("stored_id"),
+                    "type": item0.get("type"),
+                    "text": text.strip(),
+                    "tags": tags,
+                    "source": item0.get("source"),
+                    "created_at": it.get("created_at"),
+                    "identity_id": it.get("identity_id"),
+                }
+            )
+
+            if len(out) >= limit:
+                break
+
+        return out
 
     # ----------------------------
     # Legacy read-only helpers

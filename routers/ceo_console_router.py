@@ -19,6 +19,7 @@ from models.agent_contract import AgentInput
 from services.agent_registry_service import AgentRegistryService
 from services.agent_router_service import AgentRouterService
 from services.knowledge_snapshot_service import KnowledgeSnapshotService
+import os
 
 try:
     from services.identity_resolver import lookup_identity_id as _lookup_identity_id  # type: ignore
@@ -39,6 +40,26 @@ def _ensure_registry_loaded() -> None:
             _agent_registry.load_from_agents_json("config/agents.json", clear=True)
     except Exception:
         pass
+
+
+def _debug_enabled(req: "CEOCommandRequest") -> bool:
+    # Canonical debug gate (matches chat_router semantics):
+    # - request-scoped include_debug in context_hint
+    # - global env DEBUG_API_RESPONSES
+    include_debug = False
+    try:
+        ch = req.context_hint if isinstance(req, CEOCommandRequest) else None
+        if isinstance(ch, dict):
+            v = ch.get("include_debug")
+            include_debug = v is True or (
+                isinstance(v, str) and v.strip().lower() in {"1", "true", "yes", "on"}
+            )
+    except Exception:
+        include_debug = False
+
+    env = (os.getenv("DEBUG_API_RESPONSES") or "").strip().lower()
+    env_debug = env in {"1", "true", "yes", "on"}
+    return bool(include_debug or env_debug)
 
 
 class CEOCommandRequest(BaseModel):
@@ -269,6 +290,10 @@ async def ceo_command(req: CEOCommandRequest = Body(...)) -> CEOCommandResponse:
         if isinstance(iid, str) and iid.strip():
             identity_pack["identity_id_db"] = iid
 
+    memory_provider = "readonly_memory_service"
+    memory_error: Optional[str] = None
+    memory_items_count = 0
+
     memory_public: Dict[str, Any] = {}
     try:
         from services.memory_read_only import ReadOnlyMemoryService  # type: ignore
@@ -276,8 +301,16 @@ async def ceo_command(req: CEOCommandRequest = Body(...)) -> CEOCommandResponse:
         memory_public = ReadOnlyMemoryService().export_public_snapshot()
         if not isinstance(memory_public, dict):
             memory_public = {}
-    except Exception:
+    except Exception as e:
+        memory_error = str(e)
         memory_public = {}
+
+    try:
+        mic = memory_public.get("memory_items_count")
+        if isinstance(mic, int):
+            memory_items_count = int(mic)
+    except Exception:
+        memory_items_count = 0
 
     conversation_state: Optional[str] = None
     if session_id:
@@ -397,6 +430,14 @@ async def ceo_command(req: CEOCommandRequest = Body(...)) -> CEOCommandResponse:
         else {},
         memory_public=memory_public,
     )
+
+    # DEBUG-only trace fields (no contract change for non-debug responses).
+    if _debug_enabled(req):
+        tr = resp.trace if isinstance(resp.trace, dict) else {}
+        tr["memory_provider"] = memory_provider
+        tr["memory_items_count"] = int(memory_items_count)
+        tr["memory_error"] = memory_error
+        resp.trace = tr
 
     _inject_confidence_risk(resp)
     return resp

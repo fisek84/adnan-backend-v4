@@ -788,8 +788,23 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
 
     @router.post("/chat", response_model=AgentOutput, response_model_by_alias=False)
     async def chat(payload: AgentInput):
-        mem_ro = get_memory_read_only_service()
-        mem_snapshot = mem_ro.export_public_snapshot() if mem_ro else {}
+        memory_provider = "readonly_memory_service"
+        memory_error: Optional[str] = None
+        mem_snapshot: Dict[str, Any] = {}
+        try:
+            mem_ro = get_memory_read_only_service()
+            mem_snapshot = mem_ro.export_public_snapshot() if mem_ro else {}
+            if not isinstance(mem_snapshot, dict):
+                mem_snapshot = {}
+        except Exception as exc:
+            mem_snapshot = {}
+            memory_error = str(exc) if str(exc) else exc.__class__.__name__
+
+        memory_items_count = 0
+        try:
+            memory_items_count = int(mem_snapshot.get("memory_items_count") or 0)
+        except Exception:
+            memory_items_count = 0
 
         prompt = _extract_prompt(payload)
         session_id = _extract_session_id(payload)
@@ -1355,7 +1370,13 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                     },
                 }
                 if debug_on:
-                    content["trace"] = out.trace or {}
+                    tr0 = out.trace or {}
+                    if not isinstance(tr0, dict):
+                        tr0 = {}
+                    tr0["memory_provider"] = memory_provider
+                    tr0["memory_items_count"] = memory_items_count
+                    tr0["memory_error"] = memory_error
+                    content["trace"] = tr0
                     content.update(kb)
                     content.update(grounding)
                 else:
@@ -1377,7 +1398,13 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 },
             }
             if debug_on:
-                content["trace"] = out.trace or {}
+                tr0 = out.trace or {}
+                if not isinstance(tr0, dict):
+                    tr0 = {}
+                tr0["memory_provider"] = memory_provider
+                tr0["memory_items_count"] = memory_items_count
+                tr0["memory_error"] = memory_error
+                content["trace"] = tr0
                 content.update(kb)
                 content.update(grounding)
             else:
@@ -1427,6 +1454,9 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 },
             }
             if debug_on:
+                tr["memory_provider"] = memory_provider
+                tr["memory_items_count"] = memory_items_count
+                tr["memory_error"] = memory_error
                 content["trace"] = tr
                 content.update(kb)
                 content.update(grounding)
@@ -1478,6 +1508,9 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             },
         }
         if debug_on:
+            tr["memory_provider"] = memory_provider
+            tr["memory_items_count"] = memory_items_count
+            tr["memory_error"] = memory_error
             content["trace"] = tr
             content.update(kb)
             content.update(grounding)
