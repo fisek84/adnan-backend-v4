@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, List
 
 
 _SMART_QUOTES = {
@@ -54,7 +54,7 @@ def normalize_text(s: str) -> str:
     t = re.sub(r"\s+", " ", t).strip()
 
     # Strip surrounding quotes/punctuation.
-    t = t.strip('"\'`.,;:!?()[]{}<>')
+    t = t.strip("\"'`.,;:!?()[]{}<>")
 
     return t
 

@@ -4,7 +4,9 @@ import pytest
 
 
 @pytest.mark.anyio
-async def test_kb_search_production_prompt_wysiati_included_and_not_only_hit(monkeypatch):
+async def test_kb_search_production_prompt_wysiati_included_and_not_only_hit(
+    monkeypatch,
+):
     """Regression #2 (production prompt).
 
     Query: "Objasni WYSIATI kao da sam pročitao knjigu, ali koristi samo KB."

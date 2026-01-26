@@ -15,7 +15,9 @@ if not os.getenv("DATABASE_URL"):
 
 
 def test_scheduler_advisory_lock_blocks_second_runner(monkeypatch):
-    url = os.environ["DATABASE_URL"]
+    url = (os.getenv("DATABASE_URL") or "").strip()
+    if not url:
+        pytest.skip("DATABASE_URL not set; skipping DB-backed scheduler lock test")
 
     try:
         with sa.create_engine(url, pool_pre_ping=True).connect():

@@ -14,6 +14,7 @@ from services.notion_service import (
 
 PageObj = Dict[str, Any]
 BlockObj = Dict[str, Any]
+DatabaseObj = Dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -76,6 +77,48 @@ class NotionReadService:
 
         return None
 
+    async def get_database_by_title_contains(self, query: str) -> Optional[DatabaseObj]:
+        """
+        Vraća database samo ako title sadrži query (case-insensitive).
+
+        IMPORTANT:
+        - Ova funkcija ne mijenja ponašanje get_page_by_title_contains (ne dira negative test).
+        - Koristi isti Notion /v1/search, ali filtera na object=database.
+        """
+        q = (query or "").strip()
+        if not q:
+            return None
+
+        payload: Dict[str, Any] = {
+            "query": q,
+            "filter": {"property": "object", "value": "database"},
+            "sort": {"direction": "descending", "timestamp": "last_edited_time"},
+            "page_size": 25,
+        }
+
+        resp = await self._notion._safe_request(
+            "POST",
+            "https://api.notion.com/v1/search",
+            payload=payload,
+        )
+
+        results: Sequence[Dict[str, Any]] = resp.get("results", []) or []
+        if not results:
+            return None
+
+        q_lower = q.lower()
+        for item in results:
+            if not isinstance(item, dict):
+                continue
+            if item.get("object") != "database":
+                continue
+
+            title = self._extract_database_title(item)
+            if title and q_lower in title.lower():
+                return item
+
+        return None
+
     async def render_page_to_markdown(self, page: PageObj) -> str:
         """
         Renderuje Notion page block tree u markdown.
@@ -105,6 +148,10 @@ class NotionReadService:
         """
         Stable contract for endpoint consumption.
         Returns empty strings if not found (endpoint normalizes to ok=false).
+
+        CHANGE (safe):
+        - Ako page nije nađen, pokušaj database istog naslova i vrati njegov URL/title.
+        - Ne pokušavamo renderovati database u markdown (jer nije page).
         """
         q = (query or "").strip()
         if not q:
@@ -119,16 +166,31 @@ class NotionReadService:
                 max_latency_ms=max_latency_ms,
             ):
                 page = await self.get_page_by_title_contains(q)
-                if not page:
+                if page:
+                    title = self._extract_page_title(page)
+                    url = page.get("url", "") if isinstance(page, dict) else ""
+                    content_md = await self.render_page_to_markdown(page)
+                    return {
+                        "title": (title or "").strip(),
+                        "url": (url or "").strip(),
+                        "content_markdown": (content_md or "").strip(),
+                    }
+
+                # Fallback: možda je "Goals" database, ne page.
+                db = await self.get_database_by_title_contains(q)
+                if not db:
                     return {"title": "", "url": "", "content_markdown": ""}
 
-                title = self._extract_page_title(page)
-                url = page.get("url", "") if isinstance(page, dict) else ""
-                content_md = await self.render_page_to_markdown(page)
+                db_title = self._extract_database_title(db)
+                db_url = db.get("url", "") if isinstance(db, dict) else ""
+
+                # Minimalno, ne kvari postojeći UI: prikaži link i kratku oznaku.
+                # (content_markdown je opcionalno; ostavljamo nešto stabilno umjesto praznog "#")
+                content_md = "#\n\n(Database)"
 
                 return {
-                    "title": (title or "").strip(),
-                    "url": (url or "").strip(),
+                    "title": (db_title or "").strip(),
+                    "url": (db_url or "").strip(),
                     "content_markdown": (content_md or "").strip(),
                 }
         except NotionBudgetExceeded:
@@ -295,6 +357,20 @@ class NotionReadService:
                 title_items = prop.get("title") or []
                 if isinstance(title_items, list):
                     return self._rich_text_to_plain(title_items).strip()
+
+        return ""
+
+    def _extract_database_title(self, db: DatabaseObj) -> str:
+        """
+        Robust database title extraction:
+        - database object has top-level "title": [rich_text...]
+        """
+        if not isinstance(db, dict):
+            return ""
+
+        title_items = db.get("title") or []
+        if isinstance(title_items, list):
+            return self._rich_text_to_plain(title_items).strip()
 
         return ""
 

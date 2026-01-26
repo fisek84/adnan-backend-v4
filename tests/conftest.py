@@ -6,6 +6,8 @@ Goals:
 """
 
 import os
+import socket
+import urllib.parse
 from typing import Any, Callable
 
 from pathlib import Path
@@ -22,6 +24,38 @@ def _is_external_host(host: str | None) -> bool:
     if h in {"testserver", "test", "localhost", "127.0.0.1", "0.0.0.0"}:
         return False
     return True
+
+
+def _db_host_port(db_url: str) -> tuple[str | None, int | None]:
+    """Best-effort parse of DB host/port for connection-availability checks."""
+    u = (db_url or "").strip()
+    if not u:
+        return None, None
+
+    # Keep sqlite URLs as-is (no external dependency).
+    if u.startswith("sqlite"):
+        return None, None
+
+    try:
+        parsed = urllib.parse.urlparse(u)
+    except Exception:
+        return None, None
+
+    scheme = (parsed.scheme or "").lower()
+    if not scheme.startswith("postgres"):
+        return None, None
+
+    host = parsed.hostname
+    port = parsed.port or 5432
+    return host, port
+
+
+def _tcp_port_open(host: str, port: int, *, timeout_s: float = 0.15) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=timeout_s):
+            return True
+    except OSError:
+        return False
 
 
 @pytest.fixture
@@ -55,6 +89,19 @@ def _disable_external_network(monkeypatch: pytest.MonkeyPatch):
     # NOTE: Do not unset Notion env vars here; gateway boot validation may require them.
     for k in ("OPENAI_API_KEY", "CEO_ADVISOR_ASSISTANT_ID"):
         os.environ.pop(k, None)
+
+    # Avoid flaky local/dev DB dependencies during unit tests.
+    # If DATABASE_URL points to a local Postgres that isn't running, drop it so
+    # callers that support "no DB configured" can fall back deterministically.
+    db_url = (os.getenv("DATABASE_URL") or "").strip()
+    if db_url:
+        host, port = _db_host_port(db_url)
+        if host is not None:
+            # Never allow tests to talk to external DB hosts.
+            if _is_external_host(host):
+                monkeypatch.delenv("DATABASE_URL", raising=False)
+            elif port is not None and not _tcp_port_open(host, port):
+                monkeypatch.delenv("DATABASE_URL", raising=False)
 
     try:
         import httpx
