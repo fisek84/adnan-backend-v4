@@ -10,6 +10,8 @@ from typing import Any, Dict, List, Optional, Tuple
 from models.agent_contract import AgentInput, AgentOutput, ProposedCommand
 from models.canon import PROPOSAL_WRAPPER_INTENT
 
+from services.intent_precedence import classify_intent
+
 # PHASE 6: Import shared Notion Ops state management
 from services.notion_ops_state import get_state as get_notion_ops_state
 from services.notion_ops_state import is_armed as notion_ops_is_armed
@@ -587,6 +589,42 @@ def _is_planning_or_help_request(user_text: str) -> bool:
             r"kako\s+da\s+pocn\w*|kako\s+da\s+po\u010dn\w*|krenut\w*|"
             r"pomozi|pomo\u0107|pomoc|pomo\u0107i|pomoci|help|start|po\u010det\w*|pocet\w*|"
             r"7\s*dana|sedmodnev\w*|7-day|7day"
+            r")\b",
+            t,
+        )
+    )
+
+
+def _is_revenue_growth_deliverable_request(user_text: str) -> bool:
+    """True for concrete sales/growth deliverables (messages/emails/sequences/scripts).
+
+    This is used to prevent the empty-TASKS weekly priorities fallback from hijacking
+    deliverable drafting requests (e.g. follow-up poruke, cold email sekvence).
+    """
+
+    t = (user_text or "").strip().lower()
+    if not t:
+        return False
+
+    # If user is explicitly asking for weekly/7-day planning, this is not a deliverable.
+    if re.search(r"(?i)\b(weekly|sedmic\w*|7\s*dana|7-day|7day)\b", t):
+        return False
+
+    # Require at least one concrete deliverable keyword.
+    return bool(
+        re.search(
+            r"(?i)\b("
+            r"follow\s*-?up|followup|"
+            r"cold\s*email|"
+            r"email|e-mail|mail|"
+            r"dm|direct\s+message|"
+            r"poruk\w*|msg|message\w*|"
+            r"outreach|prospect\w*|lead\w*|"
+            r"sekvenc\w*|sequence\w*|"
+            r"skript\w*|script\w*|"
+            r"pitch|ponud\w*|proposal\w*|"
+            r"linkedin|"
+            r"funnel|pipeline|sales"
             r")\b",
             t,
         )
@@ -1757,6 +1795,8 @@ async def create_ceo_advisor_agent(
     if not base_text:
         base_text = "Reci ukratko šta možeš i kako mogu tražiti akciju."
 
+    intent = classify_intent(base_text)
+
     # Preferred UI output language (Bosanski / English) from metadata
     meta = agent_input.metadata if isinstance(agent_input.metadata, dict) else {}
     ui_lang_raw = str(
@@ -2016,6 +2056,52 @@ async def create_ceo_advisor_agent(
         meta=meta,
     )
 
+    # Precedence fix: deliverable intent always delegates to Revenue & Growth Operator.
+    # TASKS snapshot (empty or not) must never hijack deliverables into weekly/kickoff.
+    if intent == "deliverable":
+        try:
+            from services.revenue_growth_operator_agent import (  # noqa: PLC0415
+                revenue_growth_operator_agent,
+            )
+
+            delegated_input = AgentInput(
+                message=base_text,
+                identity_pack=agent_input.identity_pack,
+                snapshot=agent_input.snapshot,
+                conversation_id=agent_input.conversation_id,
+                history=agent_input.history,
+                preferred_agent_id="revenue_growth_operator",
+                metadata=agent_input.metadata,
+            )
+
+            delegated = await revenue_growth_operator_agent(
+                delegated_input, ctx if isinstance(ctx, dict) else {}
+            )
+            tr = dict(getattr(delegated, "trace", None) or {})
+            tr.update(
+                {
+                    "delegated_by": "ceo_advisor",
+                    "delegation_reason": "intent_precedence_guard",
+                    "intent": "deliverable",
+                    "ceo_snapshot_trace": snap_trace,
+                }
+            )
+
+            debug_trace = (os.getenv("DEBUG_TRACE") or "").strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
+            if debug_trace:
+                tr["delegated_to"] = "revenue_growth_operator"
+            delegated.trace = tr
+            return _final(delegated)
+        except Exception:
+            logger.exception(
+                "[CEO-ADVISOR] Deliverable delegation to revenue_growth_operator failed; falling back to CEO Advisor flow."
+            )
+
     # Deterministic fallback when tasks are empty for planning/help prompts.
     # Keep this BEFORE Responses-mode grounding guard; it must not call LLM/executor.
     projects = None
@@ -2028,24 +2114,7 @@ async def create_ceo_advisor_agent(
     except Exception:
         projects = None
 
-    t_fallback = (base_text or "").strip().lower()
-    is_role_or_capabilities = _is_assistant_role_or_capabilities_question(base_text)
-    wants_weekly_plan = (
-        "sedmic" in t_fallback
-        or "weekly" in t_fallback
-        or "7 dana" in t_fallback
-        or "7day" in t_fallback
-        or "7-day" in t_fallback
-        or (
-            "plan" in t_fallback
-            and ("cilj" in t_fallback or "task" in t_fallback or "zadat" in t_fallback)
-        )
-        or "pomozi" in t_fallback
-        or "help" in t_fallback
-        or _is_planning_or_help_request(base_text)
-    )
-    if is_role_or_capabilities:
-        wants_weekly_plan = False
+    wants_weekly_plan = intent == "weekly"
 
     # Only trigger when snapshot explicitly contains a tasks list.
     if (
@@ -2257,6 +2326,7 @@ async def create_ceo_advisor_agent(
         and (kb_hits == 0)
         and (not snapshot_has_facts)
         and (not _should_use_kickoff_in_offline_mode(t0))
+        and (not (wants_prompt_template and wants_notion))
     ):
         effective_allow_general = bool(allow_general and llm_configured)
         logger.info(

@@ -13,6 +13,7 @@ from services.execution_registry import get_execution_registry
 from services.notion_ops_agent import NotionOpsAgent
 from services.notion_service import get_notion_service
 from services.memory_ops_executor import MemoryOpsExecutor
+from services.notion_ops_state import is_armed as notion_ops_is_armed
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -82,6 +83,41 @@ class ExecutionOrchestrator:
         self, command: Union[AICommand, Dict[str, Any]]
     ) -> Dict[str, Any]:
         cmd = self._normalize_command(command)
+
+        # SSOT safety: Notion writes must never dispatch when Notion Ops is not ARMED.
+        # This is session-scoped and only enforced when session_id is present.
+        try:
+            if cmd.intent == "notion_write" or cmd.command == "notion_write":
+                md = (
+                    cmd.metadata
+                    if isinstance(getattr(cmd, "metadata", None), dict)
+                    else {}
+                )
+                session_id = md.get("session_id") if isinstance(md, dict) else None
+                if isinstance(session_id, str) and session_id.strip():
+                    armed = await notion_ops_is_armed(session_id.strip())
+                    if not armed:
+                        cmd.execution_state = "BLOCKED"
+                        self.registry.block(
+                            cmd.execution_id,
+                            {
+                                "allowed": False,
+                                "reason": "notion_ops_disarmed",
+                                "execution_id": cmd.execution_id,
+                                "approval_id": cmd.approval_id,
+                                "context_type": cmd.context_type or cmd.command,
+                                "directive": cmd.command,
+                            },
+                        )
+                        return {
+                            "execution_id": cmd.execution_id,
+                            "execution_state": "BLOCKED",
+                            "approval_id": cmd.approval_id,
+                            "reason": "notion_ops_disarmed",
+                        }
+        except Exception:
+            # Fail-soft: do not crash execution path on gating errors.
+            pass
 
         if self._is_proposal_wrapper(cmd):
             raise ValueError("proposal wrapper cannot be executed")

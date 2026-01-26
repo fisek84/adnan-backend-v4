@@ -1,8 +1,6 @@
 # services/notion_ops_agent.py
 
 from __future__ import annotations
-from fastapi.responses import JSONResponse
-
 
 import logging
 from typing import Any, Dict, List
@@ -188,15 +186,14 @@ async def notion_ops_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> Agen
         armed = state.get("armed", False)
 
         if not armed:
-            # Block any write operation if Notion Ops is not armed
-            return JSONResponse(
-                content={
-                    "text": "Notion Ops nije aktivan. Želiš aktivirati? (napiši: 'notion ops aktiviraj' / 'notion ops uključi') / Notion Ops is not armed. Want to activate? (write: 'notion ops activate' / 'notion ops enable')",
-                    "proposed_commands": proposed,
-                    "agent_id": "notion_ops",
-                    "read_only": True,
-                    "trace": trace,
-                }
+            # Disarmed: keep standard AgentOutput contract (proposal-only).
+            trace["notion_ops_armed"] = False
+            return AgentOutput(
+                text="Notion Ops nije aktivan. Želiš aktivirati? (napiši: 'notion ops aktiviraj' / 'notion ops uključi') / Notion Ops is not armed. Want to activate? (write: 'notion ops activate' / 'notion ops enable')",
+                proposed_commands=proposed,
+                agent_id="notion_ops",
+                read_only=True,
+                trace=trace,
             )
 
     return AgentOutput(

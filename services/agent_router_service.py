@@ -2,13 +2,20 @@ from __future__ import annotations
 
 import importlib
 import inspect
+import os
 from typing import Any, Callable, Dict, List, Tuple
 
 from models.agent_contract import AgentInput, AgentOutput, ProposedCommand
 from services.agent_registry_service import AgentRegistryEntry, AgentRegistryService
+from services.intent_precedence import classify_intent
 
 # Callable može vratiti AgentOutput ili awaitable AgentOutput
 AgentCallable = Callable[[AgentInput, Dict[str, Any]], Any]
+
+
+def _debug_trace_enabled() -> bool:
+    v = (os.getenv("DEBUG_TRACE") or "").strip().lower()
+    return v in {"1", "true", "yes", "on"}
 
 
 def _deep_merge_dicts(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
@@ -198,6 +205,22 @@ class AgentRouterService:
         merged_trace["selected_entrypoint"] = selected.entrypoint
         merged_trace["read_only"] = read_only
         merged_trace["require_approval"] = require_approval
+
+        if _debug_trace_enabled():
+            merged_trace["debug_trace"] = {
+                "intent": trace.get("intent"),
+                "selected_by": trace.get("selected_by"),
+                "preferred_agent_id": trace.get("preferred_agent_id"),
+                "forced_agent_id": trace.get("forced_agent_id"),
+                "fallback_used": trace.get("fallback_used"),
+                "inputs_used": {
+                    "has_snapshot": bool(getattr(agent_input, "snapshot", None)),
+                    "has_history": bool(getattr(agent_input, "history", None)),
+                    "has_conversation_id": bool(
+                        getattr(agent_input, "conversation_id", None)
+                    ),
+                },
+            }
         out.trace = merged_trace
 
         # =========================================================
@@ -283,6 +306,11 @@ class AgentRouterService:
     ) -> Tuple[AgentRegistryEntry, Dict[str, Any]]:
         msg = (agent_input.message or "").lower()
 
+        # Intent precedence guard (SSOT): enforce deterministic routing before keyword scoring.
+        # Note: explicit preferred_agent_id remains the strongest selector. When callers
+        # explicitly choose an agent, keep that choice; downstream agents may still delegate.
+        intent = classify_intent(agent_input.message or "")
+
         preferred_id = getattr(agent_input, "preferred_agent_id", None)
         if preferred_id:
             explicit = self.registry.get_agent(preferred_id)
@@ -291,6 +319,30 @@ class AgentRouterService:
                     "selected_by": "preferred_agent_id",
                     "preferred_agent_id": preferred_id,
                     "candidates": [a.id for a in agents],
+                    "intent": intent,
+                }
+
+        forced_id = None
+        forced_reason = None
+        if intent == "deliverable":
+            forced_id = "revenue_growth_operator"
+            forced_reason = "intent_precedence_guard"
+        elif intent == "notion_write":
+            forced_id = "notion_ops"
+            forced_reason = "intent_precedence_guard"
+        elif intent == "weekly":
+            forced_id = "ceo_advisor"
+            forced_reason = "intent_precedence_guard"
+
+        if forced_id:
+            forced = self.registry.get_agent(forced_id)
+            if forced and forced.enabled:
+                return forced, {
+                    "selected_by": forced_reason,
+                    "intent": intent,
+                    "forced_agent_id": forced_id,
+                    "candidates": [a.id for a in agents],
+                    "fallback_used": "weekly" if intent == "weekly" else "none",
                 }
 
         msg_tokens = _tokenize(msg)
@@ -313,6 +365,7 @@ class AgentRouterService:
         chosen, _score, _hits = scores[0]
         trace = {
             "selected_by": "keyword_score",
+            "intent": intent,
             "message_tokens": msg_tokens[:64],
             "ranking": [
                 {
