@@ -106,7 +106,9 @@ def test_deliverable_ignore_tasks_snapshot_still_routes_to_growth_operator(monke
     assert tr.get("selected_by") == "intent_precedence_guard"
 
 
-def test_weekly_request_tasks_empty_uses_ceo_weekly_flow_no_growth_delegation(monkeypatch, tmp_path):
+def test_weekly_request_tasks_empty_uses_ceo_weekly_flow_no_growth_delegation(
+    monkeypatch, tmp_path
+):
     """SSOT C: weekly flow only on explicit weekly phrases.
 
     For explicit weekly request + tasks=[], CEO Advisor may use its deterministic weekly/priorities flow.
@@ -116,14 +118,20 @@ def test_weekly_request_tasks_empty_uses_ceo_weekly_flow_no_growth_delegation(mo
     monkeypatch.setenv("OPENAI_API_MODE", "responses")
     monkeypatch.setenv("CEO_ADVISOR_ALLOW_GENERAL_KNOWLEDGE", "1")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-live-local")
-    monkeypatch.setenv("CEO_CONVERSATION_STATE_PATH", str(tmp_path / "ceo_conv_state.json"))
+    monkeypatch.setenv(
+        "CEO_CONVERSATION_STATE_PATH", str(tmp_path / "ceo_conv_state.json")
+    )
 
     from services.grounding_pack_service import GroundingPackService
 
-    monkeypatch.setattr(GroundingPackService, "build", lambda **kwargs: {"enabled": False})
+    monkeypatch.setattr(
+        GroundingPackService, "build", lambda **kwargs: {"enabled": False}
+    )
 
     def _boom(*args, **kwargs):
-        raise AssertionError("executor must not be called for weekly empty-tasks fallback")
+        raise AssertionError(
+            "executor must not be called for weekly empty-tasks fallback"
+        )
 
     monkeypatch.setattr("services.agent_router.executor_factory.get_executor", _boom)
 

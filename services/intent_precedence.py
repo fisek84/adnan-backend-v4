@@ -94,9 +94,7 @@ def classify_intent(text: str) -> Intent:
         return "weekly"
     if re.search(r"(?i)\bnaredn\w*\s+sedmic\w*\b", t):
         return "weekly"
-    if re.search(r"(?i)\bove\s+sedmic\w*\b", t) and re.search(
-        r"(?i)\bplanir\w*\b", t
-    ):
+    if re.search(r"(?i)\bove\s+sedmic\w*\b", t) and re.search(r"(?i)\bplanir\w*\b", t):
         return "weekly"
 
     return "other"

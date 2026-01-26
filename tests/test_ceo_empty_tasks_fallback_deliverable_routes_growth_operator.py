@@ -38,7 +38,9 @@ def test_empty_tasks_fallback_does_not_hijack_deliverable_intent(monkeypatch, tm
     monkeypatch.setenv("OPENAI_API_MODE", "responses")
     monkeypatch.setenv("CEO_ADVISOR_ALLOW_GENERAL_KNOWLEDGE", "1")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-live-local")
-    monkeypatch.setenv("CEO_CONVERSATION_STATE_PATH", str(tmp_path / "ceo_conv_state.json"))
+    monkeypatch.setenv(
+        "CEO_CONVERSATION_STATE_PATH", str(tmp_path / "ceo_conv_state.json")
+    )
 
     async def _fake_growth_agent(_agent_in, _ctx):  # noqa: ANN001
         from models.agent_contract import AgentOutput
