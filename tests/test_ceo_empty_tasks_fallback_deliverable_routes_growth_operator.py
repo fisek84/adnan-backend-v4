@@ -31,7 +31,8 @@ def test_empty_tasks_fallback_does_not_hijack_deliverable_intent(monkeypatch, tm
     - prompt asks for concrete outreach deliverables (follow-up poruke)
 
     Expect:
-    - response agent_id == revenue_growth_operator
+    - step 1 returns CEO proposal (no execution yet)
+    - step 2 confirmation triggers a real RGO call
     - response text does NOT contain the empty-tasks weekly priorities header
     """
 
@@ -90,7 +91,7 @@ def test_empty_tasks_fallback_does_not_hijack_deliverable_intent(monkeypatch, tm
 
     snap = {"payload": {"tasks": [], "projects": [], "goals": []}}
 
-    resp = client.post(
+    resp1 = client.post(
         "/api/chat",
         json={
             "message": "Pomozi mi pripremiti follow-up poruke za leadove (2 varijante).",
@@ -98,14 +99,32 @@ def test_empty_tasks_fallback_does_not_hijack_deliverable_intent(monkeypatch, tm
             "snapshot": snap,
         },
     )
-    assert resp.status_code == 200
-    data = resp.json()
+    assert resp1.status_code == 200
+    data1 = resp1.json()
+    assert data1.get("agent_id") == "ceo_advisor"
 
-    assert data.get("agent_id") == "revenue_growth_operator"
+    txt1 = data1.get("text") or ""
+    assert "TASKS snapshot is empty" not in txt1
+    assert "weekly" not in txt1.lower()
+    assert (data1.get("proposed_commands") or []) == []
 
-    txt = data.get("text") or ""
-    assert "TASKS snapshot is empty" not in txt
+    resp2 = client.post(
+        "/api/chat",
+        json={
+            "message": "Uradi to.",
+            "session_id": session_id,
+            "snapshot": snap,
+        },
+    )
+    assert resp2.status_code == 200
+    data2 = resp2.json()
 
-    # Sanity: should be valid JSON per agent contract.
-    parsed = json.loads(txt)
+    txt2 = data2.get("text") or ""
+    assert "TASKS snapshot is empty" not in txt2
+    assert "weekly" not in txt2.lower()
+
+    # Sanity: the embedded payload should still contain RGO JSON.
+    i0 = txt2.find("{")
+    assert i0 >= 0
+    parsed = json.loads(txt2[i0:])
     assert parsed.get("agent") == "revenue_growth_operator"

@@ -11,6 +11,7 @@
 - Stabilized Notion Ops proposal output contract (always returns standard `AgentOutput`).
 - Added a defense-in-depth execution-layer ARMED gate for Notion writes (no dispatch unless armed + approved).
 - Added opt-in DEBUG trace enrichment behind `DEBUG_TRACE=1`.
+- Added confirmation-gated, real delegation execution to Revenue & Growth Operator via the existing SSOT router.
 
 ## Entry point map (SSOT)
 - Agent SSOT registry: `config/agents.json` loaded by `AgentRegistryService.load_from_agents_json()` in [services/agent_registry_service.py](services/agent_registry_service.py)
@@ -19,6 +20,9 @@
   - Preserves explicit `preferred_agent_id` override as the strongest selector.
 - CEO fallback + delegation behavior: `create_ceo_advisor_agent()` in [services/ceo_advisor_agent.py](services/ceo_advisor_agent.py)
   - Deliverable intent delegates to `revenue_growth_operator` before any weekly/kickoff logic.
+  - On explicit confirmation ("uradi to" / "slažem se"), executes a real child call via `execute_delegation()`.
+ - Delegation execution helper: `execute_delegation()` in [services/delegation_service.py](services/delegation_service.py)
+  - Runs the child agent through `AgentRouterService.route()` (existing runtime mechanism).
   - Empty-tasks weekly priorities only when intent is explicit weekly.
   - Prompt-template requests return a deterministic copy/paste template even offline.
 - Chat entrypoint + Notion Ops arming gate: [routers/chat_router.py](routers/chat_router.py)
@@ -41,10 +45,13 @@
 
 ### 1) Deliverable → Growth (never weekly/kickoff)
 - Send a deliverable request (even with empty tasks snapshot):
-  - Example message: "Napiši mi 5 cold email varijanti za outbound prema agency ownerima."
+  - Example: "Pripremi 3 follow-up poruke + 2 emaila za leadove."
+- Then confirm execution:
+  - Example: "Slažem se, uradi to."
 - Expected:
-  - `trace.selected_agent_id == "revenue_growth_operator"`
-  - `trace.selected_by == "intent_precedence_guard"`
+  - CEO executes a real child call (Revenue & Growth Operator) and returns the produced deliverables.
+  - `trace.delegated_to == "revenue_growth_operator"`
+  - `trace.delegation_reason` includes deliverable confirmation.
   - No weekly/kickoff response content.
 
 ### 2) Weekly explicit → CEO weekly flow

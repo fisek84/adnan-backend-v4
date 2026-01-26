@@ -1797,6 +1797,49 @@ async def create_ceo_advisor_agent(
 
     intent = classify_intent(base_text)
 
+    def _debug_trace_enabled() -> bool:
+        v = (os.getenv("DEBUG_TRACE") or "").strip().lower()
+        return v in {"1", "true", "yes", "on"}
+
+    def _is_deliverable_confirm(text: str) -> bool:
+        t = " ".join((text or "").strip().lower().split())
+        if not t:
+            return False
+        # Minimal, explicit confirmations.
+        return bool(
+            re.search(
+                r"(?i)\b(uradi\s+to|uradi|sla\u017eem\s+se|slazem\s+se|proceed|go\s+ahead|ok|okej|mo\u017ee|moze)\b",
+                t,
+            )
+        )
+
+    def _extract_last_deliverable_from_conversation_state(
+        conversation_state: Any,
+    ) -> Optional[str]:
+        if not isinstance(conversation_state, str) or not conversation_state.strip():
+            return None
+
+        # Parse ConversationStateStore summary format:
+        #   "N) USER: ..." lines
+        user_lines: List[str] = []
+        for line in conversation_state.splitlines():
+            line = line.strip()
+            if "USER:" in line:
+                # keep everything after USER:
+                try:
+                    user_lines.append(line.split("USER:", 1)[1].strip())
+                except Exception:
+                    continue
+
+        # Choose the most recent user message that is a deliverable intent
+        # and is not itself a confirmation.
+        for u in reversed(user_lines):
+            if _is_deliverable_confirm(u):
+                continue
+            if classify_intent(u) == "deliverable":
+                return u
+        return None
+
     # Preferred UI output language (Bosanski / English) from metadata
     meta = agent_input.metadata if isinstance(agent_input.metadata, dict) else {}
     ui_lang_raw = str(
@@ -2056,51 +2099,124 @@ async def create_ceo_advisor_agent(
         meta=meta,
     )
 
-    # Precedence fix: deliverable intent always delegates to Revenue & Growth Operator.
-    # TASKS snapshot (empty or not) must never hijack deliverables into weekly/kickoff.
-    if intent == "deliverable":
+    # ---------------------------------------------
+    # REAL delegation (deliverables) — confirmation-gated
+    # ---------------------------------------------
+    # SSOT rule:
+    # - deliverable drafting must never be hijacked by weekly/kickoff (tasks empty is context only)
+    # - deliverable confirm must execute Revenue & Growth Operator (via existing router)
+    # - deliverable branch must never emit Notion proposals/toggles
+
+    is_confirm = _is_deliverable_confirm(base_text)
+    conv_state = ctx.get("conversation_state") if isinstance(ctx, dict) else None
+    pending_deliverable = (
+        _extract_last_deliverable_from_conversation_state(conv_state)
+        if is_confirm
+        else None
+    )
+
+    if is_confirm and pending_deliverable:
         try:
-            from services.revenue_growth_operator_agent import (  # noqa: PLC0415
-                revenue_growth_operator_agent,
+            from services.delegation_service import execute_delegation  # noqa: PLC0415
+
+            child = await execute_delegation(
+                parent_ctx=ctx if isinstance(ctx, dict) else {},
+                target_agent_id="revenue_growth_operator",
+                task_text=pending_deliverable,
+                parent_agent_input=agent_input,
+                delegation_reason="deliverable_confirmed",
             )
 
-            delegated_input = AgentInput(
-                message=base_text,
-                identity_pack=agent_input.identity_pack,
-                snapshot=agent_input.snapshot,
-                conversation_id=agent_input.conversation_id,
-                history=agent_input.history,
-                preferred_agent_id="revenue_growth_operator",
-                metadata=agent_input.metadata,
+            # CEO returns the *real* child output (no Notion proposals).
+            out = AgentOutput(
+                text=(
+                    "Urađeno: delegirao sam Revenue & Growth Operatoru i dobio rezultat.\n\n"
+                    + (child.text or "")
+                ),
+                proposed_commands=[],
+                agent_id="ceo_advisor",
+                read_only=True,
+                trace={
+                    "intent": "deliverable_confirmed",
+                    "delegated_to": "revenue_growth_operator",
+                    "delegation_reason": "deliverable_confirmed",
+                    "fallback_used": "none",
+                    "snapshot": snap_trace,
+                },
             )
 
-            delegated = await revenue_growth_operator_agent(
-                delegated_input, ctx if isinstance(ctx, dict) else {}
-            )
-            tr = dict(getattr(delegated, "trace", None) or {})
-            tr.update(
-                {
-                    "delegated_by": "ceo_advisor",
-                    "delegation_reason": "intent_precedence_guard",
-                    "intent": "deliverable",
-                    "ceo_snapshot_trace": snap_trace,
+            if _debug_trace_enabled():
+                notion_present = bool(
+                    isinstance(snapshot_payload, dict) and bool(snapshot_payload)
+                )
+                kb_hits = 0
+                try:
+                    gp0 = ctx.get("grounding_pack") if isinstance(ctx, dict) else None
+                    gp0 = gp0 if isinstance(gp0, dict) else {}
+                    tr2 = gp0.get("trace") if isinstance(gp0.get("trace"), dict) else {}
+                    kb_hits = (
+                        int(tr2.get("kb_hits") or 0) if isinstance(tr2, dict) else 0
+                    )
+                except Exception:
+                    kb_hits = 0
+
+                tasks_empty = not bool(tasks)
+                out.trace["debug_trace"] = {
+                    "selected_agent_id": "ceo_advisor",
+                    "delegated_to": "revenue_growth_operator",
+                    "delegation_reason": "deliverable_confirmed",
+                    "fallback_used": "none",
+                    "inputs_used": {
+                        "tasks_empty": bool(tasks_empty),
+                        "kb_hit": bool(kb_hits > 0),
+                        "notion_snapshot_present": bool(notion_present),
+                    },
                 }
-            )
 
-            debug_trace = (os.getenv("DEBUG_TRACE") or "").strip().lower() in {
-                "1",
-                "true",
-                "yes",
-                "on",
-            }
-            if debug_trace:
-                tr["delegated_to"] = "revenue_growth_operator"
-            delegated.trace = tr
-            return _final(delegated)
+            return _final(out)
         except Exception:
             logger.exception(
-                "[CEO-ADVISOR] Deliverable delegation to revenue_growth_operator failed; falling back to CEO Advisor flow."
+                "[CEO-ADVISOR] Deliverable confirmation delegation failed; falling back to CEO Advisor flow."
             )
+
+    if intent == "deliverable" and not is_confirm:
+        # Proposal-only prompt: ask the user to confirm execution.
+        txt = (
+            "Mogu delegirati Revenue & Growth Operatoru da napiše konkretne deliverable-e (email/poruke/sekvence).\n"
+            "Ako želiš da uradim to sada, potvrdi: 'uradi to' / 'slažem se'."
+            if not english_output
+            else "I can delegate to Revenue & Growth Operator to draft the concrete deliverables (emails/messages/sequences).\n"
+            "To execute now, confirm: 'proceed' / 'go ahead'."
+        )
+
+        out = AgentOutput(
+            text=txt,
+            proposed_commands=[],
+            agent_id="ceo_advisor",
+            read_only=True,
+            trace={
+                "intent": "deliverable_proposal",
+                "delegation_target": "revenue_growth_operator",
+                "fallback_used": "none",
+                "snapshot": snap_trace,
+            },
+        )
+
+        if _debug_trace_enabled():
+            out.trace["debug_trace"] = {
+                "selected_agent_id": "ceo_advisor",
+                "delegation_target": "revenue_growth_operator",
+                "delegation_reason": "deliverable_intent_requires_confirmation",
+                "fallback_used": "none",
+                "inputs_used": {
+                    "tasks_empty": bool(not bool(tasks)),
+                    "notion_snapshot_present": bool(
+                        isinstance(snapshot_payload, dict) and bool(snapshot_payload)
+                    ),
+                },
+            }
+
+        return _final(out)
 
     # Deterministic fallback when tasks are empty for planning/help prompts.
     # Keep this BEFORE Responses-mode grounding guard; it must not call LLM/executor.
