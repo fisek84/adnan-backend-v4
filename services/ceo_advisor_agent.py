@@ -542,6 +542,32 @@ def _is_prompt_preparation_request(user_text: str) -> bool:
     )
 
 
+def _is_assistant_role_or_capabilities_question(user_text: str) -> bool:
+    """True for meta questions about the assistant itself.
+
+    These should NOT trigger the empty-tasks weekly priorities auto-draft.
+    """
+
+    t = (user_text or "").strip().lower()
+    if not t:
+        return False
+
+    return bool(
+        re.search(
+            r"(?i)\b("
+            r"koja\s+je\s+tvoja\s+uloga|"
+            r"ko\s+si|"
+            r"\u0161ta\s+si|sta\s+si|"
+            r"\u0161ta\s+mo\u017ee\u0161|sta\s+mozes|"
+            r"\u0161ta\s+radi\u0161|sta\s+radis|"
+            r"kako\s+mi\s+najbolje\s+mozes\s+pomo[\u0107c]|"
+            r"what\s+is\s+your\s+role|what\s+can\s+you\s+do|how\s+can\s+you\s+help"
+            r")\b",
+            t,
+        )
+    )
+
+
 def _is_planning_or_help_request(user_text: str) -> bool:
     """True for advisory 'help me plan/start' prompts.
 
@@ -550,6 +576,8 @@ def _is_planning_or_help_request(user_text: str) -> bool:
 
     t = (user_text or "").strip().lower()
     if not t:
+        return False
+    if _is_assistant_role_or_capabilities_question(t):
         return False
     return bool(
         re.search(
@@ -2001,6 +2029,7 @@ async def create_ceo_advisor_agent(
         projects = None
 
     t_fallback = (base_text or "").strip().lower()
+    is_role_or_capabilities = _is_assistant_role_or_capabilities_question(base_text)
     wants_weekly_plan = (
         "sedmic" in t_fallback
         or "weekly" in t_fallback
@@ -2015,6 +2044,8 @@ async def create_ceo_advisor_agent(
         or "help" in t_fallback
         or _is_planning_or_help_request(base_text)
     )
+    if is_role_or_capabilities:
+        wants_weekly_plan = False
 
     # Only trigger when snapshot explicitly contains a tasks list.
     if (

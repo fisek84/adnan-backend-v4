@@ -119,6 +119,22 @@ class NotionReadService:
 
         return None
 
+    async def get_database_by_id(self, database_id: str) -> Optional[DatabaseObj]:
+        """Fetch a database object directly by id (read-only)."""
+        dbid = (database_id or "").strip()
+        if not dbid:
+            return None
+
+        resp = await self._notion._safe_request(
+            "GET",
+            f"https://api.notion.com/v1/databases/{dbid}",
+            payload=None,
+        )
+
+        if isinstance(resp, dict) and resp.get("object") == "database":
+            return resp
+        return None
+
     async def render_page_to_markdown(self, page: PageObj) -> str:
         """
         Renderuje Notion page block tree u markdown.
@@ -175,6 +191,40 @@ class NotionReadService:
                         "url": (url or "").strip(),
                         "content_markdown": (content_md or "").strip(),
                     }
+
+                # If user typed a known DB key (goals/tasks/projects), resolve via env-configured IDs.
+                # This fixes the case where the Notion database title is localized (e.g. "Ciljevi")
+                # and therefore doesn't contain the English query string.
+                qk = (q or "").strip().lower()
+                key_map = {
+                    "goal": "goals",
+                    "goals": "goals",
+                    "task": "tasks",
+                    "tasks": "tasks",
+                    "project": "projects",
+                    "projects": "projects",
+                }
+                norm_key = key_map.get(qk)
+                if norm_key:
+                    db_ids = getattr(self._notion, "db_ids", None)
+                    if isinstance(db_ids, dict):
+                        db_id = db_ids.get(norm_key)
+                        if isinstance(db_id, str) and db_id.strip():
+                            try:
+                                db0 = await self.get_database_by_id(db_id)
+                            except Exception:
+                                db0 = None
+                            if db0:
+                                db_title = self._extract_database_title(db0)
+                                db_url = (
+                                    db0.get("url", "") if isinstance(db0, dict) else ""
+                                )
+                                content_md = "#\n\n(Database)"
+                                return {
+                                    "title": (db_title or norm_key.title()).strip(),
+                                    "url": (db_url or "").strip(),
+                                    "content_markdown": (content_md or "").strip(),
+                                }
 
                 # Fallback: možda je "Goals" database, ne page.
                 db = await self.get_database_by_title_contains(q)
