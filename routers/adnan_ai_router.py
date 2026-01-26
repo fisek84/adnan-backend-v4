@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import logging
+import inspect
 from typing import Optional, Dict, Any
 
 from fastapi import APIRouter, HTTPException
@@ -156,6 +157,8 @@ async def adnan_ai_input(payload: AdnanAIInput) -> AgentOutput:
     )
 
     out = _agent_router.route(agent_input)
+    if inspect.isawaitable(out):
+        out = await out
 
     # Final hard gate (defense-in-depth)
     out.read_only = True

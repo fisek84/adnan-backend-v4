@@ -1,5 +1,31 @@
 # Outcome Feedback Loop (OFL) — Runbook
 
+## Smoke: Revenue & Growth Operator (read-only)
+
+Napomena (COO readiness gate): Endpoint `/api/adnan-ai/input` prvo prolazi kroz COO conversation sloj koji odlučuje da li je upit `ready_for_translation`. Ako prompt ne izgleda kao system-query / izvršiv upit, endpoint može vratiti UX tekst (npr. pitanje/pojašnjenje) umjesto JSON output contracta agenta.
+
+- Za smoke/e2e obavezno uključiti system-query frazu tipa: `Pregledaj stanje sistema ...` (ili sličan kanonski primjer: `Daj sistemski snapshot ...`) da request prođe gate i dođe do routinga/execution.
+
+Primjer request body-ja koji prolazi gate:
+
+```json
+{
+	"text": "Pregledaj stanje sistema. Draft sales outreach followup email.",
+	"context": {},
+	"identity_pack": {"user_id": "test"},
+	"snapshot": {},
+	"preferred_agent_id": "revenue_growth_operator"
+}
+```
+
+```powershell
+# Offline/deterministic smoke (no real OpenAI calls)
+$env:OPENAI_API_MODE = "assistants"; $env:REVENUE_GROWTH_OPERATOR_ASSISTANT_ID = "asst_test_revenue"; python .\tools\smoke_revenue_growth_operator_adnan_ai_input.py
+
+# Pytest e2e smoke (runs both assistants + responses modes offline)
+pytest -q -s tests\test_smoke_revenue_growth_operator_adnan_ai_input.py
+```
+
 ## 0) Pre-requisites
 - `DATABASE_URL` mora biti postavljen (Postgres).
 - Alembic migracije moraju biti na `head`.

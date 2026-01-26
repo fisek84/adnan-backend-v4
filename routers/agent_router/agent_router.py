@@ -27,6 +27,29 @@ from services.agent_health_service import AgentHealthService
 from services.agent_isolation_service import AgentIsolationService
 
 
+def _resolve_env_binding(value: Optional[str]) -> Optional[str]:
+    """Resolve simple ENV bindings like 'ENV:FOO' to os.getenv('FOO').
+
+    This keeps agents.json safe to commit (no raw assistant IDs required) and
+    makes adding new OpenAI assistant-backed agents configuration-only.
+    """
+    if not isinstance(value, str):
+        return None
+
+    raw = value.strip()
+    if not raw:
+        return None
+
+    if raw.upper().startswith("ENV:"):
+        env_key = raw.split(":", 1)[1].strip()
+        if not env_key:
+            return None
+        resolved = (os.getenv(env_key) or "").strip()
+        return resolved or None
+
+    return raw
+
+
 class AgentRouter:
     def __init__(
         self,
@@ -100,7 +123,9 @@ class AgentRouter:
             }
 
         agent_name = agent["agent_name"]
-        assistant_id = agent.get("metadata", {}).get("assistant_id")
+        assistant_id = _resolve_env_binding(
+            agent.get("metadata", {}).get("assistant_id")
+        )
 
         if not assistant_id:
             return {

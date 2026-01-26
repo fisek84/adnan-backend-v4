@@ -37,6 +37,37 @@
       ]
     },
     {
+      "id": "revenue_growth_operator",
+      "name": "Revenue & Growth Operator",
+      "enabled": true,
+      "priority": 110,
+      "entrypoint": "services.revenue_growth_operator_agent:revenue_growth_operator_agent",
+      "capabilities": [
+        "chat"
+      ],
+      "keywords": [
+        "sales",
+        "revenue",
+        "growth",
+        "outreach",
+        "pipeline",
+        "funnel",
+        "mlm",
+        "partners",
+        "meeting",
+        "followup",
+        "content",
+        "branding",
+        "marketing"
+      ],
+      "metadata": {
+        "assistant_id": "ENV:REVENUE_GROWTH_OPERATOR_ASSISTANT_ID",
+        "responses_model_env": "REVENUE_GROWTH_OPERATOR_MODEL",
+        "owner": "ceo_advisor",
+        "read_only": true
+      }
+    },
+    {
       "id": "notion_ops",
       "name": "Notion Ops",
       "enabled": true,
