@@ -118,6 +118,28 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         else:
             out["ready"] = bool(ready_raw)
 
+        # Snapshot correctness invariants (post-compute, single place):
+        # If meta indicates budget exceeded or errors, snapshot must not be ready/fresh/ok.
+        try:
+            meta = out.get("meta") if isinstance(out.get("meta"), dict) else {}
+            meta = dict(meta) if isinstance(meta, dict) else {}
+            budget = meta.get("budget") if isinstance(meta.get("budget"), dict) else {}
+
+            has_errors = bool(meta.get("errors"))
+            exceeded = bool(budget.get("exceeded"))
+            meta_ok = meta.get("ok")
+
+            if exceeded or has_errors or meta_ok is False:
+                out["ready"] = False
+                if out.get("status") == "fresh":
+                    out["status"] = "partial"
+                meta["ok"] = False
+                if "reason" not in meta:
+                    meta["reason"] = "budget_exceeded" if exceeded else "errors_present"
+                out["meta"] = meta
+        except Exception:
+            pass
+
         return out
 
     def _grounding_bundle(

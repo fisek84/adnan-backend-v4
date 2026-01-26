@@ -140,6 +140,22 @@ class GroundingPackService:
     KB_MAX_ENTRIES = 12
 
     @classmethod
+    def _kb_search_top_k(cls) -> int:
+        # How many candidates to request from KB store.search().
+        # Must be >=8 to avoid pathological single-hit collapses.
+        default_v = max(8, cls._kb_max_entries())
+        v = cls._env_int("CEO_KB_SEARCH_TOP_K", default_v)
+        try:
+            v = int(v)
+        except Exception:
+            v = int(default_v)
+        if v < 8:
+            v = 8
+        if v > 50:
+            v = 50
+        return v
+
+    @classmethod
     def _kb_max_entries(cls) -> int:
         # Allow tuning without code changes; keep within a safe, budgeted range.
         # Requested minimal standard is 5–20; default is 12.
@@ -261,38 +277,95 @@ class GroundingPackService:
 
     @classmethod
     def _retrieve_kb(cls, *, prompt: str, kb: Dict[str, Any]) -> KBRetrievalResult:
+        from services.text_normalization import (  # noqa: PLC0415
+            kb_entry_searchable_text,
+            normalize_text,
+            tokenize_normalized,
+        )
+
         entries = kb.get("entries")
         items = entries if isinstance(entries, list) else []
-        toks = _tokenize(prompt)
+
+        toks_all = tokenize_normalized(prompt)
 
         # Prevent low-signal matches that cause false positives (e.g., "plan" matching agent roles).
         low_signal = {"plan", "plans", "planning"}
-        toks_high = [t for t in toks if t not in low_signal]
+
+        # Very small stopword list for prompts like "Objasni X kao da sam...".
+        # Keep minimal to avoid surprising recall regressions.
+        stop = {
+            "kao",
+            "da",
+            "sam",
+            "si",
+            "smo",
+            "ste",
+            "su",
+            "ali",
+            "samo",
+            "objasni",
+            "objasnite",
+            "koristi",
+        }
+
+        toks_sig = [
+            t
+            for t in toks_all
+            if isinstance(t, str)
+            and len(t) >= 3
+            and t not in low_signal
+            and t not in stop
+        ]
+        toks_sig_set = set(toks_sig)
+        q_has_wysiati = "wysiati" in set(toks_all)
 
         scored: List[Tuple[float, Dict[str, Any]]] = []
         for e in items:
             if not isinstance(e, dict):
                 continue
-            content = " ".join(
-                [
-                    str(e.get("title") or ""),
-                    " ".join(
-                        [str(x) for x in (e.get("tags") or []) if isinstance(x, str)]
-                    ),
-                    str(e.get("content") or ""),
-                ]
-            ).lower()
 
-            # Tokenize content to avoid substring false positives.
-            content_tokens = set(_tokenize(content))
+            entry_id = str(e.get("id") or "")
+            title_raw = str(e.get("title") or "")
 
-            overlap_total = 0
-            overlap_high = 0
-            for t in toks:
-                if t and t in content_tokens:
-                    overlap_total += 1
-                    if t in toks_high:
-                        overlap_high += 1
+            id_norm = normalize_text(entry_id)
+            title_norm = normalize_text(title_raw)
+
+            search_norm = normalize_text(kb_entry_searchable_text(e))
+            content_tokens = set(tokenize_normalized(search_norm))
+            id_title_tokens = set(tokenize_normalized(f"{id_norm} {title_norm}"))
+
+            # Must-include rule: if query mentions WYSIATI, force include matching entry.
+            must_include = False
+            if q_has_wysiati and (
+                "wysiati" in id_title_tokens or "wysiati" in content_tokens
+            ):
+                must_include = True
+
+            id_title_hits = (
+                sum(1 for t in toks_sig_set if t in id_title_tokens)
+                if toks_sig_set
+                else 0
+            )
+            content_hits = (
+                sum(1 for t in toks_sig_set if t in content_tokens)
+                if toks_sig_set
+                else 0
+            )
+
+            # Phrase match is still useful for exact-quote lookups.
+            phrase_hit = False
+            prompt_norm = normalize_text(prompt)
+            if prompt_norm:
+                phrase_hit = (
+                    prompt_norm in search_norm
+                    or prompt_norm in title_norm
+                    or prompt_norm in id_norm
+                )
+
+            if not (
+                must_include or phrase_hit or id_title_hits > 0 or content_hits > 0
+            ):
+                continue
 
             pr = e.get("priority")
             try:
@@ -300,29 +373,20 @@ class GroundingPackService:
             except Exception:
                 prf = 0.0
 
-            # Coverage gating:
-            # - If prompt has >=2 meaningful tokens, require >=2 total overlaps AND at least
-            #   one overlap from a non-generic token (prevents "plan"-only matches).
-            # - If prompt has 0/1 tokens, require >=1 overlap.
-            if len(toks) >= 2:
-                if overlap_total < 2 or overlap_high < 1:
-                    continue
-            else:
-                if overlap_total <= 0:
-                    continue
-                continue
+            # Ranking bias: prefer direct id/title token matches heavily.
+            score = 0.0
+            if must_include:
+                score += 1_000_000.0
+            if phrase_hit:
+                score += 50_000.0
+            score += float(id_title_hits) * 10_000.0
+            score += float(content_hits) * 100.0
+            score += prf
 
-            # Deterministic score: overlap dominates; priority breaks ties.
-            score = float(overlap_total) * 10.0 + prf
             scored.append((score, e))
 
         # Deterministic sorting
-        scored.sort(
-            key=lambda pair: (
-                -pair[0],
-                str(pair[1].get("id") or ""),
-            )
-        )
+        scored.sort(key=lambda pair: (-pair[0], str(pair[1].get("id") or "")))
 
         selected = [e for _, e in scored[: cls._kb_max_entries()]]
         used_ids: List[str] = []
@@ -372,7 +436,9 @@ class GroundingPackService:
         search_attempted = False
         try:
             if kb_store is not None and hasattr(kb_store, "search"):
-                kb_search = _run_coro_in_worker(kb_store.search(prompt, top_k=8))
+                kb_search = _run_coro_in_worker(
+                    kb_store.search(prompt, top_k=cls._kb_search_top_k())
+                )
                 search_attempted = isinstance(kb_search, dict) and any(
                     k in kb_search for k in ("entries", "used_entry_ids", "meta")
                 )

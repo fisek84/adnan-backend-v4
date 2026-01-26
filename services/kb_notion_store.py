@@ -603,35 +603,129 @@ class KBNotionStore(KBStore):
     async def search(
         self, query: str, *, top_k: int = 8, force: bool = False
     ) -> Dict[str, Any]:
+        from services.text_normalization import (  # noqa: PLC0415
+            kb_entry_searchable_text,
+            normalize_text,
+            tokenize_normalized,
+        )
+
         loaded = await self.load_all(force=force)
         entries_all = loaded.get("entries") if isinstance(loaded, dict) else []
         meta0 = loaded.get("meta") if isinstance(loaded, dict) else {}
 
         q = (query or "").strip()
-        q_cf = q.casefold()
+        q_norm = normalize_text(q)
+        q_toks = tokenize_normalized(q)
 
-        hits: List[Tuple[int, int, str, KBEntry]] = []
-        if q_cf and isinstance(entries_all, list):
+        # Prevent low-signal matches.
+        low_signal = {"plan", "plans", "planning"}
+        # Very small stopword list for common "explain" prompts; keep minimal.
+        stop = {
+            "kao",
+            "da",
+            "sam",
+            "si",
+            "smo",
+            "ste",
+            "su",
+            "ali",
+            "samo",
+            "objasni",
+            "objasnite",
+            "koristi",
+        }
+        q_toks_sig = [
+            t
+            for t in q_toks
+            if isinstance(t, str)
+            and len(t) >= 3
+            and t not in low_signal
+            and t not in stop
+        ]
+        q_toks_sig_set = set(q_toks_sig)
+        q_has_wysiati = "wysiati" in set(q_toks)
+
+        hits: List[Tuple[int, int, int, int, str, KBEntry]] = []
+        if q_norm and isinstance(entries_all, list):
             for e in entries_all:
                 if not isinstance(e, dict):
                     continue
-                title = str(e.get("title") or "")
-                content = str(e.get("content") or "")
-                title_cf = title.casefold()
-                content_cf = content.casefold()
-                title_hit = 1 if q_cf in title_cf else 0
-                content_hit = 1 if q_cf in content_cf else 0
-                if not (title_hit or content_hit):
-                    continue
-                occurrences = (title_cf + "\n" + content_cf).count(q_cf)
-                _id = str(e.get("id") or "")
-                # Sort: title hits first, then occurrences desc, then id.
-                hits.append((title_hit, occurrences, _id, e))
 
-        hits.sort(key=lambda t: (-t[0], -t[1], t[2]))
+                entry_id = str(e.get("id") or "")
+                title_raw = str(e.get("title") or "")
+                title_norm = normalize_text(title_raw)
+
+                search_raw = kb_entry_searchable_text(e)
+                search_norm = normalize_text(search_raw)
+
+                id_norm = normalize_text(entry_id)
+                id_title_tokens = set(tokenize_normalized(f"{id_norm} {title_norm}"))
+
+                # Primary: full-phrase match on normalized text.
+                title_hit = 1 if q_norm in title_norm else 0
+                phrase_hit = q_norm in search_norm
+
+                # Secondary: token overlap on normalized tokens.
+                token_hit = False
+                content_tokens: set[str] = set()
+                if not phrase_hit and (q_toks_sig or q_has_wysiati):
+                    content_tokens = set(tokenize_normalized(search_norm))
+
+                    # Must-include rule: if query mentions WYSIATI, include matching entry.
+                    must_include = False
+                    if q_has_wysiati and (
+                        "wysiati" in id_title_tokens or "wysiati" in content_tokens
+                    ):
+                        must_include = True
+                        token_hit = True
+
+                    if not token_hit and q_toks_sig:
+                        overlap_total = sum(
+                            1 for t in q_toks_sig_set if t in content_tokens
+                        )
+                        overlap_id_title = sum(
+                            1 for t in q_toks_sig_set if t in id_title_tokens
+                        )
+
+                        if len(q_toks_sig) >= 2:
+                            token_hit = overlap_total >= 2 or (
+                                overlap_total >= 1 and overlap_id_title >= 1
+                            )
+                        else:
+                            token_hit = overlap_total >= 1
+                else:
+                    must_include = False
+
+                if not (phrase_hit or token_hit):
+                    continue
+
+                occurrences = search_norm.count(q_norm) if q_norm else 0
+                _id = entry_id
+
+                # Ranking bias: prefer direct id/title token matches.
+                id_title_hits = (
+                    sum(1 for t in q_toks_sig_set if t in id_title_tokens)
+                    if q_toks_sig_set
+                    else 0
+                )
+
+                hits.append(
+                    (
+                        1 if must_include else 0,
+                        id_title_hits,
+                        title_hit,
+                        occurrences,
+                        _id,
+                        e,
+                    )
+                )
+
+        # Sort: must-include first, then id/title token matches, then title phrase hits,
+        # then occurrences desc, then stable by id.
+        hits.sort(key=lambda t: (-t[0], -t[1], -t[2], -t[3], t[4]))
 
         top_k_i = int(top_k) if int(top_k) > 0 else 8
-        selected = [e for _, _, _, e in hits[:top_k_i]]
+        selected = [e for _, _, _, _, _, e in hits[:top_k_i]]
 
         used_ids: List[str] = []
         for e in selected:

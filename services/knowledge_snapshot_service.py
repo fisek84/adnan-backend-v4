@@ -30,6 +30,7 @@ class KnowledgeSnapshotService:
     _meta: Optional[Dict[str, Any]] = None
     _ready: bool = False
     _last_sync: Optional[str] = None  # ISO UTC
+    _status_hint: Optional[str] = None
 
     logger = logging.getLogger("knowledge_snapshot")
     logger.setLevel(logging.INFO)
@@ -115,12 +116,40 @@ class KnowledgeSnapshotService:
         cls._meta = meta if isinstance(meta, dict) else {}
 
         # Readiness should reflect whether we actually have usable snapshot data.
-        # If meta.ok explicitly false and there is no data, mark not-ready.
+        # Invariants (enterprise):
+        # - If meta.ok == false OR budget exceeded OR meta.errors non-empty OR payload empty
+        #   => snapshot must NOT be ready/fresh.
         meta_ok = None
         try:
             meta_ok = cls._meta.get("ok") if isinstance(cls._meta, dict) else None
         except Exception:
             meta_ok = None
+
+        meta_errors = []
+        try:
+            meta_errors = (
+                cls._meta.get("errors") if isinstance(cls._meta, dict) else None
+            )
+        except Exception:
+            meta_errors = []
+        has_errors = isinstance(meta_errors, list) and len(meta_errors) > 0
+
+        budget_exceeded = False
+        try:
+            if isinstance(cls._meta, dict):
+                if cls._meta.get("budget_exceeded") is True:
+                    budget_exceeded = True
+                budget = cls._meta.get("budget")
+                if isinstance(budget, dict) and budget.get("exceeded") is True:
+                    budget_exceeded = True
+        except Exception:
+            budget_exceeded = False
+
+        payload_empty = False
+        try:
+            payload_empty = not bool(cls._payload)
+        except Exception:
+            payload_empty = True
 
         has_core_data = False
         try:
@@ -133,7 +162,19 @@ class KnowledgeSnapshotService:
         except Exception:
             has_core_data = False
 
-        cls._ready = bool(has_core_data or meta_ok is not False)
+        hard_not_ready = bool(
+            meta_ok is False or budget_exceeded or has_errors or payload_empty
+        )
+        if hard_not_ready:
+            cls._ready = False
+            cls._status_hint = (
+                "error"
+                if (meta_ok is False or budget_exceeded or has_errors)
+                else "partial"
+            )
+        else:
+            cls._ready = bool(has_core_data or meta_ok is not False)
+            cls._status_hint = None
 
         if isinstance(cls._payload.get("last_sync"), str):
             cls._last_sync = cls._payload["last_sync"]
@@ -200,17 +241,19 @@ class KnowledgeSnapshotService:
 
         identity_pack = cls._load_identity_pack_best_effort()
 
-        # Enterprise status is derived from readiness + TTL (not from payload truthiness).
-        if not cls._ready:
-            status = "missing_data"
-        elif expired:
+        # Contract: status must remain within the stable public set.
+        # Readiness invariants and richer health signals are exposed via `ready` and `status_detail`.
+        if expired:
             status = "stale"
+        elif not cls._ready:
+            status = "missing_data"
         else:
             status = "fresh"
 
         snap: Dict[str, Any] = {
             "schema_version": "v1",
             "status": status,
+            "status_detail": cls._status_hint,
             "generated_at": generated_at,
             "ready": bool(cls._ready and not expired),
             "expired": bool(expired),

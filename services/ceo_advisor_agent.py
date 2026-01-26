@@ -90,15 +90,28 @@ def build_ceo_instructions(
         if isinstance(mp, dict):
             memory_payload = mp
 
+    kb_has_hits = len(kb_entries) > 0
+
     # Governance / hard constraints.
-    governance = (
-        "GOVERNANCE (non-negotiable):\n"
-        "- READ-ONLY: no tool calls, no side effects, no external writes.\n"
-        "- Answer ONLY from the provided context sections below (IDENTITY, KB_CONTEXT, NOTION_SNAPSHOT, MEMORY_CONTEXT).\n"
-        "- DO NOT use general world knowledge. If the answer is not in the provided context, say: 'Nemam u KB/Memory/Snapshot'.\n"
-        "- If you propose actions, put them into proposed_commands but do not execute anything.\n"
-        "- NOTION WRITES: Only propose Notion write commands when NOTION_OPS_STATE.armed == true. If armed==false, ask the user to arm Notion Ops ('notion ops aktiviraj') instead of proposing writes.\n"
-    )
+    if kb_has_hits:
+        governance = (
+            "GOVERNANCE (non-negotiable):\n"
+            "- READ-ONLY: no tool calls, no side effects, no external writes.\n"
+            "- KB-FIRST: Answer ONLY using the provided KB_CONTEXT below.\n"
+            "- DO NOT use general world knowledge.\n"
+            "- Do NOT respond with 'Nemam u KB/Memory/Snapshot' when KB_CONTEXT is present; synthesize your answer from KB_CONTEXT.\n"
+            "- If you propose actions, put them into proposed_commands but do not execute anything.\n"
+            "- NOTION WRITES: Only propose Notion write commands when NOTION_OPS_STATE.armed == true. If armed==false, ask the user to arm Notion Ops ('notion ops aktiviraj') instead of proposing writes.\n"
+        )
+    else:
+        governance = (
+            "GOVERNANCE (non-negotiable):\n"
+            "- READ-ONLY: no tool calls, no side effects, no external writes.\n"
+            "- Answer ONLY from the provided context sections below (IDENTITY, KB_CONTEXT, NOTION_SNAPSHOT, MEMORY_CONTEXT).\n"
+            "- DO NOT use general world knowledge. If the answer is not in the provided context, say: 'Nemam u KB/Memory/Snapshot'.\n"
+            "- If you propose actions, put them into proposed_commands but do not execute anything.\n"
+            "- NOTION WRITES: Only propose Notion write commands when NOTION_OPS_STATE.armed == true. If armed==false, ask the user to arm Notion Ops ('notion ops aktiviraj') instead of proposing writes.\n"
+        )
 
     notion_ops_txt = "(missing)"
     if isinstance(notion_ops, dict) and notion_ops:
@@ -106,7 +119,9 @@ def build_ceo_instructions(
 
     # IDENTITY section (budgeted dump).
     identity_txt = "(missing)"
-    if identity_payload is not None:
+    if kb_has_hits:
+        identity_txt = "(omitted: KB-first)"
+    elif identity_payload is not None:
         identity_txt = _dump(identity_payload, max_chars=section_max_chars)
 
     # KB_HITS section: top N, budgeted per-entry.
@@ -128,12 +143,16 @@ def build_ceo_instructions(
 
     # NOTION snapshot (budgeted dump).
     notion_txt = "(missing)"
-    if notion_snapshot is not None:
+    if kb_has_hits:
+        notion_txt = "(omitted: KB-first)"
+    elif notion_snapshot is not None:
         notion_txt = _dump(notion_snapshot, max_chars=section_max_chars)
 
     # MEMORY snapshot payload (budgeted dump).
     memory_txt = "(missing)"
-    if memory_payload is not None:
+    if kb_has_hits:
+        memory_txt = "(omitted: KB-first)"
+    elif memory_payload is not None:
         memory_txt = _dump(memory_payload, max_chars=section_max_chars)
 
     if isinstance(conversation_state, str) and conversation_state.strip():
