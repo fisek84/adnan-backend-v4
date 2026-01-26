@@ -16,7 +16,9 @@ def _load_app():
         return app
 
 
-def test_deliverable_proposal_then_confirm_executes_rgo_no_notion(monkeypatch, tmp_path):
+def test_deliverable_proposal_then_confirm_executes_rgo_no_notion(
+    monkeypatch, tmp_path
+):
     """Real delegation: CEO proposal -> user confirm -> actual RGO call.
 
     Requirements:
@@ -39,7 +41,9 @@ def test_deliverable_proposal_then_confirm_executes_rgo_no_notion(monkeypatch, t
     # Grounding pack can be missing/disabled; deliverable proposal/confirm must still work.
     from services.grounding_pack_service import GroundingPackService
 
-    monkeypatch.setattr(GroundingPackService, "build", lambda **kwargs: {"enabled": False})
+    monkeypatch.setattr(
+        GroundingPackService, "build", lambda **kwargs: {"enabled": False}
+    )
 
     def _boom(*args, **kwargs):  # noqa: ANN001
         raise AssertionError("executor must not be called")
@@ -118,9 +122,10 @@ def test_deliverable_proposal_then_confirm_executes_rgo_no_notion(monkeypatch, t
     assert data1.get("agent_id") == "ceo_advisor"
     assert (data1.get("proposed_commands") or []) == []
     assert "notion" not in (data1.get("text") or "").lower()
-    assert "uradi" in (data1.get("text") or "").lower() or "proceed" in (
-        data1.get("text") or ""
-    ).lower()
+    assert (
+        "uradi" in (data1.get("text") or "").lower()
+        or "proceed" in (data1.get("text") or "").lower()
+    )
     assert calls == [], "RGO must not be called before confirmation"
 
     # Step 2: user confirms -> real delegation + real output
@@ -164,7 +169,9 @@ def test_weekly_explicit_does_not_call_rgo(monkeypatch, tmp_path):
 
     from services.grounding_pack_service import GroundingPackService
 
-    monkeypatch.setattr(GroundingPackService, "build", lambda **kwargs: {"enabled": False})
+    monkeypatch.setattr(
+        GroundingPackService, "build", lambda **kwargs: {"enabled": False}
+    )
 
     calls: list[int] = []
 
