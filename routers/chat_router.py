@@ -738,8 +738,9 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 command="notion_ops_toggle",
                 args={"session_id": session_id.strip(), "armed": True},
                 reason="Notion write intent detected; arm Notion Ops to continue.",
-                requires_approval=True,
-                risk="LOW",
+                # This is a CEO-only direct endpoint; it must NEVER go through approval/execute.
+                requires_approval=False,
+                risk="NONE",
                 dry_run=True,
                 scope="api_notion_ops_toggle",
                 payload_summary={
@@ -1341,8 +1342,9 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                         command="notion_ops_toggle",
                         args={"session_id": session_id.strip(), "armed": True},
                         reason="Optional: arm Notion Ops for Notion writes (not required for memory_write).",
-                        requires_approval=True,
-                        risk="LOW",
+                        # Suggestion only; never approval-gated.
+                        requires_approval=False,
+                        risk="NONE",
                         dry_run=True,
                         scope="api_notion_ops_toggle",
                         payload_summary={

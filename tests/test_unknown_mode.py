@@ -135,6 +135,7 @@ def test_disarmed_still_returns_memory_proposal_and_arm_suggestion_when_session_
     assert any(
         isinstance(pc, dict)
         and pc.get("command") == "notion_ops_toggle"
+        and pc.get("requires_approval") is False
         and isinstance(pc.get("args"), dict)
         and pc.get("args").get("armed") is True
         for pc in pcs
