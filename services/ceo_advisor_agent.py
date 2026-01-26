@@ -2118,6 +2118,9 @@ async def create_ceo_advisor_agent(
     if is_confirm and pending_deliverable:
         try:
             from services.delegation_service import execute_delegation  # noqa: PLC0415
+            from services.output_presenters.revenue_growth_presenter import (  # noqa: PLC0415
+                to_ceo_report,
+            )
 
             child = await execute_delegation(
                 parent_ctx=ctx if isinstance(ctx, dict) else {},
@@ -2129,10 +2132,7 @@ async def create_ceo_advisor_agent(
 
             # CEO returns the *real* child output (no Notion proposals).
             out = AgentOutput(
-                text=(
-                    "Urađeno: delegirao sam Revenue & Growth Operatoru i dobio rezultat.\n\n"
-                    + (child.text or "")
-                ),
+                text=to_ceo_report(child),
                 proposed_commands=[],
                 agent_id="ceo_advisor",
                 read_only=True,

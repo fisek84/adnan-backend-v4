@@ -123,8 +123,9 @@ def test_empty_tasks_fallback_does_not_hijack_deliverable_intent(monkeypatch, tm
     assert "TASKS snapshot is empty" not in txt2
     assert "weekly" not in txt2.lower()
 
-    # Sanity: the embedded payload should still contain RGO JSON.
-    i0 = txt2.find("{")
-    assert i0 >= 0
-    parsed = json.loads(txt2[i0:])
-    assert parsed.get("agent") == "revenue_growth_operator"
+    # CEO-facing text must be human-readable and must not leak raw RGO JSON.
+    assert "Izvještaj" in txt2
+    assert "{" not in txt2
+    assert "work_done" not in txt2
+    assert "meta" not in txt2
+    assert "agent" not in txt2
