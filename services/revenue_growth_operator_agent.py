@@ -113,7 +113,9 @@ def _ensure_contract_shape(obj: Any, *, objective_fallback: str) -> Dict[str, An
     return out
 
 
-async def revenue_growth_operator_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> AgentOutput:
+async def revenue_growth_operator_agent(
+    agent_input: AgentInput, ctx: Dict[str, Any]
+) -> AgentOutput:
     """LLM worker-agent: Revenue & Growth Operator (read-only, JSON-only)."""
 
     md = getattr(ctx.get("registry_entry"), "metadata", None)
@@ -138,9 +140,15 @@ async def revenue_growth_operator_agent(agent_input: AgentInput, ctx: Dict[str, 
         },
         "inputs": {
             "message": message,
-            "metadata": getattr(agent_input, "metadata", None) if isinstance(getattr(agent_input, "metadata", None), dict) else {},
-            "identity_pack": getattr(agent_input, "identity_pack", None) if isinstance(getattr(agent_input, "identity_pack", None), dict) else {},
-            "snapshot": getattr(agent_input, "snapshot", None) if isinstance(getattr(agent_input, "snapshot", None), dict) else {},
+            "metadata": getattr(agent_input, "metadata", None)
+            if isinstance(getattr(agent_input, "metadata", None), dict)
+            else {},
+            "identity_pack": getattr(agent_input, "identity_pack", None)
+            if isinstance(getattr(agent_input, "identity_pack", None), dict)
+            else {},
+            "snapshot": getattr(agent_input, "snapshot", None)
+            if isinstance(getattr(agent_input, "snapshot", None), dict)
+            else {},
         },
         "constraints": {
             "read_only": True,
@@ -154,7 +162,9 @@ async def revenue_growth_operator_agent(agent_input: AgentInput, ctx: Dict[str, 
 
     try:
         if mode == "responses":
-            model_env = str(md.get("responses_model_env") or "REVENUE_GROWTH_OPERATOR_MODEL")
+            model_env = str(
+                md.get("responses_model_env") or "REVENUE_GROWTH_OPERATOR_MODEL"
+            )
             executor = OpenAIResponsesExecutor(model_env=model_env)
             result = await executor.execute(
                 {
@@ -185,7 +195,9 @@ async def revenue_growth_operator_agent(agent_input: AgentInput, ctx: Dict[str, 
                 }
             )
 
-        contract = _ensure_contract_shape(result, objective_fallback=envelope["objective"])
+        contract = _ensure_contract_shape(
+            result, objective_fallback=envelope["objective"]
+        )
 
         return AgentOutput(
             text=json.dumps(contract, ensure_ascii=False),

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 from typing import Any, Dict
 
 import pytest
@@ -90,7 +89,9 @@ def _assert_response_contract(body: Dict[str, Any]) -> None:
 
 
 @pytest.mark.parametrize("mode", ["assistants", "responses"])
-def test_smoke_revenue_growth_operator_via_existing_adnan_ai_input_endpoint(mode, monkeypatch, capsys):
+def test_smoke_revenue_growth_operator_via_existing_adnan_ai_input_endpoint(
+    mode, monkeypatch, capsys
+):
     # Keep this smoke test fully read-only and deterministic.
     monkeypatch.setenv("TESTING", "1")
     monkeypatch.delenv("NOTION_API_KEY", raising=False)

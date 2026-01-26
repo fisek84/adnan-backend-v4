@@ -4,7 +4,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from fastapi.testclient import TestClient
 
@@ -123,7 +123,9 @@ def _assert_safe_output(*, response_json: Dict[str, Any]) -> None:
     # Guard against write markers.
     lowered = txt.lower()
     forbidden = ("proposedcommand", "notion_write", "dispatch", "tool_call")
-    assert not any(f in lowered for f in forbidden), f"forbidden marker in output: {forbidden}"
+    assert not any(
+        f in lowered for f in forbidden
+    ), f"forbidden marker in output: {forbidden}"
 
 
 def _run_case(client: TestClient, *, payload: Dict[str, Any], label: str) -> None:
