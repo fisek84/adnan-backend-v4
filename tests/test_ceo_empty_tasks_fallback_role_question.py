@@ -55,8 +55,10 @@ def test_empty_tasks_fallback_does_not_hijack_role_question(monkeypatch):
     assert resp.status_code == 200
     data = resp.json()
 
-    text = (data.get("text") or "")
+    text = data.get("text") or ""
     assert "TASKS snapshot" not in text
 
     pcs = data.get("proposed_commands") or []
-    assert pcs == [] or not any((pc or {}).get("command") == "notion_write" for pc in pcs)
+    assert pcs == [] or not any(
+        (pc or {}).get("command") == "notion_write" for pc in pcs
+    )
