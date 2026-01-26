@@ -22,12 +22,12 @@
     },
     {
       "id": "roles_001",
-      "title": "Uloge agenata: CEO Advisor i Notion Ops",
+      "title": "Uloge agenata: CEO Advisor, Revenue & Growth Operator i Notion Ops",
       "tags": ["agents", "roles", "capabilities"],
       "applies_to": ["all"],
       "priority": 1.0,
-      "content": "CEO Advisor: chat + plan + analiza + read-only Notion + dispatch komandi. Nikad direktno ne piše/briše u Notion. Notion Ops: izvršni agent za Notion write operacije (create/update/delete) isključivo kroz approval/policy gate.",
-      "updated_at": "2025-12-26"
+      "content": "CEO Advisor: šef/orchestrator. Radi chat + plan + analiza, koristi read-only Notion (snapshot/query), delegira zadatke drugim agentima i donosi odluke. Nikad direktno ne piše/briše u Notion. Revenue & Growth Operator: operativni worker agent za prodaju i rast (outreach, email/DM sekvence, meeting brief/minutes, funnel/MLM operativa, prodajni content, follow-up disciplina). Nema write privilegije i vraća isključivo strukturisan (JSON) report CEO Advisoru. Notion Ops: izvršni agent za Notion write operacije (create/update/delete) isključivo kroz approval/policy gate; izvršenje je dozvoljeno tek nakon eksplicitnog odobrenja korisnika. Komunikacija: worker agenti ne pišu direktno u Notion i ne izvršavaju side-effecte; sve ide kroz CEO Advisor → (proposal) → Notion Ops → approval → execution.",
+      "updated_at": "2026-01-26"
     },
     {
       "id": "flow_approval_001",
