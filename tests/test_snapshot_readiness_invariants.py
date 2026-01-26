@@ -4,6 +4,16 @@ from __future__ import annotations
 def test_snapshot_not_ready_when_meta_ok_false_budget_exceeded_and_payload_empty():
     from services.knowledge_snapshot_service import KnowledgeSnapshotService
 
+    # Use a current timestamp to avoid flakiness due to TTL-based expiration.
+    from datetime import datetime, timezone
+
+    now_iso = (
+        datetime.now(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
     KnowledgeSnapshotService.update_snapshot(
         {
             "payload": {},
@@ -12,7 +22,7 @@ def test_snapshot_not_ready_when_meta_ok_false_budget_exceeded_and_payload_empty
                 "errors": ["budget_exceeded"],
                 "budget": {"exceeded": True, "exceeded_kind": "max_latency_ms"},
                 "source": "test",
-                "synced_at": "2026-01-26T00:00:00Z",
+                "synced_at": now_iso,
             },
         }
     )
