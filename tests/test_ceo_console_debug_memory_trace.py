@@ -30,4 +30,6 @@ def test_ceo_console_command_debug_includes_memory_trace_fields() -> None:
 
     # May be None or a string depending on backend availability.
     assert "memory_error" in trace
-    assert trace.get("memory_error") is None or isinstance(trace.get("memory_error"), str)
+    assert trace.get("memory_error") is None or isinstance(
+        trace.get("memory_error"), str
+    )

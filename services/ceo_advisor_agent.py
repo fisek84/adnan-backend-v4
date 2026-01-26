@@ -2179,6 +2179,348 @@ async def create_ceo_advisor_agent(
     )
 
     # ---------------------------------------------
+    # Explicit delegation request (agent-to-agent)
+    # ---------------------------------------------
+    def _extract_delegate_target(text: str) -> Optional[str]:
+        """Extract a target agent name/id from a user delegation request.
+
+        Supported patterns (BHS/EN, normalized to ASCII):
+        - "pos(al)ji agentu <agent>: ..."
+        - "delegiraj agentu <agent>: ..."
+        """
+
+        t = _norm_bhs_ascii(text)
+        if not t:
+            return None
+
+        # Pattern A: "pošalji agentu <target> ..."
+        m = re.search(
+            r"(?i)\b(posalji|delegiraj|proslijedi|prepusti|assign|send)\b\s+\bagent\w*\b\s+(.+)$",
+            t,
+        )
+
+        # Pattern B: "pošalji <target> agentu ..." (allow punctuation after 'agentu')
+        if not m:
+            m = re.search(
+                r"(?i)\b(posalji|delegiraj|proslijedi|prepusti|assign|send)\b\s+(.+?)\s+\bagent\w*\b(?=\s|$|[:,-])",
+                t,
+            )
+            if not m:
+                return None
+            raw = (m.group(2) or "").strip()
+        else:
+            raw = (m.group(2) or "").strip()
+
+        if not raw:
+            return None
+
+        # Stop at common separators if they appear later.
+        raw = raw.split(":", 1)[0].strip()
+        raw = raw.split(",", 1)[0].strip()
+        raw = raw.split("-", 1)[0].strip()
+        raw = raw.split("—", 1)[0].strip()
+
+        # If the capture starts with a clause starter ("da ..."), then no target was provided.
+        raw_norm0 = _norm_bhs_ascii(raw)
+        if raw_norm0 in {"da", "to", "please"}:
+            return None
+        if (
+            raw_norm0.startswith("da ")
+            or raw_norm0.startswith("da mi ")
+            or raw_norm0.startswith("da nam ")
+        ):
+            return None
+        if raw_norm0.startswith("to ") or raw_norm0.startswith("please "):
+            return None
+
+        # If the user wrote "pošalji agentu <target> da ...", cut at the clause.
+        for sep in (" da ", " to "):
+            if sep in raw_norm0:
+                raw = raw[: raw_norm0.index(sep)].strip()
+                raw_norm0 = _norm_bhs_ascii(raw)
+                break
+
+        # If target looks like an agent_id token, keep just the first token.
+        first_tok = (raw.split() or [""])[0].strip()
+        if (
+            first_tok
+            and ("_" in first_tok)
+            and re.match(r"^[a-z0-9_]+$", _norm_bhs_ascii(first_tok))
+        ):
+            raw = first_tok
+
+        if not raw:
+            return None
+
+        return raw or None
+
+    def _looks_like_delegate_without_target(text: str) -> bool:
+        t = _norm_bhs_ascii(text)
+        if not t:
+            return False
+        has_verb = bool(
+            re.search(
+                r"(?i)\b(posalji|delegiraj|proslijedi|prepusti|assign|send)\b",
+                t,
+            )
+        )
+        if not has_verb:
+            return False
+        # Require the 'agent' noun to avoid catching normal requests like "pošalji email".
+        if not re.search(r"(?i)\bagent\w*\b", t):
+            return False
+
+        # If we can extract a plausible target, it's not missing-target.
+        if _extract_delegate_target(text):
+            return False
+        return True
+
+    def _enabled_agents_for_picker() -> List[Dict[str, str]]:
+        """Return a small list of enabled agents for UI text (id + name)."""
+        try:
+            from services.agent_registry_service import AgentRegistryService  # noqa: PLC0415
+
+            reg = AgentRegistryService()
+            reg.load_from_agents_json("config/agents.json", clear=True)
+            enabled = reg.list_agents(enabled_only=True)
+        except Exception:
+            enabled = []
+
+        out: List[Dict[str, str]] = []
+        for e in enabled:
+            if not getattr(e, "id", None):
+                continue
+            # Do not offer delegating back into CEO advisor itself.
+            if e.id in {"ceo_advisor", "ceo_clone", "execution_orchestrator"}:
+                continue
+            out.append({"id": str(e.id), "name": str(e.name or e.id)})
+
+        # Deterministic order: id asc
+        out.sort(key=lambda x: x.get("id") or "")
+        return out
+
+    def _render_agent_picker(*, english: bool) -> str:
+        agents = _enabled_agents_for_picker()
+        if not agents:
+            return (
+                "Nema dostupnih agenata za delegaciju u ovom okruženju."
+                if not english
+                else "No enabled agents are available for delegation in this environment."
+            )
+
+        lines: List[str] = []
+        for a in agents[:12]:
+            lines.append(f"- {a.get('name')} (agent_id: {a.get('id')})")
+
+        header = (
+            "Ko kojem agentu želiš delegirati? Dostupni agenti:"
+            if not english
+            else "Which agent should I delegate to? Enabled agents:"
+        )
+        usage = (
+            "\n\nPrimjer: 'Pošalji agentu revenue_growth_operator: napiši 3 follow-up poruke.'"
+            if not english
+            else "\n\nExample: 'Send to agent revenue_growth_operator: draft 3 follow-up messages.'"
+        )
+        optional = (
+            "\n\nOvo je opcija, nije uslov — ako ne želiš delegirati, samo napiši šta tačno treba i ja ću pomoći ovdje."
+            if not english
+            else "\n\nThis is optional — if you don't want to delegate, just describe what you need and I'll help here."
+        )
+        return header + "\n" + "\n".join(lines) + usage + optional
+
+    def _resolve_agent_id_from_text(target: str) -> Optional[str]:
+        t = _norm_bhs_ascii(target)
+        if not t:
+            return None
+
+        # Common aliases.
+        if t in {"rgo", "revenue growth", "revenue & growth"}:
+            return "revenue_growth_operator"
+        if "notion" in t:
+            return "notion_ops"
+
+        # Fast path: exact id.
+        if t in {
+            "ceo_advisor",
+            "ceo_clone",
+            "revenue_growth_operator",
+            "notion_ops",
+            "execution_orchestrator",
+        }:
+            return t
+
+        try:
+            from services.agent_registry_service import AgentRegistryService  # noqa: PLC0415
+
+            reg = AgentRegistryService()
+            reg.load_from_agents_json("config/agents.json", clear=True)
+            enabled = reg.list_agents(enabled_only=True)
+
+            # Match by display name containment or keyword hit.
+            for e in enabled:
+                name_norm = _norm_bhs_ascii(e.name)
+                if name_norm and (t == name_norm or t in name_norm):
+                    return e.id
+
+                kws = [
+                    _norm_bhs_ascii(k)
+                    for k in (e.keywords or [])
+                    if isinstance(k, str) and k.strip()
+                ]
+                if t in kws:
+                    return e.id
+        except Exception:
+            return None
+
+        return None
+
+    def _delegation_task_text_from_prompt(prompt_text: str) -> str:
+        # Prefer content after the first ':' as the task.
+        raw = (prompt_text or "").strip()
+        if not raw:
+            return ""
+        if ":" in raw:
+            _, after = raw.split(":", 1)
+            after = after.strip()
+            return after or raw
+        return raw
+
+    def _is_explicit_delegate_to_rgo(text: str) -> bool:
+        t = _norm_bhs_ascii(text)
+        if not t:
+            return False
+
+        mentions_rgo = bool(
+            re.search(
+                r"(?i)\b(revenue\s*&\s*growth\s*operator\w*|revenue\s+growth\s+operator\w*|rgo)\b",
+                t,
+            )
+        )
+        if not mentions_rgo:
+            return False
+
+        return bool(
+            re.search(
+                r"(?i)\b(posalji|delegiraj|proslijedi|prepusti|assign|send)\b",
+                t,
+            )
+        )
+
+    if _is_explicit_delegate_to_rgo(base_text):
+        try:
+            from services.delegation_service import execute_delegation  # noqa: PLC0415
+            from services.output_presenters.revenue_growth_presenter import (  # noqa: PLC0415
+                to_ceo_report,
+            )
+
+            child = await execute_delegation(
+                parent_ctx=ctx if isinstance(ctx, dict) else {},
+                target_agent_id="revenue_growth_operator",
+                task_text=(base_text or "").strip(),
+                parent_agent_input=agent_input,
+                delegation_reason="explicit_delegate_request",
+            )
+
+            out = AgentOutput(
+                text=to_ceo_report(child),
+                proposed_commands=[],
+                agent_id="ceo_advisor",
+                read_only=True,
+                trace={
+                    "intent": "delegate_agent_task",
+                    "delegated_to": "revenue_growth_operator",
+                    "delegation_reason": "explicit_delegate_request",
+                    "fallback_used": "none",
+                    "snapshot": snap_trace,
+                },
+            )
+
+            return _final(out)
+        except Exception:
+            logger.exception(
+                "[CEO-ADVISOR] Explicit delegation request failed; falling back to CEO Advisor flow."
+            )
+
+    # Generic: "pošalji/delegiraj agentu <agent>".
+    target_txt = _extract_delegate_target(base_text)
+    if isinstance(target_txt, str) and target_txt.strip():
+        target_id = _resolve_agent_id_from_text(target_txt)
+        if isinstance(target_id, str) and target_id.strip():
+            try:
+                from services.delegation_service import execute_delegation  # noqa: PLC0415
+                from services.output_presenters.revenue_growth_presenter import (  # noqa: PLC0415
+                    to_ceo_report,
+                )
+
+                task_text = _delegation_task_text_from_prompt(base_text)
+                child = await execute_delegation(
+                    parent_ctx=ctx if isinstance(ctx, dict) else {},
+                    target_agent_id=target_id.strip(),
+                    task_text=task_text,
+                    parent_agent_input=agent_input,
+                    delegation_reason="explicit_delegate_request",
+                )
+
+                txt_out = child.text
+                if target_id.strip() == "revenue_growth_operator":
+                    txt_out = to_ceo_report(child)
+
+                out = AgentOutput(
+                    text=txt_out,
+                    proposed_commands=[],
+                    agent_id="ceo_advisor",
+                    read_only=True,
+                    trace={
+                        "intent": "delegate_agent_task",
+                        "delegated_to": target_id.strip(),
+                        "delegation_reason": "explicit_delegate_request",
+                        "fallback_used": "none",
+                        "snapshot": snap_trace,
+                    },
+                )
+
+                return _final(out)
+            except Exception:
+                logger.exception(
+                    "[CEO-ADVISOR] Generic delegation request failed; falling back to CEO Advisor flow."
+                )
+        else:
+            # Unknown/disabled agent: keep response read-only, no Notion ops mentions.
+            out = AgentOutput(
+                text=(
+                    "Ne mogu pronaći traženog agenta za delegaciju. "
+                    "Napiši tačan agent_id (npr. 'revenue_growth_operator' ili 'notion_ops') "
+                    "ili koristi naziv iz liste aktivnih agenata."
+                ),
+                proposed_commands=[],
+                agent_id="ceo_advisor",
+                read_only=True,
+                trace={
+                    "intent": "delegate_agent_task",
+                    "exit_reason": "delegate_agent_task.unknown_target",
+                    "requested_target": target_txt,
+                    "snapshot": snap_trace,
+                },
+            )
+            return _final(out)
+
+    # Missing target: ask which agent, but keep it optional.
+    if _looks_like_delegate_without_target(base_text):
+        out = AgentOutput(
+            text=_render_agent_picker(english=bool(english_output)),
+            proposed_commands=[],
+            agent_id="ceo_advisor",
+            read_only=True,
+            trace={
+                "intent": "delegate_agent_task",
+                "exit_reason": "delegate_agent_task.missing_target",
+                "snapshot": snap_trace,
+            },
+        )
+        return _final(out)
+
+    # ---------------------------------------------
     # REAL delegation (deliverables) — confirmation-gated
     # ---------------------------------------------
     # SSOT rule:

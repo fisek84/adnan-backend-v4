@@ -131,12 +131,7 @@ def test_disarmed_still_returns_memory_proposal_and_arm_suggestion_when_session_
         for pc in pcs
     )
 
-    # Must include an explicit arm suggestion proposal (never auto-executed).
-    assert any(
-        isinstance(pc, dict)
-        and pc.get("command") == "notion_ops_toggle"
-        and pc.get("requires_approval") is False
-        and isinstance(pc.get("args"), dict)
-        and pc.get("args").get("armed") is True
-        for pc in pcs
+    # No notion_ops_toggle proposals should be emitted implicitly.
+    assert not any(
+        isinstance(pc, dict) and pc.get("command") == "notion_ops_toggle" for pc in pcs
     )

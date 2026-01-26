@@ -731,27 +731,10 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         if isinstance(why, str) and why.strip():
             msg = f"{msg}\n\nReason: {why}"
 
+        # IMPORTANT: do not emit notion_ops_toggle proposals here.
+        # Arming/disarming is a CEO-only direct endpoint and should be invoked
+        # explicitly by the user via chat keywords or the dedicated toggle route.
         pcs_out: List[Dict[str, Any]] = []
-        # For a blocked write-intent request, the only meaningful proposal is to arm Notion Ops.
-        if isinstance(session_id, str) and session_id.strip():
-            arm = ProposedCommand(
-                command="notion_ops_toggle",
-                args={"session_id": session_id.strip(), "armed": True},
-                reason="Notion write intent detected; arm Notion Ops to continue.",
-                # This is a CEO-only direct endpoint; it must NEVER go through approval/execute.
-                requires_approval=False,
-                risk="NONE",
-                dry_run=True,
-                scope="api_notion_ops_toggle",
-                payload_summary={
-                    "endpoint": "/api/notion-ops/toggle",
-                    "canon": "NOTION_OPS_ARM_SUGGESTION",
-                    "source": "api_chat",
-                },
-            )
-            pcs_out.append(
-                _ensure_payload_summary_contract(_pc_to_dict(arm, prompt=prompt))
-            )
 
         tr = out.trace or {} if hasattr(out, "trace") else {}
         if not isinstance(tr, dict):
@@ -1334,30 +1317,6 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 for pc in wrappers:
                     d = _pc_to_dict(pc, prompt=prompt)
                     pcs_out.append(_ensure_payload_summary_contract(d))
-
-                # Enterprise UX: when Notion Ops is DISARMED, include an explicit arm suggestion
-                # as a separate proposal (never auto-executed).
-                if isinstance(session_id, str) and session_id.strip():
-                    arm = ProposedCommand(
-                        command="notion_ops_toggle",
-                        args={"session_id": session_id.strip(), "armed": True},
-                        reason="Optional: arm Notion Ops for Notion writes (not required for memory_write).",
-                        # Suggestion only; never approval-gated.
-                        requires_approval=False,
-                        risk="NONE",
-                        dry_run=True,
-                        scope="api_notion_ops_toggle",
-                        payload_summary={
-                            "endpoint": "/api/notion-ops/toggle",
-                            "canon": "NOTION_OPS_ARM_SUGGESTION",
-                            "source": "api_chat",
-                        },
-                    )
-                    pcs_out.append(
-                        _ensure_payload_summary_contract(
-                            _pc_to_dict(arm, prompt=prompt)
-                        )
-                    )
 
                 content: Dict[str, Any] = {
                     "text": out.text,

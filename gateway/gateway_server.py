@@ -1017,10 +1017,14 @@ def _require_boot_services() -> (
 
 
 # ================================================================
-# HARD-BLOCK: ONLY NEXT_STEP MUST NEVER CREATE APPROVAL OR EXECUTE
+# HARD-BLOCK: META-COMMANDS MUST NEVER CREATE APPROVAL OR EXECUTE
 # ================================================================
+# These commands are either UI/control-plane operations or otherwise unsupported
+# by the execution orchestrator. They must remain read-only even if a client
+# attempts to send them to /api/execute/raw.
 _HARD_READ_ONLY_INTENTS = {
     "ceo_console.next_step",
+    "notion_ops_toggle",
 }
 
 

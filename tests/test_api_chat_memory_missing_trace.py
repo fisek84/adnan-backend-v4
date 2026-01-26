@@ -43,4 +43,6 @@ def test_api_chat_trace_marks_memory_missing_when_snapshot_unavailable(
     assert "memory_items_count" in trace
     assert isinstance(trace.get("memory_items_count"), int)
     assert "memory_error" in trace
-    assert trace.get("memory_error") is None or isinstance(trace.get("memory_error"), str)
+    assert trace.get("memory_error") is None or isinstance(
+        trace.get("memory_error"), str
+    )
