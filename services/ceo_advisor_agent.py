@@ -1963,18 +1963,137 @@ async def create_ceo_advisor_agent(
         return v in {"1", "true", "yes", "on"}
 
     def _is_deliverable_confirm(text: str) -> bool:
-        t = " ".join((text or "").strip().lower().split())
+        raw = (text or "").strip()
+        if not raw:
+            return False
+
+        # Defensive: do not treat questions as confirmations.
+        if "?" in raw:
+            return False
+
+        t = _norm_bhs_ascii(raw)
+        t = re.sub(r"[^a-z0-9\s]", " ", t)
+        t = " ".join(t.split())
+
         if not t:
             return False
+        if t.startswith("da li ") or t.startswith("da l "):
+            return False
+
         # Minimal, explicit confirmations only.
         # NOTE: Avoid ambiguous tokens like "ok" / "moze" which can appear in normal questions
         # (e.g., "da li mi agent moze pomoci...") and would incorrectly trigger delegation.
+        allowed = {
+            "da",
+            "yes",
+            "y",
+            "zelim",
+            "hocu",
+            "uradi to",
+            "slazem se",
+            "go ahead",
+            "proceed",
+            "confirm",
+            "potvrdi",
+        }
+        if t in allowed:
+            return True
+
         return bool(
             re.search(
-                r"(?i)\b(uradi\s+to|sla\u017eem\s+se|slazem\s+se|proceed|go\s+ahead)\b",
+                r"(?i)\b(uradi\s+to|slazem\s+se|proceed|go\s+ahead|potvrdi|confirm|da|zelim|hocu)\b",
                 t,
             )
         )
+
+    def _is_deliverable_decline(text: str) -> bool:
+        raw = (text or "").strip()
+        if not raw:
+            return False
+        if "?" in raw:
+            return False
+        t = _norm_bhs_ascii(raw)
+        t = re.sub(r"[^a-z0-9\s]", " ", t)
+        t = " ".join(t.split())
+        if not t:
+            return False
+        if t.startswith("da li ") or t.startswith("da l "):
+            return False
+
+        # Short/noisy declines.
+        if t in {
+            "ne",
+            "no",
+            "n",
+            "nemoj",
+            "odustani",
+            "stop",
+            "cancel",
+            "ne zelim",
+            "necu",
+            "nije potrebno",
+            "ne treba",
+            "not now",
+            "no thanks",
+            "ne hvala",
+        }:
+            return True
+
+        # Longer declines that include negation.
+        return bool(
+            re.search(
+                r"(?i)\b(ne|nemoj|necu|ne\s+zelim|odustani|stop|cancel|nije\s+potrebno|ne\s+treba)\b",
+                t,
+            )
+        )
+
+    def _deliverable_confirm_prompt_count(*, conversation_id: str) -> int:
+        try:
+            from services.ceo_conversation_state_store import (  # noqa: PLC0415
+                ConversationStateStore,
+            )
+
+            meta0 = ConversationStateStore.get_meta(conversation_id=conversation_id)
+            if not isinstance(meta0, dict):
+                return 0
+            v = meta0.get("deliverable_confirm_prompt_count")
+            return int(v) if isinstance(v, (int, float)) else 0
+        except Exception:
+            return 0
+
+    def _deliverable_confirm_prompt_bump(*, conversation_id: str) -> int:
+        try:
+            from services.ceo_conversation_state_store import (  # noqa: PLC0415
+                ConversationStateStore,
+            )
+
+            cur = _deliverable_confirm_prompt_count(conversation_id=conversation_id)
+            nxt = int(cur) + 1
+            ConversationStateStore.update_meta(
+                conversation_id=conversation_id,
+                updates={
+                    "deliverable_confirm_prompt_count": nxt,
+                    "deliverable_confirm_prompt_last_at": float(time.time()),
+                },
+            )
+            return nxt
+        except Exception:
+            return 0
+
+    def _deliverable_confirm_prompt_reset(*, conversation_id: str) -> None:
+        try:
+            from services.ceo_conversation_state_store import (  # noqa: PLC0415
+                ConversationStateStore,
+            )
+
+            ConversationStateStore.update_meta(
+                conversation_id=conversation_id,
+                updates={
+                    "deliverable_confirm_prompt_count": 0,
+                },
+            )
+        except Exception:
+            return
 
     def _extract_last_deliverable_from_conversation_state(
         conversation_state: Any,
@@ -2002,6 +2121,89 @@ async def create_ceo_advisor_agent(
             if classify_intent(u) == "deliverable":
                 return u
         return None
+
+    def _has_plan_keywords(text: str) -> bool:
+        t = _norm_bhs_ascii(text)
+        if not t:
+            return False
+        return bool(
+            re.search(
+                r"(?i)\b(plan|prioritet\w*|strateg\w*|roadmap|okvir|korac\w*|korak\w*|timeline|vremensk\w*)\b",
+                t,
+            )
+        )
+
+    def _has_deliverable_markers(text: str) -> bool:
+        t = _norm_bhs_ascii(text)
+        if not t:
+            return False
+        return bool(
+            re.search(
+                r"(?i)\b(email\w*|poruk\w*|message\w*|follow\s*-?up\w*|sekvenc\w*|sequence\w*|dm\b|linkedin\b)\b",
+                t,
+            )
+        )
+
+    def _extract_deadline_hint(text: str) -> Optional[str]:
+        raw = (text or "").strip()
+        if not raw:
+            return None
+        t = _norm_bhs_ascii(raw)
+        # Simple, bounded capture; we only need a hint for acknowledgement.
+        m = re.search(r"(?i)\b(do|until|by)\s+([^\n\r]{1,32})", t)
+        if not m:
+            return None
+        hint = (m.group(0) or "").strip()
+        return hint if hint else None
+
+    def _delegation_ack_text(*, user_text: str, english: bool) -> Optional[str]:
+        # Must be 1–2 sentences. Prefer paraphrase over verbatim echo.
+        raw = (user_text or "").strip()
+        if not raw:
+            return None
+        if not _has_deliverable_markers(raw):
+            return None
+
+        deadline = _extract_deadline_hint(raw)
+        paraphrase = _truncate(raw, max_chars=90)
+        mentions_plan = _has_plan_keywords(raw)
+
+        if english:
+            first = (
+                "Got it — you're asking for concrete outreach deliverables (messages/emails)."
+                + (" You also mentioned a plan." if mentions_plan else "")
+            )
+            second_parts: List[str] = [f"Request: {paraphrase}."]
+            if deadline:
+                second_parts.append(f"Deadline hint: {deadline}.")
+            second = " ".join(second_parts)
+            return " ".join([first, second]).strip()
+
+        first = (
+            "Razumijem — tražiš konkretne outreach deliverable-e (poruke/emailove)."
+            + (" Pominješ i plan." if mentions_plan else "")
+        )
+        second_parts_bhs: List[str] = [f"Sažetak: {paraphrase}."]
+        if deadline:
+            second_parts_bhs.append(f"Rok hint: {deadline}.")
+        second = " ".join(second_parts_bhs)
+        return " ".join([first, second]).strip()
+
+    def _generic_delegation_ack_text(*, user_text: str, english: bool) -> Optional[str]:
+        raw = (user_text or "").strip()
+        if not raw:
+            return None
+        paraphrase = _truncate(raw, max_chars=110)
+        deadline = _extract_deadline_hint(raw)
+        if english:
+            parts: List[str] = [f"Acknowledged. Task summary: {paraphrase}."]
+            if deadline:
+                parts.append(f"Deadline hint: {deadline}.")
+            return " ".join(parts[:2]).strip()
+        parts_bhs: List[str] = [f"Razumijem. Sažetak zadatka: {paraphrase}."]
+        if deadline:
+            parts_bhs.append(f"Rok hint: {deadline}.")
+        return " ".join(parts_bhs[:2]).strip()
 
     # Preferred UI output language (Bosanski / English) from metadata
     meta = agent_input.metadata if isinstance(agent_input.metadata, dict) else {}
@@ -2232,6 +2434,28 @@ async def create_ceo_advisor_agent(
                     out.text = (out.text or "").rstrip() + note
 
         out.trace = tr
+
+        # SSOT guard: if snapshot isn't ready/available, do not allow fabricated
+        # GOALS/TASKS style tables in the output.
+        try:
+            txt0 = out.text if isinstance(out.text, str) else ""
+            if txt0 and (not snapshot_ready):
+                if re.search(r"(?im)^\s*(GOALS|TASKS|CILJEVI|ZADACI)\b", txt0):
+                    out.text = (
+                        "Nemam SSOT snapshot u ovom trenutku, pa ne mogu pouzdano izlistati ciljeve i zadatke. "
+                        "Reci cilj + rok + ograničenja, pa ću napraviti plan."
+                        if not english_output
+                        else "I don't have the SSOT snapshot right now, so I can't reliably list goals and tasks. "
+                        "Tell me the objective + deadline + constraints and I'll draft the plan."
+                    )
+                    tr.setdefault("ssot_guard", {})
+                    tr["ssot_guard"] = {
+                        "applied": True,
+                        "reason": "snapshot_missing_or_unready",
+                    }
+                    out.trace = tr
+        except Exception:
+            pass
         return out
 
     # Inicijalizacija goals i tasks
@@ -2534,6 +2758,28 @@ async def create_ceo_advisor_agent(
     if _is_explicit_delegate_to_rgo(base_text):
         # /api/chat is read-only: never execute delegation here.
         task_text = (base_text or "").strip()
+        ack = _generic_delegation_ack_text(
+            user_text=task_text,
+            english=bool(english_output),
+        )
+        if not ack:
+            return _final(
+                AgentOutput(
+                    text=(
+                        "Koji je tačan zadatak i rok za delegaciju?"
+                        if not english_output
+                        else "What exactly should I delegate, and what is the deadline?"
+                    ),
+                    proposed_commands=[],
+                    agent_id="ceo_advisor",
+                    read_only=True,
+                    trace={
+                        "intent": "delegate_agent_task",
+                        "exit_reason": "delegate_agent_task.missing_task_text",
+                        "snapshot": snap_trace,
+                    },
+                )
+            )
         proposed = ProposedCommand(
             command="delegate_agent_task",
             args={
@@ -2565,9 +2811,13 @@ async def create_ceo_advisor_agent(
 
         out = AgentOutput(
             text=(
-                "Želiš li da delegiram ovaj zadatak Revenue & Growth Operatoru?"
-                if not english_output
-                else "Do you want me to delegate this task to Revenue & Growth Operator?"
+                ack
+                + "\n\n"
+                + (
+                    "Želiš li da delegiram ovaj zadatak Revenue & Growth Operatoru?"
+                    if not english_output
+                    else "Do you want me to delegate this task to Revenue & Growth Operator?"
+                )
             ),
             proposed_commands=[proposed],
             agent_id="ceo_advisor",
@@ -2590,6 +2840,28 @@ async def create_ceo_advisor_agent(
         if isinstance(target_id, str) and target_id.strip():
             # /api/chat is read-only: never execute delegation here.
             task_text = _delegation_task_text_from_prompt(base_text)
+            ack = _generic_delegation_ack_text(
+                user_text=task_text,
+                english=bool(english_output),
+            )
+            if not ack:
+                return _final(
+                    AgentOutput(
+                        text=(
+                            "Koji je tačan zadatak i rok za delegaciju?"
+                            if not english_output
+                            else "What exactly should I delegate, and what is the deadline?"
+                        ),
+                        proposed_commands=[],
+                        agent_id="ceo_advisor",
+                        read_only=True,
+                        trace={
+                            "intent": "delegate_agent_task",
+                            "exit_reason": "delegate_agent_task.missing_task_text",
+                            "snapshot": snap_trace,
+                        },
+                    )
+                )
             proposed = ProposedCommand(
                 command="delegate_agent_task",
                 args={
@@ -2621,9 +2893,13 @@ async def create_ceo_advisor_agent(
 
             out = AgentOutput(
                 text=(
-                    f"Želiš li da delegiram ovaj zadatak agentu '{target_id.strip()}'?"
-                    if not english_output
-                    else f"Do you want me to delegate this task to agent '{target_id.strip()}'?"
+                    ack
+                    + "\n\n"
+                    + (
+                        f"Želiš li da delegiram ovaj zadatak agentu '{target_id.strip()}'?"
+                        if not english_output
+                        else f"Do you want me to delegate this task to agent '{target_id.strip()}'?"
+                    )
                 ),
                 proposed_commands=[proposed],
                 agent_id="ceo_advisor",
@@ -2682,6 +2958,7 @@ async def create_ceo_advisor_agent(
     # - deliverable branch must never emit Notion proposals/toggles
 
     is_confirm = _is_deliverable_confirm(base_text)
+    is_decline = _is_deliverable_decline(base_text)
     conv_state = ctx.get("conversation_state") if isinstance(ctx, dict) else None
     pending_deliverable = (
         _extract_last_deliverable_from_conversation_state(conv_state)
@@ -2771,6 +3048,10 @@ async def create_ceo_advisor_agent(
             pending_deliverable = None
 
     if is_confirm and pending_deliverable:
+        cid0 = _conversation_id()
+        if isinstance(cid0, str) and cid0.strip():
+            _deliverable_confirm_prompt_reset(conversation_id=cid0.strip())
+
         proposed = _build_rgo_delegation_proposal(
             task_text=pending_deliverable,
             reason="Delegacija RGO za izradu deliverable-a (traži odobrenje).",
@@ -2795,7 +3076,95 @@ async def create_ceo_advisor_agent(
         )
         return _final(out)
 
+    # User explicitly declined delegation: don't keep asking.
+    if is_decline and intent == "deliverable":
+        cid0 = _conversation_id()
+        if isinstance(cid0, str) and cid0.strip():
+            _deliverable_confirm_prompt_reset(conversation_id=cid0.strip())
+
+        out = AgentOutput(
+            text=(
+                "Uredu — ne delegiram deliverable-e. Reci tačno šta želiš umjesto toga (npr. plan/prioriteti/strategija), pa ću pomoći ovdje."
+                if not english_output
+                else "OK — I won't delegate deliverables. Tell me what you want instead (e.g., a plan/priorities/strategy), and I'll help here."
+            ),
+            proposed_commands=[],
+            agent_id="ceo_advisor",
+            read_only=True,
+            trace={
+                "intent": "deliverable_declined",
+                "exit_reason": "deliverable.declined",
+                "snapshot": snap_trace,
+            },
+        )
+        return _final(out)
+
     if intent == "deliverable" and not is_confirm:
+        # ACK discipline: if the user is actually asking for a plan (not deliverables),
+        # ask a clarifying question instead of proposing delegation.
+        if _has_plan_keywords(base_text) and (not _has_deliverable_markers(base_text)):
+            return _final(
+                AgentOutput(
+                    text=(
+                        "Da potvrdim: želiš plan/prioritete (bez konkretnih poruka/emailova), ili želiš i deliverable-e?"
+                        if not english_output
+                        else "Quick check: do you want a plan/priorities (no concrete messages/emails), or do you want deliverables too?"
+                    ),
+                    proposed_commands=[],
+                    agent_id="ceo_advisor",
+                    read_only=True,
+                    trace={
+                        "intent": "deliverable_clarify_plan_vs_deliverables",
+                        "exit_reason": "deliverable.ack_clarify",
+                        "snapshot": snap_trace,
+                    },
+                )
+            )
+
+        ack = _delegation_ack_text(user_text=base_text, english=bool(english_output))
+        if not ack:
+            return _final(
+                AgentOutput(
+                    text=(
+                        "Da bih predložio delegaciju, trebam 1 detalj: šta je cilj deliverable-a i koji je rok?"
+                        if not english_output
+                        else "Before I propose delegation, one detail: what's the deliverable objective and deadline?"
+                    ),
+                    proposed_commands=[],
+                    agent_id="ceo_advisor",
+                    read_only=True,
+                    trace={
+                        "intent": "deliverable_clarify_missing_ack_fields",
+                        "exit_reason": "deliverable.ack_missing",
+                        "snapshot": snap_trace,
+                    },
+                )
+            )
+
+        # Loop safeguard: if we've already asked for confirmation a few times and
+        # the user keeps responding with non-confirm/non-continue, stop prompting.
+        cid0 = _conversation_id()
+        if isinstance(cid0, str) and cid0.strip():
+            cnt = _deliverable_confirm_prompt_count(conversation_id=cid0.strip())
+            if cnt >= 2:
+                _deliverable_confirm_prompt_reset(conversation_id=cid0.strip())
+                out = AgentOutput(
+                    text=(
+                        "Neću više tražiti potvrdu za delegaciju. Ako želiš samo plan (bez deliverable-a), reci vremenski okvir i cilj, pa ću sastaviti plan."
+                        if not english_output
+                        else "I won't keep asking for delegation confirmation. If you want a plan (without deliverables), tell me the timeframe and objective and I'll draft the plan."
+                    ),
+                    proposed_commands=[],
+                    agent_id="ceo_advisor",
+                    read_only=True,
+                    trace={
+                        "intent": "deliverable_confirmation_loop_break",
+                        "exit_reason": "deliverable.confirmation_loop_break",
+                        "snapshot": snap_trace,
+                    },
+                )
+                return _final(out)
+
         # Proposal-only: emit an approval-gated delegation proposal (no execution).
         proposed = _build_rgo_delegation_proposal(
             task_text=base_text,
@@ -2808,6 +3177,8 @@ async def create_ceo_advisor_agent(
             else "I can delegate to Revenue & Growth Operator to draft the concrete deliverables (emails/messages/sequences).\n"
             "To proceed, confirm: 'yes' / 'go ahead' / 'proceed'."
         )
+        if ack:
+            txt = (ack.strip() + "\n\n" + txt).strip()
 
         out = AgentOutput(
             text=txt,
@@ -2821,6 +3192,9 @@ async def create_ceo_advisor_agent(
                 "snapshot": snap_trace,
             },
         )
+
+        if isinstance(cid0, str) and cid0.strip():
+            _deliverable_confirm_prompt_bump(conversation_id=cid0.strip())
 
         if _debug_trace_enabled():
             out.trace["debug_trace"] = {
@@ -3838,6 +4212,26 @@ async def create_ceo_advisor_agent(
                 result = {"text": txt, "proposed_commands": []}
 
         text_out = _pick_text(result) or "CEO advisor nije vratio tekstualni output."
+        ssot_ok = True
+        try:
+            if (
+                isinstance(snapshot_payload, dict)
+                and snapshot_payload.get("available") is False
+            ):
+                ssot_ok = False
+            if not (isinstance(snap_trace, dict) and snap_trace.get("ready") is True):
+                ssot_ok = False
+        except Exception:
+            ssot_ok = False
+
+        if (not ssot_ok) and re.search(r"(?im)^\s*(GOALS|TASKS)\b", text_out or ""):
+            text_out = (
+                "Nemam SSOT snapshot u ovom trenutku, zato neću navoditi liste ciljeva i zadataka niti tvrditi poslovni status. "
+                "Mogu ipak pomoći s planom: napiši cilj, rok i ograničenja."
+                if not english_output
+                else "I don't have an SSOT snapshot available right now, so I won't list goals or tasks or business status. "
+                "I can still help with a plan: share the objective, deadline, and constraints."
+            )
         "- NE SMIJEŠ tvrditi status/rizik/blokade ili brojeve ciljeva/taskova ako to nije eksplicitno u snapshot-u; u tom slučaju reci da nije poznato iz snapshot-a i predloži refresh.\n"
         proposed_items = (
             result.get("proposed_commands") if isinstance(result, dict) else None
