@@ -24,6 +24,10 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+# Ensure clients (PowerShell 5.1 / curl / browsers) decode BHS special chars correctly.
+# This changes only the Content-Type header (no payload changes).
+JSONResponse.media_type = "application/json; charset=utf-8"
+
 from system_version import ARCH_LOCK, RELEASE_CHANNEL, SYSTEM_NAME, VERSION
 from models.canon import PROPOSAL_WRAPPER_INTENT
 from models.ceo_console_snapshot import CeoConsoleSnapshotResponse
