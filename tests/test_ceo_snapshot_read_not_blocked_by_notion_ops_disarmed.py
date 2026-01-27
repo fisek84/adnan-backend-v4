@@ -28,12 +28,15 @@ def test_ceo_uses_ready_snapshot_when_notion_ops_disarmed(monkeypatch, tmp_path)
     monkeypatch.setenv("CEO_ADVISOR_ALLOW_GENERAL_KNOWLEDGE", "1")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-local")
     monkeypatch.setenv(
-        "CEO_CONVERSATION_STATE_PATH", str(tmp_path / "ceo_conv_state_snapshot_read.json")
+        "CEO_CONVERSATION_STATE_PATH",
+        str(tmp_path / "ceo_conv_state_snapshot_read.json"),
     )
 
     from services.grounding_pack_service import GroundingPackService
 
-    monkeypatch.setattr(GroundingPackService, "build", lambda **kwargs: {"enabled": False})
+    monkeypatch.setattr(
+        GroundingPackService, "build", lambda **kwargs: {"enabled": False}
+    )
 
     from services.knowledge_snapshot_service import KnowledgeSnapshotService
 
@@ -50,7 +53,9 @@ def test_ceo_uses_ready_snapshot_when_notion_ops_disarmed(monkeypatch, tmp_path)
             },
         }
 
-    monkeypatch.setattr(KnowledgeSnapshotService, "get_snapshot", staticmethod(_stub_snapshot))
+    monkeypatch.setattr(
+        KnowledgeSnapshotService, "get_snapshot", staticmethod(_stub_snapshot)
+    )
 
     app = _load_app()
     client = TestClient(app)
