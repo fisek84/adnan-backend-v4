@@ -2490,28 +2490,105 @@ async def create_ceo_advisor_agent(
         )
 
     if _is_explicit_delegate_to_rgo(base_text):
-        try:
-            from services.delegation_service import execute_delegation  # noqa: PLC0415
-            from services.output_presenters.revenue_growth_presenter import (  # noqa: PLC0415
-                to_ceo_report,
-            )
+        # /api/chat is read-only: never execute delegation here.
+        task_text = (base_text or "").strip()
+        proposed = ProposedCommand(
+            command="delegate_agent_task",
+            args={
+                "agent_id": "revenue_growth_operator",
+                "task_text": task_text,
+                "endpoint": "/agents/execute",
+                "canon": "delegate_agent_task.v1",
+            },
+            reason="Delegacija Revenue & Growth Operatoru (traži odobrenje).",
+            requires_approval=True,
+            risk="LOW",
+            scope="agents/execute",
+            dry_run=True,
+            payload_summary={
+                "kind": "delegation",
+                "command": "delegate_agent_task",
+                "payload": {
+                    "agent_id": "revenue_growth_operator",
+                    "task_text": task_text,
+                },
+                "endpoint": "/agents/execute",
+                "canon": "CEO_CONSOLE_EXECUTION_FLOW",
+                "source": "api_chat",
+                "confidence_score": 0.7,
+                "assumption_count": 0,
+                "recommendation_type": "OPERATIONAL",
+            },
+        )
 
-            child = await execute_delegation(
-                parent_ctx=ctx if isinstance(ctx, dict) else {},
-                target_agent_id="revenue_growth_operator",
-                task_text=(base_text or "").strip(),
-                parent_agent_input=agent_input,
-                delegation_reason="explicit_delegate_request",
+        out = AgentOutput(
+            text=(
+                "Želiš li da delegiram ovaj zadatak Revenue & Growth Operatoru?"
+                if not english_output
+                else "Do you want me to delegate this task to Revenue & Growth Operator?"
+            ),
+            proposed_commands=[proposed],
+            agent_id="ceo_advisor",
+            read_only=True,
+            trace={
+                "intent": "delegate_agent_task",
+                "delegated_to": "revenue_growth_operator",
+                "delegation_reason": "explicit_delegate_request",
+                "fallback_used": "none",
+                "snapshot": snap_trace,
+            },
+        )
+
+        return _final(out)
+
+    # Generic: "pošalji/delegiraj agentu <agent>".
+    target_txt = _extract_delegate_target(base_text)
+    if isinstance(target_txt, str) and target_txt.strip():
+        target_id = _resolve_agent_id_from_text(target_txt)
+        if isinstance(target_id, str) and target_id.strip():
+            # /api/chat is read-only: never execute delegation here.
+            task_text = _delegation_task_text_from_prompt(base_text)
+            proposed = ProposedCommand(
+                command="delegate_agent_task",
+                args={
+                    "agent_id": target_id.strip(),
+                    "task_text": task_text,
+                    "endpoint": "/agents/execute",
+                    "canon": "delegate_agent_task.v1",
+                },
+                reason="Delegacija agentu (traži odobrenje).",
+                requires_approval=True,
+                risk="LOW",
+                scope="agents/execute",
+                dry_run=True,
+                payload_summary={
+                    "kind": "delegation",
+                    "command": "delegate_agent_task",
+                    "payload": {
+                        "agent_id": target_id.strip(),
+                        "task_text": task_text,
+                    },
+                    "endpoint": "/agents/execute",
+                    "canon": "CEO_CONSOLE_EXECUTION_FLOW",
+                    "source": "api_chat",
+                    "confidence_score": 0.7,
+                    "assumption_count": 0,
+                    "recommendation_type": "OPERATIONAL",
+                },
             )
 
             out = AgentOutput(
-                text=to_ceo_report(child),
-                proposed_commands=[],
+                text=(
+                    f"Želiš li da delegiram ovaj zadatak agentu '{target_id.strip()}'?"
+                    if not english_output
+                    else f"Do you want me to delegate this task to agent '{target_id.strip()}'?"
+                ),
+                proposed_commands=[proposed],
                 agent_id="ceo_advisor",
                 read_only=True,
                 trace={
                     "intent": "delegate_agent_task",
-                    "delegated_to": "revenue_growth_operator",
+                    "delegated_to": target_id.strip(),
                     "delegation_reason": "explicit_delegate_request",
                     "fallback_used": "none",
                     "snapshot": snap_trace,
@@ -2519,54 +2596,6 @@ async def create_ceo_advisor_agent(
             )
 
             return _final(out)
-        except Exception:
-            logger.exception(
-                "[CEO-ADVISOR] Explicit delegation request failed; falling back to CEO Advisor flow."
-            )
-
-    # Generic: "pošalji/delegiraj agentu <agent>".
-    target_txt = _extract_delegate_target(base_text)
-    if isinstance(target_txt, str) and target_txt.strip():
-        target_id = _resolve_agent_id_from_text(target_txt)
-        if isinstance(target_id, str) and target_id.strip():
-            try:
-                from services.delegation_service import execute_delegation  # noqa: PLC0415
-                from services.output_presenters.revenue_growth_presenter import (  # noqa: PLC0415
-                    to_ceo_report,
-                )
-
-                task_text = _delegation_task_text_from_prompt(base_text)
-                child = await execute_delegation(
-                    parent_ctx=ctx if isinstance(ctx, dict) else {},
-                    target_agent_id=target_id.strip(),
-                    task_text=task_text,
-                    parent_agent_input=agent_input,
-                    delegation_reason="explicit_delegate_request",
-                )
-
-                txt_out = child.text
-                if target_id.strip() == "revenue_growth_operator":
-                    txt_out = to_ceo_report(child)
-
-                out = AgentOutput(
-                    text=txt_out,
-                    proposed_commands=[],
-                    agent_id="ceo_advisor",
-                    read_only=True,
-                    trace={
-                        "intent": "delegate_agent_task",
-                        "delegated_to": target_id.strip(),
-                        "delegation_reason": "explicit_delegate_request",
-                        "fallback_used": "none",
-                        "snapshot": snap_trace,
-                    },
-                )
-
-                return _final(out)
-            except Exception:
-                logger.exception(
-                    "[CEO-ADVISOR] Generic delegation request failed; falling back to CEO Advisor flow."
-                )
         else:
             # Unknown/disabled agent: keep response read-only, no Notion ops mentions.
             out = AgentOutput(

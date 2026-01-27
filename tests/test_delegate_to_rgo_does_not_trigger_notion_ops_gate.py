@@ -84,9 +84,12 @@ def test_explicit_delegate_to_rgo_is_read_only_and_no_notion_toggle(
     assert data.get("read_only") is True
     assert data.get("agent_id") == "ceo_advisor"
     pcs = data.get("proposed_commands") or []
-    assert pcs == []
+    assert isinstance(pcs, list) and len(pcs) == 1
+    assert (pcs[0].get("command") or "") == "delegate_agent_task"
+    args = pcs[0].get("args") or {}
+    assert args.get("agent_id") == "revenue_growth_operator"
 
-    assert len(calls) == 1
+    assert len(calls) == 0
     tr = data.get("trace") or {}
     assert tr.get("delegated_to") == "revenue_growth_operator"
     assert tr.get("intent") == "delegate_agent_task"

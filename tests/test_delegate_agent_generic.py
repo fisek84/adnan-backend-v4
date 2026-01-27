@@ -19,8 +19,8 @@ def _load_app():
 def test_delegate_to_named_agent_is_read_only_and_no_toggle(monkeypatch, tmp_path):
     """Regression: explicit delegation must never route into notion_ops_toggle UI/approval.
 
-    Even when delegating to the Notion Ops agent, this is an agent-to-agent dispatch
-    executed via the existing router and must return read-only output without proposals.
+    Even when delegating to the Notion Ops agent, /api/chat is read-only:
+    it must return a proposal (no execution) and never surface notion_ops_toggle.
     """
 
     monkeypatch.setenv("OPENAI_API_MODE", "responses")
@@ -79,10 +79,14 @@ def test_delegate_to_named_agent_is_read_only_and_no_toggle(monkeypatch, tmp_pat
 
     assert data.get("read_only") is True
     assert data.get("agent_id") == "ceo_advisor"
-    assert (data.get("proposed_commands") or []) == []
+    pcs = data.get("proposed_commands") or []
+    assert isinstance(pcs, list) and len(pcs) == 1
+    assert (pcs[0].get("command") or "") == "delegate_agent_task"
+    args = pcs[0].get("args") or {}
+    assert args.get("agent_id") == "notion_ops"
     assert "notion_ops_toggle" not in json.dumps(data, ensure_ascii=False).lower()
 
-    assert len(calls) == 1
+    assert len(calls) == 0
     tr = data.get("trace") or {}
     assert tr.get("intent") == "delegate_agent_task"
     assert tr.get("delegated_to") == "notion_ops"
@@ -244,8 +248,12 @@ def test_delegate_to_rgo_without_colon_still_delegates(monkeypatch, tmp_path):
     )
     assert resp.status_code == 200, resp.text
     data = resp.json()
-    assert (data.get("proposed_commands") or []) == []
-    assert len(calls) == 1
+    pcs = data.get("proposed_commands") or []
+    assert isinstance(pcs, list) and len(pcs) == 1
+    assert (pcs[0].get("command") or "") == "delegate_agent_task"
+    args = pcs[0].get("args") or {}
+    assert args.get("agent_id") == "revenue_growth_operator"
+    assert len(calls) == 0
     tr = data.get("trace") or {}
     assert tr.get("delegated_to") == "revenue_growth_operator"
 
@@ -300,7 +308,11 @@ def test_delegate_target_before_word_agentu(monkeypatch, tmp_path):
     )
     assert resp.status_code == 200, resp.text
     data = resp.json()
-    assert (data.get("proposed_commands") or []) == []
-    assert len(calls) == 1
+    pcs = data.get("proposed_commands") or []
+    assert isinstance(pcs, list) and len(pcs) == 1
+    assert (pcs[0].get("command") or "") == "delegate_agent_task"
+    args = pcs[0].get("args") or {}
+    assert args.get("agent_id") == "revenue_growth_operator"
+    assert len(calls) == 0
     tr = data.get("trace") or {}
     assert tr.get("delegated_to") == "revenue_growth_operator"
