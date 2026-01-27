@@ -1524,11 +1524,41 @@ class NotionService:
         }
 
         max_calls = env_int("CEO_NOTION_MAX_CALLS", 3)
-        max_latency_ms = env_int("CEO_NOTION_MAX_LATENCY_MS", 1500)
+
+        # CEO snapshot latency budget:
+        # - per-DB overrides take precedence
+        # - then global CEO_NOTION_MAX_LATENCY_MS
+        # - then CEO snapshot default (4000ms)
+        # NOTE: this does not change error formats or meta schema.
+        def _env_int_optional(name: str) -> Optional[int]:
+            raw = (os.getenv(name) or "").strip()
+            if not raw:
+                return None
+            try:
+                return int(raw)
+            except Exception:
+                return None
+
+        max_latency_ms_global = _env_int_optional("CEO_NOTION_MAX_LATENCY_MS")
+        if max_latency_ms_global is None:
+            max_latency_ms_global = 4000
+
+        def _latency_ms_for_db(db_key: str) -> int:
+            per_db_env = {
+                "goals": "CEO_NOTION_MAX_LATENCY_MS_GOALS",
+                "projects": "CEO_NOTION_MAX_LATENCY_MS_PROJECTS",
+                "tasks": "CEO_NOTION_MAX_LATENCY_MS_TASKS",
+            }.get(db_key)
+            if isinstance(per_db_env, str):
+                v = _env_int_optional(per_db_env)
+                if v is not None:
+                    return int(v)
+            return int(max_latency_ms_global)
+
         meta["budget"] = {
             "schema_version": "v1",
             "max_calls": int(max_calls),
-            "max_latency_ms": int(max_latency_ms),
+            "max_latency_ms": int(max_latency_ms_global),
             "exceeded": False,
             "exceeded_kind": None,
             "exceeded_detail": {},
@@ -1557,10 +1587,18 @@ class NotionService:
 
         async with notion_budget_context(
             max_calls=max_calls,
-            max_latency_ms=max_latency_ms,
+            max_latency_ms=int(max_latency_ms_global),
         ) as budget_state:
             for idx, db_key in enumerate(keys):
                 try:
+                    # Apply per-DB latency budget *for this db_key*.
+                    # Calls budget remains shared across the whole snapshot.
+                    try:
+                        budget_state.max_latency_ms = int(_latency_ms_for_db(db_key))
+                        budget_state.started_at = time.monotonic()
+                    except Exception:
+                        pass
+
                     db_id = self._resolve_db_id(db_key)
 
                     # Discover true title property (schema-driven). Best-effort: if schema unavailable, default to "Name".

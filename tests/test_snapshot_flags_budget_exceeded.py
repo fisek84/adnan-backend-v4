@@ -59,6 +59,7 @@ def test_api_chat_snapshot_flags_not_fresh_when_budget_exceeded(monkeypatch):
     meta = snap.get("meta")
     assert isinstance(meta, dict)
     assert meta.get("ok") is False
+    assert meta.get("reason") == "budget_exceeded"
 
     errs = meta.get("errors")
     assert isinstance(errs, list)

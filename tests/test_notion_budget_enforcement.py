@@ -1,4 +1,3 @@
-import asyncio
 import os
 import unittest
 from unittest.mock import patch
@@ -20,15 +19,16 @@ class _DummyResp:
 
 
 class _DummyClient:
-    def __init__(self, *, delay_s: float = 0.0, data=None):
-        self.delay_s = float(delay_s)
+    def __init__(self, *, advance_s=None, data=None):
+        # advance_s: optional callable invoked on each request to advance fake time.
+        self.advance_s = advance_s
         self.data = data or {}
         self.calls = 0
 
     async def request(self, method, url, params=None, json=None):
         self.calls += 1
-        if self.delay_s:
-            await asyncio.sleep(self.delay_s)
+        if callable(self.advance_s):
+            self.advance_s()
         return _DummyResp(self.data)
 
 
@@ -45,22 +45,35 @@ class TestNotionBudgets(unittest.IsolatedAsyncioTestCase):
         await self.service.aclose()
 
     async def test_budget_max_calls_enforced(self):
-        dummy = _DummyClient(delay_s=0.0, data={})
+        # Fake monotonic clock (no sleeps).
+        now = {"t": 0.0}
+
+        def _mono():
+            return float(now["t"])
+
+        def _advance():
+            # Keep under any reasonable latency budget.
+            now["t"] += 0.0001
+
+        dummy = _DummyClient(
+            advance_s=_advance, data={"results": [], "has_more": False}
+        )
 
         async def _get_client():
             return dummy
 
         self.service._get_client = _get_client  # type: ignore[method-assign]
 
-        with patch.dict(
-            os.environ,
-            {
-                "CEO_NOTION_MAX_CALLS": "1",
-                "CEO_NOTION_MAX_LATENCY_MS": "999999",
-            },
-            clear=False,
-        ):
-            snap = await self.service.build_knowledge_snapshot()
+        with patch("services.notion_service.time.monotonic", _mono):
+            with patch.dict(
+                os.environ,
+                {
+                    "CEO_NOTION_MAX_CALLS": "1",
+                    "CEO_NOTION_MAX_LATENCY_MS": "999999",
+                },
+                clear=False,
+            ):
+                snap = await self.service.build_knowledge_snapshot()
 
         meta = snap.get("meta") if isinstance(snap, dict) else {}
         self.assertIsInstance(meta, dict)
@@ -74,22 +87,35 @@ class TestNotionBudgets(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(int(meta.get("notion_calls") or 0), 1)
 
     async def test_budget_max_latency_enforced(self):
-        dummy = _DummyClient(delay_s=0.02, data={})
+        # Fake monotonic clock advanced by the dummy client (no sleeps).
+        now = {"t": 0.0}
+
+        def _mono():
+            return float(now["t"])
+
+        def _advance():
+            # 2ms virtual request latency.
+            now["t"] += 0.002
+
+        dummy = _DummyClient(
+            advance_s=_advance, data={"results": [], "has_more": False}
+        )
 
         async def _get_client():
             return dummy
 
         self.service._get_client = _get_client  # type: ignore[method-assign]
 
-        with patch.dict(
-            os.environ,
-            {
-                "CEO_NOTION_MAX_CALLS": "50",
-                "CEO_NOTION_MAX_LATENCY_MS": "1",
-            },
-            clear=False,
-        ):
-            snap = await self.service.build_knowledge_snapshot()
+        with patch("services.notion_service.time.monotonic", _mono):
+            with patch.dict(
+                os.environ,
+                {
+                    "CEO_NOTION_MAX_CALLS": "50",
+                    "CEO_NOTION_MAX_LATENCY_MS": "1",
+                },
+                clear=False,
+            ):
+                snap = await self.service.build_knowledge_snapshot()
 
         meta = snap.get("meta") if isinstance(snap, dict) else {}
         self.assertIsInstance(meta, dict)
