@@ -181,6 +181,102 @@ def build_ceo_instructions(
     return joined
 
 
+def _business_plan_template_with_questions(*, english_output: bool) -> str:
+    if english_output:
+        return (
+            "BUSINESS PLAN — 1-page template (fill-in)\n"
+            "\n"
+            "1) Problem & Customer\n"
+            "- Problem: ____\n"
+            "- Target customer: ____\n"
+            "- Why now: ____\n"
+            "\n"
+            "2) Solution & Value Proposition\n"
+            "- Solution (1 sentence): ____\n"
+            "- Differentiator: ____\n"
+            "- Proof/credibility: ____\n"
+            "\n"
+            "3) Market & Competition\n"
+            "- Market segment: ____\n"
+            "- Alternatives/competitors: ____\n"
+            "- Your advantage: ____\n"
+            "\n"
+            "4) Go-to-Market (GTM)\n"
+            "- Offer: ____\n"
+            "- Pricing: ____\n"
+            "- Channels: ____\n"
+            "- Sales motion: ____\n"
+            "\n"
+            "5) Operations\n"
+            "- Team/roles: ____\n"
+            "- Delivery process: ____\n"
+            "- Tools/resources: ____\n"
+            "\n"
+            "6) Financials\n"
+            "- Revenue model: ____\n"
+            "- Main costs: ____\n"
+            "- Unit economics (rough): ____\n"
+            "\n"
+            "7) 30/60/90-day plan + KPIs\n"
+            "- 30d: ____ (KPI: ____)\n"
+            "- 60d: ____ (KPI: ____)\n"
+            "- 90d: ____ (KPI: ____)\n"
+            "\n"
+            "Questions to answer (quick):\n"
+            "- Who exactly is the customer and what is the urgent pain?\n"
+            "- What are you selling first (offer) and why will they buy now?\n"
+            "- What channel will you use first, and what is the first sales step?\n"
+            "- What are the top 3 assumptions and how will you test them in 7 days?\n"
+            "- What is your target KPI for 30/60/90 days?\n"
+        )
+    return (
+        "BIZNIS PLAN — minimalni 1-page template (za popunu)\n"
+        "\n"
+        "1) Problem i ciljna grupa\n"
+        "- Problem (jedna rečenica): ____\n"
+        "- Ciljni kupac (ko tačno): ____\n"
+        "- Zašto sad (hitnost): ____\n"
+        "\n"
+        "2) Rješenje i value proposition\n"
+        "- Rješenje (jedna rečenica): ____\n"
+        "- Diferencijator (zašto baš mi): ____\n"
+        "- Dokaz/credibility: ____\n"
+        "\n"
+        "3) Tržište i konkurencija\n"
+        "- Segment tržišta: ____\n"
+        "- Alternative/konkurenti: ____\n"
+        "- Naša prednost: ____\n"
+        "\n"
+        "4) GTM (go-to-market)\n"
+        "- Ponuda (šta tačno prodaješ): ____\n"
+        "- Cijene/paketi: ____\n"
+        "- Kanali (1–2 prva): ____\n"
+        "- Prodajni tok (prvi korak): ____\n"
+        "\n"
+        "5) Operacije\n"
+        "- Tim i uloge: ____\n"
+        "- Proces isporuke: ____\n"
+        "- Alati/resursi: ____\n"
+        "\n"
+        "6) Finansije\n"
+        "- Model prihoda: ____\n"
+        "- Glavni troškovi: ____\n"
+        "- Unit economics (grubo): ____\n"
+        "\n"
+        "7) 30/60/90 dana + KPI\n"
+        "- 30d: ____ (KPI: ____)\n"
+        "- 60d: ____ (KPI: ____)\n"
+        "- 90d: ____ (KPI: ____)\n"
+        "\n"
+        "Pitanja za popunu (brzo):\n"
+        "- Ko je tačno kupac i koji je urgentan problem?\n"
+        "- Šta je prva ponuda (MVP/offer) i zašto će kupiti sada?\n"
+        "- Koji je prvi kanal i koji je prvi prodajni korak?\n"
+        "- Koje su top 3 pretpostavke i kako ih testiraš u 7 dana?\n"
+        "- Koji KPI target imaš za 30/60/90 dana?\n"
+    )
+
+
 def _responses_mode_enabled() -> bool:
     return (os.getenv("OPENAI_API_MODE") or "assistants").strip().lower() == "responses"
 
@@ -2027,6 +2123,56 @@ async def create_ceo_advisor_agent(
         except Exception:
             return False
 
+    def _get_pending_deliverable_offer(
+        conversation_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        try:
+            from services.ceo_conversation_state_store import (  # noqa: PLC0415
+                ConversationStateStore,
+            )
+
+            meta = ConversationStateStore.get_meta(conversation_id=conversation_id)
+            if not isinstance(meta, dict):
+                return None
+            v = meta.get("pending_deliverable_offer")
+            return v if isinstance(v, dict) else None
+        except Exception:
+            return None
+
+    def _set_pending_deliverable_offer(
+        conversation_id: str, offer: Dict[str, Any]
+    ) -> None:
+        try:
+            from services.ceo_conversation_state_store import (  # noqa: PLC0415
+                ConversationStateStore,
+            )
+
+            ConversationStateStore.update_meta(
+                conversation_id=conversation_id,
+                updates={
+                    "pending_deliverable_offer": offer,
+                    "pending_deliverable_offer_at": float(time.time()),
+                },
+            )
+        except Exception:
+            pass
+
+    def _clear_pending_deliverable_offer(conversation_id: str) -> None:
+        try:
+            from services.ceo_conversation_state_store import (  # noqa: PLC0415
+                ConversationStateStore,
+            )
+
+            ConversationStateStore.update_meta(
+                conversation_id=conversation_id,
+                updates={
+                    "pending_deliverable_offer": None,
+                    "pending_deliverable_offer_at": None,
+                },
+            )
+        except Exception:
+            pass
+
     continue_deliverable = _is_deliverable_continue(base_text)
     intent = classify_intent(base_text)
 
@@ -2118,6 +2264,38 @@ async def create_ceo_advisor_agent(
                 t,
             )
         )
+
+    def _is_offer_accept(text: str) -> bool:
+        raw = (text or "").strip()
+        if not raw:
+            return False
+        if "?" in raw:
+            return False
+        t = _norm_bhs_ascii(raw)
+        t = re.sub(r"[^a-z0-9\s]", " ", t)
+        t = " ".join(t.split())
+        if not t:
+            return False
+        if t.startswith("da li ") or t.startswith("da l "):
+            return False
+
+        # More permissive than _is_deliverable_confirm because it is only checked
+        # when we have a pending offer marker from the assistant.
+        return t in {
+            "da",
+            "yes",
+            "y",
+            "ok",
+            "okej",
+            "moze",
+            "zelim",
+            "da zelim",
+            "zelimo",
+            "hocu",
+            "uradi",
+            "uradi to",
+            "slazem se",
+        }
 
     def _deliverable_confirm_prompt_count(*, conversation_id: str) -> int:
         try:
@@ -2506,6 +2684,44 @@ async def create_ceo_advisor_agent(
                     out.text = (out.text or "").rstrip() + note
 
         out.trace = tr
+
+        # Persist an explicit deliverable offer marker ONLY when the assistant
+        # itself surfaced the offer from KB (business plan template).
+        try:
+            cid2 = _conversation_id()
+            if isinstance(cid2, str) and cid2.strip() and isinstance(out.text, str):
+                kb_ids0 = (
+                    out.trace.get("kb_ids_used")
+                    if isinstance(out.trace, dict)
+                    else None
+                )
+                kb_ids0 = kb_ids0 if isinstance(kb_ids0, list) else []
+                kb_ids = [x for x in kb_ids0 if isinstance(x, str) and x.strip()]
+
+                # The offer text lives inside KB:plans_business_plan_001.
+                txtn = _norm_bhs_ascii(out.text)
+                # Fallback: in tests/offline, kb_ids_used may be empty; however the
+                # assistant text may carry an explicit KB marker.
+                kb_marker_hit = "kb:plans_business_plan_001" in (out.text or "").lower()
+                offer_hit = (
+                    ("ako treba" in txtn)
+                    and ("mogu dati minimalni" in txtn)
+                    and ("template" in txtn)
+                    and (("listu pitanja" in txtn) or ("lista pitanja" in txtn))
+                    and (("plans_business_plan_001" in kb_ids) or kb_marker_hit)
+                )
+
+                if offer_hit:
+                    _set_pending_deliverable_offer(
+                        cid2.strip(),
+                        {
+                            "kind": "business_plan_template.v1",
+                            "kb_id": "plans_business_plan_001",
+                            "source": "kb_offer_sentence",
+                        },
+                    )
+        except Exception:
+            pass
         # ------------------------------------------------------------
         # Debug-only observability: prove which intelligence sources were present
         # and whether SSOT snapshot was used as context vs returned.
@@ -2829,6 +3045,43 @@ async def create_ceo_advisor_agent(
     snapshot_ready = bool(
         isinstance(snap_trace, dict) and snap_trace.get("ready") is True
     )
+
+    # ------------------------------------------------------------
+    # Minimal bugfix: YES after explicit business-plan template offer
+    # (offer comes from KB:plans_business_plan_001)
+    # ------------------------------------------------------------
+    cid_offer = _conversation_id()
+    pending_offer = (
+        _get_pending_deliverable_offer(cid_offer.strip())
+        if isinstance(cid_offer, str) and cid_offer.strip()
+        else None
+    )
+    if (
+        isinstance(pending_offer, dict)
+        and pending_offer.get("kind") == "business_plan_template.v1"
+        and isinstance(cid_offer, str)
+        and cid_offer.strip()
+    ):
+        if _is_offer_accept(base_text):
+            _clear_pending_deliverable_offer(cid_offer.strip())
+            return _final(
+                AgentOutput(
+                    text=_business_plan_template_with_questions(
+                        english_output=bool(english_output)
+                    ),
+                    proposed_commands=[],
+                    agent_id="ceo_advisor",
+                    read_only=True,
+                    trace={
+                        "intent": "business_plan_template_delivered",
+                        "snapshot": snap_trace,
+                    },
+                )
+            )
+
+        # User said NO or sent a new request: drop the offer marker and proceed.
+        if _is_deliverable_decline(base_text) or (not _is_offer_accept(base_text)):
+            _clear_pending_deliverable_offer(cid_offer.strip())
 
     def _item_title(item: Any) -> Optional[str]:
         if not isinstance(item, dict):
