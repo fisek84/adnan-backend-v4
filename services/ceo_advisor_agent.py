@@ -254,6 +254,78 @@ def _wants_notion_task_or_goal(user_text: str) -> bool:
     return "task" in t or "zad" in t or "goal" in t or "cilj" in t
 
 
+def _defers_notion_execution_or_wants_discussion_first(user_text: str) -> bool:
+    """True when the user explicitly says: not now / let's talk first / prep/analysis.
+
+    This is used to avoid short-circuiting into the SSOT snapshot_read_summary
+    response for planning/discussion prompts.
+    """
+
+    t = (user_text or "").strip().lower()
+    if not t:
+        return False
+
+    # Direct "talk first" markers.
+    if any(
+        s in t
+        for s in (
+            "prvo razgovaramo",
+            "prvo da razgovaramo",
+            "prvo razgovor",
+            "prvo da popricamo",
+            "prvo da popričamo",
+            "prvo da pricamo",
+            "da prvo razgovaramo",
+            "let's talk first",
+            "lets talk first",
+            "before we do that",
+        )
+    ):
+        return True
+
+    # "Not now" markers, typically paired with execution verbs.
+    not_now = any(
+        s in t
+        for s in (
+            "neću sad",
+            "necu sad",
+            "neću sada",
+            "necu sada",
+            "ne sada",
+            "ne sad",
+            "neću još",
+            "necu jos",
+            "neću jos",
+            "ne jos",
+        )
+    )
+    if not_now and any(
+        v in t
+        for v in (
+            "postav",
+            "podes",
+            "upi",
+            "upis",
+            "unes",
+            "kreir",
+            "dodaj",
+            "napravi",
+            "set ",
+            "create ",
+            "write ",
+        )
+    ):
+        return True
+
+    # Prep/analysis wording that implies discussion before execution.
+    if any(s in t for s in ("priprem", "priprema", "razrad", "razrada")) and any(
+        s in t for s in ("prvo", "before", "najprije", "najpre")
+    ):
+        return True
+
+    return False
+
+
 def _wants_task(user_text: str) -> bool:
     t = (user_text or "").lower()
     return ("task" in t or "zad" in t) and ("goal" not in t and "cilj" not in t)
@@ -2502,7 +2574,11 @@ async def create_ceo_advisor_agent(
     # READ snapshot must not be coupled to Notion Ops ARMED.
     # If a ready snapshot is present and the user asks about goals/tasks existence,
     # answer deterministically from snapshot instead of disclaiming access.
-    if snapshot_ready and _wants_notion_task_or_goal(base_text):
+    if (
+        snapshot_ready
+        and _wants_notion_task_or_goal(base_text)
+        and (not _defers_notion_execution_or_wants_discussion_first(base_text))
+    ):
         goals_count = len(goals) if isinstance(goals, list) else 0
         tasks_count = len(tasks) if isinstance(tasks, list) else 0
         g0 = _item_title(goals[0]) if isinstance(goals, list) and goals else None
