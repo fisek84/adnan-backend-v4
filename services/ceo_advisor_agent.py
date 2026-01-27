@@ -421,6 +421,88 @@ def _build_trace_status_text(*, trace_v2: Dict[str, Any], english_output: bool) 
     return f"Korišteno: {used_txt}. Preskočeno: {skipped_txt}."
 
 
+def _is_agent_registry_question(user_text: str) -> bool:
+    """Detect deterministic intent: user asks to list available agents.
+
+    This must short-circuit *before* any LLM/KB/offline fallback paths.
+    """
+
+    t = (user_text or "").strip().lower()
+    if not t:
+        return False
+
+    # Must mention agents.
+    if not re.search(r"(?i)\b(agent|agenti|agente|agentima|agents)\b", t):
+        return False
+
+    # Common list/enumeration phrasing (BHS + EN).
+    if re.search(
+        r"(?i)\b(koje|koji|kakv\w*|lista|spisak|popis|nabroj|dostupn\w*|imamo|available|list|which|what)\b",
+        t,
+    ):
+        return True
+
+    # Registry phrasing.
+    if re.search(r"(?i)\bagent\s+registry\b|\bregistry\b.*\bagents?\b", t):
+        return True
+
+    return False
+
+
+def _render_agent_registry_text(*, english_output: bool) -> str:
+    try:
+        from services.agent_registry_service import AgentRegistryService  # noqa: PLC0415
+
+        reg = AgentRegistryService()
+        reg.load_from_agents_json("config/agents.json", clear=True)
+        all_agents = reg.list_agents(enabled_only=False)
+    except Exception as exc:
+        err = (
+            str(exc or "agents_registry_unavailable").strip()
+            or "agents_registry_unavailable"
+        )
+        if english_output:
+            return (
+                "Agent registry is not available in this environment. " f"Detail: {err}"
+            )
+        return "Agent registry nije dostupan u ovom okruženju. " f"Detalj: {err}"
+
+    enabled = [a for a in all_agents if getattr(a, "enabled", False) is True]
+    disabled = [a for a in all_agents if getattr(a, "enabled", False) is False]
+
+    def _fmt(entries: List[Any]) -> List[str]:
+        out: List[str] = []
+        for a in entries:
+            aid = str(getattr(a, "id", "")).strip()
+            name = str(getattr(a, "name", "") or aid).strip() or aid
+            if not aid:
+                continue
+            out.append(f"- {name} (agent_id: {aid})")
+        return out
+
+    lines: List[str] = []
+    if english_output:
+        lines.append("Enabled agents:")
+        lines.extend(_fmt(enabled) or ["(none)"])
+        if disabled:
+            lines.append("")
+            lines.append("Disabled agents:")
+            lines.extend(_fmt(disabled))
+        lines.append("")
+        lines.append("To delegate: 'Send to agent <agent_id>: <task>'.")
+        return "\n".join(lines).strip()
+
+    lines.append("Aktivni agenti:")
+    lines.extend(_fmt(enabled) or ["(nema)"])
+    if disabled:
+        lines.append("")
+        lines.append("Onemogućeni agenti:")
+        lines.extend(_fmt(disabled))
+    lines.append("")
+    lines.append("Za delegaciju: 'Pošalji agentu <agent_id>: <zadatak>'.")
+    return "\n".join(lines).strip()
+
+
 def _extract_after_colon(user_text: str) -> str:
     s = (user_text or "").strip()
     if not s:
@@ -2788,6 +2870,26 @@ async def create_ceo_advisor_agent(
     kb_used_ids = [x for x in kb_used_ids if isinstance(x, str) and x.strip()]
     kb_ids_used_count = len(kb_used_ids)
 
+    # Deterministic: list available agents from the runtime registry.
+    # This should never call LLM and should not be satisfied by KB snippets.
+    if (not fact_sensitive) and _is_agent_registry_question(base_text):
+        txt = _render_agent_registry_text(english_output=english_output)
+        return _final(
+            AgentOutput(
+                text=txt,
+                proposed_commands=[],
+                agent_id="ceo_advisor",
+                read_only=True,
+                trace={
+                    "deterministic": True,
+                    "intent": "agent_registry",
+                    "exit_reason": "deterministic.agent_registry",
+                    "kb_used_entry_ids": kb_used_ids,
+                    "snapshot": snap_trace,
+                },
+            )
+        )
+
     # TRACE_STATUS / provenance query: answer from grounding trace, never from memory governance.
     t_prompt0 = (base_text or "").strip().lower()
     if _is_trace_status_query(t_prompt0):
@@ -2930,7 +3032,6 @@ async def create_ceo_advisor_agent(
     # Keep the chat going with clarifying questions and an explicit expand-knowledge option.
     if (
         (not fact_sensitive)
-        and (kb_ids_used_count == 0)
         and (kb_hits == 0)
         and (not snapshot_has_facts)
         and (not _should_use_kickoff_in_offline_mode(t0))
