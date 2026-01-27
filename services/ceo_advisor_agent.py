@@ -2647,7 +2647,9 @@ async def create_ceo_advisor_agent(
         else None
     )
 
-    def _build_rgo_delegation_proposal(*, task_text: str, reason: str) -> ProposedCommand:
+    def _build_rgo_delegation_proposal(
+        *, task_text: str, reason: str
+    ) -> ProposedCommand:
         return ProposedCommand(
             command="delegate_agent_task",
             args={

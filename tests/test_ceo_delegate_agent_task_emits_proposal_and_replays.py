@@ -14,7 +14,9 @@ def _load_app():
         return app
 
 
-def test_delegate_agent_task_emits_proposal_and_replays_on_short_confirm(monkeypatch, tmp_path):
+def test_delegate_agent_task_emits_proposal_and_replays_on_short_confirm(
+    monkeypatch, tmp_path
+):
     """Regression (CANON): delegate_agent_task must emit proposed_commands.
 
     Requirements:
@@ -35,7 +37,9 @@ def test_delegate_agent_task_emits_proposal_and_replays_on_short_confirm(monkeyp
 
     from services.grounding_pack_service import GroundingPackService
 
-    monkeypatch.setattr(GroundingPackService, "build", lambda **kwargs: {"enabled": False})
+    monkeypatch.setattr(
+        GroundingPackService, "build", lambda **kwargs: {"enabled": False}
+    )
 
     def _boom(*args, **kwargs):  # noqa: ANN001
         raise AssertionError("LLM/executor must not be called")

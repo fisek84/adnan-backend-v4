@@ -381,12 +381,16 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
 
         return False
 
-    def _load_pending_proposal(conversation_id: Optional[str]) -> Optional[List[Dict[str, Any]]]:
+    def _load_pending_proposal(
+        conversation_id: Optional[str],
+    ) -> Optional[List[Dict[str, Any]]]:
         if not (isinstance(conversation_id, str) and conversation_id.strip()):
             return None
 
         try:
-            meta = ConversationStateStore.get_meta(conversation_id=conversation_id.strip())
+            meta = ConversationStateStore.get_meta(
+                conversation_id=conversation_id.strip()
+            )
         except Exception:
             return None
 
@@ -955,14 +959,14 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 status_code=400,
                 content=_attach_session_id(
                     {
-                    "text": "Missing conversation id. Provide 'session_id' (recommended) or 'conversation_id' for CEO Responses mode.",
-                    "proposed_commands": [],
-                    "agent_id": "ceo_advisor",
-                    "read_only": True,
-                    "error": {
-                        "code": "error.missing_conversation_id",
-                        "message": "Provide session_id or conversation_id.",
-                    },
+                        "text": "Missing conversation id. Provide 'session_id' (recommended) or 'conversation_id' for CEO Responses mode.",
+                        "proposed_commands": [],
+                        "agent_id": "ceo_advisor",
+                        "read_only": True,
+                        "error": {
+                            "code": "error.missing_conversation_id",
+                            "message": "Provide session_id or conversation_id.",
+                        },
                     },
                     session_id,
                 ),
@@ -1437,18 +1441,18 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 status_code=500,
                 content=_attach_session_id(
                     {
-                    "text": str(e),
-                    "proposed_commands": [],
-                    "agent_id": "ceo_advisor",
-                    "read_only": True,
-                    "trace": {
-                        "intent": "error",
-                        "exit_reason": "error.llm_not_configured",
-                    },
-                    "error": {
-                        "code": "error.llm_not_configured",
-                        "message": str(e),
-                    },
+                        "text": str(e),
+                        "proposed_commands": [],
+                        "agent_id": "ceo_advisor",
+                        "read_only": True,
+                        "trace": {
+                            "intent": "error",
+                            "exit_reason": "error.llm_not_configured",
+                        },
+                        "error": {
+                            "code": "error.llm_not_configured",
+                            "message": str(e),
+                        },
                     },
                     session_id,
                 ),
@@ -1735,9 +1739,7 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             },
         }
 
-        _persist_pending_proposal(
-            proposal_key, content.get("proposed_commands") or []
-        )
+        _persist_pending_proposal(proposal_key, content.get("proposed_commands") or [])
         if debug_on:
             tr["memory_provider"] = memory_provider
             tr["memory_items_count"] = memory_items_count

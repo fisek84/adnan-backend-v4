@@ -14,7 +14,9 @@ def _load_app():
         return app
 
 
-def test_api_chat_generates_session_id_and_replays_pending_proposal(monkeypatch, tmp_path):
+def test_api_chat_generates_session_id_and_replays_pending_proposal(
+    monkeypatch, tmp_path
+):
     """Root-cause regression: /api/chat must not rely on cookies for replay.
 
     Step 1: POST /api/chat WITHOUT session_id -> response returns session_id and a proposal.
@@ -35,7 +37,9 @@ def test_api_chat_generates_session_id_and_replays_pending_proposal(monkeypatch,
 
     from services.grounding_pack_service import GroundingPackService
 
-    monkeypatch.setattr(GroundingPackService, "build", lambda **kwargs: {"enabled": False})
+    monkeypatch.setattr(
+        GroundingPackService, "build", lambda **kwargs: {"enabled": False}
+    )
 
     app = _load_app()
     client = TestClient(app)
