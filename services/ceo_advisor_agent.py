@@ -103,6 +103,7 @@ def build_ceo_instructions(
             "- KB-FIRST: Answer ONLY using the provided KB_CONTEXT below.\n"
             "- DO NOT use general world knowledge.\n"
             "- Do NOT respond with 'Nemam u KB/Memory/Snapshot' when KB_CONTEXT is present; synthesize your answer from KB_CONTEXT.\n"
+            "- NOTION READ SNAPSHOT: If NOTION_SNAPSHOT is present/ready, you DO have access to it regardless of NOTION_OPS_STATE.armed; use it for situational awareness and do NOT ask to enable snapshot.\n"
             "- If you propose actions, put them into proposed_commands but do not execute anything.\n"
             "- NOTION WRITES: Only propose Notion write commands when NOTION_OPS_STATE.armed == true. If armed==false, ask the user to arm Notion Ops ('notion ops aktiviraj') instead of proposing writes.\n"
         )
@@ -112,6 +113,7 @@ def build_ceo_instructions(
             "- READ-ONLY: no tool calls, no side effects, no external writes.\n"
             "- Answer ONLY from the provided context sections below (IDENTITY, KB_CONTEXT, NOTION_SNAPSHOT, MEMORY_CONTEXT).\n"
             "- DO NOT use general world knowledge. If the answer is not in the provided context, say: 'Nemam u KB/Memory/Snapshot'.\n"
+            "- NOTION READ SNAPSHOT: If NOTION_SNAPSHOT is present/ready, you DO have access to it regardless of NOTION_OPS_STATE.armed; use it for situational awareness and do NOT ask to enable snapshot.\n"
             "- If you propose actions, put them into proposed_commands but do not execute anything.\n"
             "- NOTION WRITES: Only propose Notion write commands when NOTION_OPS_STATE.armed == true. If armed==false, ask the user to arm Notion Ops ('notion ops aktiviraj') instead of proposing writes.\n"
         )
@@ -2260,6 +2262,46 @@ async def create_ceo_advisor_agent(
         meta=meta,
     )
 
+    snapshot_ready = bool(
+        isinstance(snap_trace, dict) and snap_trace.get("ready") is True
+    )
+
+    def _item_title(item: Any) -> Optional[str]:
+        if not isinstance(item, dict):
+            return None
+        for k in ("title", "name", "Name", "Title"):
+            v = item.get(k)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+        return None
+
+    # READ snapshot must not be coupled to Notion Ops ARMED.
+    # If a ready snapshot is present and the user asks about goals/tasks existence,
+    # answer deterministically from snapshot instead of disclaiming access.
+    if snapshot_ready and _wants_notion_task_or_goal(base_text):
+        goals_count = len(goals) if isinstance(goals, list) else 0
+        tasks_count = len(tasks) if isinstance(tasks, list) else 0
+        g0 = _item_title(goals[0]) if isinstance(goals, list) and goals else None
+        t0 = _item_title(tasks[0]) if isinstance(tasks, list) and tasks else None
+
+        parts: list[str] = [
+            f"Imam SSOT Notion snapshot (READ): goals={goals_count}, tasks={tasks_count}."
+        ]
+        if g0:
+            parts.append(f"Primjer cilja: {g0}")
+        if t0:
+            parts.append(f"Primjer taska: {t0}")
+
+        return _final(
+            AgentOutput(
+                text="\n".join(parts).strip(),
+                proposed_commands=[],
+                agent_id="ceo_advisor",
+                read_only=True,
+                trace={"snapshot": snap_trace, "intent": "snapshot_read_summary"},
+            )
+        )
+
     # ---------------------------------------------
     # Explicit delegation request (agent-to-agent)
     # ---------------------------------------------
@@ -3228,8 +3270,7 @@ async def create_ceo_advisor_agent(
         structured_mode
         and not goals
         and not tasks
-        and not snapshot_payload.get("goals")
-        and not snapshot_payload.get("tasks")
+        and (not snapshot_ready)
         and (_is_empty_state_kickoff_prompt(base_text) or not _llm_is_configured())
     ):
         kickoff = _default_kickoff_text()
