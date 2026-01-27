@@ -6,10 +6,11 @@ from __future__ import annotations
 import os
 import re
 import time
+import uuid
 
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from models.agent_contract import AgentInput, AgentOutput, ProposedCommand
@@ -51,6 +52,13 @@ _DEACTIVATE_KEYWORDS = (
 
 def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
     router = APIRouter()
+
+    def _attach_session_id(
+        content: Dict[str, Any], session_id: Optional[str]
+    ) -> Dict[str, Any]:
+        if isinstance(session_id, str) and session_id.strip():
+            content.setdefault("session_id", session_id.strip())
+        return content
 
     def _deep_merge_dicts(
         base: Dict[str, Any], incoming: Dict[str, Any]
@@ -272,8 +280,8 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
     def _extract_session_id(payload: AgentInput) -> Optional[str]:
         """
         PHASE 6: Notion Ops ARMED Gate
-        Best-effort extraction. We do NOT invent a global key.
-        If no session_id is available, we keep Notion Ops DISARMED.
+        Best-effort extraction from payload/metadata.
+        NOTE: the /api/chat endpoint may generate a session_id when missing.
         """
         for attr in ("session_id", "sessionId"):
             v = getattr(payload, attr, None)
@@ -876,6 +884,7 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             "proposed_commands": pcs_out,
             "agent_id": getattr(out, "agent_id", None),
             "read_only": True,
+            "session_id": session_id,
             "notion_ops": {
                 "armed": False,
                 "armed_at": None,
@@ -896,7 +905,7 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         return JSONResponse(content=content)
 
     @router.post("/chat", response_model=AgentOutput, response_model_by_alias=False)
-    async def chat(payload: AgentInput):
+    async def chat(payload: AgentInput, request: Request):
         memory_provider = "readonly_memory_service"
         memory_error: Optional[str] = None
         mem_snapshot: Dict[str, Any] = {}
@@ -916,8 +925,26 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             memory_items_count = 0
 
         prompt = _extract_prompt(payload)
+
+        # Deterministic session key for proposal persistence/replay.
+        # Do NOT rely on cookies (PowerShell WebSession has no Set-Cookie here).
         session_id = _extract_session_id(payload)
+        if not (isinstance(session_id, str) and session_id.strip()):
+            hdr = (request.headers.get("X-Session-Id") or "").strip()
+            if hdr:
+                session_id = hdr
+
+        if not (isinstance(session_id, str) and session_id.strip()):
+            session_id = str(uuid.uuid4())
+            try:
+                payload.session_id = session_id  # type: ignore[attr-defined]
+            except Exception:
+                pass
+
+        # Keep conversation_id for downstream multi-turn summaries;
+        # proposal persistence/replay uses session_id as the key.
         conversation_id = _extract_conversation_id(payload) or session_id
+        proposal_key = session_id
         # Responses+CEO multi-turn can require a stable id when explicitly enabled.
         if (
             _responses_mode_enabled()
@@ -926,7 +953,8 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         ):
             return JSONResponse(
                 status_code=400,
-                content={
+                content=_attach_session_id(
+                    {
                     "text": "Missing conversation id. Provide 'session_id' (recommended) or 'conversation_id' for CEO Responses mode.",
                     "proposed_commands": [],
                     "agent_id": "ceo_advisor",
@@ -935,7 +963,9 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                         "code": "error.missing_conversation_id",
                         "message": "Provide session_id or conversation_id.",
                     },
-                },
+                    },
+                    session_id,
+                ),
             )
 
         # Ensure agent_input has conversation_id populated for downstream.
@@ -949,7 +979,7 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         # CANON RESTORE: short yes/confirm should replay pending proposal
         # ------------------------------------------------------------
         if _is_short_confirmation(prompt):
-            pending = _load_pending_proposal(conversation_id)
+            pending = _load_pending_proposal(proposal_key)
             if pending:
                 st0 = (
                     await _get_state(session_id)
@@ -978,7 +1008,7 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                     kb0 = _knowledge_bundle()
                     content.update(kb0)
 
-                return JSONResponse(content=content)
+                return JSONResponse(content=_attach_session_id(content, session_id))
 
         conv_summary = None
         if isinstance(conversation_id, str) and conversation_id.strip():
@@ -1271,7 +1301,7 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 content["trace"] = tr
                 content.update(kb)
                 content.update(grounding)
-            return JSONResponse(content=content)
+            return JSONResponse(content=_attach_session_id(content, session_id))
 
         if session_id and _is_deactivate(prompt):
             st = await _set_armed(session_id, False, prompt=prompt)
@@ -1304,7 +1334,7 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 content["trace"] = tr
                 content.update(kb)
                 content.update(grounding)
-            return JSONResponse(content=content)
+            return JSONResponse(content=_attach_session_id(content, session_id))
 
         # Determine armed state (default false if no session_id)
         st = (
@@ -1405,7 +1435,8 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         except LLMNotConfiguredError as e:
             return JSONResponse(
                 status_code=500,
-                content={
+                content=_attach_session_id(
+                    {
                     "text": str(e),
                     "proposed_commands": [],
                     "agent_id": "ceo_advisor",
@@ -1418,7 +1449,9 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                         "code": "error.llm_not_configured",
                         "message": str(e),
                     },
-                },
+                    },
+                    session_id,
+                ),
             )
 
         # Persist bounded multi-turn context (never log content).
@@ -1496,7 +1529,7 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                     if isinstance(d, dict):
                         pcs_out.append(_ensure_payload_summary_contract(d))
 
-                _persist_pending_proposal(conversation_id, pcs_out)
+                _persist_pending_proposal(proposal_key, pcs_out)
 
                 content = {
                     "text": out.text,
@@ -1530,7 +1563,7 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                     minimal_trace = _minimal_trace_intent(out.trace)
                     if minimal_trace:
                         content["trace"] = minimal_trace
-                return JSONResponse(content=content)
+                return JSONResponse(content=_attach_session_id(content, session_id))
 
             # If the advisor returned non-actionable proposal wrappers (e.g. approval-gated
             # memory/knowledge write proposals), keep them even when Notion Ops is DISARMED.
@@ -1546,7 +1579,7 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                     d = _pc_to_dict(pc, prompt=prompt)
                     pcs_out.append(_ensure_payload_summary_contract(d))
 
-                _persist_pending_proposal(conversation_id, pcs_out)
+                _persist_pending_proposal(proposal_key, pcs_out)
 
                 content: Dict[str, Any] = {
                     "text": out.text,
@@ -1574,7 +1607,7 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                     minimal_trace = _minimal_trace_intent(out.trace)
                     if minimal_trace:
                         content["trace"] = minimal_trace
-                return JSONResponse(content=content)
+                return JSONResponse(content=_attach_session_id(content, session_id))
 
             content: Dict[str, Any] = {
                 "text": out.text,
@@ -1588,7 +1621,7 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                     "armed_state": st,
                 },
             }
-            _persist_pending_proposal(conversation_id, [])
+            _persist_pending_proposal(proposal_key, [])
             if debug_on:
                 tr0 = out.trace or {}
                 if not isinstance(tr0, dict):
@@ -1603,7 +1636,7 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 minimal_trace = _minimal_trace_intent(out.trace)
                 if minimal_trace:
                     content["trace"] = minimal_trace
-            return JSONResponse(content=content)
+            return JSONResponse(content=_attach_session_id(content, session_id))
 
         # ARMED: allow actionable, otherwise allow approval-wrapper fallback
         if actionable:
@@ -1620,7 +1653,7 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 if isinstance(d, dict):
                     pcs_out.append(_ensure_payload_summary_contract(d))
 
-            _persist_pending_proposal(conversation_id, pcs_out)
+            _persist_pending_proposal(proposal_key, pcs_out)
 
             tr = out.trace or {}
             if not isinstance(tr, dict):
@@ -1658,7 +1691,7 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 minimal_trace = _minimal_trace_intent(tr)
                 if minimal_trace:
                     content["trace"] = minimal_trace
-            return JSONResponse(content=content)
+            return JSONResponse(content=_attach_session_id(content, session_id))
 
         # No actionable → fallback:
         if _looks_like_write_intent(prompt):
@@ -1702,7 +1735,9 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             },
         }
 
-        _persist_pending_proposal(conversation_id, content.get("proposed_commands") or [])
+        _persist_pending_proposal(
+            proposal_key, content.get("proposed_commands") or []
+        )
         if debug_on:
             tr["memory_provider"] = memory_provider
             tr["memory_items_count"] = memory_items_count
@@ -1714,6 +1749,6 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             minimal_trace = _minimal_trace_intent(tr)
             if minimal_trace:
                 content["trace"] = minimal_trace
-        return JSONResponse(content=content)
+        return JSONResponse(content=_attach_session_id(content, session_id))
 
     return router
