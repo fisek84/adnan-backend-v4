@@ -15,7 +15,9 @@ def test_ceo_advisor_lists_agents_deterministically_without_llm(monkeypatch):
     monkeypatch.setattr("services.ceo_advisor_agent._llm_is_configured", lambda: True)
 
     def _boom(*args, **kwargs):  # pragma: no cover
-        raise AssertionError("LLM executor must NOT be called for agent registry questions")
+        raise AssertionError(
+            "LLM executor must NOT be called for agent registry questions"
+        )
 
     monkeypatch.setattr("services.agent_router.executor_factory.get_executor", _boom)
 
