@@ -432,6 +432,90 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
 
         return False
 
+    def _pending_prompt_count(*, conversation_id: Optional[str]) -> int:
+        if not (isinstance(conversation_id, str) and conversation_id.strip()):
+            return 0
+        try:
+            meta = ConversationStateStore.get_meta(
+                conversation_id=conversation_id.strip()
+            )
+            if not isinstance(meta, dict):
+                return 0
+            v = meta.get("pending_proposal_confirm_prompt_count")
+            return int(v) if isinstance(v, (int, float)) else 0
+        except Exception:
+            return 0
+
+    def _pending_prompt_bump(*, conversation_id: Optional[str]) -> int:
+        if not (isinstance(conversation_id, str) and conversation_id.strip()):
+            return 0
+        try:
+            cur = _pending_prompt_count(conversation_id=conversation_id)
+            nxt = int(cur) + 1
+            ConversationStateStore.update_meta(
+                conversation_id=conversation_id.strip(),
+                updates={
+                    "pending_proposal_confirm_prompt_count": nxt,
+                    "pending_proposal_confirm_prompt_last_at": float(time.time()),
+                },
+            )
+            return nxt
+        except Exception:
+            return 0
+
+    def _pending_prompt_reset(*, conversation_id: Optional[str]) -> None:
+        if not (isinstance(conversation_id, str) and conversation_id.strip()):
+            return
+        try:
+            ConversationStateStore.update_meta(
+                conversation_id=conversation_id.strip(),
+                updates={"pending_proposal_confirm_prompt_count": 0},
+            )
+        except Exception:
+            return
+
+    def _classify_pending_response(text: str) -> str:
+        """Classify user reply when a pending proposal exists.
+
+        Returns: YES | NO | NEW_REQUEST | UNKNOWN
+        """
+        if _is_short_confirmation(text):
+            return "YES"
+        if _is_short_decline(text):
+            return "NO"
+
+        raw = (text or "").strip()
+        if not raw:
+            return "UNKNOWN"
+
+        t = _norm_bhs_ascii(raw)
+        t = re.sub(r"[^a-z0-9\s]", " ", t)
+        t = " ".join(t.split())
+        if not t:
+            return "UNKNOWN"
+        if t.startswith("da li ") or t.startswith("da l "):
+            return "UNKNOWN"
+
+        neg = bool(
+            re.search(
+                r"(?i)\b(ne|nemoj|necu|ne\s+zelim|odustani|stop|cancel|preskoci|skip|umjesto|instead|bez)\b",
+                t,
+            )
+        )
+        req = bool(
+            re.search(
+                r"(?i)\b(treba\s+mi|hoc\w*|uradi|napravi|pripremi|daj\s+mi|plan|prioritet\w*|strateg\w*|funnel|marketing|sales|prodaj\w*|kampanj\w*|sekvenc\w*|email\w*|poruk\w*)\b",
+                t,
+            )
+        )
+
+        if neg and req:
+            return "NEW_REQUEST"
+        if req:
+            return "NEW_REQUEST"
+
+        return "UNKNOWN"
+
     def _load_pending_proposal(
         conversation_id: Optional[str],
     ) -> Optional[List[Dict[str, Any]]]:
@@ -1031,21 +1115,20 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 pass
 
         # ------------------------------------------------------------
-        # CANON RESTORE: short yes/confirm should replay pending proposal
+        # CANON RESTORE: pending proposal replay / cancel / intent switch
         # ------------------------------------------------------------
-        if _is_short_decline(prompt):
-            # User explicitly declined/cancelled: clear any pending proposal and continue.
-            _persist_pending_proposal(proposal_key, [])
+        pending = _load_pending_proposal(proposal_key)
+        if pending:
+            cls = _classify_pending_response(prompt)
 
-        if _is_short_confirmation(prompt):
-            pending = _load_pending_proposal(proposal_key)
-            if pending:
+            if cls == "YES":
+                _pending_prompt_reset(conversation_id=proposal_key)
                 st0 = (
                     await _get_state(session_id)
                     if session_id
                     else {"armed": False, "armed_at": None}
                 )
-                content: Dict[str, Any] = {
+                content = {
                     "text": "Uredu — evo posljednjeg prijedloga ponovo. Pregledaj i odobri izvršenje.",
                     "proposed_commands": pending,
                     "agent_id": "ceo_advisor",
@@ -1062,12 +1145,52 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                     },
                 }
 
-                # Keep SSOT snapshot fields in debug mode (parity with normal path).
                 if _debug_enabled(payload):
                     kb0 = _knowledge_bundle()
                     content.update(kb0)
 
                 return JSONResponse(content=_attach_session_id(content, session_id))
+
+            if cls in {"NO", "NEW_REQUEST"}:
+                _persist_pending_proposal(proposal_key, [])
+                _pending_prompt_reset(conversation_id=proposal_key)
+            else:
+                # UNKNOWN: ask once, then auto-cancel on the next unknown.
+                cnt = _pending_prompt_count(conversation_id=proposal_key)
+                if cnt < 1:
+                    _pending_prompt_bump(conversation_id=proposal_key)
+                    st0 = (
+                        await _get_state(session_id)
+                        if session_id
+                        else {"armed": False, "armed_at": None}
+                    )
+                    content = {
+                        "text": (
+                            "Imam prijedlog na čekanju. Odgovori 'da' da ga ponovim, ili 'ne' da ga otkažem. "
+                            "Ako imaš novi zahtjev, napiši ga (npr. 'umjesto toga…')."
+                        ),
+                        "proposed_commands": pending,
+                        "agent_id": "ceo_advisor",
+                        "read_only": True,
+                        "notion_ops": {
+                            "armed": bool(st0.get("armed") is True),
+                            "armed_at": st0.get("armed_at"),
+                            "session_id": session_id,
+                            "armed_state": st0,
+                        },
+                        "trace": {
+                            "intent": "pending_proposal_confirm_needed",
+                            "canon": "api_chat_pending_proposal_confirm_needed",
+                        },
+                    }
+                    if _debug_enabled(payload):
+                        kb0 = _knowledge_bundle()
+                        content.update(kb0)
+                    return JSONResponse(content=_attach_session_id(content, session_id))
+
+                # Second unknown: auto-cancel and continue normal routing.
+                _persist_pending_proposal(proposal_key, [])
+                _pending_prompt_reset(conversation_id=proposal_key)
 
         conv_summary = None
         if isinstance(conversation_id, str) and conversation_id.strip():

@@ -117,6 +117,10 @@ def test_deliverable_proposal_then_confirm_executes_rgo_no_notion(
     assert resp1.status_code == 200
     data1 = resp1.json()
 
+    # ACK discipline: must acknowledge before asking to delegate.
+    txt1 = (data1.get("text") or "").lower()
+    assert "razumijem" in txt1 or "got it" in txt1
+
     assert data1.get("agent_id") == "ceo_advisor"
     pcs1 = data1.get("proposed_commands") or []
     assert isinstance(pcs1, list) and len(pcs1) >= 1
@@ -361,6 +365,196 @@ def test_pending_proposal_decline_clears_replay(monkeypatch, tmp_path):
     data3 = resp3.json()
     pcs3 = data3.get("proposed_commands") or []
     assert pcs3 != pcs1
+
+
+def test_pending_new_request_cancels_and_routes(monkeypatch, tmp_path):
+    """Pending + NEW_REQUEST => cancel pending + continue with new intent (no replay)."""
+
+    monkeypatch.setenv("OPENAI_API_MODE", "responses")
+    monkeypatch.setenv("CEO_ADVISOR_ALLOW_GENERAL_KNOWLEDGE", "1")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-local")
+    monkeypatch.setenv(
+        "CEO_CONVERSATION_STATE_PATH", str(tmp_path / "ceo_conv_state_newreq.json")
+    )
+
+    from services.grounding_pack_service import GroundingPackService
+
+    monkeypatch.setattr(
+        GroundingPackService, "build", lambda **kwargs: {"enabled": False}
+    )
+
+    def _boom(*args, **kwargs):  # noqa: ANN001
+        raise AssertionError("executor must not be called")
+
+    monkeypatch.setattr("services.agent_router.executor_factory.get_executor", _boom)
+
+    app = _load_app()
+    client = TestClient(app)
+
+    session_id = "session_pending_new_request_1"
+    snap = {"payload": {"tasks": []}}
+
+    # Step 1: deliverable request -> produces a pending proposal
+    resp1 = client.post(
+        "/api/chat",
+        json={
+            "message": "Pripremi 3 follow-up poruke + 2 emaila.",
+            "session_id": session_id,
+            "snapshot": snap,
+            "metadata": {"include_debug": True},
+        },
+    )
+    assert resp1.status_code == 200
+    pcs1 = resp1.json().get("proposed_commands") or []
+    assert isinstance(pcs1, list) and pcs1
+
+    # Step 2: NEW_REQUEST while pending -> must cancel pending and not replay
+    resp2 = client.post(
+        "/api/chat",
+        json={
+            "message": "Umjesto delegacije, napravi plan i prioritete.",
+            "session_id": session_id,
+            "snapshot": snap,
+            "metadata": {"include_debug": True},
+        },
+    )
+    assert resp2.status_code == 200
+    data2 = resp2.json()
+    tr2 = data2.get("trace") or {}
+    assert tr2.get("intent") != "approve_last_proposal_replay"
+    txt2 = (data2.get("text") or "").lower()
+    assert "zeli" not in txt2 or "delegir" not in txt2
+    assert "delegiram? potvrdi" not in txt2
+
+
+def test_pending_unknown_twice_prompts_once_then_auto_cancels(monkeypatch, tmp_path):
+    """Pending + UNKNOWN => ask confirm once; second UNKNOWN auto-cancels and continues."""
+
+    monkeypatch.setenv("OPENAI_API_MODE", "responses")
+    monkeypatch.setenv("CEO_ADVISOR_ALLOW_GENERAL_KNOWLEDGE", "1")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-local")
+    monkeypatch.setenv(
+        "CEO_CONVERSATION_STATE_PATH", str(tmp_path / "ceo_conv_state_unknown2.json")
+    )
+
+    from services.grounding_pack_service import GroundingPackService
+
+    monkeypatch.setattr(
+        GroundingPackService, "build", lambda **kwargs: {"enabled": False}
+    )
+
+    def _boom(*args, **kwargs):  # noqa: ANN001
+        raise AssertionError("executor must not be called")
+
+    monkeypatch.setattr("services.agent_router.executor_factory.get_executor", _boom)
+
+    app = _load_app()
+    client = TestClient(app)
+
+    session_id = "session_pending_unknown_twice_1"
+    snap = {"payload": {"tasks": []}}
+
+    resp1 = client.post(
+        "/api/chat",
+        json={
+            "message": "Pripremi 2 follow-up poruke + 1 email.",
+            "session_id": session_id,
+            "snapshot": snap,
+            "metadata": {"include_debug": True},
+        },
+    )
+    assert resp1.status_code == 200
+    pcs1 = resp1.json().get("proposed_commands") or []
+    assert isinstance(pcs1, list) and pcs1
+
+    # First UNKNOWN -> router asks for confirm (no replay)
+    resp2 = client.post(
+        "/api/chat",
+        json={
+            "message": "hmm",
+            "session_id": session_id,
+            "snapshot": snap,
+            "metadata": {"include_debug": True},
+        },
+    )
+    assert resp2.status_code == 200
+    data2 = resp2.json()
+    tr2 = data2.get("trace") or {}
+    assert tr2.get("intent") == "pending_proposal_confirm_needed"
+
+    # Second UNKNOWN -> auto-cancel; must not replay
+    resp3 = client.post(
+        "/api/chat",
+        json={
+            "message": "hmm",
+            "session_id": session_id,
+            "snapshot": snap,
+            "metadata": {"include_debug": True},
+        },
+    )
+    assert resp3.status_code == 200
+    data3 = resp3.json()
+    tr3 = data3.get("trace") or {}
+    assert tr3.get("intent") != "approve_last_proposal_replay"
+    pcs3 = data3.get("proposed_commands") or []
+    assert pcs3 != pcs1
+
+
+def test_ssot_missing_no_hallucinated_goals_tasks(monkeypatch, tmp_path):
+    """Regression: when SSOT snapshot is missing/unavailable, the agent must not print fabricated GOALS/TASKS tables."""
+
+    monkeypatch.setenv("OPENAI_API_MODE", "responses")
+    monkeypatch.setenv("CEO_ADVISOR_ALLOW_GENERAL_KNOWLEDGE", "1")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-local")
+    monkeypatch.setenv(
+        "CEO_CONVERSATION_STATE_PATH", str(tmp_path / "ceo_conv_state_ssot_missing.json")
+    )
+
+    # Grounding pack must be present for responses-mode LLM path.
+    from services.grounding_pack_service import GroundingPackService
+
+    def _fake_gp_build(**_kwargs):  # noqa: ANN001
+        return {
+            "enabled": True,
+            "identity_pack": {"payload": {"org": "test"}},
+            "kb_retrieved": {"entries": [], "used_entry_ids": []},
+            "notion_snapshot": {},
+            "memory_snapshot": {"payload": {}},
+        }
+
+    monkeypatch.setattr(GroundingPackService, "build", _fake_gp_build)
+
+    class _FakeExecutor:
+        async def ceo_command(self, text, context):  # noqa: ANN001
+            return {
+                "text": "GOALS (top 3)\n1) Fake\n\nTASKS (top 5)\n1) Fake",
+                "proposed_commands": [],
+            }
+
+    monkeypatch.setattr(
+        "services.agent_router.executor_factory.get_executor",
+        lambda **_kwargs: _FakeExecutor(),
+    )
+
+    app = _load_app()
+    client = TestClient(app)
+
+    # Explicitly mark snapshot unavailable.
+    snap = {"payload": {"available": False, "error": "missing"}, "ready": False}
+
+    resp = client.post(
+        "/api/chat",
+        json={
+            "message": "Daj mi pregled ciljeva i taskova.",
+            "session_id": "session_ssot_missing_1",
+            "snapshot": snap,
+        },
+    )
+    assert resp.status_code == 200
+    txt = resp.json().get("text") or ""
+    assert "Nemam SSOT snapshot" in txt or "don't have an SSOT snapshot" in txt
+    assert "GOALS" not in txt
+    assert "TASKS" not in txt
 
 
 def test_decline_deliverables_new_request_does_not_loop(monkeypatch, tmp_path):
