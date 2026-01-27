@@ -75,7 +75,7 @@ def main() -> int:
     if not identity_path.exists():
         raise SystemExit(f"identity.json not found: {identity_path}")
 
-    identity_obj = json.loads(identity_path.read_text(encoding="utf-8"))
+    identity_obj = json.loads(identity_path.read_text(encoding="utf-8-sig"))
     all_fields = _leaf_paths(identity_obj, prefix="identity")
 
     # Keep this read-only and deterministic: use in-process TestClient.
