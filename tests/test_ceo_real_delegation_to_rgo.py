@@ -507,7 +507,8 @@ def test_ssot_missing_no_hallucinated_goals_tasks(monkeypatch, tmp_path):
     monkeypatch.setenv("CEO_ADVISOR_ALLOW_GENERAL_KNOWLEDGE", "1")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-local")
     monkeypatch.setenv(
-        "CEO_CONVERSATION_STATE_PATH", str(tmp_path / "ceo_conv_state_ssot_missing.json")
+        "CEO_CONVERSATION_STATE_PATH",
+        str(tmp_path / "ceo_conv_state_ssot_missing.json"),
     )
 
     # Grounding pack must be present for responses-mode LLM path.

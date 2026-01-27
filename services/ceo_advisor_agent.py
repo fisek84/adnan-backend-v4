@@ -2443,7 +2443,7 @@ async def create_ceo_advisor_agent(
                 if re.search(r"(?im)^\s*(GOALS|TASKS|CILJEVI|ZADACI)\b", txt0):
                     out.text = (
                         "Nemam SSOT snapshot u ovom trenutku, pa ne mogu pouzdano izlistati ciljeve i zadatke. "
-                        "Reci cilj + rok + ograničenja, pa ću napraviti plan." 
+                        "Reci cilj + rok + ograničenja, pa ću napraviti plan."
                         if not english_output
                         else "I don't have the SSOT snapshot right now, so I can't reliably list goals and tasks. "
                         "Tell me the objective + deadline + constraints and I'll draft the plan."
@@ -4214,7 +4214,10 @@ async def create_ceo_advisor_agent(
         text_out = _pick_text(result) or "CEO advisor nije vratio tekstualni output."
         ssot_ok = True
         try:
-            if isinstance(snapshot_payload, dict) and snapshot_payload.get("available") is False:
+            if (
+                isinstance(snapshot_payload, dict)
+                and snapshot_payload.get("available") is False
+            ):
                 ssot_ok = False
             if not (isinstance(snap_trace, dict) and snap_trace.get("ready") is True):
                 ssot_ok = False
