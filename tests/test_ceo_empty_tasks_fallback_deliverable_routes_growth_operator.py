@@ -31,8 +31,8 @@ def test_empty_tasks_fallback_does_not_hijack_deliverable_intent(monkeypatch, tm
     - prompt asks for concrete outreach deliverables (follow-up poruke)
 
     Expect:
-    - step 1 returns CEO proposal (no execution yet)
-    - step 2 confirmation triggers a real RGO call
+    - step 1 returns CEO proposal (no execution)
+    - step 2 confirmation replays the same proposal (no execution)
     - response text does NOT contain the empty-tasks weekly priorities header
     """
 
@@ -43,7 +43,10 @@ def test_empty_tasks_fallback_does_not_hijack_deliverable_intent(monkeypatch, tm
         "CEO_CONVERSATION_STATE_PATH", str(tmp_path / "ceo_conv_state.json")
     )
 
-    async def _fake_growth_agent(_agent_in, _ctx):  # noqa: ANN001
+    calls: list[dict] = []
+
+    async def _fake_growth_agent(agent_in, ctx):  # noqa: ANN001
+        calls.append({"message": agent_in.message, "ctx": ctx})
         from models.agent_contract import AgentOutput
 
         payload = {
@@ -83,6 +86,11 @@ def test_empty_tasks_fallback_does_not_hijack_deliverable_intent(monkeypatch, tm
         _fake_growth_agent,
     )
 
+    def _boom(*args, **kwargs):  # noqa: ANN001
+        raise AssertionError("executor must not be called")
+
+    monkeypatch.setattr("services.agent_router.executor_factory.get_executor", _boom)
+
     session_id = "session_test_empty_tasks_deliverable_1"
     _arm(session_id)
 
@@ -106,7 +114,9 @@ def test_empty_tasks_fallback_does_not_hijack_deliverable_intent(monkeypatch, tm
     txt1 = data1.get("text") or ""
     assert "TASKS snapshot is empty" not in txt1
     assert "weekly" not in txt1.lower()
-    assert (data1.get("proposed_commands") or []) == []
+    pcs1 = data1.get("proposed_commands") or []
+    assert isinstance(pcs1, list) and len(pcs1) >= 1
+    assert calls == []
 
     resp2 = client.post(
         "/api/chat",
@@ -123,8 +133,11 @@ def test_empty_tasks_fallback_does_not_hijack_deliverable_intent(monkeypatch, tm
     assert "TASKS snapshot is empty" not in txt2
     assert "weekly" not in txt2.lower()
 
-    # CEO-facing text must be human-readable and must not leak raw RGO JSON.
-    assert "Izvještaj" in txt2
+    pcs2 = data2.get("proposed_commands") or []
+    assert pcs2 == pcs1
+    assert calls == []
+
+    # Must not leak raw RGO JSON.
     assert "{" not in txt2
     assert "work_done" not in txt2
     assert "meta" not in txt2

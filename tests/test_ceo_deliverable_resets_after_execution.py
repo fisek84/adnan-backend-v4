@@ -17,13 +17,13 @@ def _load_app():
 
 
 def test_deliverable_does_not_stick_after_execution(monkeypatch, tmp_path):
-    """Regression: after a deliverable is executed, next user input must be
-    re-evaluated as a NEW intent unless user explicitly asks to continue.
+    """Regression: pending deliverable proposals only replay on short confirm.
 
     Scenario:
     1) deliverable request -> proposal
-    2) confirm -> executes RGO exactly once
-    3) new question (contains acknowledgement text) -> must NOT execute RGO again
+    2) short confirm -> replays same proposal (no execution)
+    3) long confirm (contains acknowledgement text) -> must NOT use router replay
+    4) new question (contains acknowledgement text) -> must NOT auto-replay
     """
 
     monkeypatch.setenv("OPENAI_API_MODE", "responses")
@@ -107,10 +107,30 @@ def test_deliverable_does_not_stick_after_execution(monkeypatch, tmp_path):
     assert resp1.status_code == 200
     data1 = resp1.json()
     assert data1.get("agent_id") == "ceo_advisor"
+    pcs1 = data1.get("proposed_commands") or []
+    assert isinstance(pcs1, list) and len(pcs1) >= 1
     assert calls == []
 
-    # 2) confirm -> executes
+    # 2) short confirm -> replay proposal
     resp2 = client.post(
+        "/api/chat",
+        json={
+            "message": "da",
+            "session_id": session_id,
+            "snapshot": snap,
+            "metadata": {"include_debug": True},
+        },
+    )
+    assert resp2.status_code == 200
+    data2 = resp2.json()
+    assert calls == [], "Must not delegate/execute in /api/chat"
+    pcs2 = data2.get("proposed_commands") or []
+    assert pcs2 == pcs1
+    tr2 = data2.get("trace") or {}
+    assert tr2.get("intent") == "approve_last_proposal_replay"
+
+    # 3) new question (has acknowledgement text) -> must NOT auto-replay
+    resp3 = client.post(
         "/api/chat",
         json={
             "message": "Slažem se, uradi to.",
@@ -119,14 +139,15 @@ def test_deliverable_does_not_stick_after_execution(monkeypatch, tmp_path):
             "metadata": {"include_debug": True},
         },
     )
-    assert resp2.status_code == 200
-    data2 = resp2.json()
-    assert len(calls) == 1
-    tr2 = data2.get("trace") or {}
-    assert tr2.get("delegated_to") == "revenue_growth_operator"
+    assert resp3.status_code == 200
+    data3 = resp3.json()
 
-    # 3) new question (has acknowledgement text) -> must NOT execute again
-    resp3 = client.post(
+    assert calls == []
+    tr3 = data3.get("trace") or {}
+    assert str(tr3.get("intent") or "") != "approve_last_proposal_replay"
+
+    # 4) new question (has acknowledgement text) -> must NOT auto-replay
+    resp4 = client.post(
         "/api/chat",
         json={
             "message": "Slažem se. Da li pamtiš?",
@@ -135,11 +156,12 @@ def test_deliverable_does_not_stick_after_execution(monkeypatch, tmp_path):
             "metadata": {"include_debug": True},
         },
     )
-    assert resp3.status_code == 200
-    data3 = resp3.json()
+    assert resp4.status_code == 200
+    data4 = resp4.json()
 
-    assert len(calls) == 1, "Must not re-delegate to RGO after completion"
+    assert calls == []
+    pcs4 = data4.get("proposed_commands") or []
+    assert pcs4 != pcs1
 
-    tr3 = data3.get("trace") or {}
-    assert tr3.get("delegated_to") != "revenue_growth_operator"
-    assert str(tr3.get("intent") or "") != "deliverable_confirmed"
+    tr4 = data4.get("trace") or {}
+    assert str(tr4.get("intent") or "") != "approve_last_proposal_replay"

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import re
+import time
 
 from typing import Any, Dict, List, Optional
 
@@ -305,6 +306,125 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
     def _norm_text(s: str) -> str:
         return " ".join((s or "").strip().lower().split())
 
+    def _norm_bhs_ascii(text: str) -> str:
+        t = (text or "").strip().lower()
+        if not t:
+            return ""
+        return (
+            t.replace("č", "c")
+            .replace("ć", "c")
+            .replace("š", "s")
+            .replace("đ", "dj")
+            .replace("ž", "z")
+        )
+
+    def _is_short_confirmation(text: str) -> bool:
+        """True only for short, explicit confirmations.
+
+        IMPORTANT: must NOT match normal questions like "da li...".
+        """
+
+        raw = (text or "").strip()
+        if not raw:
+            return False
+
+        # Defensive: do not treat questions as confirmations.
+        if "?" in raw:
+            return False
+
+        t = _norm_bhs_ascii(raw)
+        t = re.sub(r"[^a-z0-9\s]", " ", t)
+        t = " ".join(t.split())
+
+        if not t:
+            return False
+        if t.startswith("da li ") or t.startswith("da l "):
+            return False
+
+        allowed = {
+            "da",
+            "yes",
+            "y",
+            "ok",
+            "okay",
+            "u redu",
+            "uredu",
+            "zelim",
+            "hocu",
+            "hoc u",
+            "moze",
+            "moze to",
+            "potvrdi",
+            "confirm",
+            "slazem se",
+            "uradi to",
+            "go ahead",
+            "proceed",
+        }
+        if t in allowed:
+            return True
+
+        # Also allow tiny variants like "da, zelim".
+        if len(t) <= 20 and re.fullmatch(
+            r"(da|zelim|ok|okay|potvrdi|confirm|yes|y)(\s+(da|zelim|ok|okay|yes|y))?",
+            t,
+        ):
+            return True
+
+        return False
+
+    def _load_pending_proposal(conversation_id: Optional[str]) -> Optional[List[Dict[str, Any]]]:
+        if not (isinstance(conversation_id, str) and conversation_id.strip()):
+            return None
+
+        try:
+            meta = ConversationStateStore.get_meta(conversation_id=conversation_id.strip())
+        except Exception:
+            return None
+
+        if not isinstance(meta, dict):
+            return None
+
+        pcs = meta.get("pending_proposed_commands")
+        if not isinstance(pcs, list) or not pcs:
+            return None
+
+        # Optional TTL (fail-open: if missing, allow).
+        ts = meta.get("pending_proposal_created_at")
+        if isinstance(ts, (int, float)):
+            if (time.time() - float(ts)) > 15 * 60:
+                return None
+
+        # Ensure list items are dicts.
+        out = [x for x in pcs if isinstance(x, dict) and x]
+        return out or None
+
+    def _persist_pending_proposal(
+        conversation_id: Optional[str], proposed_commands_out: List[Dict[str, Any]]
+    ) -> None:
+        if not (isinstance(conversation_id, str) and conversation_id.strip()):
+            return
+        try:
+            updates: Dict[str, Any] = {}
+            if isinstance(proposed_commands_out, list) and proposed_commands_out:
+                updates = {
+                    "pending_proposal": True,
+                    "pending_proposed_commands": proposed_commands_out,
+                    "pending_proposal_created_at": float(time.time()),
+                }
+            else:
+                updates = {
+                    "pending_proposal": False,
+                    "pending_proposed_commands": [],
+                }
+
+            ConversationStateStore.update_meta(
+                conversation_id=conversation_id.strip(),
+                updates=updates,
+            )
+        except Exception:
+            return
+
     def _is_activate(text: str) -> bool:
         t = _norm_text(text)
         return any(k in t for k in _ACTIVATE_KEYWORDS)
@@ -572,6 +692,11 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         if any(k in t for k in explicit_targeting):
             return True
 
+        # Avoid hijacking generic phrasing like "napravi email"; for Notion gating,
+        # require an explicit Notion mention (or explicit targeting above).
+        if "notion" not in t:
+            return False
+
         return any(k in t for k in write_verbs)
 
     def _armed_write_ack(prompt: str, *, has_actionable: bool) -> str:
@@ -819,6 +944,41 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 payload.conversation_id = conversation_id.strip()
             except Exception:
                 pass
+
+        # ------------------------------------------------------------
+        # CANON RESTORE: short yes/confirm should replay pending proposal
+        # ------------------------------------------------------------
+        if _is_short_confirmation(prompt):
+            pending = _load_pending_proposal(conversation_id)
+            if pending:
+                st0 = (
+                    await _get_state(session_id)
+                    if session_id
+                    else {"armed": False, "armed_at": None}
+                )
+                content: Dict[str, Any] = {
+                    "text": "Uredu — evo posljednjeg prijedloga ponovo. Pregledaj i odobri izvršenje.",
+                    "proposed_commands": pending,
+                    "agent_id": "ceo_advisor",
+                    "read_only": True,
+                    "notion_ops": {
+                        "armed": bool(st0.get("armed") is True),
+                        "armed_at": st0.get("armed_at"),
+                        "session_id": session_id,
+                        "armed_state": st0,
+                    },
+                    "trace": {
+                        "intent": "approve_last_proposal_replay",
+                        "canon": "api_chat_pending_proposal_replay",
+                    },
+                }
+
+                # Keep SSOT snapshot fields in debug mode (parity with normal path).
+                if _debug_enabled(payload):
+                    kb0 = _knowledge_bundle()
+                    content.update(kb0)
+
+                return JSONResponse(content=content)
 
         conv_summary = None
         if isinstance(conversation_id, str) and conversation_id.strip():
@@ -1292,7 +1452,15 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
 
         # PHASE 6: hard gate when not ARMED
         if not armed:
-            if actionable or _looks_like_write_intent(prompt):
+            # Only gate Notion write proposals when DISARMED.
+            has_notion_write = any(
+                (
+                    getattr(pc, "command", None) == "notion_write"
+                    or getattr(pc, "intent", None) == "notion_write"
+                )
+                for pc in actionable
+            )
+            if has_notion_write or _looks_like_write_intent(prompt):
                 return _blocked_response(
                     out=out,
                     prompt=prompt,
@@ -1303,6 +1471,66 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                     grounding=grounding,
                     debug_on=debug_on,
                 )
+
+            # Non-Notion actionable proposals (e.g. delegation) are allowed even
+            # when Notion Ops is DISARMED (Notion gate applies to Notion writes).
+            actionable_non_notion = [
+                pc
+                for pc in actionable
+                if not (
+                    getattr(pc, "command", None) == "notion_write"
+                    or getattr(pc, "intent", None) == "notion_write"
+                )
+            ]
+            if actionable_non_notion:
+                for pc in actionable_non_notion:
+                    _finalize_actionable(pc)
+
+                pcs_out: List[Dict[str, Any]] = []
+                for pc in actionable_non_notion:
+                    d = (
+                        pc.model_dump(by_alias=False)
+                        if hasattr(pc, "model_dump")
+                        else pc.dict(by_alias=False)
+                    )
+                    if isinstance(d, dict):
+                        pcs_out.append(_ensure_payload_summary_contract(d))
+
+                _persist_pending_proposal(conversation_id, pcs_out)
+
+                content = {
+                    "text": out.text,
+                    "proposed_commands": pcs_out,
+                    "agent_id": out.agent_id,
+                    "read_only": True,
+                    "notion_ops": {
+                        "armed": False,
+                        "armed_at": None,
+                        "session_id": session_id,
+                        "armed_state": st,
+                    },
+                }
+                if debug_on:
+                    tr0 = out.trace or {}
+                    if not isinstance(tr0, dict):
+                        tr0 = {}
+                    tr0["memory_provider"] = memory_provider
+                    tr0["memory_items_count"] = memory_items_count
+                    tr0["memory_error"] = memory_error
+                    tr0.setdefault("phase6_notion_ops_gate", {})
+                    tr0["phase6_notion_ops_gate"] = {
+                        "armed": False,
+                        "session_id_present": bool(session_id),
+                        "why": "non_notion_actionable_allowed",
+                    }
+                    content["trace"] = tr0
+                    content.update(kb)
+                    content.update(grounding)
+                else:
+                    minimal_trace = _minimal_trace_intent(out.trace)
+                    if minimal_trace:
+                        content["trace"] = minimal_trace
+                return JSONResponse(content=content)
 
             # If the advisor returned non-actionable proposal wrappers (e.g. approval-gated
             # memory/knowledge write proposals), keep them even when Notion Ops is DISARMED.
@@ -1317,6 +1545,8 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 for pc in wrappers:
                     d = _pc_to_dict(pc, prompt=prompt)
                     pcs_out.append(_ensure_payload_summary_contract(d))
+
+                _persist_pending_proposal(conversation_id, pcs_out)
 
                 content: Dict[str, Any] = {
                     "text": out.text,
@@ -1358,6 +1588,7 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                     "armed_state": st,
                 },
             }
+            _persist_pending_proposal(conversation_id, [])
             if debug_on:
                 tr0 = out.trace or {}
                 if not isinstance(tr0, dict):
@@ -1388,6 +1619,8 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 )
                 if isinstance(d, dict):
                     pcs_out.append(_ensure_payload_summary_contract(d))
+
+            _persist_pending_proposal(conversation_id, pcs_out)
 
             tr = out.trace or {}
             if not isinstance(tr, dict):
@@ -1468,6 +1701,8 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 "armed_state": st,
             },
         }
+
+        _persist_pending_proposal(conversation_id, content.get("proposed_commands") or [])
         if debug_on:
             tr["memory_provider"] = memory_provider
             tr["memory_items_count"] = memory_items_count

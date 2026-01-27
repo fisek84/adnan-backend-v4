@@ -81,12 +81,15 @@ def test_deliverable_confirm_returns_human_report_not_json(monkeypatch, tmp_path
         },
     )
     assert resp1.status_code == 200
+    data1 = resp1.json()
+    pcs1 = data1.get("proposed_commands") or []
+    assert isinstance(pcs1, list) and len(pcs1) >= 1
 
-    # Step 2: confirm -> real delegation -> CEO-readable report
+    # Step 2: short confirm -> replay proposal (no execution)
     resp2 = client.post(
         "/api/chat",
         json={
-            "message": "Slažem se, uradi to.",
+            "message": "da",
             "session_id": session_id,
             "snapshot": snap,
         },
@@ -95,8 +98,8 @@ def test_deliverable_confirm_returns_human_report_not_json(monkeypatch, tmp_path
     data2 = resp2.json()
 
     txt = data2.get("text") or ""
-    assert "Izvještaj" in txt
-    assert "Email 1" in txt
+    pcs2 = data2.get("proposed_commands") or []
+    assert pcs2 == pcs1
 
     # Must not expose raw JSON / technical fields in user-facing text
     assert "{" not in txt

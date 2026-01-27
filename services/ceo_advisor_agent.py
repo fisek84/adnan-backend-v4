@@ -2607,7 +2607,7 @@ async def create_ceo_advisor_agent(
     # ---------------------------------------------
     # SSOT rule:
     # - deliverable drafting must never be hijacked by weekly/kickoff (tasks empty is context only)
-    # - deliverable confirm must execute Revenue & Growth Operator (via existing router)
+    # - deliverable confirm must NOT execute; it must replay the same proposal
     # - deliverable branch must never emit Notion proposals/toggles
 
     is_confirm = _is_deliverable_confirm(base_text)
@@ -2618,54 +2618,68 @@ async def create_ceo_advisor_agent(
         else None
     )
 
+    def _build_rgo_delegation_proposal(*, task_text: str, reason: str) -> ProposedCommand:
+        return ProposedCommand(
+            command="delegate_agent_task",
+            args={
+                "agent_id": "revenue_growth_operator",
+                "task_text": (task_text or "").strip(),
+                "endpoint": "/agents/execute",
+                "canon": "deliverable_delegation.v1",
+            },
+            reason=reason,
+            requires_approval=True,
+            risk="LOW",
+            scope="agents/execute",
+            dry_run=True,
+            payload_summary={
+                "kind": "delegation",
+                "command": "delegate_agent_task",
+                "payload": {
+                    "agent_id": "revenue_growth_operator",
+                    "task_text": (task_text or "").strip(),
+                },
+                "endpoint": "/agents/execute",
+                "canon": "CEO_CONSOLE_EXECUTION_FLOW",
+                "source": "api_chat",
+                "confidence_score": 0.7,
+                "assumption_count": 0,
+                "recommendation_type": "OPERATIONAL",
+            },
+        )
+
     # Explicit continuation keywords should resume the last deliverable even if
     # the new user message does not contain deliverable keywords.
     if continue_deliverable and pending_deliverable:
-        try:
-            from services.delegation_service import execute_delegation  # noqa: PLC0415
-            from services.output_presenters.revenue_growth_presenter import (  # noqa: PLC0415
-                to_ceo_report,
-            )
+        task_text = (
+            (pending_deliverable or "").strip()
+            + "\n\nKorisnik traži iteraciju/nastavak: "
+            + (base_text or "").strip()
+        ).strip()
 
-            task_text = (
-                (pending_deliverable or "").strip()
-                + "\n\nKorisnik traži iteraciju/nastavak: "
-                + (base_text or "").strip()
-            ).strip()
+        proposed = _build_rgo_delegation_proposal(
+            task_text=task_text,
+            reason="Delegacija RGO za iteraciju deliverable-a (traži odobrenje).",
+        )
 
-            child = await execute_delegation(
-                parent_ctx=ctx if isinstance(ctx, dict) else {},
-                target_agent_id="revenue_growth_operator",
-                task_text=task_text,
-                parent_agent_input=agent_input,
-                delegation_reason="deliverable_continue",
-            )
-
-            out = AgentOutput(
-                text=to_ceo_report(child),
-                proposed_commands=[],
-                agent_id="ceo_advisor",
-                read_only=True,
-                trace={
-                    "intent": "deliverable_continue",
-                    "delegated_to": "revenue_growth_operator",
-                    "delegation_reason": "deliverable_continue",
-                    "fallback_used": "none",
-                    "snapshot": snap_trace,
-                },
-            )
-
-            cid = _conversation_id()
-            if isinstance(cid, str) and cid.strip():
-                _mark_deliverable_completed(
-                    conversation_id=cid.strip(), task_text=pending_deliverable
-                )
-
-            return _final(out)
-        except Exception:
-            logger.exception(
-                "[CEO-ADVISOR] Deliverable continuation delegation failed; falling back to CEO Advisor flow."
-            )
+        out = AgentOutput(
+            text=(
+                "Uredu — pripremio sam prijedlog delegacije za iteraciju. Odobri izvršenje."
+                if not english_output
+                else "OK — I prepared a delegation proposal for the iteration. Please approve execution."
+            ),
+            proposed_commands=[proposed],
+            agent_id="ceo_advisor",
+            read_only=True,
+            trace={
+                "intent": "deliverable_continue_proposal",
+                "delegation_target": "revenue_growth_operator",
+                "delegation_reason": "deliverable_continue_proposal",
+                "fallback_used": "none",
+                "snapshot": snap_trace,
+            },
+        )
+        return _final(out)
 
     # After a successful deliverable execution, do NOT keep re-executing the same
     # deliverable on subsequent generic confirmations. Re-evaluate the message as
@@ -2684,88 +2698,47 @@ async def create_ceo_advisor_agent(
             pending_deliverable = None
 
     if is_confirm and pending_deliverable:
-        try:
-            from services.delegation_service import execute_delegation  # noqa: PLC0415
-            from services.output_presenters.revenue_growth_presenter import (  # noqa: PLC0415
-                to_ceo_report,
-            )
+        proposed = _build_rgo_delegation_proposal(
+            task_text=pending_deliverable,
+            reason="Delegacija RGO za izradu deliverable-a (traži odobrenje).",
+        )
 
-            child = await execute_delegation(
-                parent_ctx=ctx if isinstance(ctx, dict) else {},
-                target_agent_id="revenue_growth_operator",
-                task_text=pending_deliverable,
-                parent_agent_input=agent_input,
-                delegation_reason="deliverable_confirmed",
-            )
-
-            # CEO returns the *real* child output (no Notion proposals).
-            out = AgentOutput(
-                text=to_ceo_report(child),
-                proposed_commands=[],
-                agent_id="ceo_advisor",
-                read_only=True,
-                trace={
-                    "intent": "deliverable_confirmed",
-                    "delegated_to": "revenue_growth_operator",
-                    "delegation_reason": "deliverable_confirmed",
-                    "fallback_used": "none",
-                    "snapshot": snap_trace,
-                },
-            )
-
-            if _debug_trace_enabled():
-                notion_present = bool(
-                    isinstance(snapshot_payload, dict) and bool(snapshot_payload)
-                )
-                kb_hits = 0
-                try:
-                    gp0 = ctx.get("grounding_pack") if isinstance(ctx, dict) else None
-                    gp0 = gp0 if isinstance(gp0, dict) else {}
-                    tr2 = gp0.get("trace") if isinstance(gp0.get("trace"), dict) else {}
-                    kb_hits = (
-                        int(tr2.get("kb_hits") or 0) if isinstance(tr2, dict) else 0
-                    )
-                except Exception:
-                    kb_hits = 0
-
-                tasks_empty = not bool(tasks)
-                out.trace["debug_trace"] = {
-                    "selected_agent_id": "ceo_advisor",
-                    "delegated_to": "revenue_growth_operator",
-                    "delegation_reason": "deliverable_confirmed",
-                    "fallback_used": "none",
-                    "inputs_used": {
-                        "tasks_empty": bool(tasks_empty),
-                        "kb_hit": bool(kb_hits > 0),
-                        "notion_snapshot_present": bool(notion_present),
-                    },
-                }
-
-            cid = _conversation_id()
-            if isinstance(cid, str) and cid.strip():
-                _mark_deliverable_completed(
-                    conversation_id=cid.strip(), task_text=pending_deliverable
-                )
-
-            return _final(out)
-        except Exception:
-            logger.exception(
-                "[CEO-ADVISOR] Deliverable confirmation delegation failed; falling back to CEO Advisor flow."
-            )
+        out = AgentOutput(
+            text=(
+                "Uredu — potvrđeno. Evo istog prijedloga delegacije ponovo za odobrenje."
+                if not english_output
+                else "OK — confirmed. Replaying the same delegation proposal for approval."
+            ),
+            proposed_commands=[proposed],
+            agent_id="ceo_advisor",
+            read_only=True,
+            trace={
+                "intent": "deliverable_confirm_replay",
+                "delegation_target": "revenue_growth_operator",
+                "delegation_reason": "deliverable_confirm_replay",
+                "fallback_used": "none",
+                "snapshot": snap_trace,
+            },
+        )
+        return _final(out)
 
     if intent == "deliverable" and not is_confirm:
-        # Proposal-only prompt: ask the user to confirm execution.
+        # Proposal-only: emit an approval-gated delegation proposal (no execution).
+        proposed = _build_rgo_delegation_proposal(
+            task_text=base_text,
+            reason="Delegacija Revenue & Growth Operatoru za izradu deliverable-a (traži odobrenje).",
+        )
         txt = (
             "Mogu delegirati Revenue & Growth Operatoru da napiše konkretne deliverable-e (email/poruke/sekvence).\n"
-            "Ako želiš da uradim to sada, potvrdi: 'uradi to' / 'slažem se'."
+            "Želiš da delegiram? Potvrdi: 'da' / 'želim' / 'uradi to' / 'slažem se'."
             if not english_output
             else "I can delegate to Revenue & Growth Operator to draft the concrete deliverables (emails/messages/sequences).\n"
-            "To execute now, confirm: 'proceed' / 'go ahead'."
+            "To proceed, confirm: 'yes' / 'go ahead' / 'proceed'."
         )
 
         out = AgentOutput(
             text=txt,
-            proposed_commands=[],
+            proposed_commands=[proposed],
             agent_id="ceo_advisor",
             read_only=True,
             trace={

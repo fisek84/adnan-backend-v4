@@ -19,14 +19,12 @@ def _load_app():
 def test_deliverable_proposal_then_confirm_executes_rgo_no_notion(
     monkeypatch, tmp_path
 ):
-    """Real delegation: CEO proposal -> user confirm -> actual RGO call.
+    """Deliverable delegation is proposal-only in /api/chat.
 
     Requirements:
     - No LLM/executor usage (mock)
-    - Confirm step calls revenue_growth_operator_agent via existing router
-    - Output contains real RGO content (not meta)
-    - trace includes delegated_to + delegation_reason
-    - deliverable flow emits no Notion proposals/toggles
+    - Confirm step replays the same proposed_commands (no RGO call)
+    - deliverable flow emits no Notion ops prompts/toggles
     - tasks=[] must not hijack into weekly/kickoff
     """
 
@@ -120,19 +118,16 @@ def test_deliverable_proposal_then_confirm_executes_rgo_no_notion(
     data1 = resp1.json()
 
     assert data1.get("agent_id") == "ceo_advisor"
-    assert (data1.get("proposed_commands") or []) == []
+    pcs1 = data1.get("proposed_commands") or []
+    assert isinstance(pcs1, list) and len(pcs1) >= 1
     assert "notion" not in (data1.get("text") or "").lower()
-    assert (
-        "uradi" in (data1.get("text") or "").lower()
-        or "proceed" in (data1.get("text") or "").lower()
-    )
     assert calls == [], "RGO must not be called before confirmation"
 
-    # Step 2: user confirms -> real delegation + real output
+    # Step 2: short confirm -> replay same proposal (no execution)
     resp2 = client.post(
         "/api/chat",
         json={
-            "message": "Slažem se, uradi to.",
+            "message": "Da",
             "session_id": session_id,
             "snapshot": snap,
             "metadata": {"include_debug": True},
@@ -141,20 +136,16 @@ def test_deliverable_proposal_then_confirm_executes_rgo_no_notion(
     assert resp2.status_code == 200
     data2 = resp2.json()
 
-    assert len(calls) == 1, "Expected exactly one real RGO call"
-    assert calls[0]["message"].startswith("Pripremi 3 follow-up")
+    assert calls == [], "RGO must not be called on confirmation"
 
     txt2 = data2.get("text") or ""
-    assert "Email 1" in txt2 and "Email 2" in txt2
-    assert "pripremio sam json" not in txt2.lower()
+    assert "json" not in txt2.lower(), "Must not enter JSON-mode prompt"
 
-    # No Notion proposals/toggles in deliverable confirm output
     pcs2 = data2.get("proposed_commands") or []
-    assert pcs2 == []
+    assert pcs2 == pcs1
 
     tr2 = data2.get("trace") or {}
-    assert tr2.get("delegated_to") == "revenue_growth_operator"
-    assert "deliverable" in str(tr2.get("delegation_reason") or "").lower()
+    assert tr2.get("intent") == "approve_last_proposal_replay"
 
 
 def test_weekly_explicit_does_not_call_rgo(monkeypatch, tmp_path):
