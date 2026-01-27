@@ -1963,18 +1963,137 @@ async def create_ceo_advisor_agent(
         return v in {"1", "true", "yes", "on"}
 
     def _is_deliverable_confirm(text: str) -> bool:
-        t = " ".join((text or "").strip().lower().split())
+        raw = (text or "").strip()
+        if not raw:
+            return False
+
+        # Defensive: do not treat questions as confirmations.
+        if "?" in raw:
+            return False
+
+        t = _norm_bhs_ascii(raw)
+        t = re.sub(r"[^a-z0-9\s]", " ", t)
+        t = " ".join(t.split())
+
         if not t:
             return False
+        if t.startswith("da li ") or t.startswith("da l "):
+            return False
+
         # Minimal, explicit confirmations only.
         # NOTE: Avoid ambiguous tokens like "ok" / "moze" which can appear in normal questions
         # (e.g., "da li mi agent moze pomoci...") and would incorrectly trigger delegation.
+        allowed = {
+            "da",
+            "yes",
+            "y",
+            "zelim",
+            "hocu",
+            "uradi to",
+            "slazem se",
+            "go ahead",
+            "proceed",
+            "confirm",
+            "potvrdi",
+        }
+        if t in allowed:
+            return True
+
         return bool(
             re.search(
-                r"(?i)\b(uradi\s+to|sla\u017eem\s+se|slazem\s+se|proceed|go\s+ahead)\b",
+                r"(?i)\b(uradi\s+to|slazem\s+se|proceed|go\s+ahead|potvrdi|confirm|da|zelim|hocu)\b",
                 t,
             )
         )
+
+    def _is_deliverable_decline(text: str) -> bool:
+        raw = (text or "").strip()
+        if not raw:
+            return False
+        if "?" in raw:
+            return False
+        t = _norm_bhs_ascii(raw)
+        t = re.sub(r"[^a-z0-9\s]", " ", t)
+        t = " ".join(t.split())
+        if not t:
+            return False
+        if t.startswith("da li ") or t.startswith("da l "):
+            return False
+
+        # Short/noisy declines.
+        if t in {
+            "ne",
+            "no",
+            "n",
+            "nemoj",
+            "odustani",
+            "stop",
+            "cancel",
+            "ne zelim",
+            "necu",
+            "nije potrebno",
+            "ne treba",
+            "not now",
+            "no thanks",
+            "ne hvala",
+        }:
+            return True
+
+        # Longer declines that include negation.
+        return bool(
+            re.search(
+                r"(?i)\b(ne|nemoj|necu|ne\s+zelim|odustani|stop|cancel|nije\s+potrebno|ne\s+treba)\b",
+                t,
+            )
+        )
+
+    def _deliverable_confirm_prompt_count(*, conversation_id: str) -> int:
+        try:
+            from services.ceo_conversation_state_store import (  # noqa: PLC0415
+                ConversationStateStore,
+            )
+
+            meta0 = ConversationStateStore.get_meta(conversation_id=conversation_id)
+            if not isinstance(meta0, dict):
+                return 0
+            v = meta0.get("deliverable_confirm_prompt_count")
+            return int(v) if isinstance(v, (int, float)) else 0
+        except Exception:
+            return 0
+
+    def _deliverable_confirm_prompt_bump(*, conversation_id: str) -> int:
+        try:
+            from services.ceo_conversation_state_store import (  # noqa: PLC0415
+                ConversationStateStore,
+            )
+
+            cur = _deliverable_confirm_prompt_count(conversation_id=conversation_id)
+            nxt = int(cur) + 1
+            ConversationStateStore.update_meta(
+                conversation_id=conversation_id,
+                updates={
+                    "deliverable_confirm_prompt_count": nxt,
+                    "deliverable_confirm_prompt_last_at": float(time.time()),
+                },
+            )
+            return nxt
+        except Exception:
+            return 0
+
+    def _deliverable_confirm_prompt_reset(*, conversation_id: str) -> None:
+        try:
+            from services.ceo_conversation_state_store import (  # noqa: PLC0415
+                ConversationStateStore,
+            )
+
+            ConversationStateStore.update_meta(
+                conversation_id=conversation_id,
+                updates={
+                    "deliverable_confirm_prompt_count": 0,
+                },
+            )
+        except Exception:
+            return
 
     def _extract_last_deliverable_from_conversation_state(
         conversation_state: Any,
@@ -2682,6 +2801,7 @@ async def create_ceo_advisor_agent(
     # - deliverable branch must never emit Notion proposals/toggles
 
     is_confirm = _is_deliverable_confirm(base_text)
+    is_decline = _is_deliverable_decline(base_text)
     conv_state = ctx.get("conversation_state") if isinstance(ctx, dict) else None
     pending_deliverable = (
         _extract_last_deliverable_from_conversation_state(conv_state)
@@ -2771,6 +2891,10 @@ async def create_ceo_advisor_agent(
             pending_deliverable = None
 
     if is_confirm and pending_deliverable:
+        cid0 = _conversation_id()
+        if isinstance(cid0, str) and cid0.strip():
+            _deliverable_confirm_prompt_reset(conversation_id=cid0.strip())
+
         proposed = _build_rgo_delegation_proposal(
             task_text=pending_deliverable,
             reason="Delegacija RGO za izradu deliverable-a (traži odobrenje).",
@@ -2795,7 +2919,54 @@ async def create_ceo_advisor_agent(
         )
         return _final(out)
 
+    # User explicitly declined delegation: don't keep asking.
+    if is_decline and intent == "deliverable":
+        cid0 = _conversation_id()
+        if isinstance(cid0, str) and cid0.strip():
+            _deliverable_confirm_prompt_reset(conversation_id=cid0.strip())
+
+        out = AgentOutput(
+            text=(
+                "Uredu — ne delegiram deliverable-e. Reci tačno šta želiš umjesto toga (npr. plan/prioriteti/strategija), pa ću pomoći ovdje."
+                if not english_output
+                else "OK — I won't delegate deliverables. Tell me what you want instead (e.g., a plan/priorities/strategy), and I'll help here."
+            ),
+            proposed_commands=[],
+            agent_id="ceo_advisor",
+            read_only=True,
+            trace={
+                "intent": "deliverable_declined",
+                "exit_reason": "deliverable.declined",
+                "snapshot": snap_trace,
+            },
+        )
+        return _final(out)
+
     if intent == "deliverable" and not is_confirm:
+        # Loop safeguard: if we've already asked for confirmation a few times and
+        # the user keeps responding with non-confirm/non-continue, stop prompting.
+        cid0 = _conversation_id()
+        if isinstance(cid0, str) and cid0.strip():
+            cnt = _deliverable_confirm_prompt_count(conversation_id=cid0.strip())
+            if cnt >= 2:
+                _deliverable_confirm_prompt_reset(conversation_id=cid0.strip())
+                out = AgentOutput(
+                    text=(
+                        "Neću više tražiti potvrdu za delegaciju. Ako želiš samo plan (bez deliverable-a), reci vremenski okvir i cilj, pa ću sastaviti plan."
+                        if not english_output
+                        else "I won't keep asking for delegation confirmation. If you want a plan (without deliverables), tell me the timeframe and objective and I'll draft the plan."
+                    ),
+                    proposed_commands=[],
+                    agent_id="ceo_advisor",
+                    read_only=True,
+                    trace={
+                        "intent": "deliverable_confirmation_loop_break",
+                        "exit_reason": "deliverable.confirmation_loop_break",
+                        "snapshot": snap_trace,
+                    },
+                )
+                return _final(out)
+
         # Proposal-only: emit an approval-gated delegation proposal (no execution).
         proposed = _build_rgo_delegation_proposal(
             task_text=base_text,
@@ -2821,6 +2992,9 @@ async def create_ceo_advisor_agent(
                 "snapshot": snap_trace,
             },
         )
+
+        if isinstance(cid0, str) and cid0.strip():
+            _deliverable_confirm_prompt_bump(conversation_id=cid0.strip())
 
         if _debug_trace_enabled():
             out.trace["debug_trace"] = {

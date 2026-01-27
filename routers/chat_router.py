@@ -381,6 +381,57 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
 
         return False
 
+    def _is_short_decline(text: str) -> bool:
+        """True only for short, explicit declines.
+
+        Used to cancel/clear pending proposals so users don't get stuck in
+        confirmation loops.
+        """
+
+        raw = (text or "").strip()
+        if not raw:
+            return False
+
+        # Defensive: do not treat questions as declines.
+        if "?" in raw:
+            return False
+
+        t = _norm_bhs_ascii(raw)
+        t = re.sub(r"[^a-z0-9\s]", " ", t)
+        t = " ".join(t.split())
+
+        if not t:
+            return False
+        if t.startswith("da li ") or t.startswith("da l "):
+            return False
+
+        allowed = {
+            "ne",
+            "no",
+            "n",
+            "nemoj",
+            "odustani",
+            "stop",
+            "cancel",
+            "not now",
+            "no thanks",
+            "ne hvala",
+            "ne zelim",
+            "necu",
+            "necu to",
+        }
+        if t in allowed:
+            return True
+
+        # Also allow tiny variants like "ne, hvala".
+        if len(t) <= 24 and re.fullmatch(
+            r"(ne|no|n|nemoj|cancel|stop)(\s+(hvala|thanks))?",
+            t,
+        ):
+            return True
+
+        return False
+
     def _load_pending_proposal(
         conversation_id: Optional[str],
     ) -> Optional[List[Dict[str, Any]]]:
@@ -982,6 +1033,10 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         # ------------------------------------------------------------
         # CANON RESTORE: short yes/confirm should replay pending proposal
         # ------------------------------------------------------------
+        if _is_short_decline(prompt):
+            # User explicitly declined/cancelled: clear any pending proposal and continue.
+            _persist_pending_proposal(proposal_key, [])
+
         if _is_short_confirmation(prompt):
             pending = _load_pending_proposal(proposal_key)
             if pending:

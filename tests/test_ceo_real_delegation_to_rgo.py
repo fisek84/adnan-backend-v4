@@ -288,3 +288,138 @@ def test_moze_phrase_is_not_treated_as_deliverable_confirm(monkeypatch, tmp_path
     )
     assert resp2.status_code == 200
     assert calls == []
+
+
+def test_pending_proposal_decline_clears_replay(monkeypatch, tmp_path):
+    """Regression: user can say NO to cancel a pending proposal.
+
+    Without this, users get stuck in a replay loop where a later short "Da"
+    keeps replaying an unwanted pending proposal.
+    """
+
+    monkeypatch.setenv("OPENAI_API_MODE", "responses")
+    monkeypatch.setenv("CEO_ADVISOR_ALLOW_GENERAL_KNOWLEDGE", "1")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-local")
+    monkeypatch.setenv(
+        "CEO_CONVERSATION_STATE_PATH", str(tmp_path / "ceo_conv_state_decline.json")
+    )
+
+    from services.grounding_pack_service import GroundingPackService
+
+    monkeypatch.setattr(
+        GroundingPackService, "build", lambda **kwargs: {"enabled": False}
+    )
+
+    def _boom(*args, **kwargs):  # noqa: ANN001
+        raise AssertionError("executor must not be called")
+
+    monkeypatch.setattr("services.agent_router.executor_factory.get_executor", _boom)
+
+    app = _load_app()
+    client = TestClient(app)
+
+    session_id = "session_decline_clears_pending_1"
+    snap = {"payload": {"tasks": []}}
+
+    # Step 1: deliverable request -> proposal
+    resp1 = client.post(
+        "/api/chat",
+        json={
+            "message": "Pripremi 2 follow-up poruke + 1 email.",
+            "session_id": session_id,
+            "snapshot": snap,
+        },
+    )
+    assert resp1.status_code == 200
+    pcs1 = resp1.json().get("proposed_commands") or []
+    assert isinstance(pcs1, list) and len(pcs1) >= 1
+
+    # Step 2: user declines -> clear pending proposal
+    resp2 = client.post(
+        "/api/chat",
+        json={
+            "message": "Ne",
+            "session_id": session_id,
+            "snapshot": snap,
+        },
+    )
+    assert resp2.status_code == 200
+    data2 = resp2.json()
+    tr2 = data2.get("trace") or {}
+    assert tr2.get("intent") != "approve_last_proposal_replay"
+
+    # Step 3: short yes should NOT replay the old proposal anymore
+    resp3 = client.post(
+        "/api/chat",
+        json={
+            "message": "Da",
+            "session_id": session_id,
+            "snapshot": snap,
+        },
+    )
+    assert resp3.status_code == 200
+    data3 = resp3.json()
+    pcs3 = data3.get("proposed_commands") or []
+    assert pcs3 != pcs1
+
+
+def test_decline_deliverables_new_request_does_not_loop(monkeypatch, tmp_path):
+    """Regression: "ne trebaju deliverable-i" should not trigger repeated "Želiš da delegiram?" loops."""
+
+    monkeypatch.setenv("OPENAI_API_MODE", "responses")
+    monkeypatch.setenv("CEO_ADVISOR_ALLOW_GENERAL_KNOWLEDGE", "1")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-local")
+    monkeypatch.setenv(
+        "CEO_CONVERSATION_STATE_PATH",
+        str(tmp_path / "ceo_conv_state_decline_new_req.json"),
+    )
+
+    from services.grounding_pack_service import GroundingPackService
+
+    monkeypatch.setattr(
+        GroundingPackService, "build", lambda **kwargs: {"enabled": False}
+    )
+
+    def _boom(*args, **kwargs):  # noqa: ANN001
+        raise AssertionError("executor must not be called")
+
+    monkeypatch.setattr("services.agent_router.executor_factory.get_executor", _boom)
+
+    app = _load_app()
+    client = TestClient(app)
+
+    session_id = "session_decline_new_request_1"
+    snap = {"payload": {"tasks": []}}
+
+    # Step 1: deliverable request -> proposal
+    resp1 = client.post(
+        "/api/chat",
+        json={
+            "message": "Pripremi 3 follow-up poruke + 2 emaila.",
+            "session_id": session_id,
+            "snapshot": snap,
+        },
+    )
+    assert resp1.status_code == 200
+    txt1 = resp1.json().get("text") or ""
+    assert "delegiram" in txt1.lower()
+
+    # Step 2: decline + new request (plan) -> must not keep asking for delegation confirmation
+    resp2 = client.post(
+        "/api/chat",
+        json={
+            "message": "Ne trebaju deliverable-i. Treba mi plan i prioriteti.",
+            "session_id": session_id,
+            "snapshot": snap,
+        },
+    )
+    assert resp2.status_code == 200
+    data2 = resp2.json()
+    txt2 = (data2.get("text") or "").lower()
+    # Must not keep asking for delegation confirmation.
+    assert "delegiram? potvrdi" not in txt2
+    assert "to proceed, confirm" not in txt2
+
+    # Must not emit delegation proposals on this turn.
+    pcs2 = data2.get("proposed_commands")
+    assert pcs2 in ([], None)
