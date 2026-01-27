@@ -79,6 +79,10 @@ def test_planning_discussion_first_does_not_return_ssot_snapshot_template(
     tr = data.get("trace") or {}
     assert tr.get("intent") != "snapshot_read_summary"
 
+    ssot_used = tr.get("ssot_used") or {}
+    assert isinstance(ssot_used, dict)
+    assert ssot_used.get("mode") == "context_only"
+
 
 def test_explicit_snapshot_request_still_returns_structured_snapshot(monkeypatch):
     """Regression: explicit snapshot/show requests must still return snapshot output."""
@@ -135,7 +139,10 @@ def test_notio_ops_activation_path_unchanged(tmp_path, monkeypatch):
         json={
             "message": "notion ops aktiviraj",
             "session_id": "session_ops_activate_1",
-            "metadata": {"session_id": "session_ops_activate_1", "initiator": "ceo_chat"},
+            "metadata": {
+                "session_id": "session_ops_activate_1",
+                "initiator": "ceo_chat",
+            },
         },
     )
     assert resp.status_code == 200, resp.text

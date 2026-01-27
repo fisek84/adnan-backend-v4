@@ -2506,6 +2506,274 @@ async def create_ceo_advisor_agent(
                     out.text = (out.text or "").rstrip() + note
 
         out.trace = tr
+        # ------------------------------------------------------------
+        # Debug-only observability: prove which intelligence sources were present
+        # and whether SSOT snapshot was used as context vs returned.
+        # IMPORTANT: This must not affect routing/behavior.
+        # ------------------------------------------------------------
+        try:
+            debug_on = False
+            try:
+                md0 = (
+                    agent_input.metadata if isinstance(agent_input, AgentInput) else {}
+                )
+                md0 = md0 if isinstance(md0, dict) else {}
+                debug_on = bool(md0.get("include_debug"))
+            except Exception:
+                debug_on = False
+
+            if not debug_on:
+                v = (os.getenv("DEBUG_API_RESPONSES") or "").strip().lower()
+                debug_on = v in {"1", "true", "yes", "on"}
+
+            if debug_on and isinstance(out.trace, dict):
+                gp0 = ctx.get("grounding_pack") if isinstance(ctx, dict) else None
+                gp0 = gp0 if isinstance(gp0, dict) else {}
+
+                def _leaf_paths(
+                    obj: Any, *, prefix: str = "", max_paths: int = 64
+                ) -> List[str]:
+                    out_paths: List[str] = []
+                    stack: List[Tuple[str, Any, int]] = [(prefix, obj, 0)]
+                    while stack and len(out_paths) < max_paths:
+                        pfx, cur, depth = stack.pop()
+                        if isinstance(cur, dict) and depth < 4:
+                            for k in sorted(cur.keys(), reverse=True):
+                                if not isinstance(k, str):
+                                    continue
+                                v = cur.get(k)
+                                p2 = f"{pfx}.{k}" if pfx else k
+                                stack.append((p2, v, depth + 1))
+                            continue
+                        if isinstance(cur, list) and depth < 3:
+                            # Treat list as leaf; we don't want a huge key explosion.
+                            out_paths.append(pfx or prefix or "<list>")
+                            continue
+                        if pfx:
+                            out_paths.append(pfx)
+                    return sorted(
+                        set([x for x in out_paths if isinstance(x, str) and x.strip()])
+                    )
+
+                # identity_used
+                ip_gp = (
+                    gp0.get("identity_pack")
+                    if isinstance(gp0.get("identity_pack"), dict)
+                    else {}
+                )
+                ip_payload = ip_gp.get("payload") if isinstance(ip_gp, dict) else None
+                ip_payload = ip_payload if isinstance(ip_payload, dict) else {}
+
+                files_loaded: List[str] = []
+                try:
+                    meta0 = (
+                        ip_payload.get("meta")
+                        if isinstance(ip_payload.get("meta"), dict)
+                        else {}
+                    )
+                    lm0 = (
+                        meta0.get("last_modified")
+                        if isinstance(meta0.get("last_modified"), dict)
+                        else {}
+                    )
+                    for k in (
+                        "identity",
+                        "kernel",
+                        "decision_engine",
+                        "static_memory",
+                        "memory",
+                        "agents",
+                    ):
+                        if k in lm0 and lm0.get(k) is not None:
+                            files_loaded.append(k)
+                except Exception:
+                    files_loaded = []
+
+                identity_fields_used: List[str] = []
+                try:
+                    # Focus on /adnan-ai/identity (identity.json) coverage: pack['identity'] subtree.
+                    identity_sub = (
+                        ip_payload.get("identity")
+                        if isinstance(ip_payload.get("identity"), dict)
+                        else {}
+                    )
+                    identity_fields_used = _leaf_paths(
+                        identity_sub, prefix="identity", max_paths=64
+                    )
+                except Exception:
+                    identity_fields_used = []
+
+                identity_used = {
+                    "files_loaded": files_loaded,
+                    "fields_used": identity_fields_used,
+                    "hit_count": int(len(identity_fields_used)),
+                }
+
+                # ssot_used
+                ssot_entities: List[str] = []
+                ssot_hit = 0
+                try:
+                    sp = snapshot_payload if isinstance(snapshot_payload, dict) else {}
+                    for k in ("goals", "tasks", "projects", "kpis"):
+                        v = sp.get(k)
+                        if isinstance(v, list) and v:
+                            ssot_entities.append(k)
+                            ssot_hit += len([x for x in v if x is not None])
+                    # Also count dashboard wrapper as a signal of SSOT availability.
+                    if isinstance(sp.get("dashboard"), dict) and sp.get("dashboard"):
+                        if "dashboard" not in ssot_entities:
+                            ssot_entities.append("dashboard")
+                        ssot_hit += 1
+                except Exception:
+                    ssot_entities = []
+                    ssot_hit = 0
+
+                text0 = out.text if isinstance(out.text, str) else ""
+                returned = False
+                try:
+                    if (
+                        isinstance(out.trace, dict)
+                        and out.trace.get("intent") == "snapshot_read_summary"
+                    ):
+                        returned = True
+                    elif (
+                        snapshot_ready
+                        and text0.startswith("GOALS (top 3)")
+                        and ("TASKS (top 5)" in text0)
+                    ):
+                        returned = True
+                except Exception:
+                    returned = False
+
+                ssot_used = {
+                    "entities": ssot_entities,
+                    "mode": "returned" if returned else "context_only",
+                    "hit_count": int(ssot_hit),
+                }
+
+                # kb_used
+                kb_entry_ids: List[str] = []
+                kb_hit = 0
+                kb_dbs: List[str] = []
+                try:
+                    kb_retrieved = (
+                        gp0.get("kb_retrieved")
+                        if isinstance(gp0.get("kb_retrieved"), dict)
+                        else {}
+                    )
+                    used_ids0 = kb_retrieved.get("used_entry_ids")
+                    if isinstance(used_ids0, list):
+                        kb_entry_ids = [
+                            str(x).strip()
+                            for x in used_ids0
+                            if isinstance(x, str) and x.strip()
+                        ]
+                    entries0 = kb_retrieved.get("entries")
+                    if isinstance(entries0, list):
+                        kb_hit = len([x for x in entries0 if isinstance(x, dict)])
+                    kb_snap = (
+                        gp0.get("kb_snapshot")
+                        if isinstance(gp0.get("kb_snapshot"), dict)
+                        else {}
+                    )
+                    src = kb_snap.get("source")
+                    if isinstance(src, str) and src.strip():
+                        kb_dbs = [src.strip()]
+                except Exception:
+                    kb_entry_ids = []
+                    kb_hit = 0
+                    kb_dbs = []
+
+                kb_used = {
+                    "dbs": kb_dbs,
+                    "entry_ids": kb_entry_ids,
+                    "hit_count": int(kb_hit),
+                }
+
+                # memory_used
+                mem_keys: List[str] = []
+                mem_short = False
+                mem_long = False
+                mem_hit = 0
+                try:
+                    ms = (
+                        gp0.get("memory_snapshot")
+                        if isinstance(gp0.get("memory_snapshot"), dict)
+                        else {}
+                    )
+                    mp = ms.get("payload") if isinstance(ms, dict) else None
+                    mp = mp if isinstance(mp, dict) else {}
+                    mem_keys = [str(k) for k in sorted(mp.keys()) if isinstance(k, str)]
+                    items_count = 0
+                    try:
+                        items_count = int(mp.get("memory_items_count") or 0)
+                    except Exception:
+                        items_count = 0
+                    mem_long = items_count > 0
+                    mem_short = bool(mp.get("active_decision")) or bool(
+                        mp.get("decision_outcomes")
+                    )
+                    mem_hit = items_count
+                except Exception:
+                    mem_keys = []
+                    mem_short = False
+                    mem_long = False
+                    mem_hit = 0
+
+                memory_used = {
+                    "short_term": bool(mem_short),
+                    "long_term": bool(mem_long),
+                    "keys": mem_keys,
+                }
+
+                # prompt_sources: hit-weighted percentages
+                total_hits = (
+                    int(identity_used["hit_count"])
+                    + int(ssot_used["hit_count"])
+                    + int(kb_used["hit_count"])
+                    + int(mem_hit)
+                )
+                if total_hits <= 0:
+                    prompt_sources = {
+                        "identity_pct": 0,
+                        "ssot_pct": 0,
+                        "kb_pct": 0,
+                        "memory_pct": 0,
+                    }
+                else:
+                    prompt_sources = {
+                        "identity_pct": int(
+                            round(
+                                100.0
+                                * float(identity_used["hit_count"])
+                                / float(total_hits)
+                            )
+                        ),
+                        "ssot_pct": int(
+                            round(
+                                100.0
+                                * float(ssot_used["hit_count"])
+                                / float(total_hits)
+                            )
+                        ),
+                        "kb_pct": int(
+                            round(
+                                100.0 * float(kb_used["hit_count"]) / float(total_hits)
+                            )
+                        ),
+                        "memory_pct": int(
+                            round(100.0 * float(mem_hit) / float(total_hits))
+                        ),
+                    }
+
+                out.trace["identity_used"] = identity_used
+                out.trace["ssot_used"] = ssot_used
+                out.trace["kb_used"] = kb_used
+                out.trace["memory_used"] = memory_used
+                out.trace["prompt_sources"] = prompt_sources
+        except Exception:
+            # Observability must never break the response.
+            pass
 
         # SSOT guard: if snapshot isn't ready/available, do not allow fabricated
         # GOALS/TASKS style tables in the output.
