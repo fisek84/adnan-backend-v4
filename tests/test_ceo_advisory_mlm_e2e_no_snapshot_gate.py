@@ -65,7 +65,7 @@ Sta mislis
     assert r.status_code == 200, r.text
 
     body = r.json()
-    txt = (body.get("text") or "")
+    txt = body.get("text") or ""
     low = txt.lower()
 
     # Must not demand snapshot/refresh/READ-context.

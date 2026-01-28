@@ -27,7 +27,7 @@ def test_ceo_advisor_advisory_thinking_prompt_does_not_require_snapshot(monkeypa
     )
 
     out = asyncio.run(create_ceo_advisor_agent(agent_input, ctx={}))
-    txt = (out.text or "")
+    txt = out.text or ""
     low = txt.lower()
 
     assert out.read_only is True
