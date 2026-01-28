@@ -629,6 +629,18 @@ def _build_trace_status_text(*, trace_v2: Dict[str, Any], english_output: bool) 
     return f"Korišteno: {used_txt}. Preskočeno: {skipped_txt}."
 
 
+def _trace_no_sources_text(*, english_output: bool) -> str:
+    if english_output:
+        return (
+            "This answer is based on your input + my analysis (no KB/SSOT sources were used). "
+            "If you want this to become system knowledge, write: 'Expand knowledge: ...' (approval-gated)."
+        )
+    return (
+        "Ovo je iz tvog inputa + moje analize (bez KB/SSOT izvora). "
+        "Ako želiš da ovo postane znanje sistema, napiši: 'Proširi znanje: ...' (approval-gated)."
+    )
+
+
 def _is_agent_registry_question(user_text: str) -> bool:
     """Detect deterministic intent: user asks to list available agents.
 
@@ -4001,7 +4013,44 @@ async def create_ceo_advisor_agent(
             tr2 = None
 
         tr2 = tr2 if isinstance(tr2, dict) else {}
-        txt = _build_trace_status_text(trace_v2=tr2, english_output=english_output)
+
+        used0 = tr2.get("used_sources") if isinstance(tr2, dict) else None
+        used_list0 = [
+            str(x).strip()
+            for x in (used0 or [])
+            if isinstance(x, str) and str(x).strip()
+        ]
+
+        has_snapshot_ctx = bool(
+            isinstance(snap_trace, dict)
+            and (
+                snap_trace.get("present_in_request")
+                or snap_trace.get("available")
+                or int(snap_trace.get("goals_count") or 0) > 0
+                or int(snap_trace.get("tasks_count") or 0) > 0
+            )
+        )
+        has_any_source = bool(used_list0 or kb_used_ids or has_snapshot_ctx)
+
+        if not has_any_source:
+            txt = _trace_no_sources_text(english_output=english_output)
+        else:
+            txt = _build_trace_status_text(trace_v2=tr2, english_output=english_output)
+            extra: List[str] = []
+            if kb_used_ids:
+                extra.append("KB: " + ", ".join(kb_used_ids))
+            if isinstance(snap_trace, dict) and has_snapshot_ctx:
+                extra.append(
+                    "Snapshot: present=%s ready=%s goals=%s tasks=%s"
+                    % (
+                        bool(snap_trace.get("present_in_request")),
+                        bool(snap_trace.get("ready")),
+                        int(snap_trace.get("goals_count") or 0),
+                        int(snap_trace.get("tasks_count") or 0),
+                    )
+                )
+            if extra:
+                txt = (txt.strip() + "\n" + "\n".join(extra)).strip()
         return _final(
             AgentOutput(
                 text=txt,
