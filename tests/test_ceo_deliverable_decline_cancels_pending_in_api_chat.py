@@ -86,7 +86,7 @@ def test_deliverable_decline_cancels_pending_and_no_unknown_mode(monkeypatch, tm
     assert r2.status_code == 200, r2.text
 
     body2 = r2.json()
-    txt2 = (body2.get("text") or "")
+    txt2 = body2.get("text") or ""
     low2 = txt2.lower()
 
     assert "ne delegiram" in low2
