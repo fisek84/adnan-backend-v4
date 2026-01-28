@@ -848,6 +848,52 @@ def _is_planning_or_help_request(user_text: str) -> bool:
     )
 
 
+def _is_advisory_thinking_request(user_text: str) -> bool:
+    """True for prompts asking for opinion/review/analysis/plan on provided context.
+
+    These should not be hard-blocked by the SSOT/snapshot gate.
+    """
+
+    t = (user_text or "").strip().lower()
+    if not t:
+        return False
+
+    # Avoid misclassifying explicit dashboard/listing requests.
+    # NOTE: Do NOT treat "procitaj ovo" style prompts as dashboard listing, even if they mention 'cilj'.
+    if re.search(
+        r"(?i)\b(pokazi|poka\u017ei|prika\u017ei|prikazi|izlistaj|show|list)\b",
+        t,
+    ) and re.search(r"(?i)\b(cilj\w*|goal\w*|task\w*|zadat\w*|zadac\w*|kpi\w*)\b", t):
+        return False
+
+    thinking_markers = bool(
+        re.search(
+            r"(?i)\b("
+            r"\u0161ta\s+misl\w*|sta\s+misl\w*|"
+            r"misljenj\w*|mi\u0161ljenj\w*|"
+            r"feedback|komentar\w*|review|"
+            r"procijeni|ocijeni|"
+            r"analiz\w*|"
+            r"pro\u010ditaj|procitaj|read\s+this|pregledaj"
+            r")\b",
+            t,
+        )
+    )
+
+    plan_markers = bool(
+        re.search(
+            r"(?i)\b("
+            r"mo\u017ee\s+li\s+se\s+napraviti\s+plan|"
+            r"moze\s+li\s+se\s+napraviti\s+plan|"
+            r"napravi\s+plan|make\s+a\s+plan"
+            r")\b",
+            t,
+        )
+    )
+
+    return bool(thinking_markers or plan_markers)
+
+
 def _is_revenue_growth_deliverable_request(user_text: str) -> bool:
     """True for concrete sales/growth deliverables (messages/emails/sequences/scripts).
 
@@ -4131,6 +4177,67 @@ async def create_ceo_advisor_agent(
         trace = ctx.get("trace") if isinstance(ctx, dict) else {}
         if not isinstance(trace, dict):
             trace = {}
+
+        # Advisory/thinking prompts should not be hard-blocked by SSOT/snapshot.
+        # Provide safe coaching without asserting business facts.
+        if _is_planning_or_help_request(base_text) or _is_advisory_thinking_request(
+            base_text
+        ):
+            trace["grounding_gate"] = {
+                "applied": True,
+                "reason": "fact_sensitive_no_snapshot_but_advisory_intent",
+                "snapshot": snap_trace,
+                "bypassed": True,
+            }
+            trace["exit_reason"] = "ok"
+            logger.info("[CEO_ADVISOR_EXIT] ok.advisory_no_snapshot")
+            return _final(
+                AgentOutput(
+                    text=(
+                        "Ne mogu potvrditi ‘stanje/status’ kao činjenicu bez tvojih internih podataka, ali mogu dati mišljenje i predložiti strukturu plana na osnovu opisa.\n\n"
+                        "Cilj\n"
+                        "- $3000/mj (MLM/Forever) kroz 10 dana: 10 proizvoda + X follow-up razgovora/dan\n"
+                        "- Fokus: brzi cashflow + ponovljiva dnevna rutina\n\n"
+                        "Ponuda\n"
+                        "- 1–2 ‘hero’ paketa (ulazni + premium)\n"
+                        "- Jasna garancija/benefit + 1 CTA (poziv/DM)\n\n"
+                        "Kanali\n"
+                        "- Warm lista (poznanici) + preporuke\n"
+                        "- Instagram/FB story (dnevno) + DM follow-up\n"
+                        "- 1 lokalni event/meetup sedmično (ako je realno)\n\n"
+                        "Skripta\n"
+                        "- Otvaranje: ‘Imam pitanje, treba mi 30 sekundi…’\n"
+                        "- Kvalifikacija: problem/želja + budžet + vrijeme\n"
+                        "- Pitch: 1 benefit + 1 dokaz + CTA\n"
+                        "- Objekcije: cijena/vrijeme/sumnja (kratko, bez rasprave)\n\n"
+                        "Dnevne metrike\n"
+                        "- 20–40 DM/day\n"
+                        "- 5–10 poziva/day\n"
+                        "- 1–3 prezentacije/day\n"
+                        "- 1 prodaja/day (target)\n\n"
+                        "10/30/60/90\n"
+                        "- 10 dana: fokus na pipeline + prvih 10 prodaja\n"
+                        "- 30 dana: standardizuj skriptu + partneri + referali\n"
+                        "- 60 dana: sistem za follow-up + mini kampanje\n"
+                        "- 90 dana: skaliranje kanala + tim + KPI rutina\n\n"
+                        "Rizici i mitigacije\n"
+                        "- Premalo aktivnosti dnevno → uvedi ‘non-negotiable’ metrike (DM/pozivi/prezentacije)\n"
+                        "- Preširoka ponuda → suzi na 1–2 paketa + jasna poruka\n"
+                        "- Slab follow-up → follow-up prozor 24h/72h/7d (kratke poruke)\n"
+                        "- Nejasan rok/ponuda → svaki razgovor završava jasnim sljedećim korakom\n\n"
+                        "Next steps\n"
+                        "1) Napiši: top 2 proizvoda/paketa + cijena + benefit (1 rečenica)\n"
+                        "2) Daj: veličina warm liste (broj kontakata) + koliko DM/poziva možeš dnevno\n"
+                        "3) Potvrdi rok: 10 proizvoda do 10.02.2026 i prosječnu maržu\n"
+                        "4) Ja ti vraćam: dan-po-dan plan 10 dana + skriptu + minimalni KPI dashboard (tekstualno)."
+                    ),
+                    proposed_commands=[],
+                    agent_id="ceo_advisor",
+                    read_only=True,
+                    trace=trace,
+                )
+            )
+
         trace["grounding_gate"] = {
             "applied": True,
             "reason": "fact_sensitive_query_without_snapshot",
