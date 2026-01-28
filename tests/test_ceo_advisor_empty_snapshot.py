@@ -58,7 +58,7 @@ def test_ceo_advisor_prepare_prompt_for_goal_subgoal_returns_template(monkeypatc
 
     agent_input = DummyAgentInput(
         message=(
-            "Dali mozes da mi pripremis prompt za taj cilj i potcilj "
+            "Dali mozes da mi pripremis prompt za kreiraj cilj i potcilj "
             "koji cu poslati Notion ops agentu da upise u notion"
         ),
         snapshot={},

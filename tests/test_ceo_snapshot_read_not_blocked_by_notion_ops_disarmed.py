@@ -63,7 +63,7 @@ def test_ceo_uses_ready_snapshot_when_notion_ops_disarmed(monkeypatch, tmp_path)
     resp = client.post(
         "/api/chat",
         json={
-            "message": "Da li imamo ciljeve i taskove u Notion?",
+            "message": "Pokaži ciljeve i taskove u Notion.",
             "session_id": "session_snapshot_read_1",
             "snapshot": {},
             "metadata": {"include_debug": True},

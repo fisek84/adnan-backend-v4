@@ -343,11 +343,40 @@ def _is_propose_only_request(user_text: str) -> bool:
     return any(s in t for s in signals)
 
 
+def _has_explicit_action_for_goal_task(user_text: str) -> tuple[bool, str]:
+    """Detect explicit imperative action for goal/task.
+
+    Returns:
+      (True, "goal") or (True, "task") only when BOTH are present in the same string:
+      - ACTION_VERB (word-boundary)
+      - TARGET (word-boundary)
+    Otherwise returns (False, "").
+    """
+
+    t = (user_text or "").strip().lower()
+    if not t:
+        return (False, "")
+
+    action_re = r"(?i)\b(kreiraj|napravi|dodaj|upi\u0161i|upisi|unesi|postavi|set|create|add|write)\b"
+    if not re.search(action_re, t):
+        return (False, "")
+
+    goal_re = r"(?i)\b(cilj|goal)\b"
+    task_re = r"(?i)\b(task|zad|zadatak)\b"
+
+    if re.search(goal_re, t):
+        return (True, "goal")
+    if re.search(task_re, t):
+        return (True, "task")
+    return (False, "")
+
+
 def _wants_notion_task_or_goal(user_text: str) -> bool:
     t = (user_text or "").lower()
     if "notion" not in t:
         return False
-    return "task" in t or "zad" in t or "goal" in t or "cilj" in t
+    ok, kind = _has_explicit_action_for_goal_task(t)
+    return bool(ok and kind in {"goal", "task"})
 
 
 def _defers_notion_execution_or_wants_discussion_first(user_text: str) -> bool:
@@ -423,13 +452,13 @@ def _defers_notion_execution_or_wants_discussion_first(user_text: str) -> bool:
 
 
 def _wants_task(user_text: str) -> bool:
-    t = (user_text or "").lower()
-    return ("task" in t or "zad" in t) and ("goal" not in t and "cilj" not in t)
+    ok, kind = _has_explicit_action_for_goal_task(user_text)
+    return bool(ok and kind == "task")
 
 
 def _wants_goal(user_text: str) -> bool:
-    t = (user_text or "").lower()
-    return "goal" in t or "cilj" in t
+    ok, kind = _has_explicit_action_for_goal_task(user_text)
+    return bool(ok and kind == "goal")
 
 
 def _llm_is_configured() -> bool:
