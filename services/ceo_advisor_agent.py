@@ -955,6 +955,182 @@ def _is_advisory_thinking_request(user_text: str) -> bool:
     return bool(thinking_markers or plan_markers)
 
 
+def _is_advisory_review_of_provided_content(user_text: str) -> bool:
+    """True when the user asks for a review/feedback of their provided text.
+
+    Enterprise intent:
+    - This is read-only analysis over user-provided content.
+    - It must NOT be blocked by missing KB/SSOT snapshot.
+    """
+
+    raw = (user_text or "").strip()
+    if not raw:
+        return False
+
+    # Long, pasted content strongly indicates user-provided material (even if phrasing is brief).
+    long_content = (len(raw) >= 800) or (raw.count("\n") >= 10)
+
+    t = raw.lower()
+    markers = bool(
+        re.search(
+            r"(?i)\b("
+            r"pro\u010ditaj|procitaj|pregledaj|review|feedback|"
+            r"analiziraj|analiz\w*|"
+            r"ocijeni|procijeni|"
+            r"komentar\w*|"
+            r"\u0161ta\s+misl\w*|sta\s+misl\w*|"
+            r"reci\s+mi\s+\u0161ta\s+misl\w*|reci\s+mi\s+sta\s+misl\w*|"
+            r"what\s+do\s+you\s+think|give\s+me\s+feedback"
+            r")\b",
+            t,
+        )
+    )
+
+    # If user explicitly requested review OR they pasted a lot of content.
+    return bool(markers or long_content)
+
+
+def _advisory_review_fallback_text(*, english_output: bool) -> str:
+    if english_output:
+        return (
+            "I can review your provided content and give read-only feedback. "
+            "I won't claim any internal business state (SSOT) without a snapshot.\n\n"
+            "To make the review actionable, I’ll cover:\n"
+            "1) Goal & audience (what success looks like)\n"
+            "2) Core assumptions and missing inputs\n"
+            "3) Structure & clarity (sections, sequencing, redundancy)\n"
+            "4) Risks/edge cases and mitigations\n"
+            "5) Metrics/KPIs and next-step checklist\n\n"
+            "If you want, paste the text (or keep it as-is if you already did) and tell me: "
+            "target audience + deadline + constraints." 
+        )
+    return (
+        "Mogu pročitati tvoj tekst i dati READ-ONLY feedback / analizu. "
+        "Neću tvrditi interno poslovno stanje (SSOT) bez snapshot-a.\n\n"
+        "Da review bude koristan, pokriću:\n"
+        "1) Cilj i publiku (šta znači uspjeh)\n"
+        "2) Pretpostavke i šta nedostaje\n"
+        "3) Strukturu i jasnoću (sekcije, tok, ponavljanja)\n"
+        "4) Rizike i mitigacije\n"
+        "5) KPI-je i checklistu sljedećih koraka\n\n"
+        "Ako želiš preciznije, napiši još: ciljna publika + rok + ograničenja." 
+    )
+
+
+def _advisory_no_snapshot_safe_analysis_text(*, english_output: bool) -> str:
+    """Safe, read-only coaching/analysis template when SSOT snapshot is missing.
+
+    Must not claim internal business state and must not instruct execution.
+    """
+
+    if english_output:
+        return (
+            "I can’t confirm internal business status without your internal data, but I can review your text and propose a safe structure.\n\n"
+            "Goal\n"
+            "- Define the outcome (what changes), the deadline, and the success metric\n\n"
+            "Offer\n"
+            "- What’s the core offer, who it’s for, and what proof you have\n\n"
+            "Channels\n"
+            "- 1–2 primary channels and a simple cadence\n\n"
+            "Script\n"
+            "- Opening → qualification → pitch → objection handling → next step\n\n"
+            "Daily metrics\n"
+            "- Activity targets (messages/calls/meetings) + conversion checkpoints\n\n"
+            "10/30/60/90\n"
+            "- 10 days: pipeline + quick wins\n"
+            "- 30 days: standardize messaging + process\n"
+            "- 60 days: retention/follow-up system\n"
+            "- 90 days: scale channels + automate reporting\n\n"
+            "Risks & mitigations\n"
+            "- Too broad → narrow the offer\n"
+            "- Low activity → non-negotiable daily inputs\n"
+            "- Weak follow-up → explicit follow-up windows (24h/72h/7d)\n\n"
+            "Next steps\n"
+            "1) Paste the text (or confirm it’s complete)\n"
+            "2) Tell me: audience + deadline + constraints\n"
+            "3) I’ll return: critique + improvements + a tightened 1-page version"
+        )
+
+    return (
+        "Ne mogu potvrditi ‘stanje/status’ kao činjenicu bez tvojih internih podataka, ali mogu pročitati tvoj tekst i dati READ-ONLY feedback i predložiti sigurnu strukturu.\n\n"
+        "Cilj\n"
+        "- Definiši ishod, rok i mjeru uspjeha (1 KPI)\n\n"
+        "Ponuda\n"
+        "- Šta tačno nudiš, kome, i koji je dokaz/benefit\n\n"
+        "Kanali\n"
+        "- 1–2 primarna kanala + jednostavna dnevna rutina\n\n"
+        "Skripta\n"
+        "- Otvaranje → kvalifikacija → pitch → objekcije → sljedeći korak\n\n"
+        "Dnevne metrike\n"
+        "- Dnevni inputi (poruke/pozivi/sastanci) + checkpointi konverzije\n\n"
+        "Prioriteti\n"
+        "- 1–3 stvari koje moraju biti tačne ovaj tjedan (npr. sužavanje opsega, definicija deliverable-a, dogovor oko promjena)\n\n"
+        "Pitanja\n"
+        "- Šta je ‘must-have’ vs ‘nice-to-have’? Ko odobrava promjene? Koji je dnevni limit vremena po developeru?\n\n"
+        "Plan (sljedeća sedmica)\n"
+        "- Dnevno: fokus + 1 deliverable + 1 checkpoint; kraj sedmice: demo + odluka o scope-u\n\n"
+        "10/30/60/90\n"
+        "- 10 dana: pipeline + brzi rezultati\n"
+        "- 30 dana: standardizuj poruku + proces\n"
+        "- 60 dana: follow-up sistem + rutina\n"
+        "- 90 dana: skaliranje kanala + reporting\n\n"
+        "Rizici i mitigacije\n"
+        "- Preširoko → suzi ponudu\n"
+        "- Premalo aktivnosti → uvedi ‘non-negotiable’ dnevne inpute\n"
+        "- Slab follow-up → follow-up prozor 24h/72h/7d\n\n"
+        "Next steps\n"
+        "1) Zalijepi tekst (ili potvrdi da je kompletan)\n"
+        "2) Napiši: publika + rok + ograničenja\n"
+        "3) Ja vraćam: kritiku + poboljšanja + zategnutu 1-page verziju"
+    )
+
+
+def _strip_internal_contract_leaks(text: str) -> str:
+    """Remove internal schema/prompt artifacts from user-facing text.
+
+    The model may echo/paraphrase contract instructions (e.g. Required keys/text/proposed_commands).
+    These must never appear in enterprise user-facing output.
+    """
+
+    t = text if isinstance(text, str) else ""
+    if not t:
+        return ""
+
+    lowered = t.lower()
+    markers = (
+        "required keys",
+        "proposed_commands",
+        "return only valid json",
+        "json object",
+        "do not wrap the json",
+        "tačno dva ključa",
+        "tacno dva kljuca",
+        "ključa",
+        "kljuca",
+        "\"text\"",
+        "\"proposed_commands\"",
+    )
+
+    if not any(m in lowered for m in markers):
+        return t
+
+    # Drop any line that looks like internal output-contract instructions.
+    out_lines: List[str] = []
+    for line in t.splitlines():
+        ln = line.strip()
+        lnl = ln.lower()
+        if not ln:
+            out_lines.append(line)
+            continue
+        if any(m in lnl for m in markers):
+            continue
+        out_lines.append(line)
+
+    cleaned = "\n".join(out_lines)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    return cleaned
+
+
 def _is_revenue_growth_deliverable_request(user_text: str) -> bool:
     """True for concrete sales/growth deliverables (messages/emails/sequences/scripts).
 
@@ -1263,7 +1439,7 @@ def _is_show_request(user_text: str) -> bool:
         return False
     show = bool(
         re.search(
-            r"(?i)\b(pokazi|poka\u017ei|prika\u017ei|prikazi|izlistaj|show|list|pogledaj|procitaj|read)\b",
+            r"(?i)\b(pokazi|poka\u017ei|prika\u017ei|prikazi|izlistaj|show|list|pogledaj)\b",
             t,
         )
     )
@@ -2790,6 +2966,13 @@ async def create_ceo_advisor_agent(
                 if isinstance(out.text, str) and note.strip() not in out.text:
                     out.text = (out.text or "").rstrip() + note
 
+        # Enterprise safety: never leak internal output-contract instructions.
+        try:
+            if isinstance(out.text, str) and out.text.strip():
+                out.text = _strip_internal_contract_leaks(out.text)
+        except Exception:
+            pass
+
         out.trace = tr
 
         # Persist an explicit deliverable offer marker ONLY when the assistant
@@ -3129,6 +3312,7 @@ async def create_ceo_advisor_agent(
     use_llm = not propose_only
     fact_sensitive = _is_fact_sensitive_query(base_text)
     snapshot_has_facts = _snapshot_has_business_facts(snapshot_payload)
+    advisory_review = _is_advisory_review_of_provided_content(base_text)
 
     logger.info(
         f"[LLM-GATE] allow_general_raw={allow_general_raw} allow_general={allow_general} (source=env)"
@@ -4196,6 +4380,7 @@ async def create_ceo_advisor_agent(
         and (kb_hits == 0)
         and (not snapshot_has_facts)
         and (not _should_use_kickoff_in_offline_mode(t0))
+        and (not advisory_review)
         and (not (wants_prompt_template and wants_notion))
     ):
         effective_allow_general = bool(allow_general and llm_configured)
@@ -4278,8 +4463,10 @@ async def create_ceo_advisor_agent(
 
         # Advisory/thinking prompts should not be hard-blocked by SSOT/snapshot.
         # Provide safe coaching without asserting business facts.
-        if _is_planning_or_help_request(base_text) or _is_advisory_thinking_request(
-            base_text
+        if (
+            advisory_review
+            or _is_planning_or_help_request(base_text)
+            or _is_advisory_thinking_request(base_text)
         ):
             trace["grounding_gate"] = {
                 "applied": True,
@@ -4291,43 +4478,8 @@ async def create_ceo_advisor_agent(
             logger.info("[CEO_ADVISOR_EXIT] ok.advisory_no_snapshot")
             return _final(
                 AgentOutput(
-                    text=(
-                        "Ne mogu potvrditi ‘stanje/status’ kao činjenicu bez tvojih internih podataka, ali mogu dati mišljenje i predložiti strukturu plana na osnovu opisa.\n\n"
-                        "Cilj\n"
-                        "- $3000/mj (MLM/Forever) kroz 10 dana: 10 proizvoda + X follow-up razgovora/dan\n"
-                        "- Fokus: brzi cashflow + ponovljiva dnevna rutina\n\n"
-                        "Ponuda\n"
-                        "- 1–2 ‘hero’ paketa (ulazni + premium)\n"
-                        "- Jasna garancija/benefit + 1 CTA (poziv/DM)\n\n"
-                        "Kanali\n"
-                        "- Warm lista (poznanici) + preporuke\n"
-                        "- Instagram/FB story (dnevno) + DM follow-up\n"
-                        "- 1 lokalni event/meetup sedmično (ako je realno)\n\n"
-                        "Skripta\n"
-                        "- Otvaranje: ‘Imam pitanje, treba mi 30 sekundi…’\n"
-                        "- Kvalifikacija: problem/želja + budžet + vrijeme\n"
-                        "- Pitch: 1 benefit + 1 dokaz + CTA\n"
-                        "- Objekcije: cijena/vrijeme/sumnja (kratko, bez rasprave)\n\n"
-                        "Dnevne metrike\n"
-                        "- 20–40 DM/day\n"
-                        "- 5–10 poziva/day\n"
-                        "- 1–3 prezentacije/day\n"
-                        "- 1 prodaja/day (target)\n\n"
-                        "10/30/60/90\n"
-                        "- 10 dana: fokus na pipeline + prvih 10 prodaja\n"
-                        "- 30 dana: standardizuj skriptu + partneri + referali\n"
-                        "- 60 dana: sistem za follow-up + mini kampanje\n"
-                        "- 90 dana: skaliranje kanala + tim + KPI rutina\n\n"
-                        "Rizici i mitigacije\n"
-                        "- Premalo aktivnosti dnevno → uvedi ‘non-negotiable’ metrike (DM/pozivi/prezentacije)\n"
-                        "- Preširoka ponuda → suzi na 1–2 paketa + jasna poruka\n"
-                        "- Slab follow-up → follow-up prozor 24h/72h/7d (kratke poruke)\n"
-                        "- Nejasan rok/ponuda → svaki razgovor završava jasnim sljedećim korakom\n\n"
-                        "Next steps\n"
-                        "1) Napiši: top 2 proizvoda/paketa + cijena + benefit (1 rečenica)\n"
-                        "2) Daj: veličina warm liste (broj kontakata) + koliko DM/poziva možeš dnevno\n"
-                        "3) Potvrdi rok: 10 proizvoda do 10.02.2026 i prosječnu maržu\n"
-                        "4) Ja ti vraćam: dan-po-dan plan 10 dana + skriptu + minimalni KPI dashboard (tekstualno)."
+                    text=_advisory_no_snapshot_safe_analysis_text(
+                        english_output=english_output
                     ),
                     proposed_commands=[],
                     agent_id="ceo_advisor",
@@ -4447,6 +4599,7 @@ async def create_ceo_advisor_agent(
         and not goals
         and not tasks
         and (not snapshot_ready)
+        and (not _is_advisory_review_of_provided_content(base_text))
         and (_is_empty_state_kickoff_prompt(base_text) or not _llm_is_configured())
     ):
         kickoff = _default_kickoff_text()
@@ -4555,6 +4708,22 @@ async def create_ceo_advisor_agent(
             )
 
         t0 = (base_text or "").strip().lower()
+
+        # Advisory review of user-provided content must not fall into unknown-mode.
+        if _is_advisory_review_of_provided_content(base_text):
+            return AgentOutput(
+                text=_advisory_review_fallback_text(english_output=english_output),
+                proposed_commands=[],
+                agent_id="ceo_advisor",
+                read_only=True,
+                trace={
+                    "offline_mode": True,
+                    "deterministic": True,
+                    "intent": "advisory_review",
+                    "exit_reason": "offline.llm_not_configured_advisory_review",
+                    "snapshot": snap_trace,
+                },
+            )
 
         # Prompt-template intent should return a copy/paste template even offline.
         if wants_prompt_template and wants_notion and not structured_mode:
@@ -4722,6 +4891,36 @@ async def create_ceo_advisor_agent(
     # RESPONSES MODE: enforce system-equivalent instructions (identity + governance + budgeted grounding).
     if _responses_mode_enabled():
         if not _grounding_sufficient_for_responses_llm(gp):
+            # Enterprise exception: advisory review/thinking over user-provided content must not be blocked
+            # by missing grounding_pack. Keep it read-only and avoid any SSOT claims.
+            if (
+                _is_advisory_review_of_provided_content(base_text)
+                or _is_advisory_thinking_request(base_text)
+                or _is_planning_or_help_request(base_text)
+            ):
+                trace = ctx.get("trace") if isinstance(ctx, dict) else {}
+                if not isinstance(trace, dict):
+                    trace = {}
+                trace["grounding_gate"] = {
+                    "applied": True,
+                    "reason": "responses_mode_missing_grounding_but_advisory_intent",
+                    "snapshot": snap_trace,
+                    "bypassed": True,
+                }
+                trace["exit_reason"] = "ok"
+                logger.info("[CEO_ADVISOR_EXIT] ok.advisory_no_snapshot")
+                return _final(
+                    AgentOutput(
+                        text=_advisory_no_snapshot_safe_analysis_text(
+                            english_output=english_output
+                        ),
+                        proposed_commands=[],
+                        agent_id="ceo_advisor",
+                        read_only=True,
+                        trace=trace,
+                    )
+                )
+
             logger.warning(
                 "[CEO_ADVISOR_RESPONSES_GUARD] blocked: missing/insufficient grounding_pack"
             )
@@ -4954,6 +5153,17 @@ async def create_ceo_advisor_agent(
                     "text": _memory_capability_text(english_output=english_output),
                     "proposed_commands": [],
                 }
+            elif (
+                _is_advisory_review_of_provided_content(base_text)
+                or _is_advisory_thinking_request(base_text)
+                or _is_planning_or_help_request(base_text)
+            ):
+                result = {
+                    "text": _advisory_no_snapshot_safe_analysis_text(
+                        english_output=english_output
+                    ),
+                    "proposed_commands": [],
+                }
             elif _is_memory_write_request(t0) or _is_expand_knowledge_request(t0):
                 detail = _extract_after_colon(base_text)
                 if not detail:
@@ -5039,6 +5249,11 @@ async def create_ceo_advisor_agent(
             result.get("proposed_commands") if isinstance(result, dict) else None
         )
         proposed = _to_proposed_commands(proposed_items)
+
+        # Enterprise: advisory review over user-provided content is always read-only.
+        if advisory_review:
+            proposed = []
+            proposed_items = []
 
     else:
         if structured_mode:
