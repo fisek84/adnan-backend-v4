@@ -14,7 +14,9 @@ def _load_app():
         return app
 
 
-def test_api_chat_provenance_odakle_info_does_not_return_unknown_mode(monkeypatch, tmp_path):
+def test_api_chat_provenance_odakle_info_does_not_return_unknown_mode(
+    monkeypatch, tmp_path
+):
     """E2E regression: provenance questions must not fall back to unknown_mode.
 
     Scenario:
