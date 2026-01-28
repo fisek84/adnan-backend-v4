@@ -43,11 +43,12 @@ def test_ceo_advisor_predlagati_goals_tasks_does_not_use_old_copy(monkeypatch):
 
     txt = out.text or ""
     assert out.read_only is True
+    assert out.proposed_commands == []
     assert isinstance(out.trace, dict)
     assert isinstance(out.trace.get("snapshot"), dict)
-    assert "odgovori na 2-3 pitanja iznad" not in txt.lower()
-    assert "GOALS (top 3)" in txt
-    assert "TASKS (top 5)" in txt
+    assert out.trace.get("intent") != "kickoff"
+    assert "GOALS (top 3)" not in txt
+    assert "TASKS (top 5)" not in txt
 
 
 def test_ceo_advisor_prepare_prompt_for_goal_subgoal_returns_template(monkeypatch):

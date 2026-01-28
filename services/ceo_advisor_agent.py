@@ -818,20 +818,31 @@ def _unknown_mode_text(*, english_output: bool) -> str:
 
 
 def _should_use_kickoff_in_offline_mode(user_text: str) -> bool:
-    t = (user_text or "").strip().lower()
-    if not t:
+    t0 = (user_text or "").strip().lower()
+    if not t0:
         return False
+
+    # Normalize BHS diacritics so sedmični -> sedmicni (matches sedmic*).
+    t = (
+        t0.replace("č", "c")
+        .replace("ć", "c")
+        .replace("š", "s")
+        .replace("đ", "dj")
+        .replace("ž", "z")
+    )
     # If user is asking about goals/tasks/KPIs/planning in an empty state,
     # the deterministic kickoff is a good enterprise-safe fallback.
     # IMPORTANT: don't trigger dashboard/kickoff purely on the word "plan".
     # Otherwise normal questions like "biznis plan" get wrongly routed to GOALS/TASKS.
-    wants_targets = bool(
-        re.search(r"(?i)\b(cilj\w*|goal\w*|task\w*|zadat\w*|kpi\w*)\b", t)
-    )
-    wants_planning = bool(re.search(r"(?i)\b(weekly|sedmic\w*)\b", t)) or (
-        wants_targets and bool(re.search(r"(?i)\b(plan\w*)\b", t))
-    )
-    return wants_targets or wants_planning
+    # NOTE (enterprise safety): only explicit action commands should trigger kickoff
+    # via goal/task targeting; narrative mentions must stay read-only.
+    ok, kind = _has_explicit_action_for_goal_task(t)
+    wants_targets = bool(ok and kind in {"goal", "task"})
+
+    # Planning kickoff is allowed ONLY for explicit weekly/sedmic* signals.
+    wants_planning = bool(re.search(r"(?i)\b(weekly|sedmic\w*)\b", t))
+
+    return wants_planning or wants_targets
 
 
 def _is_prompt_preparation_request(user_text: str) -> bool:
