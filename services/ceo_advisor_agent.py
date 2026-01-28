@@ -578,7 +578,16 @@ def _is_trace_status_query(user_text: str) -> bool:
 
     # Strong triggers (BHS + EN)
     if re.search(
-        r"(?i)\b(provenance|sources\s+used|status\s+izvora|izvori\s+znanja|sta\s+je\s+koristen\w*|\u0161ta\s+je\s+kori\u0161ten\w*|sta\s+je\s+preskocen\w*|\u0161ta\s+je\s+presko\u010den\w*|za\u0161to\s+presko\u010den\w*|zasto\s+preskocen\w*|trace)\b",
+        r"(?i)\b("
+        r"provenance|sources\s+used|status\s+izvora|"
+        r"izvor|izvori|izvori\s+znanja|"
+        r"odakle\s+ti(\s+info|\s+ovo)?|odakle\s+podaci|"
+        r"na\s+osnovu\s+\u010dega|na\s+osnovu\s+cega|"
+        r"sta\s+je\s+koristen\w*|\u0161ta\s+je\s+kori\u0161ten\w*|"
+        r"sta\s+je\s+preskocen\w*|\u0161ta\s+je\s+presko\u010den\w*|"
+        r"za\u0161to\s+presko\u010den\w*|zasto\s+preskocen\w*|"
+        r"trace"
+        r")\b",
         t,
     ):
         return True
