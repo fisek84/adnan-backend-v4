@@ -3605,7 +3605,7 @@ async def create_ceo_advisor_agent(
     conv_state = ctx.get("conversation_state") if isinstance(ctx, dict) else None
     pending_deliverable = (
         _extract_last_deliverable_from_conversation_state(conv_state)
-        if (is_confirm or continue_deliverable)
+        if (is_confirm or continue_deliverable or is_decline)
         else None
     )
 
@@ -3720,7 +3720,7 @@ async def create_ceo_advisor_agent(
         return _final(out)
 
     # User explicitly declined delegation: don't keep asking.
-    if is_decline and intent == "deliverable":
+    if is_decline and pending_deliverable:
         cid0 = _conversation_id()
         if isinstance(cid0, str) and cid0.strip():
             _deliverable_confirm_prompt_reset(conversation_id=cid0.strip())

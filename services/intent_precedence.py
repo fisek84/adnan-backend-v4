@@ -39,6 +39,21 @@ def classify_intent(text: str) -> Intent:
     if not t:
         return "other"
 
+    # Advisory/thinking prompts should not be hijacked into deliverable mode
+    # just because the pasted content mentions DM/poruke/email.
+    if re.search(
+        r"(?i)\b("
+        r"procitaj|pro\u010ditaj|"
+        r"sta\s+misl\w*|\u0161ta\s+misl\w*|"
+        r"reci\s+mi|re\u010di\s+mi|"
+        r"komentar\w*|feedback|review|analiz\w*|"
+        r"moze\s+li\s+se\s+napraviti\s+plan|"
+        r"re\u010di\s+sta\s+dalje|reci\s+sta\s+dalje"
+        r")\b",
+        t,
+    ):
+        return "other"
+
     # ----------------------------
     # A) DELIVERABLE (highest)
     # ----------------------------
