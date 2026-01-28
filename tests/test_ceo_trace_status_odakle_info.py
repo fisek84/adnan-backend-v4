@@ -44,7 +44,11 @@ def test_trace_status_odakle_ti_info_and_izvor_do_not_fall_back_to_unknown_mode(
                 metadata={"include_debug": True},
                 conversation_id="trace-1",
             ),
-            ctx={"grounding_pack": {"trace": {"used_sources": ["kb"], "not_used": []}}},
+            ctx={
+                "grounding_pack": {
+                    "trace": {"used_sources": ["kb"], "not_used": []},
+                }
+            },
         )
     )
     txt2 = (out2.text or "").lower()
@@ -60,7 +64,11 @@ def test_trace_status_odakle_ti_info_and_izvor_do_not_fall_back_to_unknown_mode(
                 metadata={"include_debug": True},
                 conversation_id="trace-1",
             ),
-            ctx={"grounding_pack": {"trace": {"used_sources": ["identity"], "not_used": []}}},
+            ctx={
+                "grounding_pack": {
+                    "trace": {"used_sources": ["identity"], "not_used": []},
+                }
+            },
         )
     )
     txt3 = (out3.text or "").lower()
