@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import inspect
 import logging
 import os
@@ -2243,6 +2244,251 @@ async def request_trace_middleware(request: Request, call_next):
     except Exception:
         logger.exception("REQ_FAIL req_id=%s path=%s", req_id, request.url.path)
         raise
+
+
+# ================================================================
+# RESPONSE CONTRACT ENFORCER (NO INTERNAL TEXT LEAK)
+#
+# Production bug: internal/system boilerplate (e.g. assistant memory template)
+# must never be shown as the user-facing `text` in /api/chat.
+#
+# This middleware is intentionally narrow:
+# - Only inspects JSON responses for /api/chat (and compatible chat aliases).
+# - Only triggers on known internal memory-boilerplate markers.
+# - Skips when the user explicitly asked about memory/snapshot/governance.
+# - On trigger: moves text to metadata.debug.internal_system_text and replaces
+#   `text` with a safe deterministic answer; also clears sticky meta-intent.
+# ================================================================
+
+_INTERNAL_MEMORY_BOILERPLATE_MARKERS: Tuple[str, ...] = (
+    "Vrste pamćenja koje koristim",
+    "Imam dvije vrste pamćenja",
+    "Kratkoročno:",
+    "Dugoročno",
+    "WRITE ide",
+    "propose → approve → execute",
+)
+
+_LEAK_GUARD_LOCK = threading.Lock()
+_LAST_INTERNAL_TEMPLATE_HASH_BY_SESSION: Dict[str, str] = {}
+
+
+def _bhs_normalize(text: str) -> str:
+    t0 = (text or "").strip().lower()
+    return (
+        t0.replace("č", "c")
+        .replace("ć", "c")
+        .replace("š", "s")
+        .replace("đ", "dj")
+        .replace("ž", "z")
+    )
+
+
+def _user_explicitly_asked_memory_or_snapshot(prompt: str) -> bool:
+    t = _bhs_normalize(prompt)
+    if not t:
+        return False
+    return bool(
+        re.search(
+            r"(?i)\b(pamcenj\w*|memorij\w*|snapshot|grounding|governance|sistemsk\w*\s+tekst|system\s+text)\b",
+            t,
+        )
+    )
+
+
+def _looks_like_internal_memory_boilerplate(text: str) -> bool:
+    s = (text or "").strip()
+    if not s:
+        return False
+
+    # Require at least one of the unique memory boilerplate headers AND one supporting marker.
+    has_header = (
+        "Vrste pamćenja koje koristim" in s
+        or "Imam dvije vrste pamćenja" in s
+        or "Memory types I use" in s
+        or "I have two kinds of memory" in s
+    )
+    if not has_header:
+        return False
+
+    supporting = 0
+    for m in _INTERNAL_MEMORY_BOILERPLATE_MARKERS:
+        if m in s:
+            supporting += 1
+
+    return supporting >= 2
+
+
+def _safe_replacement_text_for_prompt(prompt: str) -> str:
+    # Prefer a deterministic, domain-specific replacement when possible.
+    try:
+        from services.ceo_advisor_agent import (  # noqa: PLC0415
+            _is_agent_registry_question,
+            _render_agent_registry_text,
+        )
+
+        if _is_agent_registry_question(prompt):
+            return _render_agent_registry_text(english_output=False)
+    except Exception:
+        pass
+
+    # Generic read-only safe guidance (no system/snapshot leakage).
+    return (
+        "Mogu pomoći u read-only modu. Reci mi cilj i kontekst (npr. šta pokušavaš postići, rok i ograničenja), "
+        "pa ću predložiti konkretne naredne korake."
+    )
+
+
+def _clear_sticky_meta_intent(conversation_id: str) -> None:
+    cid = (conversation_id or "").strip()
+    if not cid:
+        return
+    try:
+        from services.ceo_conversation_state_store import (  # noqa: PLC0415
+            ConversationStateStore,
+        )
+
+        ConversationStateStore.update_meta(
+            conversation_id=cid,
+            updates={
+                "assistant_last_meta_intent": None,
+                "assistant_last_meta_intent_at": 0.0,
+            },
+        )
+    except Exception:
+        pass
+
+
+@app.middleware("http")
+async def prevent_internal_text_leak_middleware(request: Request, call_next):
+    path = (request.url.path or "").strip()
+    if path not in {"/api/chat", "/api/ceo/command", "/api/ceo-console/command"}:
+        return await call_next(request)
+
+    # Best-effort extract prompt + ids from request JSON.
+    prompt = ""
+    session_id = (request.headers.get("X-Session-Id") or "").strip()
+    conversation_id = ""
+    try:
+        raw = await request.body()
+        if raw:
+            req_obj = json.loads(raw.decode("utf-8"))
+            if isinstance(req_obj, dict):
+                prompt = str(
+                    req_obj.get("message")
+                    or req_obj.get("input_text")
+                    or req_obj.get("text")
+                    or ""
+                )
+                conversation_id = str(req_obj.get("conversation_id") or "").strip()
+                sid0 = str(req_obj.get("session_id") or "").strip()
+                if sid0:
+                    session_id = sid0
+    except Exception:
+        pass
+
+    if not conversation_id:
+        conversation_id = session_id
+
+    resp = await call_next(request)
+
+    ctype = (resp.headers.get("content-type") or "").lower()
+    if "application/json" not in ctype:
+        return resp
+
+    # Extract body bytes (works for JSONResponse and StreamingResponse).
+    body_bytes: bytes = b""
+    consumed_iterator = False
+    try:
+        body_attr = getattr(resp, "body", None)
+        if isinstance(body_attr, (bytes, bytearray, memoryview)):
+            body_bytes = bytes(body_attr)
+
+        if (not body_bytes) and hasattr(resp, "body_iterator"):
+            chunks: List[bytes] = []
+            async for chunk in resp.body_iterator:  # type: ignore[attr-defined]
+                if isinstance(chunk, (bytes, bytearray)):
+                    chunks.append(bytes(chunk))
+            body_bytes = b"".join(chunks)
+            consumed_iterator = True
+    except Exception:
+        return resp
+
+    if not body_bytes:
+        return resp
+
+    # If we consumed the iterator, we must rebuild the response; otherwise downstream
+    # (TestClient/proxies) will receive an empty body.
+    if consumed_iterator:
+        rebuilt = Response(
+            content=body_bytes,
+            status_code=resp.status_code,
+            media_type=getattr(resp, "media_type", None),
+            background=getattr(resp, "background", None),
+        )
+        for k, v in resp.headers.items():
+            if k.lower() == "content-length":
+                continue
+            rebuilt.headers[k] = v
+        resp = rebuilt
+
+    try:
+        body_obj = json.loads(body_bytes.decode("utf-8"))
+    except Exception:
+        return resp
+
+    if not isinstance(body_obj, dict):
+        return resp
+
+    text = body_obj.get("text")
+    if not isinstance(text, str) or not text.strip():
+        return resp
+
+    if not _looks_like_internal_memory_boilerplate(text):
+        return resp
+
+    # Allow memory/governance explanations only when explicitly requested.
+    if _user_explicitly_asked_memory_or_snapshot(prompt):
+        return resp
+
+    # Anti-loop bookkeeping: if we detect the same internal template repeatedly,
+    # we still block it; also clear sticky meta intent.
+    tpl_hash = ""
+    try:
+        import hashlib
+
+        tpl_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+    except Exception:
+        tpl_hash = ""
+
+    if session_id and tpl_hash:
+        with _LEAK_GUARD_LOCK:
+            prev = _LAST_INTERNAL_TEMPLATE_HASH_BY_SESSION.get(session_id)
+            _LAST_INTERNAL_TEMPLATE_HASH_BY_SESSION[session_id] = tpl_hash
+            # If it repeats consecutively, treat as a mode-lock signal.
+            if prev == tpl_hash and conversation_id:
+                _clear_sticky_meta_intent(conversation_id)
+
+    if conversation_id:
+        _clear_sticky_meta_intent(conversation_id)
+
+    # Move internal/system text to metadata.debug and replace user-visible text.
+    md = body_obj.get("metadata")
+    md = md if isinstance(md, dict) else {}
+    dbg = md.get("debug")
+    dbg = dbg if isinstance(dbg, dict) else {}
+    dbg.setdefault("internal_system_text", text)
+    md["debug"] = dbg
+    body_obj["metadata"] = md
+    body_obj["text"] = _safe_replacement_text_for_prompt(prompt)
+
+    # Rebuild JSON response, preserving headers/status.
+    new_resp = JSONResponse(content=body_obj, status_code=resp.status_code)
+    for k, v in resp.headers.items():
+        if k.lower() == "content-length":
+            continue
+        new_resp.headers[k] = v
+    return new_resp
 
 
 # ================================================================

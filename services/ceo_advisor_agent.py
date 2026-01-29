@@ -1205,6 +1205,13 @@ def _classify_memory_meta_question(
         t_short = re.sub(r"[^a-z0-9\s]", " ", t)
         t_short = " ".join(t_short.split())
         if t_short and len(t_short) <= 40:
+            # Anti-hijack: do not inherit memory-meta intent for short follow-ups
+            # that clearly talk about something else (agents/system/etc.).
+            if re.search(
+                r"(?i)\b(agent|agenti|agente|agents|registry|sistem|system|uloga|role|roles)\b",
+                t_short,
+            ):
+                return None
             if re.search(
                 r"(?i)\b(koju\s+koristis|koje\s+koristis|which\s+one|which\s+do\s+you\s+use)\b",
                 t_short,
@@ -1215,9 +1222,15 @@ def _classify_memory_meta_question(
                 t_short,
             ):
                 return "process"
-            if re.search(r"(?i)\b(koju|koje|kakvo|kakvu|which|type)\b", t_short):
+            # Only inherit generic "which/type" follow-ups if they still reference memory.
+            if re.search(
+                r"(?i)\b(koju|koje|kakvo|kakvu|which|type)\b", t_short
+            ) and re.search(r"(?i)\b(memorij\w*|pamcenj\w*|memory)\b", t_short):
                 return "classification"
-            if re.search(r"(?i)\b(kako|how)\b", t_short):
+            # Only inherit generic "how" follow-ups if they still reference memory.
+            if re.search(r"(?i)\b(kako|how)\b", t_short) and re.search(
+                r"(?i)\b(memorij\w*|pamcenj\w*|memory)\b", t_short
+            ):
                 return "process"
 
     return None
