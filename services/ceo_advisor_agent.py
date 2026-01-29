@@ -676,6 +676,52 @@ def _is_trace_status_query(user_text: str) -> bool:
     return False
 
 
+def _is_advisory_bypass_no_answer(user_text: str) -> bool:
+    """True when the user is asking for coaching/planning advice.
+
+    This is used to bypass missing-grounding / unknown-mode canonical no-answer fallbacks.
+    Must stay narrow and deterministic.
+    """
+
+    t0 = (user_text or "").strip().lower()
+    if not t0:
+        return False
+
+    # Reuse existing advisory detectors.
+    if (
+        _is_planning_or_help_request(t0)
+        or _is_advisory_thinking_request(t0)
+        or _is_advisory_review_of_provided_content(t0)
+    ):
+        return True
+
+    # Normalize BHS diacritics so "šta" -> "sta", "poboljšam" -> "poboljsam".
+    t = (
+        t0.replace("č", "c")
+        .replace("ć", "c")
+        .replace("š", "s")
+        .replace("đ", "dj")
+        .replace("ž", "z")
+    )
+
+    # Tight but safe coaching markers.
+    return bool(
+        re.search(
+            r"(?i)\b("
+            r"kako\s+da|"
+            r"kako\s+mogu(\s+da)?|"
+            r"napravi\s+plan|"
+            r"bolji\s+plan|"
+            r"sta\s+da\s+uradim|"
+            r"kako\s+da\s+uradim|"
+            r"kako\s+da\s+poboljsam|"
+            r"savjet"
+            r")\b",
+            t,
+        )
+    )
+
+
 def _build_trace_status_text(*, trace_v2: Dict[str, Any], english_output: bool) -> str:
     used = trace_v2.get("used_sources")
     used_list = [
@@ -4877,6 +4923,7 @@ async def create_ceo_advisor_agent(
         and (kb_hits == 0)
         and (not snapshot_has_facts)
         and (not _should_use_kickoff_in_offline_mode(t0))
+        and (not _is_advisory_bypass_no_answer(base_text))
         and (not advisory_review)
         and (not (wants_prompt_template and wants_notion))
     ):
@@ -5323,6 +5370,24 @@ async def create_ceo_advisor_agent(
                 },
             )
 
+        # Advisory/coaching prompts should not fall into unknown/no-answer even offline.
+        if _is_advisory_bypass_no_answer(base_text):
+            return AgentOutput(
+                text=_advisory_no_snapshot_safe_analysis_text(
+                    english_output=english_output
+                ),
+                proposed_commands=[],
+                agent_id="ceo_advisor",
+                read_only=True,
+                trace={
+                    "offline_mode": True,
+                    "deterministic": True,
+                    "intent": "advisory",
+                    "exit_reason": "offline.llm_not_configured_advisory",
+                    "snapshot": snap_trace,
+                },
+            )
+
         fallback_reason = "offline.llm_not_configured"
         return _final(
             AgentOutput(
@@ -5385,6 +5450,7 @@ async def create_ceo_advisor_agent(
                 _is_advisory_review_of_provided_content(base_text)
                 or _is_advisory_thinking_request(base_text)
                 or _is_planning_or_help_request(base_text)
+                or _is_advisory_bypass_no_answer(base_text)
             ):
                 trace = ctx.get("trace") if isinstance(ctx, dict) else {}
                 if not isinstance(trace, dict):
