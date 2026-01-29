@@ -930,7 +930,7 @@ def _is_advisory_thinking_request(user_text: str) -> bool:
     thinking_markers = bool(
         re.search(
             r"(?i)\b("
-            r"\u0161ta\s+misl\w*|sta\s+misl\w*|"
+            r"\u0161ta(\s+ti)?\s+misl\w*|sta(\s+ti)?\s+misl\w*|"
             r"misljenj\w*|mi\u0161ljenj\w*|"
             r"feedback|komentar\w*|review|"
             r"procijeni|ocijeni|"
@@ -978,7 +978,7 @@ def _is_advisory_review_of_provided_content(user_text: str) -> bool:
             r"analiziraj|analiz\w*|"
             r"ocijeni|procijeni|"
             r"komentar\w*|"
-            r"\u0161ta\s+misl\w*|sta\s+misl\w*|"
+            r"\u0161ta(\s+ti)?\s+misl\w*|sta(\s+ti)?\s+misl\w*|"
             r"reci\s+mi\s+\u0161ta\s+misl\w*|reci\s+mi\s+sta\s+misl\w*|"
             r"what\s+do\s+you\s+think|give\s+me\s+feedback"
             r")\b",
@@ -2481,6 +2481,13 @@ async def create_ceo_advisor_agent(
         if t.startswith("da li ") or t.startswith("da l "):
             return False
 
+        # Never treat a negated message as a confirmation (e.g., "ne zelim").
+        if re.search(
+            r"(?i)\b(ne|nemoj|necu|ne\s+zelim|odustani|stop|cancel|nije\s+potrebno|ne\s+treba)\b",
+            t,
+        ):
+            return False
+
         # Minimal, explicit confirmations only.
         # NOTE: Avoid ambiguous tokens like "ok" / "moze" which can appear in normal questions
         # (e.g., "da li mi agent moze pomoci...") and would incorrectly trigger delegation.
@@ -3853,6 +3860,23 @@ async def create_ceo_advisor_agent(
         if (is_confirm or continue_deliverable or is_decline)
         else None
     )
+
+    # If the user is explicitly declining but also asking for advisory feedback,
+    # do not short-circuit into deliverable-decline copy — cancel the pending
+    # deliverable intent and continue normal READ-only advisory routing.
+    if (
+        is_decline
+        and pending_deliverable
+        and (
+            _is_advisory_review_of_provided_content(base_text)
+            or _is_advisory_thinking_request(base_text)
+        )
+    ):
+        cid0 = _conversation_id()
+        if isinstance(cid0, str) and cid0.strip():
+            _deliverable_confirm_prompt_reset(conversation_id=cid0.strip())
+        is_decline = False
+        pending_deliverable = None
 
     def _build_rgo_delegation_proposal(
         *, task_text: str, reason: str

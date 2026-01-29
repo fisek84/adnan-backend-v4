@@ -500,6 +500,91 @@ def test_pending_unknown_twice_prompts_once_then_auto_cancels(monkeypatch, tmp_p
     assert pcs3 != pcs1
 
 
+def test_pending_decline_then_advisory_cancels_pending_and_continues(monkeypatch, tmp_path):
+    """Regression: negation + advisory must cancel pending proposal and continue.
+
+    Repro: when a pending proposal exists and user replies with a decline + advisory intent
+    (e.g., "Ne zelim. Zanima me sta ti mislis"), router must:
+    - cancel pending_proposed_commands
+    - avoid pending_proposal_confirm_needed loop
+    - continue normal READ-only advisory routing
+    - not fall into unknown-mode
+    """
+
+    monkeypatch.setenv("OPENAI_API_MODE", "responses")
+    monkeypatch.setenv("CEO_ADVISOR_ALLOW_GENERAL_KNOWLEDGE", "1")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-local")
+    monkeypatch.setenv(
+        "CEO_CONVERSATION_STATE_PATH", str(tmp_path / "ceo_conv_state_pending_cancel.json")
+    )
+
+    from services.grounding_pack_service import GroundingPackService
+
+    monkeypatch.setattr(
+        GroundingPackService, "build", lambda **kwargs: {"enabled": False}
+    )
+
+    def _boom(*args, **kwargs):  # noqa: ANN001
+        raise AssertionError("executor must not be called")
+
+    monkeypatch.setattr("services.agent_router.executor_factory.get_executor", _boom)
+
+    app = _load_app()
+    client = TestClient(app)
+
+    session_id = "session_pending_cancel_advisory_1"
+    snap = {"payload": {"tasks": []}}
+
+    # Step 1: create a pending proposal
+    resp1 = client.post(
+        "/api/chat",
+        json={
+            "message": "Pripremi 2 follow-up poruke + 1 email.",
+            "session_id": session_id,
+            "snapshot": snap,
+            "metadata": {"include_debug": True},
+        },
+    )
+    assert resp1.status_code == 200
+    data1 = resp1.json()
+    pcs1 = data1.get("proposed_commands") or []
+    assert isinstance(pcs1, list) and pcs1
+
+    # Step 2: decline + advisory
+    resp2 = client.post(
+        "/api/chat",
+        json={
+            "message": "Ne zelim. Zanima me sta ti mislis.",
+            "session_id": session_id,
+            "snapshot": snap,
+            "metadata": {"include_debug": True},
+        },
+    )
+    assert resp2.status_code == 200
+    data2 = resp2.json()
+
+    tr2 = data2.get("trace") or {}
+    assert tr2.get("intent") != "pending_proposal_confirm_needed"
+    assert tr2.get("intent") != "approve_last_proposal_replay"
+
+    # Must not keep the user in pending jail.
+    txt2 = (data2.get("text") or "").lower()
+    assert "imam prijedlog na cekanju" not in txt2
+    assert "trenutno nemam" not in txt2
+    assert "ne delegiram deliverable" not in txt2
+
+    assert data2.get("read_only") is True
+    assert (data2.get("proposed_commands") or []) == []
+
+    # Pending must be cleared in ConversationStateStore meta.
+    from services.ceo_conversation_state_store import ConversationStateStore
+
+    meta = ConversationStateStore.get_meta(conversation_id=session_id)
+    assert isinstance(meta, dict)
+    assert meta.get("pending_proposed_commands") in (None, [])
+    assert meta.get("pending_proposal") in (None, False)
+
+
 def test_ssot_missing_no_hallucinated_goals_tasks(monkeypatch, tmp_path):
     """Regression: when SSOT snapshot is missing/unavailable, the agent must not print fabricated GOALS/TASKS tables."""
 
