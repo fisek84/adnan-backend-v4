@@ -307,6 +307,10 @@ def map_notion_page_to_kb_entry(
         return None
 
     tags = _extract_multi_select(props, "Tags")
+    applies_to_raw = _extract_multi_select(props, "AppliesTo")
+    applies_to = [x.strip().lower() for x in applies_to_raw if isinstance(x, str) and x.strip()]
+    if not applies_to:
+        applies_to = ["all"]
 
     updated_at = _extract_date_start(props, "UpdatedAt")
     if not updated_at:
@@ -325,7 +329,7 @@ def map_notion_page_to_kb_entry(
         "id": kb_id,
         "title": title,
         "tags": tags,
-        "applies_to": ["all"],
+        "applies_to": applies_to,
         "priority": float(priority),
         "content": content,
         "updated_at": updated_at,
@@ -601,7 +605,12 @@ class KBNotionStore(KBStore):
             raise KBNotionReadFail(str(exc))
 
     async def search(
-        self, query: str, *, top_k: int = 8, force: bool = False
+        self,
+        query: str,
+        *,
+        top_k: int = 8,
+        force: bool = False,
+        intent: Optional[str] = None,
     ) -> Dict[str, Any]:
         from services.text_normalization import (  # noqa: PLC0415
             kb_entry_searchable_text,
@@ -645,11 +654,30 @@ class KBNotionStore(KBStore):
         q_toks_sig_set = set(q_toks_sig)
         q_has_wysiati = "wysiati" in set(q_toks)
 
+        intent_norm = (intent or "").strip().lower()
+        gate_enabled = intent_norm in {"advisory", "state_query", "identity"}
+
+        def _entry_applies_to(entry: KBEntry) -> List[str]:
+            raw = entry.get("applies_to")
+            if isinstance(raw, list):
+                out = [
+                    str(x).strip().lower()
+                    for x in raw
+                    if isinstance(x, str) and str(x).strip()
+                ]
+                return out or ["all"]
+            return ["all"]
+
         hits: List[Tuple[int, int, int, int, str, KBEntry]] = []
         if q_norm and isinstance(entries_all, list):
             for e in entries_all:
                 if not isinstance(e, dict):
                     continue
+
+                if gate_enabled:
+                    applies_to = _entry_applies_to(e)
+                    if (intent_norm not in applies_to) and ("all" not in applies_to):
+                        continue
 
                 entry_id = str(e.get("id") or "")
                 title_raw = str(e.get("title") or "")

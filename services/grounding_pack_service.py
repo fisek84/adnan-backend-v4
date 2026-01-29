@@ -276,7 +276,9 @@ class GroundingPackService:
             )
 
     @classmethod
-    def _retrieve_kb(cls, *, prompt: str, kb: Dict[str, Any]) -> KBRetrievalResult:
+    def _retrieve_kb(
+        cls, *, prompt: str, kb: Dict[str, Any], intent: Optional[str] = None
+    ) -> KBRetrievalResult:
         from services.text_normalization import (  # noqa: PLC0415
             kb_entry_searchable_text,
             normalize_text,
@@ -319,10 +321,29 @@ class GroundingPackService:
         toks_sig_set = set(toks_sig)
         q_has_wysiati = "wysiati" in set(toks_all)
 
+        intent_norm = (intent or "").strip().lower()
+        gate_enabled = intent_norm in {"advisory", "state_query", "identity"}
+
+        def _entry_applies_to(entry: Dict[str, Any]) -> List[str]:
+            raw = entry.get("applies_to")
+            if isinstance(raw, list):
+                out = [
+                    str(x).strip().lower()
+                    for x in raw
+                    if isinstance(x, str) and str(x).strip()
+                ]
+                return out or ["all"]
+            return ["all"]
+
         scored: List[Tuple[float, Dict[str, Any]]] = []
         for e in items:
             if not isinstance(e, dict):
                 continue
+
+            if gate_enabled:
+                applies_to = _entry_applies_to(e)
+                if (intent_norm not in applies_to) and ("all" not in applies_to):
+                    continue
 
             entry_id = str(e.get("id") or "")
             title_raw = str(e.get("title") or "")
@@ -434,11 +455,25 @@ class GroundingPackService:
         t_kb0 = time.perf_counter()
         kb_search: Dict[str, Any] = {}
         search_attempted = False
+        intent_for_kb: Optional[str] = None
+        if isinstance(legacy_trace, dict):
+            it = legacy_trace.get("intent")
+            if isinstance(it, str) and it.strip():
+                intent_for_kb = it.strip()
         try:
             if kb_store is not None and hasattr(kb_store, "search"):
-                kb_search = _run_coro_in_worker(
-                    kb_store.search(prompt, top_k=cls._kb_search_top_k())
-                )
+                try:
+                    kb_search = _run_coro_in_worker(
+                        kb_store.search(
+                            prompt,
+                            top_k=cls._kb_search_top_k(),
+                            intent=intent_for_kb,
+                        )
+                    )
+                except TypeError:
+                    kb_search = _run_coro_in_worker(
+                        kb_store.search(prompt, top_k=cls._kb_search_top_k())
+                    )
                 search_attempted = isinstance(kb_search, dict) and any(
                     k in kb_search for k in ("entries", "used_entry_ids", "meta")
                 )
@@ -472,7 +507,9 @@ class GroundingPackService:
         # Back-compat fallback: if store.search isn't implemented or failed to return
         # a structured response, fall back to deterministic token-overlap retrieval.
         if not search_attempted:
-            kb_retrieval = cls._retrieve_kb(prompt=prompt, kb=kb_file)
+            kb_retrieval = cls._retrieve_kb(
+                prompt=prompt, kb=kb_file, intent=intent_for_kb
+            )
             used_entry_ids = list(kb_retrieval.used_entry_ids)
             selected_entries = list(kb_retrieval.selected_entries)
             kb_search_meta = kb_meta if isinstance(kb_meta, dict) else {}

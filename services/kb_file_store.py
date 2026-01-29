@@ -160,7 +160,12 @@ class FileKBStore(KBStore):
         return {"entries": entries, "meta": meta}
 
     async def search(
-        self, query: str, *, top_k: int = 8, force: bool = False
+        self,
+        query: str,
+        *,
+        top_k: int = 8,
+        force: bool = False,
+        intent: Optional[str] = None,
     ) -> Dict[str, Any]:
         payload = self.load_payload()
         # Use the exact same scoring/selection logic as the legacy grounding pack.
@@ -168,7 +173,9 @@ class FileKBStore(KBStore):
         try:
             from services.grounding_pack_service import GroundingPackService  # noqa: PLC0415
 
-            baseline = GroundingPackService._retrieve_kb(prompt=query, kb=payload)
+            baseline = GroundingPackService._retrieve_kb(
+                prompt=query, kb=payload, intent=intent
+            )
             selected = list(baseline.selected_entries)
             used_ids = list(baseline.used_entry_ids)
         except Exception:

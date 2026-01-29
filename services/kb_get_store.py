@@ -45,7 +45,14 @@ class _TestStubKBStore(KBStore):
     async def get_entries(self, ctx: Optional[Dict[str, Any]] = None):
         return [{"id": f"E{i}", "title": f"T{i}", "content": "x"} for i in range(46)]
 
-    async def search(self, query: str, *, top_k: int = 8, force: bool = False):
+    async def search(
+        self,
+        query: str,
+        *,
+        top_k: int = 8,
+        force: bool = False,
+        intent: Optional[str] = None,
+    ):
         self._search_calls += 1
         cache_hit = self._search_calls > 2
         meta = dict(self._last_meta)
@@ -92,7 +99,14 @@ class _ErrorKBStore(KBStore):
     async def load_all(self, *, force: bool = False):
         return {"entries": [], "meta": dict(self._meta)}
 
-    async def search(self, query: str, *, top_k: int = 8, force: bool = False):
+    async def search(
+        self,
+        query: str,
+        *,
+        top_k: int = 8,
+        force: bool = False,
+        intent: Optional[str] = None,
+    ):
         meta = dict(self._meta)
         meta["hit_count"] = 0
         return {"entries": [], "used_entry_ids": [], "meta": meta}
@@ -167,10 +181,19 @@ class _FallbackKBStore(KBStore):
         meta = self._file.get_meta()
         return {"entries": entries, "meta": meta}
 
-    async def search(self, query: str, *, top_k: int = 8, force: bool = False):
+    async def search(
+        self,
+        query: str,
+        *,
+        top_k: int = 8,
+        force: bool = False,
+        intent: Optional[str] = None,
+    ):
         try:
             if hasattr(self._notion, "search"):
-                out = await self._notion.search(query, top_k=top_k, force=force)  # type: ignore[attr-defined]
+                out = await self._notion.search(  # type: ignore[attr-defined]
+                    query, top_k=top_k, force=force, intent=intent
+                )
                 if isinstance(out, dict):
                     self._last_meta = dict(out.get("meta") or self._notion.get_meta())
                 return out
@@ -178,7 +201,9 @@ class _FallbackKBStore(KBStore):
             pass
 
         if hasattr(self._file, "search"):
-            return await self._file.search(query, top_k=top_k, force=force)  # type: ignore[attr-defined]
+            return await self._file.search(  # type: ignore[attr-defined]
+                query, top_k=top_k, force=force, intent=intent
+            )
         return {"entries": [], "used_entry_ids": [], "meta": self._file.get_meta()}
 
     def get_meta(self) -> Dict[str, Any]:

@@ -95,6 +95,35 @@ def test_notion_mapping_and_status_skip():
     assert map_notion_page_to_kb_entry(page_inactive_status_type) is None
 
 
+def test_notion_mapping_applies_to_preserved_lowercased_and_fallback():
+    from services.kb_notion_store import map_notion_page_to_kb_entry
+
+    page_with_applies_to = {
+        "properties": {
+            "Name": {"title": [{"plain_text": "T"}]},
+            "ID": {"rich_text": [{"plain_text": "id_applies"}]},
+            "Content": {"rich_text": [{"plain_text": "x"}]},
+            "AppliesTo": {"multi_select": [{"name": "Advisory"}]},
+            "Status": {"select": {"name": "active"}},
+        }
+    }
+    e1 = map_notion_page_to_kb_entry(page_with_applies_to)
+    assert e1 is not None
+    assert e1["applies_to"] == ["advisory"]
+
+    page_missing_applies_to = {
+        "properties": {
+            "Name": {"title": [{"plain_text": "T"}]},
+            "ID": {"rich_text": [{"plain_text": "id_missing"}]},
+            "Content": {"rich_text": [{"plain_text": "x"}]},
+            "Status": {"select": {"name": "active"}},
+        }
+    }
+    e2 = map_notion_page_to_kb_entry(page_missing_applies_to)
+    assert e2 is not None
+    assert e2["applies_to"] == ["all"]
+
+
 @pytest.mark.anyio
 async def test_notion_singleflight_one_http_call(monkeypatch):
     from services.kb_notion_store import NotionKBStore, _reset_cache_for_tests
