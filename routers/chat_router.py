@@ -509,8 +509,6 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             )
         )
 
-        if neg and req:
-            return "NEW_REQUEST"
         if neg:
             return "NO"
         if req:
