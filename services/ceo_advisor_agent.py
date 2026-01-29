@@ -861,6 +861,158 @@ def _assistant_memory_text(*, english_output: bool) -> str:
     )
 
 
+def _assistant_memory_existence_text(*, english_output: bool) -> str:
+    if english_output:
+        return (
+            "Yes — I have memory in two forms:\n"
+            "- Short-term: I keep the context of the current conversation while the session lasts.\n"
+            "- Long-term (only with approval): I can write facts to Notion/KB via an approval-gated process.\n\n"
+            "Nothing is stored implicitly, and I never perform WRITE actions autonomously.\n"
+            "WRITE is strictly propose → approve → execute."
+        )
+    return (
+        "Da — imam pamćenje u dvije forme:\n"
+        "- Kratkoročno: pamtim kontekst tekućeg razgovora dok traje sesija.\n"
+        "- Dugoročno (samo uz odobrenje): mogu upisati činjenice u Notion/KB kroz approval-gated proces.\n\n"
+        "Ništa se ne pamti implicitno i nikad ne radim WRITE autonomno.\n"
+        "WRITE ide isključivo kroz propose → approve → execute."
+    )
+
+
+def _assistant_memory_classification_text(*, english_output: bool) -> str:
+    if english_output:
+        return (
+            "Memory types I use:\n"
+            "- Short-term: current conversation context (session-scoped).\n"
+            "- Long-term (approval-gated): facts written to Notion/KB only when you explicitly approve.\n\n"
+            "I do not store anything implicitly. WRITE is propose → approve → execute."
+        )
+    return (
+        "Vrste pamćenja koje koristim:\n"
+        "- Kratkoročno: kontekst tekućeg razgovora (u okviru sesije).\n"
+        "- Dugoročno (approval-gated): činjenice u Notion/KB samo kad ti eksplicitno odobriš.\n\n"
+        "Ne pamtim ništa implicitno. WRITE ide propose → approve → execute."
+    )
+
+
+def _assistant_memory_process_text(*, english_output: bool) -> str:
+    if english_output:
+        return (
+            "How my memory works here:\n"
+            "- Short-term: I keep and use the conversation context while we’re in this session.\n"
+            "- Long-term: nothing is stored automatically; if you want something remembered, I prepare a write proposal.\n"
+            "  Only after your approval do I execute a WRITE to Notion/KB.\n\n"
+            "So the flow is always propose → approve → execute, with no implicit storage."
+        )
+    return (
+        "Kako ovdje radi pamćenje:\n"
+        "- Kratkoročno: držim i koristim kontekst dok smo u ovoj sesiji.\n"
+        "- Dugoročno: ništa se ne upisuje automatski; ako želiš da se nešto zapamti, pripremim prijedlog za upis.\n"
+        "  Tek nakon tvog odobrenja izvršim WRITE u Notion/KB.\n\n"
+        "Dakle, uvijek je propose → approve → execute, bez implicitnog pamćenja."
+    )
+
+
+def _assistant_memory_meta_text(*, kind: str, english_output: bool) -> str:
+    k = (kind or "").strip().lower()
+    if k == "classification":
+        return _assistant_memory_classification_text(english_output=english_output)
+    if k == "process":
+        return _assistant_memory_process_text(english_output=english_output)
+    return _assistant_memory_existence_text(english_output=english_output)
+
+
+def _classify_memory_meta_question(
+    user_text: str,
+    *,
+    prev_meta_intent: Optional[str] = None,
+) -> Optional[str]:
+    """Classify memory-meta questions into sub-intents.
+
+    Returns one of: existence | classification | process, or None.
+
+    Must stay deterministic/offline-safe and must not hijack explicit memory-write requests.
+    """
+
+    t0 = (user_text or "").strip().lower()
+    if not t0:
+        return None
+
+    # Normalize BHS diacritics so pamćenje -> pamcenje, pamtiš -> pamtis.
+    t = (
+        t0.replace("č", "c")
+        .replace("ć", "c")
+        .replace("š", "s")
+        .replace("đ", "dj")
+        .replace("ž", "z")
+    )
+
+    # Guard: do NOT hijack explicit memory write / storage requests.
+    if re.search(
+        r"(?i)\b(zapamt\w*|upis\w*|snim\w*|store\s+this|remember\s+this|save\s+this|memor(y|ija)\s+write)\b",
+        t,
+    ):
+        return None
+
+    # Explicit memory-meta questions.
+    if re.search(
+        r"(?i)\b("
+        r"(da\s*li\s+)?(ti\s+)?imas\s+(pamcenje|memoriju)|"
+        r"(da\s*li\s+)?(ti\s+)?pamtis|"
+        r"do\s+you\s+have\s+memory|"
+        r"do\s+you\s+remember"
+        r")\b",
+        t,
+    ):
+        return "existence"
+
+    if re.search(
+        r"(?i)\b("
+        r"kakv\w*\s+(pamcenj\w*|memorij\w*)\s+imas|"
+        r"koju\s+(memorij\w*|vrstu\s+pamcenj\w*)\s+koristis|"
+        r"kratkorocn\w*\s+i\s+dugorocn\w*|"
+        r"types\s+of\s+memory|"
+        r"which\s+memory"
+        r")\b",
+        t,
+    ):
+        return "classification"
+
+    if re.search(
+        r"(?i)\b("
+        r"kako\s+(pamtis|radi\s+(tvoje\s+)?(pamcenj\w*|memorij\w*)|funkcionis\w*\s+(pamcenj\w*|memorij\w*))|"
+        r"how\s+do\s+you\s+remember|"
+        r"how\s+does\s+your\s+memory\s+work"
+        r")\b",
+        t,
+    ):
+        return "process"
+
+    # Short follow-up inheritance: allow referential short questions only
+    # if prior assistant meta intent indicates memory.
+    prev = (prev_meta_intent or "").strip().lower()
+    if prev.startswith("assistant_memory"):
+        t_short = re.sub(r"[^a-z0-9\s]", " ", t)
+        t_short = " ".join(t_short.split())
+        if t_short and len(t_short) <= 40:
+            if re.search(
+                r"(?i)\b(koju\s+koristis|koje\s+koristis|which\s+one|which\s+do\s+you\s+use)\b",
+                t_short,
+            ):
+                return "classification"
+            if re.search(
+                r"(?i)\b(kako\s+to\s+radi|kako\s+radi|how\s+does\s+it\s+work)\b",
+                t_short,
+            ):
+                return "process"
+            if re.search(r"(?i)\b(koju|koje|kakvo|kakvu|which|type)\b", t_short):
+                return "classification"
+            if re.search(r"(?i)\b(kako|how)\b", t_short):
+                return "process"
+
+    return None
+
+
 def _assistant_epistemic_text(*, english_output: bool) -> str:
     if english_output:
         return (
@@ -2520,6 +2672,53 @@ async def create_ceo_advisor_agent(
             return cid1.strip()
         return None
 
+    def _get_last_meta_intent(conversation_id: str) -> Optional[str]:
+        try:
+            from services.ceo_conversation_state_store import (  # noqa: PLC0415
+                ConversationStateStore,
+            )
+
+            meta = ConversationStateStore.get_meta(conversation_id=conversation_id)
+            if not isinstance(meta, dict):
+                return None
+
+            v = meta.get("assistant_last_meta_intent")
+            v = v if isinstance(v, str) else ""
+
+            # Basic staleness guard: do not inherit follow-ups forever.
+            at = meta.get("assistant_last_meta_intent_at")
+            try:
+                at_f = float(at)
+            except Exception:
+                at_f = 0.0
+
+            # 15 minutes TTL is plenty for short follow-ups.
+            if at_f and (time.time() - at_f) > (15.0 * 60.0):
+                return None
+            return v.strip() or None
+        except Exception:
+            return None
+
+    def _set_last_meta_intent(conversation_id: str, intent_value: str) -> None:
+        try:
+            from services.ceo_conversation_state_store import (  # noqa: PLC0415
+                ConversationStateStore,
+            )
+
+            v = (intent_value or "").strip()
+            if not v:
+                return
+
+            ConversationStateStore.update_meta(
+                conversation_id=conversation_id,
+                updates={
+                    "assistant_last_meta_intent": v,
+                    "assistant_last_meta_intent_at": float(time.time()),
+                },
+            )
+        except Exception:
+            pass
+
     def _mark_deliverable_completed(*, conversation_id: str, task_text: str) -> None:
         try:
             from services.ceo_conversation_state_store import (  # noqa: PLC0415
@@ -3507,16 +3706,36 @@ async def create_ceo_advisor_agent(
         )
 
     # Memory/self-knowledge allowlist: meta questions about memory must never hit unknown-mode.
-    if _is_assistant_memory_meta_question(base_text):
+    cid_meta = _conversation_id()
+    prev_meta_intent = (
+        _get_last_meta_intent(cid_meta.strip())
+        if isinstance(cid_meta, str) and cid_meta.strip()
+        else None
+    )
+    mem_kind = _classify_memory_meta_question(
+        base_text,
+        prev_meta_intent=prev_meta_intent,
+    )
+    if mem_kind or _is_assistant_memory_meta_question(base_text):
+        # If the older matcher fired but classifier didn't, default to existence.
+        kind = mem_kind or "existence"
+
+        if isinstance(cid_meta, str) and cid_meta.strip():
+            _set_last_meta_intent(cid_meta.strip(), "assistant_memory")
+
         return _final(
             AgentOutput(
-                text=_assistant_memory_text(english_output=english_output),
+                text=_assistant_memory_meta_text(
+                    kind=kind,
+                    english_output=english_output,
+                ),
                 proposed_commands=[],
                 agent_id="ceo_advisor",
                 read_only=True,
                 trace={
                     "deterministic": True,
                     "intent": "assistant_memory",
+                    "memory_meta_kind": kind,
                     "exit_reason": "deterministic.assistant_memory",
                 },
             )
