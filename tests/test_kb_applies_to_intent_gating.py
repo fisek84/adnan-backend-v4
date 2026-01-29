@@ -1,6 +1,3 @@
-import pytest
-
-
 def test_kb_retrieval_filters_by_intent_applies_to():
     from services.grounding_pack_service import GroundingPackService
 
@@ -57,5 +54,7 @@ def test_kb_retrieval_missing_applies_to_defaults_to_all():
         ],
     }
 
-    out = GroundingPackService._retrieve_kb(prompt="hello world", kb=kb, intent="advisory")
+    out = GroundingPackService._retrieve_kb(
+        prompt="hello world", kb=kb, intent="advisory"
+    )
     assert out.used_entry_ids == ["C"]

@@ -308,7 +308,9 @@ def map_notion_page_to_kb_entry(
 
     tags = _extract_multi_select(props, "Tags")
     applies_to_raw = _extract_multi_select(props, "AppliesTo")
-    applies_to = [x.strip().lower() for x in applies_to_raw if isinstance(x, str) and x.strip()]
+    applies_to = [
+        x.strip().lower() for x in applies_to_raw if isinstance(x, str) and x.strip()
+    ]
     if not applies_to:
         applies_to = ["all"]
 
