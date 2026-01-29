@@ -15,7 +15,9 @@ class _CapturingExecutor:
         self.last_context: Optional[Dict[str, Any]] = None
         self.last_text: Optional[str] = None
 
-    async def ceo_command(self, *, text: str, context: Dict[str, Any]) -> Dict[str, Any]:
+    async def ceo_command(
+        self, *, text: str, context: Dict[str, Any]
+    ) -> Dict[str, Any]:
         self.last_text = text
         self.last_context = context
         return {
@@ -86,9 +88,12 @@ def test_notion_snapshot_is_visible_in_instructions_even_when_kb_has_hits(
 
     # NOTION_SNAPSHOT must be included even when KB has hits.
     assert "NOTION_SNAPSHOT:" in instructions
-    assert "(omitted: KB-first)" not in instructions.split("NOTION_SNAPSHOT:\n", 1)[1][:120]
+    assert (
+        "(omitted: KB-first)"
+        not in instructions.split("NOTION_SNAPSHOT:\n", 1)[1][:120]
+    )
 
     # Proof: payload lists are present.
-    assert "\"goals\"" in instructions
-    assert "\"tasks\"" in instructions
-    assert "\"projects\"" in instructions
+    assert '"goals"' in instructions
+    assert '"tasks"' in instructions
+    assert '"projects"' in instructions

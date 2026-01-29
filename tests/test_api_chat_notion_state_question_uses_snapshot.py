@@ -41,8 +41,13 @@ def test_api_chat_state_question_uses_snapshot_even_when_kb_has_hits(monkeypatch
 
     # Stub the executor so no network is used, but the router still exercises the full flow.
     class _Exec:
-        async def ceo_command(self, *, text: str, context: Dict[str, Any]) -> Dict[str, Any]:
-            return {"text": "Da — imamo ciljeve=1 i taskove=1.", "proposed_commands": []}
+        async def ceo_command(
+            self, *, text: str, context: Dict[str, Any]
+        ) -> Dict[str, Any]:
+            return {
+                "text": "Da — imamo ciljeve=1 i taskove=1.",
+                "proposed_commands": [],
+            }
 
     monkeypatch.setattr(
         "services.agent_router.executor_factory.get_executor", lambda **_k: _Exec()
