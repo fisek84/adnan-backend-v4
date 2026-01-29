@@ -1002,7 +1002,7 @@ def _advisory_review_fallback_text(*, english_output: bool) -> str:
             "4) Risks/edge cases and mitigations\n"
             "5) Metrics/KPIs and next-step checklist\n\n"
             "If you want, paste the text (or keep it as-is if you already did) and tell me: "
-            "target audience + deadline + constraints." 
+            "target audience + deadline + constraints."
         )
     return (
         "Mogu pročitati tvoj tekst i dati READ-ONLY feedback / analizu. "
@@ -1013,7 +1013,7 @@ def _advisory_review_fallback_text(*, english_output: bool) -> str:
         "3) Strukturu i jasnoću (sekcije, tok, ponavljanja)\n"
         "4) Rizike i mitigacije\n"
         "5) KPI-je i checklistu sljedećih koraka\n\n"
-        "Ako želiš preciznije, napiši još: ciljna publika + rok + ograničenja." 
+        "Ako želiš preciznije, napiši još: ciljna publika + rok + ograničenja."
     )
 
 
@@ -1107,8 +1107,8 @@ def _strip_internal_contract_leaks(text: str) -> str:
         "tacno dva kljuca",
         "ključa",
         "kljuca",
-        "\"text\"",
-        "\"proposed_commands\"",
+        '"text"',
+        '"proposed_commands"',
     )
 
     if not any(m in lowered for m in markers):

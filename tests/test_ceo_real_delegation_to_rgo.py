@@ -556,7 +556,9 @@ def test_pending_unknown_twice_prompts_once_then_auto_cancels(monkeypatch, tmp_p
     assert pcs3 != pcs1
 
 
-def test_pending_decline_then_advisory_cancels_pending_and_continues(monkeypatch, tmp_path):
+def test_pending_decline_then_advisory_cancels_pending_and_continues(
+    monkeypatch, tmp_path
+):
     """Regression: negation + advisory must cancel pending proposal and continue.
 
     Repro: when a pending proposal exists and user replies with a decline + advisory intent
@@ -571,7 +573,8 @@ def test_pending_decline_then_advisory_cancels_pending_and_continues(monkeypatch
     monkeypatch.setenv("CEO_ADVISOR_ALLOW_GENERAL_KNOWLEDGE", "1")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-local")
     monkeypatch.setenv(
-        "CEO_CONVERSATION_STATE_PATH", str(tmp_path / "ceo_conv_state_pending_cancel.json")
+        "CEO_CONVERSATION_STATE_PATH",
+        str(tmp_path / "ceo_conv_state_pending_cancel.json"),
     )
 
     from services.grounding_pack_service import GroundingPackService
