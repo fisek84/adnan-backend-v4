@@ -21,7 +21,13 @@ def _force_gateway_fallback_router(monkeypatch):
     import gateway.gateway_server as gw
 
     async def _fake_backend_ceo_command(_req):  # noqa: ANN001
-        return {"ok": True, "text": "noop", "summary": "noop", "proposed_commands": [], "trace": {}}
+        return {
+            "ok": True,
+            "text": "noop",
+            "summary": "noop",
+            "proposed_commands": [],
+            "trace": {},
+        }
 
     monkeypatch.setattr(gw.ceo_console_module, "ceo_command", _fake_backend_ceo_command)
 
@@ -54,7 +60,11 @@ def test_gateway_advisory_bypass_missing_memory_snapshot_a(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     monkeypatch.setenv("CEO_ADVISOR_ALLOW_GENERAL_KNOWLEDGE", "0")
 
-    monkeypatch.setattr(gw, "_build_ceo_read_context", lambda **_k: _ctx_bridge_missing_memory_snapshot())
+    monkeypatch.setattr(
+        gw,
+        "_build_ceo_read_context",
+        lambda **_k: _ctx_bridge_missing_memory_snapshot(),
+    )
 
     async def _fake_create_ceo_advisor_agent(_agent_in, _agent_ctx):  # noqa: ANN001
         return _FakeAgentOut(
@@ -75,7 +85,10 @@ def test_gateway_advisory_bypass_missing_memory_snapshot_a(monkeypatch):
     r = client.post(
         "/api/ceo/command",
         headers={"X-Initiator": "ceo_dashboard"},
-        json={"text": "Kako da upravljam mislima i napravim bolji plan", "data": {"session_id": "gw-adv-1"}},
+        json={
+            "text": "Kako da upravljam mislima i napravim bolji plan",
+            "data": {"session_id": "gw-adv-1"},
+        },
     )
     assert r.status_code == 200
     j: Dict[str, Any] = r.json()
@@ -90,7 +103,9 @@ def test_gateway_advisory_bypass_missing_memory_snapshot_a(monkeypatch):
     assert j.get("proposed_commands") == []
 
     tr = j.get("trace") or {}
-    assert (tr.get("router_version") or "") == "gateway-fallback-proposals-disabled-for-nonwrite-v1"
+    assert (
+        tr.get("router_version") or ""
+    ) == "gateway-fallback-proposals-disabled-for-nonwrite-v1"
 
 
 def test_gateway_advisory_bypass_missing_memory_snapshot_b(monkeypatch):
@@ -100,7 +115,11 @@ def test_gateway_advisory_bypass_missing_memory_snapshot_b(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     monkeypatch.setenv("CEO_ADVISOR_ALLOW_GENERAL_KNOWLEDGE", "0")
 
-    monkeypatch.setattr(gw, "_build_ceo_read_context", lambda **_k: _ctx_bridge_missing_memory_snapshot())
+    monkeypatch.setattr(
+        gw,
+        "_build_ceo_read_context",
+        lambda **_k: _ctx_bridge_missing_memory_snapshot(),
+    )
 
     async def _fake_create_ceo_advisor_agent(_agent_in, _agent_ctx):  # noqa: ANN001
         return _FakeAgentOut(
@@ -121,7 +140,10 @@ def test_gateway_advisory_bypass_missing_memory_snapshot_b(monkeypatch):
     r = client.post(
         "/api/ceo/command",
         headers={"X-Initiator": "ceo_dashboard"},
-        json={"text": "Kako da poboljšam fokus i donesem bolju odluku", "data": {"session_id": "gw-adv-2"}},
+        json={
+            "text": "Kako da poboljšam fokus i donesem bolju odluku",
+            "data": {"session_id": "gw-adv-2"},
+        },
     )
     assert r.status_code == 200
     j: Dict[str, Any] = r.json()
@@ -136,17 +158,25 @@ def test_gateway_advisory_bypass_missing_memory_snapshot_b(monkeypatch):
     assert j.get("proposed_commands") == []
 
 
-def test_gateway_fact_lookup_missing_memory_snapshot_still_returns_canonical_no_answer(monkeypatch):
+def test_gateway_fact_lookup_missing_memory_snapshot_still_returns_canonical_no_answer(
+    monkeypatch,
+):
     gw = _force_gateway_fallback_router(monkeypatch)
 
     monkeypatch.setenv("OPENAI_API_MODE", "responses")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     monkeypatch.setenv("CEO_ADVISOR_ALLOW_GENERAL_KNOWLEDGE", "0")
 
-    monkeypatch.setattr(gw, "_build_ceo_read_context", lambda **_k: _ctx_bridge_missing_memory_snapshot())
+    monkeypatch.setattr(
+        gw,
+        "_build_ceo_read_context",
+        lambda **_k: _ctx_bridge_missing_memory_snapshot(),
+    )
 
     async def _boom(*_a, **_k):  # noqa: ANN001
-        raise AssertionError("CEO advisor agent must not be called for fact lookup blocked at gateway")
+        raise AssertionError(
+            "CEO advisor agent must not be called for fact lookup blocked at gateway"
+        )
 
     monkeypatch.setattr("services.ceo_advisor_agent.create_ceo_advisor_agent", _boom)
 
@@ -154,7 +184,10 @@ def test_gateway_fact_lookup_missing_memory_snapshot_still_returns_canonical_no_
     r = client.post(
         "/api/ceo/command",
         headers={"X-Initiator": "ceo_dashboard"},
-        json={"text": "Koji je glavni grad Francuske?", "data": {"session_id": "gw-fact-1"}},
+        json={
+            "text": "Koji je glavni grad Francuske?",
+            "data": {"session_id": "gw-fact-1"},
+        },
     )
     assert r.status_code == 200
     j: Dict[str, Any] = r.json()
