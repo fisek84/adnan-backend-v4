@@ -2269,6 +2269,14 @@ _INTERNAL_MEMORY_BOILERPLATE_MARKERS: Tuple[str, ...] = (
     "propose → approve → execute",
 )
 
+# NEW PROD INCIDENT (verbatim): CEO Advisor intro/how-to-ask template leaked to user-visible text.
+# Marker set must expand ONLY from real prod snippets.
+_INTERNAL_CEO_INTRO_TEMPLATE_MARKERS: Tuple[str, ...] = (
+    "Ja sam CEO Advisor u ovom workspace-u",
+    "Kako radim:",
+    "Kako da pitaš:",
+)
+
 _LEAK_GUARD_LOCK = threading.Lock()
 _LAST_INTERNAL_TEMPLATE_HASH_BY_SESSION: Dict[str, str] = {}
 
@@ -2291,6 +2299,29 @@ def _user_explicitly_asked_memory_or_snapshot(prompt: str) -> bool:
     return bool(
         re.search(
             r"(?i)\b(pamcenj\w*|memorij\w*|snapshot|grounding|governance|sistemsk\w*\s+tekst|system\s+text)\b",
+            t,
+        )
+    )
+
+
+def _user_explicitly_asked_identity_or_howto(prompt: str) -> bool:
+    t = _bhs_normalize(prompt)
+    if not t:
+        return False
+
+    # Strict allowlist (enterprise): only allow intro/how-to template when explicitly asked.
+    return bool(
+        re.search(
+            r"(?i)\b("
+            r"ko\s+si|"
+            r"sta\s+si|"
+            r"\u0161ta\s+si|"
+            r"kako\s+radis|"
+            r"kako\s+da\s+pitam|"
+            r"uputstv\w*|"
+            r"help|guidelines|"
+            r"who\s+are\s+you|how\s+do\s+you\s+work|how\s+to\s+ask"
+            r")\b",
             t,
         )
     )
@@ -2319,6 +2350,20 @@ def _looks_like_internal_memory_boilerplate(text: str) -> bool:
     return supporting >= 2
 
 
+def _looks_like_internal_ceo_intro_template(text: str) -> bool:
+    s = (text or "").strip()
+    if not s:
+        return False
+
+    supporting = 0
+    for m in _INTERNAL_CEO_INTRO_TEMPLATE_MARKERS:
+        if m in s:
+            supporting += 1
+
+    # Tight match: require at least 2/3 markers from the verbatim prod snippet.
+    return supporting >= 2
+
+
 def _safe_replacement_text_for_prompt(prompt: str) -> str:
     # Prefer a deterministic, domain-specific replacement when possible.
     try:
@@ -2331,6 +2376,38 @@ def _safe_replacement_text_for_prompt(prompt: str) -> str:
             return _render_agent_registry_text(english_output=False)
     except Exception:
         pass
+
+    # Deterministic plan-review fallback (read-only): provide actionable feedback
+    # without any system/snapshot boilerplate.
+    t = _bhs_normalize(prompt)
+    if t and (
+        ("plan" in t)
+        or ("procitaj" in t)
+        or ("reci mi sta mislis" in t)
+        or ("sta mislis" in t)
+        or ("feedback" in t)
+        or ("povratn" in t)
+        or ("slabost" in t)
+    ):
+        if re.search(r"(?i)\bslabost\w*\b", t):
+            return (
+                "Evo 3 moguće slabosti u planu (read-only feedback):\n"
+                "1) Nisu jasno definisani mjerljivi KPI-jevi / kriterij uspjeha.\n"
+                "2) Rizici i pretpostavke nisu eksplicitno navedeni (i bez plana mitigacije).\n"
+                "3) Naredni koraci nisu razbijeni na vlasnika, rok i prioritet.\n\n"
+                "Ako pošalješ konkretan dio plana (cilj, tržište, budžet, rok), mogu precizirati komentare."
+            )
+
+        return (
+            "Evo brzog feedbacka na plan (read-only):\n\n"
+            "Snage:\n"
+            "- Imaš jasnu namjeru i strukturu (vidi se smjer).\n"
+            "- Postoji osnova za prioritetizaciju i izvedbu.\n\n"
+            "Poboljšanja (konkretno):\n"
+            "1) Dodaj 2–3 mjerljive metrike uspjeha (KPI) i pragove.\n"
+            "2) Eksplicitno napiši rizike + pretpostavke i kako ih mitigiraš.\n"
+            "3) Razbij naredne korake na: vlasnik → rok → ishod.\n"
+        )
 
     # Generic read-only safe guidance (no system/snapshot leakage).
     return (
@@ -2444,11 +2521,15 @@ async def prevent_internal_text_leak_middleware(request: Request, call_next):
     if not isinstance(text, str) or not text.strip():
         return resp
 
-    if not _looks_like_internal_memory_boilerplate(text):
+    is_memory_tpl = _looks_like_internal_memory_boilerplate(text)
+    is_intro_tpl = _looks_like_internal_ceo_intro_template(text)
+    if not (is_memory_tpl or is_intro_tpl):
         return resp
 
-    # Allow memory/governance explanations only when explicitly requested.
-    if _user_explicitly_asked_memory_or_snapshot(prompt):
+    # Allow meta explanations only when explicitly requested.
+    if is_memory_tpl and _user_explicitly_asked_memory_or_snapshot(prompt):
+        return resp
+    if is_intro_tpl and _user_explicitly_asked_identity_or_howto(prompt):
         return resp
 
     # Anti-loop bookkeeping: if we detect the same internal template repeatedly,
