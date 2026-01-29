@@ -839,6 +839,24 @@ def _assistant_identity_text(*, english_output: bool) -> str:
     )
 
 
+def _assistant_memory_text(*, english_output: bool) -> str:
+    if english_output:
+        return (
+            "I have two kinds of memory:\n"
+            "- Short-term: I keep the context of the current conversation while the session lasts.\n"
+            "- Long-term (only with approval): I can write facts to Notion/KB via an approval-gated process.\n"
+            "- I do not store anything implicitly, and I never write changes autonomously without your approval.\n"
+            "- WRITE (Notion) is strictly propose → approve → execute."
+        )
+    return (
+        "Imam dvije vrste pamćenja:\n"
+        "- Kratkoročno: pamtim kontekst tekućeg razgovora dok traje sesija.\n"
+        "- Dugoročno (samo uz odobrenje): mogu upisati činjenice u Notion/KB kroz approval-gated proces.\n"
+        "- Ne pamtim ništa implicitno niti samostalno upisujem promjene bez tvog odobrenja.\n"
+        "- WRITE (Notion) ide isključivo kroz propose → approve → execute."
+    )
+
+
 def _should_use_kickoff_in_offline_mode(user_text: str) -> bool:
     t0 = (user_text or "").strip().lower()
     if not t0:
@@ -900,6 +918,52 @@ def _is_assistant_role_or_capabilities_question(user_text: str) -> bool:
             r"\u0161ta\s+radi\u0161|sta\s+radis|"
             r"kako\s+mi\s+najbolje\s+mozes\s+pomo[\u0107c]|"
             r"what\s+is\s+your\s+role|what\s+can\s+you\s+do|how\s+can\s+you\s+help"
+            r")\b",
+            t,
+        )
+    )
+
+
+def _is_assistant_memory_meta_question(user_text: str) -> bool:
+    """True for meta questions about the assistant's memory/capability to remember.
+
+    These must never fall into unknown-mode, even when general knowledge is disabled.
+    """
+
+    t0 = (user_text or "").strip().lower()
+    if not t0:
+        return False
+
+    # Normalize BHS diacritics so pamćenje -> pamcenje, pamtiš -> pamtis.
+    t = (
+        t0.replace("č", "c")
+        .replace("ć", "c")
+        .replace("š", "s")
+        .replace("đ", "dj")
+        .replace("ž", "z")
+    )
+
+    # Guard: do NOT hijack explicit memory write / storage requests.
+    if re.search(
+        r"(?i)\b(zapamt\w*|upis\w*|snim\w*|store\s+this|remember\s+this|save\s+this|memor(y|ija)\s+write)\b",
+        t,
+    ):
+        return False
+
+    # Keep scope tight: only match assistant/self-memory meta questions.
+    return bool(
+        re.search(
+            r"(?i)\b("
+            r"(da\s*li\s+)?(ti\s+)?imas\s+pamcenje|"
+            r"(da\s*li\s+)?imas\s+li\s+pamcenje|"
+            r"(da\s*li\s+)?(ti\s+)?pamtis|"
+            r"kako\s+pamtis|"
+            r"sta\s+pamtis|"
+            r"kakvo\s+pamcenje\s+imas|"
+            r"(da\s*li\s+)?(ti\s+)?imas\s+memoriju|"
+            r"do\s+you\s+have\s+memory|"
+            r"do\s+you\s+remember|"
+            r"how\s+do\s+you\s+remember"
             r")\b",
             t,
         )
@@ -3379,6 +3443,22 @@ async def create_ceo_advisor_agent(
                     "deterministic": True,
                     "intent": "assistant_identity",
                     "exit_reason": "deterministic.assistant_identity",
+                },
+            )
+        )
+
+    # Memory/self-knowledge allowlist: meta questions about memory must never hit unknown-mode.
+    if _is_assistant_memory_meta_question(base_text):
+        return _final(
+            AgentOutput(
+                text=_assistant_memory_text(english_output=english_output),
+                proposed_commands=[],
+                agent_id="ceo_advisor",
+                read_only=True,
+                trace={
+                    "deterministic": True,
+                    "intent": "assistant_memory",
+                    "exit_reason": "deterministic.assistant_memory",
                 },
             )
         )
