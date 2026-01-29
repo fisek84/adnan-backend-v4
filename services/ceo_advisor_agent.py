@@ -557,22 +557,90 @@ def _is_memory_capability_question(user_text: str) -> bool:
 
 
 def _is_memory_write_request(user_text: str) -> bool:
-    t = (user_text or "").strip().lower()
-    if not t:
+    t0 = (user_text or "").strip().lower()
+    if not t0:
         return False
-    return bool(re.search(r"(?i)\b(zapamti|remember\s+this|nau\u010di)\b", t))
+
+    # Normalize BHS diacritics so upiši -> upisi.
+    t = (
+        t0.replace("č", "c")
+        .replace("ć", "c")
+        .replace("š", "s")
+        .replace("đ", "dj")
+        .replace("ž", "z")
+    )
+
+    # Must contain an explicit write verb (no noun-only triggers).
+    m = re.search(
+        r"(?i)\b("
+        r"zapamti(\s+ovo)?|"
+        r"snimi(\s+ovo)?|"
+        r"upisi(\s+ovo)?|"
+        r"pohrani(\s+ovo)?|"
+        r"spasi(\s+ovo)?|"
+        r"nauci|"
+        r"remember\s+this|"
+        r"store\s+this|"
+        r"save\s+to\s+memory|"
+        r"write\s+to\s+memory"
+        r")\b",
+        t,
+    )
+    if not m:
+        return False
+
+    after = t[m.end() :].strip()
+    if not after:
+        return False
+
+    # Accept "verb ...: payload" shapes (allow a small buffer like "ovo:").
+    if ":" in after[:12]:
+        payload = after.split(":", 1)[1].strip()
+        return bool(payload)
+
+    # Quoted payload anywhere after verb.
+    if re.search(r"([\"'\u201c\u201d\u2018\u2019]).{3,}\1", t[m.end() :]):
+        return True
+
+    return len(after) >= 15
 
 
 def _is_expand_knowledge_request(user_text: str) -> bool:
-    t = (user_text or "").strip().lower()
-    if not t:
+    t0 = (user_text or "").strip().lower()
+    if not t0:
         return False
-    return bool(
-        re.search(
-            r"(?i)\b(pro\u0161iri\s+znanje|prosiri\s+znanje|pro\u0161irenje\s+znanja)\b",
-            t,
-        )
+
+    t = (
+        t0.replace("č", "c")
+        .replace("ć", "c")
+        .replace("š", "s")
+        .replace("đ", "dj")
+        .replace("ž", "z")
     )
+
+    m = re.search(
+        r"(?i)\b("
+        r"prosiri\s+znanje|"
+        r"prosirenje\s+znanja|"
+        r"expand\s+knowledge"
+        r")\b",
+        t,
+    )
+    if not m:
+        return False
+
+    after = t[m.end() :].strip()
+    if not after:
+        return False
+
+    if ":" in after[:12]:
+        payload = after.split(":", 1)[1].strip()
+        return bool(payload)
+
+    if re.search(r"([\"'\u201c\u201d\u2018\u2019]).{3,}\1", t[m.end() :]):
+        return True
+
+    return len(after) >= 15
 
 
 def _is_trace_status_query(user_text: str) -> bool:
@@ -956,6 +1024,7 @@ def _classify_memory_meta_question(
     if re.search(
         r"(?i)\b("
         r"kakv\w*\s+(pamcenj\w*|memorij\w*)\s+imas|"
+        r"kakv\w*\s+(pamcenj\w*|memorij\w*)\s+koristis|"
         r"koju\s+(memorij\w*|vrstu\s+pamcenj\w*)\s+koristis|"
         r"kratkorocn\w*\s+i\s+dugorocn\w*|"
         r"types\s+of\s+memory|"
