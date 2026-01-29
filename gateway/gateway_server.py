@@ -2309,6 +2309,15 @@ def _user_explicitly_asked_identity_or_howto(prompt: str) -> bool:
     if not t:
         return False
 
+    # Enterprise hardening: do not allowlist long pasted content (e.g., plan text).
+    # Meta questions should be short and explicit.
+    if len(t) > 300:
+        return False
+
+    # Never allowlist plan-analysis prompts.
+    if re.search(r"(?i)\b(plan|analiz\w*|analysis|review|procitaj)\b", t):
+        return False
+
     # Strict allowlist (enterprise): only allow intro/how-to template when explicitly asked.
     return bool(
         re.search(
@@ -2355,13 +2364,83 @@ def _looks_like_internal_ceo_intro_template(text: str) -> bool:
     if not s:
         return False
 
-    supporting = 0
-    for m in _INTERNAL_CEO_INTRO_TEMPLATE_MARKERS:
-        if m in s:
-            supporting += 1
+    # Enterprise invariant (exact markers):
+    # - If it contains the unique intro line, treat as the template.
+    # - Otherwise require both section headers.
+    if _INTERNAL_CEO_INTRO_TEMPLATE_MARKERS[0] in s:
+        return True
+    return (
+        _INTERNAL_CEO_INTRO_TEMPLATE_MARKERS[1] in s
+        and _INTERNAL_CEO_INTRO_TEMPLATE_MARKERS[2] in s
+    )
 
-    # Tight match: require at least 2/3 markers from the verbatim prod snippet.
-    return supporting >= 2
+
+def sanitize_user_visible_answer(
+    *,
+    body_obj: Dict[str, Any],
+    prompt: str,
+    session_id: str,
+    conversation_id: str,
+) -> Optional[Dict[str, Any]]:
+    """Enforce enterprise response contract for user-visible assistant text.
+
+    - Sanitizes known internal templates from the outgoing `text` field.
+    - Allowlist decisions MUST be based only on the current user prompt.
+    - On sanitize: move leaked text to metadata.debug.internal_system_text,
+      replace `text` with deterministic read-only content, and clear sticky meta.
+
+    Returns a new dict if changes are applied, else None.
+    """
+
+    if not isinstance(body_obj, dict):
+        return None
+
+    text = body_obj.get("text")
+    if not isinstance(text, str) or not text.strip():
+        return None
+
+    is_memory_tpl = _looks_like_internal_memory_boilerplate(text)
+    is_intro_tpl = _looks_like_internal_ceo_intro_template(text)
+    if not (is_memory_tpl or is_intro_tpl):
+        return None
+
+    # Allow meta explanations only when explicitly requested in THIS turn.
+    if is_memory_tpl and _user_explicitly_asked_memory_or_snapshot(prompt):
+        return None
+    if is_intro_tpl and _user_explicitly_asked_identity_or_howto(prompt):
+        return None
+
+    # Anti-loop bookkeeping: if we detect the same internal template repeatedly,
+    # treat as mode-lock and clear sticky meta intent.
+    tpl_hash = ""
+    try:
+        import hashlib
+
+        tpl_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+    except Exception:
+        tpl_hash = ""
+
+    if session_id and tpl_hash:
+        with _LEAK_GUARD_LOCK:
+            prev = _LAST_INTERNAL_TEMPLATE_HASH_BY_SESSION.get(session_id)
+            _LAST_INTERNAL_TEMPLATE_HASH_BY_SESSION[session_id] = tpl_hash
+            if prev == tpl_hash and conversation_id:
+                _clear_sticky_meta_intent(conversation_id)
+
+    if conversation_id:
+        _clear_sticky_meta_intent(conversation_id)
+
+    out = dict(body_obj)
+
+    md = out.get("metadata")
+    md = md if isinstance(md, dict) else {}
+    dbg = md.get("debug")
+    dbg = dbg if isinstance(dbg, dict) else {}
+    dbg.setdefault("internal_system_text", text)
+    md["debug"] = dbg
+    out["metadata"] = md
+    out["text"] = _safe_replacement_text_for_prompt(prompt)
+    return out
 
 
 def _safe_replacement_text_for_prompt(prompt: str) -> str:
@@ -2438,8 +2517,10 @@ def _clear_sticky_meta_intent(conversation_id: str) -> None:
 
 @app.middleware("http")
 async def prevent_internal_text_leak_middleware(request: Request, call_next):
-    path = (request.url.path or "").strip()
-    if path not in {"/api/chat", "/api/ceo/command", "/api/ceo-console/command"}:
+    # Apply contract enforcement globally for POST JSON responses.
+    # This covers all frontend chat entrypoints (including legacy wrappers),
+    # and avoids missing /api-less aliases.
+    if (request.method or "").upper() != "POST":
         return await call_next(request)
 
     # Best-effort extract prompt + ids from request JSON.
@@ -2521,50 +2602,17 @@ async def prevent_internal_text_leak_middleware(request: Request, call_next):
     if not isinstance(text, str) or not text.strip():
         return resp
 
-    is_memory_tpl = _looks_like_internal_memory_boilerplate(text)
-    is_intro_tpl = _looks_like_internal_ceo_intro_template(text)
-    if not (is_memory_tpl or is_intro_tpl):
+    sanitized = sanitize_user_visible_answer(
+        body_obj=body_obj,
+        prompt=prompt,
+        session_id=session_id,
+        conversation_id=conversation_id,
+    )
+    if sanitized is None:
         return resp
-
-    # Allow meta explanations only when explicitly requested.
-    if is_memory_tpl and _user_explicitly_asked_memory_or_snapshot(prompt):
-        return resp
-    if is_intro_tpl and _user_explicitly_asked_identity_or_howto(prompt):
-        return resp
-
-    # Anti-loop bookkeeping: if we detect the same internal template repeatedly,
-    # we still block it; also clear sticky meta intent.
-    tpl_hash = ""
-    try:
-        import hashlib
-
-        tpl_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
-    except Exception:
-        tpl_hash = ""
-
-    if session_id and tpl_hash:
-        with _LEAK_GUARD_LOCK:
-            prev = _LAST_INTERNAL_TEMPLATE_HASH_BY_SESSION.get(session_id)
-            _LAST_INTERNAL_TEMPLATE_HASH_BY_SESSION[session_id] = tpl_hash
-            # If it repeats consecutively, treat as a mode-lock signal.
-            if prev == tpl_hash and conversation_id:
-                _clear_sticky_meta_intent(conversation_id)
-
-    if conversation_id:
-        _clear_sticky_meta_intent(conversation_id)
-
-    # Move internal/system text to metadata.debug and replace user-visible text.
-    md = body_obj.get("metadata")
-    md = md if isinstance(md, dict) else {}
-    dbg = md.get("debug")
-    dbg = dbg if isinstance(dbg, dict) else {}
-    dbg.setdefault("internal_system_text", text)
-    md["debug"] = dbg
-    body_obj["metadata"] = md
-    body_obj["text"] = _safe_replacement_text_for_prompt(prompt)
 
     # Rebuild JSON response, preserving headers/status.
-    new_resp = JSONResponse(content=body_obj, status_code=resp.status_code)
+    new_resp = JSONResponse(content=sanitized, status_code=resp.status_code)
     for k, v in resp.headers.items():
         if k.lower() == "content-length":
             continue
