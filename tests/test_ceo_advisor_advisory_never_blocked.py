@@ -90,7 +90,9 @@ def test_fact_lookup_without_grounding_returns_canonical_no_answer(monkeypatch):
     monkeypatch.setenv("CEO_ADVISOR_ALLOW_GENERAL_KNOWLEDGE", "0")
 
     def _boom(*args, **kwargs):
-        raise AssertionError("executor must not be called for fact lookup without grounding")
+        raise AssertionError(
+            "executor must not be called for fact lookup without grounding"
+        )
 
     monkeypatch.setattr("services.agent_router.executor_factory.get_executor", _boom)
 
