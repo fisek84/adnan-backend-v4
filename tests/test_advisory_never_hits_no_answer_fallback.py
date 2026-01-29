@@ -25,6 +25,18 @@ def test_advisory_questions_bypass_responses_missing_grounding_no_answer(
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     monkeypatch.setenv("CEO_ADVISOR_ALLOW_GENERAL_KNOWLEDGE", "0")
 
+    class _StubExecutor:
+        async def ceo_command(self, text, context):
+            return {
+                "text": "- Korak 1: Definiši cilj\n- Korak 2: Izaberi 3 prioriteta\n- Korak 3: Napravi prvi mali potez",
+                "proposed_commands": [],
+            }
+
+    monkeypatch.setattr(
+        "services.agent_router.executor_factory.get_executor",
+        lambda purpose=None: _StubExecutor(),
+    )
+
     out = _run(
         create_ceo_advisor_agent(
             AgentInput(
@@ -54,6 +66,13 @@ def test_fact_lookup_without_grounding_still_returns_canonical_no_answer(monkeyp
     monkeypatch.setenv("OPENAI_API_MODE", "responses")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     monkeypatch.setenv("CEO_ADVISOR_ALLOW_GENERAL_KNOWLEDGE", "0")
+
+    def _boom(*args, **kwargs):
+        raise AssertionError(
+            "executor must not be called for fact lookup without grounding"
+        )
+
+    monkeypatch.setattr("services.agent_router.executor_factory.get_executor", _boom)
 
     out = _run(
         create_ceo_advisor_agent(

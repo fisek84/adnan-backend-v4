@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import time
+from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
 
 from models.agent_contract import AgentInput, AgentOutput, ProposedCommand
@@ -331,6 +332,111 @@ def _canonical_no_answer_text(*, english_output: bool = False) -> str:
 
 def _responses_missing_grounding_text(*, english_output: bool) -> str:
     return _canonical_no_answer_text(english_output=english_output)
+
+
+class ResponseClass(str, Enum):
+    ADVISORY = "advisory"
+    FACT_LOOKUP = "fact_lookup"
+    ACTION_PROPOSE = "action_propose"
+
+
+def _classify_response_class(
+    user_text: str,
+    *,
+    orchestration_intent: str,
+) -> ResponseClass:
+    """Classify the *response type* to apply correct gates.
+
+    Canon rule: default to ADVISORY unless we are confident it's FACT_LOOKUP.
+    """
+
+    t = (user_text or "").strip()
+    if not t:
+        return ResponseClass.ADVISORY
+
+    # ACTION_PROPOSE: preserve existing governed write/proposal routing.
+    if str(orchestration_intent or "") == "notion_write":
+        return ResponseClass.ACTION_PROPOSE
+    if _is_propose_only_request(t):
+        return ResponseClass.ACTION_PROPOSE
+    has_goal_task_action, _ = _has_explicit_action_for_goal_task(t)
+    if has_goal_task_action:
+        return ResponseClass.ACTION_PROPOSE
+    if _is_memory_write_request(t) or _is_expand_knowledge_request(t):
+        return ResponseClass.ACTION_PROPOSE
+
+    # ADVISORY: deterministic and conservative.
+    if (
+        _is_planning_or_help_request(t)
+        or _is_advisory_thinking_request(t)
+        or _is_advisory_review_of_provided_content(t)
+        or _is_advisory_bypass_no_answer(t)
+    ):
+        return ResponseClass.ADVISORY
+
+    # FACT_LOOKUP: only when we are confident.
+    if _is_fact_sensitive_query(t):
+        return ResponseClass.FACT_LOOKUP
+
+    t0 = re.sub(r"\s+", " ", (t or "").strip().lower())
+    # Strong generic question patterns.
+    if "?" in t0:
+        return ResponseClass.FACT_LOOKUP
+    if re.match(r"(?i)^(what|who|when|where|which|why)\b", t0):
+        return ResponseClass.FACT_LOOKUP
+    if re.match(r"(?i)^how\s+many\b", t0):
+        return ResponseClass.FACT_LOOKUP
+
+    return ResponseClass.ADVISORY
+
+
+def _build_responses_no_grounding_instructions(
+    *,
+    english_output: bool,
+    response_class: ResponseClass,
+    notion_ops: Optional[Dict[str, Any]],
+) -> str:
+    """Safe instruction set for Responses-mode when grounding_pack is missing.
+
+    Must not require KB/snapshot grounding and must not leak internal terms.
+    """
+
+    if english_output:
+        base = (
+            f"{_CEO_INSTRUCTIONS_PREFIX}\n\n"
+            "GOVERNANCE (non-negotiable):\n"
+            "- READ-ONLY by default: no tool calls, no side effects, no execution.\n"
+            "- Do not claim access to any internal systems or sources.\n"
+            "- Do not use general world knowledge for factual claims.\n"
+            "- Provide safe, general coaching: frameworks, options, tradeoffs, next steps.\n"
+            "- Do not mention internal implementation details, system modes, or routing.\n"
+        )
+        if response_class == ResponseClass.ACTION_PROPOSE:
+            base += (
+                "\nACTION PROPOSALS (approval-gated):\n"
+                "- If the user asks for operational changes, propose commands only; never execute.\n"
+                "- Only propose write commands when Notion Ops is armed; otherwise ask the user to arm it.\n"
+            )
+    else:
+        base = (
+            f"{_CEO_INSTRUCTIONS_PREFIX}\n\n"
+            "GOVERNANCE (non-negotiable):\n"
+            "- READ-ONLY po defaultu: bez tool poziva, bez side-effecta, bez izvršavanja.\n"
+            "- Ne tvrdi da imaš pristup internim sistemima ili izvorima.\n"
+            "- Ne koristi opće svjetsko znanje za činjenične tvrdnje.\n"
+            "- Daj siguran, opći coaching: okviri, opcije, tradeoffi, sljedeći koraci.\n"
+            "- Ne spominji interne detalje implementacije, sistemske režime ili rutiranje.\n"
+        )
+        if response_class == ResponseClass.ACTION_PROPOSE:
+            base += (
+                "\nAKCIJE (approval-gated):\n"
+                "- Ako korisnik traži operativne promjene, predloži komande; ništa ne izvršavaj.\n"
+                "- Write komande predlaži samo kad je Notion Ops armed; inače traži da korisnik aktivira Notion Ops.\n"
+            )
+
+    armed = bool(isinstance(notion_ops, dict) and notion_ops.get("armed") is True)
+    base += f"\nNOTION_OPS_STATE: armed={str(armed).lower()}\n"
+    return base
 
 
 # -----------------------------------
@@ -5443,71 +5549,71 @@ async def create_ceo_advisor_agent(
 
     # RESPONSES MODE: enforce system-equivalent instructions (identity + governance + budgeted grounding).
     if _responses_mode_enabled():
+        response_class = _classify_response_class(
+            base_text,
+            orchestration_intent=intent,
+        )
+        safe_context["response_class"] = str(response_class.value)
+
+        conv_state = ctx.get("conversation_state") if isinstance(ctx, dict) else None
+        notion_ops_ctx = {
+            "armed": bool(notion_ops_armed is True),
+            "armed_at": notion_ops_state.get("armed_at")
+            if isinstance(notion_ops_state, dict)
+            else None,
+            "session_id": session_id,
+        }
+
         if not _grounding_sufficient_for_responses_llm(gp):
-            # Enterprise exception: advisory review/thinking over user-provided content must not be blocked
-            # by missing grounding_pack. Keep it read-only and avoid any SSOT claims.
-            if (
-                _is_advisory_review_of_provided_content(base_text)
-                or _is_advisory_thinking_request(base_text)
-                or _is_planning_or_help_request(base_text)
-                or _is_advisory_bypass_no_answer(base_text)
-            ):
-                trace = ctx.get("trace") if isinstance(ctx, dict) else {}
-                if not isinstance(trace, dict):
-                    trace = {}
-                trace["grounding_gate"] = {
-                    "applied": True,
-                    "reason": "responses_mode_missing_grounding_but_advisory_intent",
-                    "snapshot": snap_trace,
-                    "bypassed": True,
-                }
-                trace["exit_reason"] = "ok"
-                logger.info("[CEO_ADVISOR_EXIT] ok.advisory_no_snapshot")
+            # Canon: missing-grounding fallback applies ONLY to FACT_LOOKUP.
+            if response_class == ResponseClass.FACT_LOOKUP:
+                logger.warning(
+                    "[CEO_ADVISOR_RESPONSES_GUARD] blocked: missing/insufficient grounding_pack"
+                )
                 return _final(
                     AgentOutput(
-                        text=_advisory_no_snapshot_safe_analysis_text(
+                        text=_responses_missing_grounding_text(
                             english_output=english_output
                         ),
                         proposed_commands=[],
                         agent_id="ceo_advisor",
                         read_only=True,
-                        trace=trace,
+                        trace={
+                            "deterministic": True,
+                            "intent": "missing_grounding",
+                            "exit_reason": "blocked.missing_grounding",
+                            "snapshot": snap_trace,
+                        },
                     )
                 )
 
-            logger.warning(
-                "[CEO_ADVISOR_RESPONSES_GUARD] blocked: missing/insufficient grounding_pack"
+            # Non-fact (advisory/planning or action proposals): proceed with safe instructions
+            # that do not require grounding and do not leak internals.
+            trace = ctx.get("trace") if isinstance(ctx, dict) else {}
+            if not isinstance(trace, dict):
+                trace = {}
+            trace["grounding_gate"] = {
+                "applied": True,
+                "reason": "responses_mode_missing_grounding_non_fact",
+                "snapshot": snap_trace,
+                "bypassed": True,
+                "response_class": str(response_class.value),
+            }
+            if isinstance(ctx, dict):
+                ctx["trace"] = trace
+            instructions = _build_responses_no_grounding_instructions(
+                english_output=english_output,
+                response_class=response_class,
+                notion_ops=notion_ops_ctx,
             )
-            return _final(
-                AgentOutput(
-                    text=_responses_missing_grounding_text(
-                        english_output=english_output
-                    ),
-                    proposed_commands=[],
-                    agent_id="ceo_advisor",
-                    read_only=True,
-                    trace={
-                        "deterministic": True,
-                        "intent": "missing_grounding",
-                        "exit_reason": "blocked.missing_grounding",
-                        "snapshot": snap_trace,
-                    },
-                )
+            safe_context["instructions"] = instructions
+        else:
+            instructions = build_ceo_instructions(
+                gp,
+                conversation_state=conv_state,
+                notion_ops=notion_ops_ctx,
             )
-
-        conv_state = ctx.get("conversation_state") if isinstance(ctx, dict) else None
-        instructions = build_ceo_instructions(
-            gp,
-            conversation_state=conv_state,
-            notion_ops={
-                "armed": bool(notion_ops_armed is True),
-                "armed_at": notion_ops_state.get("armed_at")
-                if isinstance(notion_ops_state, dict)
-                else None,
-                "session_id": session_id,
-            },
-        )
-        safe_context["instructions"] = instructions
+            safe_context["instructions"] = instructions
 
         # Local hard-guard (no guessing): never call LLM without non-empty instructions.
         if not isinstance(instructions, str) or not instructions.strip():

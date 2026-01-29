@@ -33,7 +33,7 @@ def test_canonical_no_answer_text_responses_missing_grounding(monkeypatch):
     monkeypatch.setenv("OPENAI_API_MODE", "responses")
 
     agent_input = AgentInput(
-        message="Daj mi kratak plan za danas.",
+        message="Koji je glavni grad Francuske?",
         identity_pack={"payload": {"role": "ceo"}},
         snapshot={"payload": {"goals": [{"title": "G1"}], "tasks": []}},
         metadata={"session_id": "test_session_responses_guard", "ui_output_lang": "bs"},
