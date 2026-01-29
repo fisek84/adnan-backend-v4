@@ -110,4 +110,4 @@ def test_responses_mode_blocks_executor_when_grounding_missing(monkeypatch):
     )
     assert resp.status_code == 200
     data = resp.json()
-    assert "Nemam u KB/Memory/Snapshot" in (data.get("text") or "")
+    assert "Ne mogu dati smislen odgovor" in (data.get("text") or "")

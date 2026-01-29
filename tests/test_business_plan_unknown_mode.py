@@ -66,8 +66,7 @@ def test_api_chat_business_plan_unknown_mode_even_with_snapshot_present(
     txt = body.get("text") or ""
     assert "GOALS (top 3)" not in txt
     assert "TASKS (top 5)" not in txt
-    assert "Trenutno nemam to znanje" in txt
-    assert "Opcije" in txt
+    assert "Ne mogu dati smislen odgovor" in txt
 
     gp = body.get("grounding_pack")
     assert isinstance(gp, dict)

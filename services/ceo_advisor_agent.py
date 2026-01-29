@@ -317,13 +317,20 @@ def _grounding_sufficient_for_responses_llm(gp: Any) -> bool:
     return True
 
 
-def _responses_missing_grounding_text(*, english_output: bool) -> str:
+def _canonical_no_answer_text(*, english_output: bool = False) -> str:
     if english_output:
         return (
-            "I don't have the required grounding context (KB/Memory/Snapshot) in this request. "
-            "Nemam u KB/Memory/Snapshot."
+            "I can't give a meaningful answer as currently written. "
+            "Write exactly what you want (a question or a task) in one sentence."
         )
-    return "Nemam u KB/Memory/Snapshot za ovaj upit (u ovom READ kontekstu nije dostavljen grounding)."
+    return (
+        "Ne mogu dati smislen odgovor na to kako je trenutno napisano. "
+        "Napiši tačno šta želiš (pitanje ili zadatak) u jednoj rečenici."
+    )
+
+
+def _responses_missing_grounding_text(*, english_output: bool) -> str:
+    return _canonical_no_answer_text(english_output=english_output)
 
 
 # -----------------------------------
@@ -796,27 +803,7 @@ def _memory_idempotency_key(
 
 
 def _unknown_mode_text(*, english_output: bool) -> str:
-    if english_output:
-        return (
-            "I don't have this knowledge yet (not in my curated KB / current snapshot).\n\n"
-            "Options:\n"
-            "1) Clarify: answer 1–3 questions and I'll respond with a best-effort answer (clearly marking assumptions).\n"
-            "2) Expand knowledge: write 'Expand knowledge: ...' and I'll prepare an approval-gated write proposal.\n\n"
-            "Quick questions:\n"
-            "- What is the goal: definition, decision, or implementation plan?\n"
-            "- What context/domain is this in (business/tech/legal)?\n"
-            "- Any constraints (time, tools, scope)?"
-        )
-    return (
-        "Trenutno nemam to znanje (nije u kuriranom KB-u / trenutnom snapshotu).\n\n"
-        "Opcije:\n"
-        "1) Razjasni: odgovori na 1–3 pitanja i daću najbolji mogući odgovor (jasno ću označiti pretpostavke).\n"
-        "2) Proširi znanje: napiši 'Proširi znanje: ...' i pripremiću approval-gated prijedlog za upis.\n\n"
-        "Brza pitanja:\n"
-        "- Šta ti tačno treba: definicija, odluka ili plan implementacije?\n"
-        "- Koji je kontekst/domena (biz/tech/legal)?\n"
-        "- Koja su ograničenja (vrijeme, alati, scope)?"
-    )
+    return _canonical_no_answer_text(english_output=english_output)
 
 
 def _assistant_identity_text(*, english_output: bool) -> str:
@@ -1033,6 +1020,10 @@ def _should_use_kickoff_in_offline_mode(user_text: str) -> bool:
     t0 = (user_text or "").strip().lower()
     if not t0:
         return False
+
+    # Empty-state kickoff prompts should bypass unknown_mode and use deterministic kickoff guidance.
+    if _is_empty_state_kickoff_prompt(t0):
+        return True
 
     # Normalize BHS diacritics so sedmični -> sedmicni (matches sedmic*).
     t = (
@@ -4858,16 +4849,7 @@ async def create_ceo_advisor_agent(
             )
             return _final(
                 AgentOutput(
-                    text=(
-                        "Trenutno nemam to znanje (nije u kuriranom KB-u / trenutnom snapshotu).\n\n"
-                        "Opcije:\n"
-                        "1) Razjasni: odgovori na 1–3 pitanja i daću najbolji mogući odgovor (jasno ću označiti pretpostavke).\n"
-                        "2) Proširi znanje: napiši 'Proširi znanje: ...' i pripremiću approval-gated prijedlog za upis.\n\n"
-                        "Brza pitanja:\n"
-                        "- Šta ti tačno treba: definicija, odluka ili plan implementacije?\n"
-                        "- Koji je kontekst/domena (biz/tech/legal)?\n"
-                        "- Koja su ograničenja (vrijeme, alati, scope)?"
-                    ),
+                    text=_canonical_no_answer_text(english_output=english_output),
                     proposed_commands=[],
                     agent_id="ceo_advisor",
                     read_only=True,

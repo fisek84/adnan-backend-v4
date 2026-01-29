@@ -21,7 +21,7 @@ def test_ceo_advisor_responses_mode_blocks_without_grounding_pack(monkeypatch):
 
     assert out.read_only is True
     assert out.proposed_commands == []
-    assert "Nemam u KB/Memory/Snapshot" in out.text
+    assert "Ne mogu dati smislen odgovor" in out.text
     assert out.trace.get("exit_reason") == "blocked.missing_grounding"
     assert "used_sources" in out.trace
     assert "missing_inputs" in out.trace

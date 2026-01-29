@@ -32,7 +32,7 @@ def test_unknown_mode_kb_miss_does_not_fallback_to_goals_tasks():
 
     assert "GOALS (top 3)" not in txt
     assert "TASKS (top 5)" not in txt
-    assert "Opcije" in txt
+    assert "Ne mogu dati smislen odgovor" in txt
 
 
 def test_memory_capability_answer_is_canonical_and_not_dashboard():

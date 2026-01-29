@@ -66,6 +66,6 @@ def test_unknown_mode_fallback_when_allow_general_false(monkeypatch):
         )
     )
 
-    assert "Trenutno nemam to znanje" in out.text
+    assert "Ne mogu dati smislen odgovor" in out.text
     assert out.trace.get("exit_reason") == "fallback.allow_general_false"
     assert out.trace.get("intent") == "unknown_mode"
