@@ -7,6 +7,80 @@ from typing import Literal
 Intent = Literal["deliverable", "notion_write", "weekly", "other"]
 
 
+_DELIVERABLE_KEYWORDS_RE = re.compile(
+    r"(?i)\b("
+    r"follow\s*-?up|followup|"
+    r"cold\s*email|"
+    r"email|e-mail|mail|"
+    r"dm|direct\s+message|"
+    r"poruk\w*|msg|message\w*|"
+    r"outreach|prospect\w*|lead\w*|"
+    r"sekvenc\w*|sequence\w*|"
+    r"skript\w*|script\w*|"
+    r"funnel|pipeline|"
+    r"sales\s+plan|prodajn\w*\s+plan|"
+    r"linkedin"
+    r")\b"
+)
+
+
+_DELIVERABLE_REQUEST_VERBS_RE = re.compile(
+    r"(?i)\b("
+    # Use stems to cover common inflections (e.g., "pripremiti", "napisati").
+    r"napis\w*|"
+    r"priprem\w*|"
+    r"sastav\w*|"
+    r"kreir\w*|"
+    r"naprav\w*|"
+    r"izrad\w*|"
+    r"generis\w*|"
+    r"daj\s+mi|"
+    r"treba\s+mi|"
+    r"hoc\w*\s+da|"
+    r"mozes\s+li|mo\u017ee\u0161\s+li|"
+    # English verbs ("draft" handled separately to avoid label-like "DRAFT:").
+    r"write|create|prepare|generate"
+    r")\b"
+)
+
+
+def _has_explicit_deliverable_request(t: str) -> bool:
+    """True when the user explicitly requests deliverables.
+
+    Prevents false positives on pasted content that merely *mentions* deliverable words.
+    Heuristic: require a request verb/phrase near a deliverable keyword.
+    """
+
+    if not t:
+        return False
+
+    verb_hits = list(_DELIVERABLE_REQUEST_VERBS_RE.finditer(t))
+
+    # Handle "draft" carefully: a pasted header like "DRAFT:" or "DRAFT (copy/paste)" must
+    # not be treated as a user request verb.
+    for m in re.finditer(r"(?i)\bdraft\b", t):
+        tail = t[m.end() : m.end() + 12]
+        if re.match(r"\s*[:\(\[\-]", tail):
+            continue
+        verb_hits.append(m)
+
+    if not verb_hits:
+        return False
+
+    kw_hits = list(_DELIVERABLE_KEYWORDS_RE.finditer(t))
+    if not kw_hits:
+        return False
+
+    # Proximity window (chars) to keep this deterministic and avoid expensive NLP.
+    window = 120
+    for v in verb_hits:
+        for k in kw_hits:
+            if abs(v.start() - k.start()) <= window:
+                return True
+
+    return False
+
+
 def _normalize_text(text: str) -> str:
     t = (text or "").strip().lower()
     if not t:
@@ -57,23 +131,9 @@ def classify_intent(text: str) -> Intent:
     # ----------------------------
     # A) DELIVERABLE (highest)
     # ----------------------------
-    # Concrete artifacts for sales/growth. Keep broad but focused.
-    if re.search(
-        r"(?i)\b("
-        r"follow\s*-?up|followup|"
-        r"cold\s*email|"
-        r"email|e-mail|mail|"
-        r"dm|direct\s+message|"
-        r"poruk\w*|msg|message\w*|"
-        r"outreach|prospect\w*|lead\w*|"
-        r"sekvenc\w*|sequence\w*|"
-        r"skript\w*|script\w*|"
-        r"funnel|pipeline|"
-        r"sales\s+plan|prodajn\w*\s+plan|"
-        r"linkedin"
-        r")\b",
-        t,
-    ):
+    # Concrete artifacts for sales/growth.
+    # Guardrail: do NOT treat mere mentions (pasted content) as a deliverable request.
+    if _DELIVERABLE_KEYWORDS_RE.search(t) and _has_explicit_deliverable_request(t):
         return "deliverable"
 
     # ----------------------------

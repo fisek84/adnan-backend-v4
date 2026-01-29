@@ -8,6 +8,22 @@ from services.agent_registry_service import AgentRegistryService
 from services.agent_router_service import AgentRouterService
 
 
+def test_classify_intent_deliverable_requires_explicit_request_verbs():
+    from services.intent_precedence import classify_intent
+
+    # Pasted content that merely mentions deliverable words must NOT trigger deliverable intent.
+    pasted = (
+        "DRAFT:\n\n"
+        "Email sekvence:\n- Email 1: ...\n- Email 2: ...\n\n"
+        "Poruke (follow-up):\n- Poruka 1 ...\n"
+    )
+    assert classify_intent(pasted) != "deliverable"
+
+    # Explicit request must still trigger deliverable intent.
+    explicit = "Napiši 3 follow-up poruke i 2 emaila za leadove."
+    assert classify_intent(explicit) == "deliverable"
+
+
 def _mk_router() -> AgentRouterService:
     reg = AgentRegistryService()
     reg.load_from_agents_json("config/agents.json", clear=True)

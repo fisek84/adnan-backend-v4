@@ -219,6 +219,62 @@ def test_weekly_explicit_does_not_call_rgo(monkeypatch, tmp_path):
     assert "TASKS snapshot" in txt
 
 
+def test_pasted_deliverable_keywords_without_request_verbs_does_not_propose_delegation(
+    monkeypatch, tmp_path
+):
+    """Regression: pasted content mentioning poruka/email/sekvence must not trigger delegation.
+
+    Only explicit request verbs (napiši/pripremi/sastavi/kreiraj/...) should produce deliverable proposals.
+    """
+
+    monkeypatch.setenv("OPENAI_API_MODE", "responses")
+    monkeypatch.setenv("CEO_ADVISOR_ALLOW_GENERAL_KNOWLEDGE", "1")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-local")
+    monkeypatch.setenv(
+        "CEO_CONVERSATION_STATE_PATH",
+        str(tmp_path / "ceo_conv_state_pasted_deliverables.json"),
+    )
+
+    from services.grounding_pack_service import GroundingPackService
+
+    monkeypatch.setattr(
+        GroundingPackService, "build", lambda **kwargs: {"enabled": False}
+    )
+
+    def _boom(*args, **kwargs):  # noqa: ANN001
+        raise AssertionError("executor must not be called")
+
+    monkeypatch.setattr("services.agent_router.executor_factory.get_executor", _boom)
+
+    app = _load_app()
+    client = TestClient(app)
+
+    msg = (
+        "DRAFT (copy/paste):\n\n"
+        "Email sekvence:\n- Email 1: ...\n- Email 2: ...\n\n"
+        "Poruke / follow-up:\n- Poruka 1: ...\n- Poruka 2: ...\n"
+    )
+
+    resp = client.post(
+        "/api/chat",
+        json={
+            "message": msg,
+            "session_id": "session_pasted_deliverables_no_verbs_1",
+            "snapshot": {"payload": {"tasks": []}},
+            "metadata": {"include_debug": True},
+        },
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data.get("agent_id") == "ceo_advisor"
+    assert data.get("read_only") is True
+    assert (data.get("proposed_commands") or []) == []
+
+    tr = data.get("trace") or {}
+    assert tr.get("intent") != "deliverable_proposal"
+
+
 def test_moze_phrase_is_not_treated_as_deliverable_confirm(monkeypatch, tmp_path):
     """Regression: words like 'moze/može' must not trigger deliverable confirmation.
 
