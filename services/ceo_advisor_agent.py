@@ -379,6 +379,8 @@ def _classify_response_class(
         return ResponseClass.FACT_LOOKUP
 
     t0 = re.sub(r"\s+", " ", (t or "").strip().lower())
+    if re.search(r"(?i)\b(status|stanje)\b", t0):
+        return ResponseClass.FACT_LOOKUP
     # Strong generic question patterns.
     if "?" in t0:
         return ResponseClass.FACT_LOOKUP

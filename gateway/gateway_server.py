@@ -529,21 +529,68 @@ async def _generate_ceo_readonly_answer(
         else {}
     )
 
+    missing_memory_snapshot = _responses_mode_enabled() and not isinstance(
+        gp.get("memory_snapshot"), dict
+    )
+    bypass_missing_memory_snapshot_for_advisory = False
+
+    response_class = None
+    if _responses_mode_enabled():
+        # Reuse the same deterministic response-class classifier as CEO advisor.
+        # Default to "answer safely" (ADVISORY) unless we are confident about FACT_LOOKUP.
+        try:
+            from services.ceo_advisor_agent import (  # type: ignore
+                ResponseClass,
+                _classify_response_class,
+                _responses_missing_grounding_text,
+            )
+            from services.intent_precedence import classify_intent  # type: ignore
+
+            intent = classify_intent(prompt_in)
+            response_class = _classify_response_class(
+                prompt_in, orchestration_intent=intent
+            )
+            bypass_missing_memory_snapshot_for_advisory = bool(
+                missing_memory_snapshot and response_class == ResponseClass.ADVISORY
+            )
+        except Exception:
+            response_class = None
+
     # Responses-mode grounding guard: require required snapshot shapes.
     # This keeps the fallback bridge from calling any executor/LLM when the
     # request did not supply the minimum read context.
     if _responses_mode_enabled():
-        if not isinstance(gp.get("memory_snapshot"), dict):
-            txt = "Nedostaje: memory_snapshot. Pošalji MEMORY_CONTEXT (snapshot) pa ponovi pitanje."
-            return {
-                "text": txt,
-                "summary": txt,
-                "trace": {
-                    "exit_reason": "blocked.missing_grounding",
-                    "used_sources": used_sources,
-                    "missing_inputs": sorted(set(missing_inputs + ["memory"])),
-                },
-            }
+        if missing_memory_snapshot:
+            # Canon: never block ADVISORY due to missing memory_snapshot.
+            # Keep FACT_LOOKUP blocked with the canonical no-answer fallback.
+            try:
+                from services.ceo_advisor_agent import ResponseClass  # type: ignore
+
+                if response_class == ResponseClass.FACT_LOOKUP:
+                    txt = _responses_missing_grounding_text(english_output=False)
+                    return {
+                        "text": txt,
+                        "summary": txt,
+                        "trace": {
+                            "exit_reason": "blocked.missing_grounding",
+                            "used_sources": used_sources,
+                            "missing_inputs": sorted(set(missing_inputs + ["memory"])),
+                        },
+                    }
+            except Exception:
+                # If classification isn't available, fall back to a strict heuristic:
+                # treat clear question forms as fact-lookup; otherwise allow advisory.
+                if "?" in prompt_in:
+                    txt = "Ne mogu dati smislen odgovor na to kako je trenutno napisano. Napiši tačno šta želiš (pitanje ili zadatak) u jednoj rečenici."
+                    return {
+                        "text": txt,
+                        "summary": txt,
+                        "trace": {
+                            "exit_reason": "blocked.missing_grounding",
+                            "used_sources": used_sources,
+                            "missing_inputs": sorted(set(missing_inputs + ["memory"])),
+                        },
+                    }
 
     # Optional strict guard (opt-in): require at least N injected KB entries in Responses-mode.
     if _responses_mode_enabled():
@@ -618,6 +665,8 @@ async def _generate_ceo_readonly_answer(
 
             ex_pcs = (ex_out or {}).get("proposed_commands")
             ex_pcs_list = ex_pcs if isinstance(ex_pcs, list) else []
+            if bypass_missing_memory_snapshot_for_advisory:
+                ex_pcs_list = []
 
             return {
                 "text": ex_text,
@@ -670,6 +719,8 @@ async def _generate_ceo_readonly_answer(
 
         pcs = out_dict.get("proposed_commands")
         pcs_list = pcs if isinstance(pcs, list) else []
+        if bypass_missing_memory_snapshot_for_advisory:
+            pcs_list = []
 
         return {
             "text": text_out,
@@ -2424,27 +2475,21 @@ def _inject_fallback_proposed_commands(result: Dict[str, Any], *, prompt: str) -
         return
 
     text = (prompt or "").strip().lower()
-    write_like = any(
-        k in text
-        for k in [
-            "create",
-            "kreiraj",
-            "napravi",
-            "dodaj",
-            "update",
-            "azuriraj",
-            "izmijeni",
-            "promijeni",
-            "delete",
-            "obrisi",
-            "ukloni",
-            "task",
-            "zadatak",
-            "goal",
-            "cilj",
-            "notion",
-        ]
+    # Conservative write intent: require BOTH an action verb and an explicit write target.
+    # This prevents advisory prompts like "napravim plan" from being misrouted as write proposals.
+    action = bool(
+        re.search(
+            r"(?i)\b(create|kreiraj|napravi|dodaj|update|azuriraj|izmijeni|promijeni|delete|obrisi|ukloni)\b",
+            text,
+        )
     )
+    target = bool(
+        re.search(
+            r"(?i)\b(task|zadatak|goal|cilj|project|projekat|notion)\b",
+            text,
+        )
+    )
+    write_like = bool(action and target)
 
     if not write_like:
         result["proposed_commands"] = []
