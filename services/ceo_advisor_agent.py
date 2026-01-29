@@ -857,6 +857,22 @@ def _assistant_memory_text(*, english_output: bool) -> str:
     )
 
 
+def _assistant_epistemic_text(*, english_output: bool) -> str:
+    if english_output:
+        return (
+            "I only know from: (1) this conversation, (2) the available curated KB, (3) the Notion snapshot/state-read when present.\n"
+            "- When general knowledge is disabled, I do not use outside/world knowledge.\n"
+            "- If a source is missing, I will say I can't confirm.\n"
+            "- I never perform WRITE actions without your explicit approval (propose → approve → execute)."
+        )
+    return (
+        "Znam samo iz: (1) ovog razgovora, (2) dostupnog kuriranog KB-a, (3) Notion snapshot/state-read kad je prisutan.\n"
+        "- Kad je general knowledge isključen, ne koristim opšte/vanjsko znanje.\n"
+        "- Ako izvor nije dostupan, reći ću da ne mogu potvrditi.\n"
+        "- Ne radim WRITE akcije bez tvog eksplicitnog odobrenja (propose → approve → execute)."
+    )
+
+
 def _should_use_kickoff_in_offline_mode(user_text: str) -> bool:
     t0 = (user_text or "").strip().lower()
     if not t0:
@@ -964,6 +980,45 @@ def _is_assistant_memory_meta_question(user_text: str) -> bool:
             r"do\s+you\s+have\s+memory|"
             r"do\s+you\s+remember|"
             r"how\s+do\s+you\s+remember"
+            r")\b",
+            t,
+        )
+    )
+
+
+def _is_assistant_epistemic_meta_question(user_text: str) -> bool:
+    """True for meta questions about how the assistant knows / sources / reasoning provenance.
+
+    Must be narrow to avoid catching normal 'how to' questions.
+    """
+
+    t0 = (user_text or "").strip().lower()
+    if not t0:
+        return False
+
+    # Avoid catching normal 'kako da' / 'how to' questions.
+    if re.search(r"(?i)\b(kako\s+da|how\s+to)\b", t0):
+        return False
+
+    # Normalize BHS diacritics so znaš -> znas, čega -> cega, došao -> dosao.
+    t = (
+        t0.replace("č", "c")
+        .replace("ć", "c")
+        .replace("š", "s")
+        .replace("đ", "dj")
+        .replace("ž", "z")
+    )
+
+    # Only match if it's explicitly about knowing/sources/reasoning.
+    return bool(
+        re.search(
+            r"(?i)\b("
+            r"kako\s+ti\s+to\s+znas|"
+            r"odakle\s+ti\s+to|"
+            r"na\s+osnovu\s+cega|"
+            r"zasto\s+to\s+mislis|"
+            r"kako\s+si\s+dosao(\s+do\s+toga)?|"
+            r"kako\s+si\s+dosao\s+do\s+toga"
             r")\b",
             t,
         )
@@ -3459,6 +3514,22 @@ async def create_ceo_advisor_agent(
                     "deterministic": True,
                     "intent": "assistant_memory",
                     "exit_reason": "deterministic.assistant_memory",
+                },
+            )
+        )
+
+    # Epistemic/meta allowlist: questions about how/why we know something must never hit unknown-mode.
+    if _is_assistant_epistemic_meta_question(base_text):
+        return _final(
+            AgentOutput(
+                text=_assistant_epistemic_text(english_output=english_output),
+                proposed_commands=[],
+                agent_id="ceo_advisor",
+                read_only=True,
+                trace={
+                    "deterministic": True,
+                    "intent": "assistant_epistemic",
+                    "exit_reason": "deterministic.assistant_epistemic",
                 },
             )
         )
