@@ -275,8 +275,12 @@ def _business_plan_template_with_questions(*, english_output: bool) -> str:
     )
 
 
+def _openai_api_mode() -> str:
+    return (os.getenv("OPENAI_API_MODE") or "assistants").strip().lower()
+
+
 def _responses_mode_enabled() -> bool:
-    return (os.getenv("OPENAI_API_MODE") or "assistants").strip().lower() == "responses"
+    return _openai_api_mode() == "responses"
 
 
 def _grounding_sufficient_for_responses_llm(gp: Any) -> bool:
