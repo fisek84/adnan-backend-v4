@@ -100,10 +100,10 @@ def build_ceo_instructions(
         governance = (
             "GOVERNANCE (non-negotiable):\n"
             "- READ-ONLY: no tool calls, no side effects, no external writes.\n"
-            "- KB-FIRST: Answer ONLY using the provided KB_CONTEXT below.\n"
+            "- KB-FIRST: Prefer KB_CONTEXT for curated knowledge/policies, BUT you MAY use NOTION_SNAPSHOT for factual state questions about Notion (e.g. do we have goals/tasks/projects, counts, presence).\n"
             "- DO NOT use general world knowledge.\n"
-            "- Do NOT respond with 'Nemam u KB/Memory/Snapshot' when KB_CONTEXT is present; synthesize your answer from KB_CONTEXT.\n"
-            "- NOTION READ SNAPSHOT: If NOTION_SNAPSHOT is present/ready, you DO have access to it regardless of NOTION_OPS_STATE.armed; use it for situational awareness and do NOT ask to enable snapshot.\n"
+            "- For Notion state questions: if NOTION_SNAPSHOT is present, answer from it and do NOT respond with 'Nemam u KB/Memory/Snapshot'.\n"
+            "- NOTION READ SNAPSHOT: If NOTION_SNAPSHOT is present/ready, you DO have access to it regardless of NOTION_OPS_STATE.armed; use it for situational awareness.\n"
             "- If you propose actions, put them into proposed_commands but do not execute anything.\n"
             "- NOTION WRITES: Only propose Notion write commands when NOTION_OPS_STATE.armed == true. If armed==false, ask the user to arm Notion Ops ('notion ops aktiviraj') instead of proposing writes.\n"
         )
@@ -148,9 +148,7 @@ def build_ceo_instructions(
 
     # NOTION snapshot (budgeted dump).
     notion_txt = "(missing)"
-    if kb_has_hits:
-        notion_txt = "(omitted: KB-first)"
-    elif notion_snapshot is not None:
+    if notion_snapshot is not None:
         notion_txt = _dump(notion_snapshot, max_chars=section_max_chars)
 
     # MEMORY snapshot payload (budgeted dump).
@@ -814,6 +812,30 @@ def _unknown_mode_text(*, english_output: bool) -> str:
         "- Šta ti tačno treba: definicija, odluka ili plan implementacije?\n"
         "- Koji je kontekst/domena (biz/tech/legal)?\n"
         "- Koja su ograničenja (vrijeme, alati, scope)?"
+    )
+
+
+def _assistant_identity_text(*, english_output: bool) -> str:
+    if english_output:
+        return (
+            "I'm the CEO Advisor in this workspace. I help you think, plan, and execute safely.\n\n"
+            "How I work:\n"
+            "- READ-only by default: I can analyze, summarize, and propose next steps.\n"
+            "- Action is approval-gated: when you want me to change things (e.g., Notion/tasks/DB), I return a proposal you approve.\n"
+            "- If knowledge sources (KB/snapshot) are unavailable, I'll say so and stay deterministic/offline-safe.\n\n"
+            "How to ask:\n"
+            "- For a plan: tell me goal + deadline + constraints.\n"
+            "- For execution: say explicitly what to create/update, and I will draft an approval-gated proposal."
+        )
+    return (
+        "Ja sam CEO Advisor u ovom workspace-u. Pomažem ti da razmišljaš, planiraš i izvršiš stvari na siguran način.\n\n"
+        "Kako radim:\n"
+        "- READ-only po defaultu: mogu analizirati, sažeti i predložiti naredne korake.\n"
+        "- Akcije su approval-gated: kad želiš da nešto mijenjam (npr. Notion/taskovi/DB), vratim prijedlog koji ti odobriš.\n"
+        "- Ako izvori znanja (KB/snapshot) nisu dostupni, to ću reći i ostajem determinističan/offline-safe.\n\n"
+        "Kako da pitaš:\n"
+        "- Za plan: reci cilj + rok + ograničenja.\n"
+        "- Za izvršenje: eksplicitno napiši šta da kreiram/izmijenim i pripremiću approval-gated prijedlog."
     )
 
 
@@ -3343,6 +3365,23 @@ async def create_ceo_advisor_agent(
     snapshot_ready = bool(
         isinstance(snap_trace, dict) and snap_trace.get("ready") is True
     )
+
+    # Identity/capabilities allowlist: these are meta questions about the assistant.
+    # They must never fall into unknown-mode, even when general knowledge is disabled.
+    if _is_assistant_role_or_capabilities_question(base_text):
+        return _final(
+            AgentOutput(
+                text=_assistant_identity_text(english_output=english_output),
+                proposed_commands=[],
+                agent_id="ceo_advisor",
+                read_only=True,
+                trace={
+                    "deterministic": True,
+                    "intent": "assistant_identity",
+                    "exit_reason": "deterministic.assistant_identity",
+                },
+            )
+        )
 
     # ------------------------------------------------------------
     # Minimal bugfix: YES after explicit business-plan template offer
