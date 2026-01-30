@@ -2336,6 +2336,32 @@ def _user_explicitly_asked_identity_or_howto(prompt: str) -> bool:
     )
 
 
+def _is_canonical_ceo_advisor_identity_response(*, body_obj: Dict[str, Any]) -> bool:
+    """True only for the canonical CEO Advisor identity response.
+
+    Bypass is intentionally strict to avoid re-allowing intro-template leaks in
+    non-identity contexts (e.g. plan/review). We only bypass when server-side
+    metadata says this is the assistant-identity intent.
+    """
+
+    if not isinstance(body_obj, dict):
+        return False
+
+    # Explicit server-side override (if present).
+    tr = body_obj.get("trace")
+    if isinstance(tr, dict) and tr.get("canonical_identity") is True:
+        return True
+
+    agent_id = str(body_obj.get("agent_id") or "").strip()
+    if agent_id != "ceo_advisor":
+        return False
+
+    if not isinstance(tr, dict):
+        return False
+
+    return str(tr.get("intent") or "").strip() == "assistant_identity"
+
+
 def _looks_like_internal_memory_boilerplate(text: str) -> bool:
     s = (text or "").strip()
     if not s:
@@ -2402,6 +2428,11 @@ def sanitize_user_visible_answer(
     is_memory_tpl = _looks_like_internal_memory_boilerplate(text)
     is_intro_tpl = _looks_like_internal_ceo_intro_template(text)
     if not (is_memory_tpl or is_intro_tpl):
+        return None
+
+    # HOTFIX: If this is already the canonical CEO Advisor identity answer, do not
+    # sanitize it into a generic fallback.
+    if is_intro_tpl and _is_canonical_ceo_advisor_identity_response(body_obj=body_obj):
         return None
 
     # Allow meta explanations only when explicitly requested in THIS turn.
