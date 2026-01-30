@@ -585,16 +585,7 @@ def _llm_is_configured() -> bool:
     # Enterprise: avoid hard dependency on OpenAI for basic advisory flows.
     # If not configured, we must produce a useful deterministic response.
     api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
-    if not api_key:
-        return False
-
-    # CEO Advisor uses the OpenAI assistant executor; a key without an Assistant ID
-    # is effectively not configured and must fall back to deterministic/offline-safe
-    # behavior (especially in CI where keys may be present but assistant IDs are not).
-    assistant_id = (os.getenv("CEO_ADVISOR_ASSISTANT_ID") or "").strip() or (
-        os.getenv("NOTION_OPS_ASSISTANT_ID") or ""
-    ).strip()
-    return bool(assistant_id)
+    return bool(api_key)
 
 
 class LLMNotConfiguredError(RuntimeError):
@@ -5837,16 +5828,29 @@ async def create_ceo_advisor_agent(
                 "Do not wrap the json in markdown code fences."
             )
             raw = await executor.ceo_command(text=prompt_text, context=safe_context)
+
+            # Some executors return a dict sentinel when the OpenAI executor is not
+            # configured (e.g., missing Assistant ID). Treat that as offline LLM-not-
+            # configured to keep behavior deterministic in CI/offline deployments.
             if isinstance(raw, dict):
+                tr0 = raw.get("trace") if isinstance(raw.get("trace"), dict) else {}
+                txt0 = str(raw.get("text") or "")
+                if tr0.get("llm") == "not_configured" or "nema Assistant ID" in txt0:
+                    raise LLMNotConfiguredError("executor.not_configured")
                 result = raw
             else:
                 result = {"text": str(raw)}
+
             llm_exit_reason = "llm.success"
             logger.info("[CEO_ADVISOR_EXIT] llm.success")
         except Exception as exc:
             logger.exception("[LLM-GATE] Exception in LLM execution")
-            llm_exit_reason = "offline.executor_error"
-            logger.info("[CEO_ADVISOR_EXIT] offline.executor_error")
+            if isinstance(exc, LLMNotConfiguredError):
+                llm_exit_reason = "offline.llm_not_configured"
+                logger.info("[CEO_ADVISOR_EXIT] offline.llm_not_configured")
+            else:
+                llm_exit_reason = "offline.executor_error"
+                logger.info("[CEO_ADVISOR_EXIT] offline.executor_error")
 
             # Detect OpenAI authentication failure (401 invalid_api_key) so it can't
             # be misdiagnosed as missing KB/snapshot knowledge.
