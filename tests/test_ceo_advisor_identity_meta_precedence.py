@@ -16,8 +16,8 @@ def test_identity_questions_never_sanitize_canonical_identity_answer(monkeypatch
 
     cases = [
         ("Koja je tvoja uloga u sistemu", "bs", "Ja sam CEO Advisor"),
-        ("Ko si", "bs", "Ja sam CEO Advisor"),
-        ("What is your role", "en", "CEO Advisor"),
+        ("Ko si ti?", "bs", "Ja sam CEO Advisor"),
+        ("What is your role?", "en", "CEO Advisor"),
     ]
 
     for prompt, ui_lang, must_contain in cases:
@@ -58,3 +58,38 @@ def test_identity_questions_never_sanitize_canonical_identity_answer(monkeypatch
             conversation_id="test_identity_meta",
         )
         assert sanitized is None
+
+
+def test_identity_questions_allow_whitespace_case_and_trailing_newlines(monkeypatch):
+    # Deterministic: ensure we do not hit OpenAI.
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr("services.ceo_advisor_agent._llm_is_configured", lambda: False)
+
+    prompts = [
+        " Ko si ti ",
+        "KO SI TI",
+        "Ko si ti\n\n",
+    ]
+
+    for prompt in prompts:
+        out = _run(
+            create_ceo_advisor_agent(
+                AgentInput(
+                    message=prompt,
+                    identity_pack={"payload": {"role": "ceo"}},
+                    snapshot={"payload": {"goals": [{"title": "G1"}], "tasks": []}},
+                    metadata={
+                        "session_id": "test_identity_meta_variants",
+                        "ui_output_lang": "bs",
+                    },
+                ),
+                ctx={"grounding_pack": {}},
+            )
+        )
+
+        assert out.read_only is True
+        assert out.proposed_commands == []
+        assert out.trace.get("intent") == "assistant_identity"
+
+        txt = out.text or ""
+        assert "Ja sam CEO Advisor" in txt

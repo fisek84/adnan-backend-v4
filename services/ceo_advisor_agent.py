@@ -1303,21 +1303,43 @@ def _is_assistant_role_or_capabilities_question(user_text: str) -> bool:
     These should NOT trigger the empty-tasks weekly priorities auto-draft.
     """
 
-    t = (user_text or "").strip().lower()
-    if not t:
+    raw = (user_text or "").strip()
+    if not raw:
         return False
 
+    # Production hardening: identity intent must only trigger for explicit, short
+    # questions addressed to the assistant. Do not match substrings inside pasted
+    # documents (e.g., headings like "KO SI TI (POZICIJA)").
+    #
+    # Treat identity as a directive-only question: allow one non-empty line (the
+    # question), plus optional trailing whitespace/newlines. If there are additional
+    # non-empty lines, assume it's pasted payload and do NOT switch intent.
+    non_empty_lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+    if len(non_empty_lines) != 1:
+        return False
+
+    first_line = non_empty_lines[0].strip()
+    if not first_line:
+        return False
+    if len(first_line) > 300:
+        return False
+
+    t = first_line.lower()
+
     return bool(
-        re.search(
-            r"(?i)\b("
-            r"koja\s+je\s+tvoja\s+uloga|"
-            r"ko\s+si|"
-            r"\u0161ta\s+si|sta\s+si|"
-            r"\u0161ta\s+mo\u017ee\u0161|sta\s+mozes|"
-            r"\u0161ta\s+radi\u0161|sta\s+radis|"
-            r"kako\s+mi\s+najbolje\s+mozes\s+pomo[\u0107c]|"
-            r"what\s+is\s+your\s+role|what\s+can\s+you\s+do|how\s+can\s+you\s+help"
-            r")\b",
+        re.match(
+            r"(?i)^\s*(?:"
+            r"ko\s+si(?:\s+ti)?"
+            r"|koja\s+je\s+tvoja\s+uloga(?:\s+u\s+sistemu)?"
+            r"|\u0161ta\s+si|sta\s+si"
+            r"|\u0161ta\s+mo\u017ee\u0161|sta\s+mozes"
+            r"|\u0161ta\s+radi\u0161|sta\s+radis"
+            r"|kako\s+mi\s+najbolje\s+mozes\s+pomo[\u0107c]"
+            r"|who\s+are\s+you"
+            r"|what\s+is\s+your\s+role"
+            r"|what\s+can\s+you\s+do"
+            r"|how\s+can\s+you\s+help"
+            r")\s*\??\s*$",
             t,
         )
     )
@@ -2855,6 +2877,21 @@ async def create_ceo_advisor_agent(
     if not base_text:
         base_text = "Reci ukratko šta možeš i kako mogu tražiti akciju."
 
+    # Directive vs payload segmentation (enterprise hardening): intent/routing should
+    # only look at a small directive window, not at the full pasted payload.
+    # Spec: first non-empty line, capped to 300 chars; otherwise first 300 chars.
+    def _directive_window(text: str) -> str:
+        raw = text or ""
+        if not raw:
+            return ""
+        for line in raw.splitlines():
+            line0 = line.strip()
+            if line0:
+                return line0[:300].strip()
+        return raw.strip()[:300].strip()
+
+    intent_text = _directive_window(base_text)
+
     def _norm_bhs_ascii(text: str) -> str:
         t = (text or "").strip().lower()
         if not t:
@@ -3027,8 +3064,8 @@ async def create_ceo_advisor_agent(
         except Exception:
             pass
 
-    continue_deliverable = _is_deliverable_continue(base_text)
-    intent = classify_intent(base_text)
+    continue_deliverable = _is_deliverable_continue(intent_text)
+    intent = classify_intent(intent_text)
 
     def _debug_trace_enabled() -> bool:
         v = (os.getenv("DEBUG_TRACE") or "").strip().lower()
@@ -3917,7 +3954,7 @@ async def create_ceo_advisor_agent(
 
     # Identity/capabilities allowlist: these are meta questions about the assistant.
     # They must never fall into unknown-mode, even when general knowledge is disabled.
-    if _is_assistant_role_or_capabilities_question(base_text):
+    if _is_assistant_role_or_capabilities_question(intent_text):
         return _final(
             AgentOutput(
                 text=_assistant_identity_text(english_output=english_output),
@@ -3943,7 +3980,7 @@ async def create_ceo_advisor_agent(
         base_text,
         prev_meta_intent=prev_meta_intent,
     )
-    if mem_kind or _is_assistant_memory_meta_question(base_text):
+    if mem_kind or _is_assistant_memory_meta_question(intent_text):
         # If the older matcher fired but classifier didn't, default to existence.
         kind = mem_kind or "existence"
 
@@ -3969,7 +4006,7 @@ async def create_ceo_advisor_agent(
         )
 
     # Epistemic/meta allowlist: questions about how/why we know something must never hit unknown-mode.
-    if _is_assistant_epistemic_meta_question(base_text):
+    if _is_assistant_epistemic_meta_question(intent_text):
         return _final(
             AgentOutput(
                 text=_assistant_epistemic_text(english_output=english_output),
@@ -4035,8 +4072,8 @@ async def create_ceo_advisor_agent(
     # answer deterministically from snapshot instead of disclaiming access.
     if (
         snapshot_ready
-        and _wants_notion_task_or_goal(base_text)
-        and (not _defers_notion_execution_or_wants_discussion_first(base_text))
+        and _wants_notion_task_or_goal(intent_text)
+        and (not _defers_notion_execution_or_wants_discussion_first(intent_text))
     ):
         goals_count = len(goals) if isinstance(goals, list) else 0
         tasks_count = len(tasks) if isinstance(tasks, list) else 0
@@ -4290,7 +4327,7 @@ async def create_ceo_advisor_agent(
             )
         )
 
-    if _is_explicit_delegate_to_rgo(base_text):
+    if _is_explicit_delegate_to_rgo(intent_text):
         # /api/chat is read-only: never execute delegation here.
         task_text = (base_text or "").strip()
         ack = _generic_delegation_ack_text(
@@ -4369,7 +4406,7 @@ async def create_ceo_advisor_agent(
         return _final(out)
 
     # Generic: "pošalji/delegiraj agentu <agent>".
-    target_txt = _extract_delegate_target(base_text)
+    target_txt = _extract_delegate_target(intent_text)
     if isinstance(target_txt, str) and target_txt.strip():
         target_id = _resolve_agent_id_from_text(target_txt)
         if isinstance(target_id, str) and target_id.strip():
@@ -4470,7 +4507,7 @@ async def create_ceo_advisor_agent(
             return _final(out)
 
     # Missing target: ask which agent, but keep it optional.
-    if _looks_like_delegate_without_target(base_text):
+    if _looks_like_delegate_without_target(intent_text):
         out = AgentOutput(
             text=_render_agent_picker(english=bool(english_output)),
             proposed_commands=[],
@@ -4799,17 +4836,17 @@ async def create_ceo_advisor_agent(
             )
         )
 
-    structured_mode = _needs_structured_snapshot_answer(base_text)
-    propose_only = _is_propose_only_request(base_text)
-    wants_notion = _wants_notion_task_or_goal(base_text)
-    wants_prompt_template = _is_prompt_preparation_request(base_text)
+    structured_mode = _needs_structured_snapshot_answer(intent_text)
+    propose_only = _is_propose_only_request(intent_text)
+    wants_notion = _wants_notion_task_or_goal(intent_text)
+    wants_prompt_template = _is_prompt_preparation_request(intent_text)
 
     use_llm = not propose_only
 
     # Grounding gate: for fact-sensitive questions, never assert state without snapshot.
     # This prevents hallucinated "blocked/at risk" type claims.
     snapshot_has_facts = _snapshot_has_business_facts(snapshot_payload)
-    fact_sensitive = _is_fact_sensitive_query(base_text)
+    fact_sensitive = _is_fact_sensitive_query(intent_text)
 
     # Grounding pack (if present): used to decide whether we have curated KB coverage.
     gp_ctx = ctx.get("grounding_pack") if isinstance(ctx, dict) else None
