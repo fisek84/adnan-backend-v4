@@ -1324,19 +1324,33 @@ def _is_assistant_role_or_capabilities_question(user_text: str) -> bool:
     if len(first_line) > 300:
         return False
 
-    t = first_line.lower()
+    # Normalize BHS diacritics and lightly normalize punctuation to keep matching
+    # robust for voice/IM inputs while staying directive-only.
+    t0 = (
+        first_line.lower()
+        .replace("č", "c")
+        .replace("ć", "c")
+        .replace("š", "s")
+        .replace("đ", "dj")
+        .replace("ž", "z")
+    )
+    t = re.sub(r"[^a-z0-9\s\?]", " ", t0)
+    t = " ".join(t.split())
 
+    # IMPORTANT: anchored match to the *entire* directive line. Allow a small
+    # set of explicit compound forms like: "koja je tvoja uloga i kako mi pomazes".
     return bool(
         re.match(
             r"(?i)^\s*(?:"
-            r"ko\s+si(?:\s+ti)?"
-            r"|koja\s+je\s+tvoja\s+uloga(?:\s+u\s+sistemu)?"
-            r"|\u0161ta\s+si|sta\s+si"
-            r"|\u0161ta\s+mo\u017ee\u0161|sta\s+mozes"
-            r"|\u0161ta\s+radi\u0161|sta\s+radis"
-            r"|kako\s+mi\s+najbolje\s+mozes\s+pomo[\u0107c]"
+            r"(?:ko\s+si(?:\s+ti)?)(?:\s+(?:i|and)\s+(?:sta\s+mozes|kako\s+mi\s+(?:mozes\s+pomoc[ic]|pomazes)))?"
+            r"|(?:koja\s+je\s+tvoja\s+uloga(?:\s+u\s+sistemu)?)(?:\s+(?:i|and)\s+(?:kako\s+mi\s+(?:mozes\s+pomoc[ic]|pomazes)|sta\s+mozes|sta\s+radis))?"
+            r"|sta\s+si"
+            r"|sta\s+mozes"
+            r"|sta\s+radis"
+            r"|kako\s+mi\s+(?:najbolje\s+)?mozes\s+pomoc[ic]"
+            r"|kako\s+mi\s+pomazes"
             r"|who\s+are\s+you"
-            r"|what\s+is\s+your\s+role"
+            r"|(?:what\s+is\s+your\s+role)(?:\s+and\s+how\s+can\s+you\s+help)?"
             r"|what\s+can\s+you\s+do"
             r"|how\s+can\s+you\s+help"
             r")\s*\??\s*$",

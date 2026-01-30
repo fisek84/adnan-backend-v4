@@ -16,6 +16,7 @@ def test_identity_questions_never_sanitize_canonical_identity_answer(monkeypatch
 
     cases = [
         ("Koja je tvoja uloga u sistemu", "bs", "Ja sam CEO Advisor"),
+        ("Koja je tvoja uloga i kako mi pomazes", "bs", "Ja sam CEO Advisor"),
         ("Ko si ti?", "bs", "Ja sam CEO Advisor"),
         ("What is your role?", "en", "CEO Advisor"),
     ]
