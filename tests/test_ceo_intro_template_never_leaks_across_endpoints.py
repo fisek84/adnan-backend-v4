@@ -48,11 +48,11 @@ def _extract_text_from_stream_payload(raw: str) -> str:
     # Best-effort reconstruction for simple SSE/JSON-lines streams.
     out: list[str] = []
     for line in (raw or "").splitlines():
-        l = line.strip()
-        if not l:
+        line_stripped = line.strip()
+        if not line_stripped:
             continue
-        if l.startswith("data:"):
-            payload = l[len("data:") :].strip()
+        if line_stripped.startswith("data:"):
+            payload = line_stripped[len("data:") :].strip()
             if payload in {"[DONE]", "done"}:
                 continue
             try:
@@ -69,7 +69,7 @@ def _extract_text_from_stream_payload(raw: str) -> str:
 
         # Non-SSE: attempt JSON parse per line.
         try:
-            obj = json.loads(l)
+            obj = json.loads(line_stripped)
         except Exception:
             continue
         if isinstance(obj, dict):
@@ -79,12 +79,16 @@ def _extract_text_from_stream_payload(raw: str) -> str:
     return "".join(out).strip()
 
 
-def test_api_chat_two_turn_plan_repro_no_template(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_api_chat_two_turn_plan_repro_no_template(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     import routers.chat_router as chat_router
 
     calls: list[str] = []
 
-    async def _stub_create_ceo_advisor_agent(*_args: Any, **_kwargs: Any) -> AgentOutput:
+    async def _stub_create_ceo_advisor_agent(
+        *_args: Any, **_kwargs: Any
+    ) -> AgentOutput:
         calls.append("call")
         if len(calls) == 1:
             return AgentOutput(
@@ -146,13 +150,17 @@ def test_api_chat_two_turn_plan_repro_no_template(monkeypatch: pytest.MonkeyPatc
     assert "Poboljšanja" in txt2
 
 
-def test_chat_alias_two_turn_plan_repro_no_template(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_chat_alias_two_turn_plan_repro_no_template(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # /chat alias is registered without /api prefix; sanitizer must still apply.
     import routers.chat_router as chat_router
 
     calls: list[str] = []
 
-    async def _stub_create_ceo_advisor_agent(*_args: Any, **_kwargs: Any) -> AgentOutput:
+    async def _stub_create_ceo_advisor_agent(
+        *_args: Any, **_kwargs: Any
+    ) -> AgentOutput:
         calls.append("call")
         if len(calls) == 1:
             return AgentOutput(
@@ -211,7 +219,9 @@ def test_streaming_endpoint_if_present(monkeypatch: pytest.MonkeyPatch) -> None:
     # If a streaming chat endpoint exists, it must also obey the no-template-leak invariant.
     import routers.chat_router as chat_router
 
-    async def _stub_create_ceo_advisor_agent(*_args: Any, **_kwargs: Any) -> AgentOutput:
+    async def _stub_create_ceo_advisor_agent(
+        *_args: Any, **_kwargs: Any
+    ) -> AgentOutput:
         return AgentOutput(
             text=_CEO_INTRO_TEMPLATE,
             proposed_commands=[],
@@ -249,7 +259,9 @@ def test_streaming_endpoint_if_present(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     assert resp.status_code in {200, 404}, resp.text
     if resp.status_code == 404:
-        pytest.skip("Streaming chat endpoint path exists in routes list but returns 404")
+        pytest.skip(
+            "Streaming chat endpoint path exists in routes list but returns 404"
+        )
 
     raw = resp.text or ""
     reconstructed = _extract_text_from_stream_payload(raw) or raw
@@ -276,10 +288,14 @@ def test_voice_endpoint_if_present_no_template_leak() -> None:
     assert "Ja sam CEO Advisor u ovom workspace-u" not in raw
 
 
-def test_explicit_meta_question_allows_intro_template(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_explicit_meta_question_allows_intro_template(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     import routers.chat_router as chat_router
 
-    async def _stub_create_ceo_advisor_agent(*_args: Any, **_kwargs: Any) -> AgentOutput:
+    async def _stub_create_ceo_advisor_agent(
+        *_args: Any, **_kwargs: Any
+    ) -> AgentOutput:
         return AgentOutput(
             text=_CEO_INTRO_TEMPLATE,
             proposed_commands=[],
