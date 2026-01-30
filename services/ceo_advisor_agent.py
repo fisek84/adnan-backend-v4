@@ -585,7 +585,16 @@ def _llm_is_configured() -> bool:
     # Enterprise: avoid hard dependency on OpenAI for basic advisory flows.
     # If not configured, we must produce a useful deterministic response.
     api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
-    return bool(api_key)
+    if not api_key:
+        return False
+
+    # CEO Advisor uses the OpenAI assistant executor; a key without an Assistant ID
+    # is effectively not configured and must fall back to deterministic/offline-safe
+    # behavior (especially in CI where keys may be present but assistant IDs are not).
+    assistant_id = (os.getenv("CEO_ADVISOR_ASSISTANT_ID") or "").strip() or (
+        os.getenv("NOTION_OPS_ASSISTANT_ID") or ""
+    ).strip()
+    return bool(assistant_id)
 
 
 class LLMNotConfiguredError(RuntimeError):
@@ -1540,25 +1549,35 @@ def _advisory_review_fallback_text(*, english_output: bool) -> str:
     if english_output:
         return (
             "I can review your provided content and give read-only feedback. "
-            "I won't claim any internal business state (SSOT) without a snapshot.\n\n"
+            "I won't claim internal business state as fact without your internal data.\n\n"
             "To make the review actionable, I’ll cover:\n"
             "1) Goal & audience (what success looks like)\n"
             "2) Core assumptions and missing inputs\n"
             "3) Structure & clarity (sections, sequencing, redundancy)\n"
             "4) Risks/edge cases and mitigations\n"
             "5) Metrics/KPIs and next-step checklist\n\n"
+            "Questions (so I can be specific):\n"
+            "- What is the deadline and the success metric?\n"
+            "- What are the top 1–3 priorities for the next 7 days?\n\n"
+            "Plan (next week):\n"
+            "- Define 1 deliverable per day + 1 checkpoint; end-of-week: review + decision\n\n"
             "If you want, paste the text (or keep it as-is if you already did) and tell me: "
             "target audience + deadline + constraints."
         )
     return (
         "Mogu pročitati tvoj tekst i dati READ-ONLY feedback / analizu. "
-        "Neću tvrditi interno poslovno stanje (SSOT) bez snapshot-a.\n\n"
+        "Neću tvrditi interno poslovno stanje kao činjenicu bez tvojih internih podataka.\n\n"
         "Da review bude koristan, pokriću:\n"
         "1) Cilj i publiku (šta znači uspjeh)\n"
         "2) Pretpostavke i šta nedostaje\n"
         "3) Strukturu i jasnoću (sekcije, tok, ponavljanja)\n"
         "4) Rizike i mitigacije\n"
         "5) KPI-je i checklistu sljedećih koraka\n\n"
+        "Pitanja (da budem precizan):\n"
+        "- Koji je rok i 1 KPI (mjera uspjeha)?\n"
+        "- Koja su top 1–3 prioriteta za narednih 7 dana?\n\n"
+        "Plan (sljedeća sedmica):\n"
+        "- Dnevno: 1 deliverable + 1 checkpoint; kraj sedmice: review + odluka\n\n"
         "Ako želiš preciznije, napiši još: ciljna publika + rok + ograničenja."
     )
 
