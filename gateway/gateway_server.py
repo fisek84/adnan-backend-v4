@@ -55,6 +55,22 @@ def _responses_mode_enabled() -> bool:
     return _openai_api_mode() == "responses"
 
 
+def _directive_window(text: str) -> str:
+    """Extract the directive window from a user prompt.
+
+    Spec: first non-empty line, max 300 chars; fallback to first 300 chars.
+    """
+
+    raw = text or ""
+    if not raw:
+        return ""
+    for line in raw.splitlines():
+        line0 = line.strip()
+        if line0:
+            return line0[:300].strip()
+    return raw.strip()[:300].strip()
+
+
 def _env_int(name: str, default: int) -> int:
     v = (os.getenv(name) or "").strip()
     if not v:
@@ -564,10 +580,63 @@ async def _generate_ceo_readonly_answer(
         if missing_memory_snapshot:
             # Canon: never block ADVISORY due to missing memory_snapshot.
             # Keep FACT_LOOKUP blocked with the canonical no-answer fallback.
+
+            dw = _directive_window(prompt_in)
+
+            # Enterprise-safe bypass: identity/meta/advisory directives must never
+            # be blocked due to missing memory_snapshot, even if classifier/import
+            # logic fails.
+            allow_due_to_meta_or_advisory = False
+            try:
+                from services.ceo_advisor_agent import (  # type: ignore
+                    _is_advisory_review_of_provided_content,
+                    _is_advisory_thinking_request,
+                    _is_assistant_epistemic_meta_question,
+                    _is_assistant_memory_meta_question,
+                    _is_assistant_role_or_capabilities_question,
+                    _is_planning_or_help_request,
+                )
+
+                long_paste_marker = bool(
+                    len((prompt_in or "").strip()) >= 800
+                    or (prompt_in or "").count("\n") >= 8
+                )
+
+                allow_due_to_meta_or_advisory = bool(
+                    _is_assistant_role_or_capabilities_question(dw)
+                    or _is_assistant_memory_meta_question(dw)
+                    or _is_assistant_epistemic_meta_question(dw)
+                    or _is_planning_or_help_request(dw)
+                    or _is_advisory_thinking_request(dw)
+                    or _is_advisory_review_of_provided_content(dw)
+                    or long_paste_marker
+                )
+            except Exception:
+                # Ultra-minimal fallback if imports fail: keep only explicit identity
+                # questions unblocked. Do not try to infer broader intents here.
+                t = (dw or "").strip().lower()
+                t = (
+                    t.replace("č", "c")
+                    .replace("ć", "c")
+                    .replace("š", "s")
+                    .replace("đ", "dj")
+                    .replace("ž", "z")
+                )
+                t = re.sub(r"[^a-z0-9\s\?]", " ", t)
+                t = " ".join(t.split())
+                allow_due_to_meta_or_advisory = bool(
+                    re.match(
+                        r"(?i)^\s*(?:ko\s+si(?:\s+ti)?|koja\s+je\s+tvoja\s+uloga|who\s+are\s+you|what\s+is\s+your\s+role)\s*\??\s*$",
+                        t,
+                    )
+                )
+
             try:
                 from services.ceo_advisor_agent import ResponseClass  # type: ignore
 
-                if response_class == ResponseClass.FACT_LOOKUP:
+                if (not allow_due_to_meta_or_advisory) and (
+                    response_class == ResponseClass.FACT_LOOKUP
+                ):
                     txt = _responses_missing_grounding_text(english_output=False)
                     return {
                         "text": txt,
@@ -579,19 +648,27 @@ async def _generate_ceo_readonly_answer(
                         },
                     }
             except Exception:
-                # If classification isn't available, fall back to a strict heuristic:
-                # treat clear question forms as fact-lookup; otherwise allow advisory.
-                if "?" in prompt_in:
-                    txt = "Ne mogu dati smislen odgovor na to kako je trenutno napisano. Napiši tačno šta želiš (pitanje ili zadatak) u jednoj rečenici."
-                    return {
-                        "text": txt,
-                        "summary": txt,
-                        "trace": {
-                            "exit_reason": "blocked.missing_grounding",
-                            "used_sources": used_sources,
-                            "missing_inputs": sorted(set(missing_inputs + ["memory"])),
-                        },
-                    }
+                # If classification isn't available, keep behavior deterministic:
+                # - Never block identity/meta/advisory directives
+                # - Only block clear FACT_LOOKUP question forms
+                if not allow_due_to_meta_or_advisory:
+                    dw0 = (dw or "").strip()
+                    if "?" in dw0 and re.search(
+                        r"(?i)\b(what\s+is|who\s+is|when\s+is|where\s+is|why\s+is|how\s+does|explain|define|objasni|sta\s+je|s\s*ta\s+je|ko\s+je)\b",
+                        dw0,
+                    ):
+                        txt = _responses_missing_grounding_text(english_output=False)
+                        return {
+                            "text": txt,
+                            "summary": txt,
+                            "trace": {
+                                "exit_reason": "blocked.missing_grounding",
+                                "used_sources": used_sources,
+                                "missing_inputs": sorted(
+                                    set(missing_inputs + ["memory"])
+                                ),
+                            },
+                        }
 
     # Optional strict guard (opt-in): require at least N injected KB entries in Responses-mode.
     if _responses_mode_enabled():
