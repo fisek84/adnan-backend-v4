@@ -27,7 +27,10 @@ def test_identity_questions_never_sanitize_canonical_identity_answer(monkeypatch
                     message=prompt,
                     identity_pack={"payload": {"role": "ceo"}},
                     snapshot={"payload": {"goals": [{"title": "G1"}], "tasks": []}},
-                    metadata={"session_id": "test_identity_meta", "ui_output_lang": ui_lang},
+                    metadata={
+                        "session_id": "test_identity_meta",
+                        "ui_output_lang": ui_lang,
+                    },
                 ),
                 ctx={"grounding_pack": {}},
             )
