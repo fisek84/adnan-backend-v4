@@ -17,7 +17,9 @@ def _run(coro):
         "Ko si ti?",
     ],
 )
-def test_responses_mode_missing_memory_snapshot_does_not_block_identity_meta(monkeypatch, prompt):
+def test_responses_mode_missing_memory_snapshot_does_not_block_identity_meta(
+    monkeypatch, prompt
+):
     monkeypatch.setenv("OPENAI_API_MODE", "responses")
 
     # Ensure required bridge inputs are present so we reach the missing_memory_snapshot guard.
@@ -28,7 +30,9 @@ def test_responses_mode_missing_memory_snapshot_does_not_block_identity_meta(mon
         "missing": [],
     }
 
-    out = _run(_generate_ceo_readonly_answer(prompt=prompt, session_id="t", context=ctx))
+    out = _run(
+        _generate_ceo_readonly_answer(prompt=prompt, session_id="t", context=ctx)
+    )
     txt = str(out.get("text") or "")
 
     assert "Ne mogu dati smislen odgovor" not in txt
@@ -70,7 +74,11 @@ def test_gateway_except_path_does_not_block_identity_meta(monkeypatch):
     def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
         # Only fail the specific import used in the guard:
         # `from services.ceo_advisor_agent import ResponseClass`.
-        if name == "services.ceo_advisor_agent" and fromlist and "ResponseClass" in fromlist:
+        if (
+            name == "services.ceo_advisor_agent"
+            and fromlist
+            and "ResponseClass" in fromlist
+        ):
             # Allow other imports (e.g., create_ceo_advisor_agent) to succeed.
             raise ImportError("simulated import failure for ResponseClass")
         return real_import(name, globals, locals, fromlist, level)
