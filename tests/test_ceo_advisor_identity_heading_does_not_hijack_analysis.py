@@ -40,7 +40,10 @@ def test_payload_keywords_do_not_hijack_intent_when_directive_is_analysis(
                 message=msg,
                 identity_pack={"payload": {"role": "ceo"}},
                 snapshot={"payload": {"goals": [{"title": "G1"}], "tasks": []}},
-                metadata={"session_id": "test_identity_heading", "ui_output_lang": "bs"},
+                metadata={
+                    "session_id": "test_identity_heading",
+                    "ui_output_lang": "bs",
+                },
             ),
             ctx={"grounding_pack": {}},
         )
@@ -82,7 +85,10 @@ def test_payload_only_long_paste_that_starts_with_identity_like_heading_does_not
                 message=msg,
                 identity_pack={"payload": {"role": "ceo"}},
                 snapshot={"payload": {"goals": [{"title": "G1"}], "tasks": []}},
-                metadata={"session_id": "test_payload_only_long_paste", "ui_output_lang": "bs"},
+                metadata={
+                    "session_id": "test_payload_only_long_paste",
+                    "ui_output_lang": "bs",
+                },
             ),
             ctx={"grounding_pack": {}, "conversation_state": "assistant: posalji plan"},
         )
