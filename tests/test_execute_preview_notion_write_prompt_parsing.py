@@ -59,8 +59,12 @@ def test_execute_preview_notion_write_create_goal_prompt_parses_status_priority(
     assert isinstance(status, dict)
     assert isinstance(priority, dict)
 
-    status_name = (((status.get("select") or {}).get("name")) if "select" in status else ((status.get("status") or {}).get("name")))
-    priority_name = ((priority.get("select") or {}).get("name"))
+    status_name = (
+        ((status.get("select") or {}).get("name"))
+        if "select" in status
+        else ((status.get("status") or {}).get("name"))
+    )
+    priority_name = (priority.get("select") or {}).get("name")
 
     assert str(status_name or "").strip().lower() == "active"
     assert str(priority_name or "").strip().lower() == "high"
@@ -143,7 +147,10 @@ def test_execute_preview_notion_write_legacy_title_only_no_prompt_no_parsing():
     assert isinstance(props_preview, dict)
 
     # Legacy behavior: only Name from title; no parsing attempted.
-    assert _name_text_from_preview(props_preview) == "Legacy title, Status active, Priority high"
+    assert (
+        _name_text_from_preview(props_preview)
+        == "Legacy title, Status active, Priority high"
+    )
     assert "Status" not in props_preview
     assert "Priority" not in props_preview
 
