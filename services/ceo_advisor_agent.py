@@ -4872,6 +4872,70 @@ async def create_ceo_advisor_agent(
     snapshot_has_facts = _snapshot_has_business_facts(snapshot_payload)
     fact_sensitive = _is_fact_sensitive_query(intent_text)
 
+    # HOTFIX: Notion write proposals must never be blocked by the SSOT
+    # fact_sensitive + missing snapshot guard. This applies only when we'd
+    # otherwise enter the fallback below.
+    response_class = _classify_response_class(
+        intent_text,
+        orchestration_intent=str(intent or ""),
+    )
+    has_goal_task_action, goal_task_kind = _has_explicit_action_for_goal_task(base_text)
+    if (
+        fact_sensitive
+        and (not snapshot_has_facts)
+        and (
+            str(intent or "") == "notion_write"
+            or response_class == ResponseClass.ACTION_PROPOSE
+            or has_goal_task_action
+        )
+    ):
+        title0 = _extract_after_colon(base_text) or base_text
+        ai_cmd: Dict[str, Any]
+        if goal_task_kind == "goal":
+            ai_cmd = {
+                "command": "notion_write",
+                "intent": "create_goal",
+                "params": {"title": title0.strip() or "(untitled goal)"},
+            }
+        elif goal_task_kind == "task":
+            ai_cmd = {
+                "command": "notion_write",
+                "intent": "create_task",
+                "params": {"title": title0.strip() or "(untitled task)"},
+            }
+        else:
+            ai_cmd = _deterministic_notion_ai_command_from_text(base_text) or {
+                "command": "notion_write",
+                "intent": "create_goal",
+                "params": {"title": title0.strip() or "(untitled goal)"},
+            }
+
+        proposed = _wrap_as_proposed_command_with_ai_command(
+            ai_cmd,
+            reason="Notion write proposal (approval required).",
+            risk="LOW",
+        )
+
+        return _final(
+            AgentOutput(
+                text=(
+                    "Mogu kreirati ovo kao prijedlog (zahtijeva odobrenje)."
+                    if not english_output
+                    else "I can create this as a proposal (requires approval)."
+                ),
+                proposed_commands=[proposed],
+                agent_id="ceo_advisor",
+                read_only=True,
+                trace={
+                    "deterministic": True,
+                    "intent": str(intent or ""),
+                    "response_class": str(response_class.value),
+                    "exit_reason": "hotfix.write_propose_bypasses_snapshot_gate",
+                    "snapshot": snap_trace,
+                },
+            )
+        )
+
     # Grounding pack (if present): used to decide whether we have curated KB coverage.
     gp_ctx = ctx.get("grounding_pack") if isinstance(ctx, dict) else None
     gp_ctx = gp_ctx if isinstance(gp_ctx, dict) else {}
