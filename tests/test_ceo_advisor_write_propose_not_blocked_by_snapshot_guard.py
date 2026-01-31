@@ -24,6 +24,9 @@ def test_write_create_goal_not_blocked_by_fact_sensitive_missing_snapshot_guard(
     assert any(pc.command == "notion_write" for pc in (out.proposed_commands or []))
     assert "Ne mogu potvrditi poslovno stanje" not in (out.text or "")
     assert all(pc.command != "refresh_snapshot" for pc in (out.proposed_commands or []))
+    assert isinstance(out.trace, dict)
+    assert out.trace.get("response_class") == "action_propose"
+    assert out.trace.get("exit_reason") != "fallback.fact_sensitive_no_snapshot"
 
 
 def test_fact_status_query_without_snapshot_still_hits_fact_sensitive_fallback():
