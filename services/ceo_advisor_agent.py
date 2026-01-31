@@ -5190,25 +5190,48 @@ async def create_ceo_advisor_agent(
         )
     ):
         response_class = ResponseClass.ACTION_PROPOSE
-        title0 = _extract_after_colon(base_text) or base_text
+        # Canonical parsing input: always provide `params.prompt` and a clean `params.title`
+        # so the gateway can schema-parse fields (Status, Priority, ...) deterministically.
+        try:
+            from services.notion_write_intent_normalizer import (  # noqa: PLC0415
+                normalize_prompt_for_property_parse,
+                strip_prefixes_for_title,
+            )
+
+            norm0 = normalize_prompt_for_property_parse(base_text)
+            clean0 = strip_prefixes_for_title(norm0)
+            title0 = (clean0.split(",", 1)[0]).strip() if "," in clean0 else clean0
+        except Exception:
+            title0 = _extract_after_colon(base_text) or base_text
+
+        prompt0 = (base_text or "").strip()
         ai_cmd: Dict[str, Any]
         if goal_task_kind == "goal":
             ai_cmd = {
                 "command": "notion_write",
                 "intent": "create_goal",
-                "params": {"title": title0.strip() or "(untitled goal)"},
+                "params": {
+                    "title": title0.strip() or "(untitled goal)",
+                    "prompt": prompt0,
+                },
             }
         elif goal_task_kind == "task":
             ai_cmd = {
                 "command": "notion_write",
                 "intent": "create_task",
-                "params": {"title": title0.strip() or "(untitled task)"},
+                "params": {
+                    "title": title0.strip() or "(untitled task)",
+                    "prompt": prompt0,
+                },
             }
         else:
             ai_cmd = _deterministic_notion_ai_command_from_text(base_text) or {
                 "command": "notion_write",
                 "intent": "create_goal",
-                "params": {"title": title0.strip() or "(untitled goal)"},
+                "params": {
+                    "title": title0.strip() or "(untitled goal)",
+                    "prompt": prompt0,
+                },
             }
 
         proposed = _wrap_as_proposed_command_with_ai_command(

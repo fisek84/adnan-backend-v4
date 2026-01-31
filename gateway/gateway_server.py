@@ -4580,6 +4580,7 @@ async def execute_preview_command(
                 *,
                 db_key: Optional[str],
                 property_specs: Dict[str, Any],
+                wrapper_patch_override: Optional[Dict[str, Any]] = None,
             ) -> Dict[str, Any]:
                 dk = (db_key or "").strip()
                 if not dk:
@@ -4592,6 +4593,12 @@ async def execute_preview_command(
                         "validated": True,
                     }
 
+                wp_eff = wrapper_patch_override
+                if not isinstance(wp_eff, dict):
+                    wp_eff = (
+                        wrapper_patch0 if isinstance(wrapper_patch0, dict) else None
+                    )
+
                 try:
                     from services.notion_property_specs_builder import (  # noqa: PLC0415
                         validate_and_build_property_specs,
@@ -4600,9 +4607,7 @@ async def execute_preview_command(
                     return validate_and_build_property_specs(
                         db_key=dk,
                         property_specs_in=property_specs,
-                        wrapper_patch_in=wrapper_patch0
-                        if isinstance(wrapper_patch0, dict)
-                        else None,
+                        wrapper_patch_in=wp_eff,
                     )
                 except Exception:
                     return {
@@ -4654,6 +4659,276 @@ async def execute_preview_command(
                     # Let explicit specs override derived ones.
                     ps.update(extra_specs)
                 return ps
+
+            def _extract_preview_value(spec: Dict[str, Any]) -> Any:
+                stype = _ensure_str(spec.get("type")).lower()
+                if stype in {"title", "rich_text", "text"}:
+                    return _ensure_str(
+                        spec.get("text") or spec.get("value") or ""
+                    ).strip()
+                if stype in {"select", "status"}:
+                    return _ensure_str(
+                        spec.get("name") or spec.get("value") or ""
+                    ).strip()
+                if stype == "multi_select":
+                    raw = spec.get("names")
+                    if isinstance(raw, list):
+                        return [
+                            _ensure_str(x).strip()
+                            for x in raw
+                            if _ensure_str(x).strip()
+                        ]
+                    return _ensure_str(spec.get("value") or "").strip()
+                if stype == "date":
+                    return _ensure_str(
+                        spec.get("start") or spec.get("value") or ""
+                    ).strip()
+                if stype == "number":
+                    return (
+                        spec.get("number")
+                        if spec.get("number") is not None
+                        else spec.get("value")
+                    )
+                if stype == "checkbox":
+                    return (
+                        spec.get("checkbox")
+                        if spec.get("checkbox") is not None
+                        else spec.get("value")
+                    )
+                if stype == "people":
+                    return (
+                        spec.get("emails")
+                        or spec.get("names")
+                        or spec.get("ids")
+                        or spec.get("value")
+                    )
+                if stype == "relation":
+                    return spec.get("ids") or spec.get("id") or spec.get("value")
+                return None
+
+            def _prompt_kv_wrapper_patch_for_db(
+                *,
+                prompt: str,
+                db_key: str,
+            ) -> Dict[str, Any]:
+                """Parse comma-separated key/value segments (after first comma) from prompt.
+
+                Deterministic, schema-driven:
+                - Only maps to existing schema property names.
+                - Drops unknown fields.
+                - Drops read-only/computed fields.
+
+                Returns a dict with keys:
+                  wrapper_patch, unknown_props, ignored_readonly_props
+                """
+
+                out = {
+                    "wrapper_patch": {},
+                    "unknown_props": [],
+                    "ignored_readonly_props": [],
+                }
+
+                p = (prompt or "").strip()
+                if not p:
+                    return out
+
+                # Reuse SSOT normalizers.
+                try:
+                    from services.notion_write_intent_normalizer import (  # noqa: PLC0415
+                        normalize_prompt_for_property_parse,
+                        strip_prefixes_for_title,
+                    )
+
+                    norm = normalize_prompt_for_property_parse(p)
+                    _ = strip_prefixes_for_title(norm)  # for prefix stripping parity
+                except Exception:
+                    norm = p
+
+                if "," not in norm:
+                    return out
+
+                tail = norm.split(",", 1)[1]
+                segments = [s.strip() for s in tail.split(",") if s.strip()]
+                if not segments:
+                    return out
+
+                try:
+                    from services.notion_schema_registry import (  # noqa: PLC0415
+                        NotionSchemaRegistry,
+                    )
+
+                    models = NotionSchemaRegistry.get_property_models(db_key)
+                except Exception:
+                    models = {}
+
+                if not isinstance(models, dict) or not models:
+                    return out
+
+                schema_names = [
+                    k for k in models.keys() if isinstance(k, str) and k.strip()
+                ]
+                schema_by_cf = {k.casefold(): k for k in schema_names}
+
+                deny_type_keys = {
+                    "formula",
+                    "rollup",
+                    "created_time",
+                    "last_edited_time",
+                    "unique_id",
+                    "created_by",
+                    "last_edited_by",
+                }
+
+                def _resolve_key(raw_key: str) -> Optional[str]:
+                    k = (raw_key or "").strip()
+                    if not k:
+                        return None
+                    cf = k.casefold()
+                    if cf in schema_by_cf:
+                        return schema_by_cf[cf]
+
+                    # Limited deterministic synonyms.
+                    if cf in {"status", "stanje"}:
+                        return (
+                            schema_by_cf.get("status")
+                            or schema_by_cf.get("stanje")
+                            or ("Status" if "Status" in models else None)
+                        )
+
+                    if cf in {"priority", "prioritet"}:
+                        return "Priority" if "Priority" in models else None
+
+                    if cf in {"deadline", "due", "due date", "rok"}:
+                        # Choose whichever exists in schema, prefer Due Date when present.
+                        if "Due Date" in models:
+                            return "Due Date"
+                        if "Deadline" in models:
+                            return "Deadline"
+                        return None
+
+                    return None
+
+                def _is_writable(field_name: str) -> bool:
+                    m = models.get(field_name)
+                    if m is None:
+                        return False
+                    try:
+                        if bool(getattr(m, "read_only", False)):
+                            return False
+                        nt = _ensure_str(getattr(m, "notion_type", "")).lower()
+                        if nt in deny_type_keys:
+                            return False
+                        wt = _ensure_str(getattr(m, "write_type", "")).lower()
+                        allow = {
+                            "title",
+                            "rich_text",
+                            "select",
+                            "multi_select",
+                            "number",
+                            "checkbox",
+                            "date",
+                            "people",
+                            "relation",
+                            "url",
+                            "email",
+                            "phone_number",
+                            "status",
+                        }
+                        return wt in allow
+                    except Exception:
+                        return False
+
+                # Help parse segments that omit ':' (e.g. "Status active").
+                key_candidates = list(schema_names)
+                # Add minimal synonyms as candidates for prefix detection.
+                key_candidates.extend(
+                    [
+                        "status",
+                        "stanje",
+                        "priority",
+                        "prioritet",
+                        "deadline",
+                        "due",
+                        "due date",
+                        "rok",
+                    ]
+                )
+                key_candidates = [
+                    k for k in key_candidates if isinstance(k, str) and k.strip()
+                ]
+                key_candidates.sort(key=lambda x: len(x), reverse=True)
+
+                def _split_kv(seg: str) -> Optional[tuple[str, str]]:
+                    s = (seg or "").strip()
+                    if not s:
+                        return None
+
+                    # Prefer explicit separators.
+                    for sep in (":", "="):
+                        if sep in s:
+                            left, right = s.split(sep, 1)
+                            k0 = left.strip()
+                            v0 = right.strip()
+                            if k0 and v0:
+                                return k0, v0
+
+                    # Prefix match against known keys/synonyms.
+                    s_cf = s.casefold()
+                    for cand in key_candidates:
+                        c_cf = cand.casefold()
+                        if not s_cf.startswith(c_cf):
+                            continue
+                        rest = s[len(cand) :].strip()
+                        # Require a delimiter between key and value.
+                        if not rest:
+                            continue
+                        # Accept if remaining begins with whitespace or punctuation.
+                        return cand, rest
+
+                    # Fallback: split once on whitespace.
+                    parts = s.split(None, 1)
+                    if len(parts) == 2 and parts[0].strip() and parts[1].strip():
+                        return parts[0].strip(), parts[1].strip()
+                    return None
+
+                wp: Dict[str, Any] = {}
+                unknown: List[str] = []
+                ignored: List[str] = []
+
+                for seg in segments:
+                    kv = _split_kv(seg)
+                    if kv is None:
+                        continue
+                    raw_key, raw_val = kv
+                    k0 = (raw_key or "").strip()
+                    v0 = (raw_val or "").strip()
+                    if not k0 or not v0:
+                        continue
+
+                    # Treat explicit read-only type tokens as denied.
+                    if k0.casefold() in deny_type_keys:
+                        ignored.append(k0)
+                        continue
+
+                    resolved = _resolve_key(k0)
+                    if not resolved:
+                        unknown.append(k0)
+                        continue
+
+                    if not _is_writable(resolved):
+                        ignored.append(resolved)
+                        continue
+
+                    wp[resolved] = v0
+
+                out["wrapper_patch"] = wp
+                out["unknown_props"] = sorted(
+                    list({x for x in unknown if isinstance(x, str) and x.strip()})
+                )
+                out["ignored_readonly_props"] = sorted(
+                    list({x for x in ignored if isinstance(x, str) and x.strip()})
+                )
+                return out
 
             # create_page/update_page carry property_specs directly.
             if intent in {"create_page", "update_page"}:
@@ -4715,15 +4990,102 @@ async def execute_preview_command(
                     else "projects"
                 )
 
+                raw_prompt = _ensure_str(params.get("prompt")).strip()
+
                 title = _ensure_str(params.get("title")).strip()
                 description = _ensure_str(params.get("description")).strip()
                 deadline = _ensure_str(params.get("deadline")).strip()
                 priority = _ensure_str(params.get("priority")).strip()
                 status = _ensure_str(params.get("status")).strip()
 
+                # ============================================================
+                # Canon (prompt-first parsing): when params.prompt exists, parse
+                # comma-separated fields after the first comma and map them to
+                # schema-backed property_specs. Legacy path remains title-only.
+                # ============================================================
+                parsed_trace: Optional[Dict[str, Any]] = None
+
+                # Schema-driven title prop name (Projects uses "Project Name").
+                title_prop_name = "Name"
+                try:
+                    from services.notion_schema_registry import (  # noqa: PLC0415
+                        NotionSchemaRegistry,
+                    )
+
+                    models0 = NotionSchemaRegistry.get_property_models(db_key)
+                    if isinstance(models0, dict):
+                        for n0, m0 in models0.items():
+                            if getattr(m0, "write_type", None) == "title":
+                                title_prop_name = n0
+                                break
+                except Exception:
+                    title_prop_name = "Project Name" if db_key == "projects" else "Name"
+
                 property_specs: Dict[str, Any] = {}
-                if title:
-                    property_specs["Name"] = {"type": "title", "text": title}
+                wrapper_patch_eff: Optional[Dict[str, Any]] = None
+
+                if raw_prompt:
+                    # Ensure Name is clean: cut at first comma (after normalization/prefix stripping).
+                    try:
+                        from services.notion_write_intent_normalizer import (  # noqa: PLC0415
+                            normalize_prompt_for_property_parse,
+                            strip_prefixes_for_title,
+                        )
+
+                        norm = normalize_prompt_for_property_parse(raw_prompt)
+                        clean_title = strip_prefixes_for_title(norm)
+                        clean_title = (
+                            clean_title.split(",", 1)[0].strip()
+                            if "," in clean_title
+                            else clean_title.strip()
+                        )
+                    except Exception:
+                        clean_title = ""
+
+                    # Prefer explicit title if present, but sanitize similarly.
+                    if title:
+                        title = (
+                            title.split(",", 1)[0].strip() if "," in title else title
+                        )
+                    elif clean_title:
+                        title = clean_title
+
+                    if title:
+                        property_specs[title_prop_name] = {
+                            "type": "title",
+                            "text": title,
+                        }
+
+                    parsed = _prompt_kv_wrapper_patch_for_db(
+                        prompt=raw_prompt,
+                        db_key=db_key,
+                    )
+                    wp_from_prompt = parsed.get("wrapper_patch")
+                    if isinstance(wp_from_prompt, dict) and wp_from_prompt:
+                        wrapper_patch_eff = dict(wp_from_prompt)
+                    else:
+                        wrapper_patch_eff = {}
+
+                    # UI-provided wrapper_patch (if any) wins over prompt parsing.
+                    if isinstance(wrapper_patch0, dict) and wrapper_patch0:
+                        wrapper_patch_eff.update(wrapper_patch0)
+
+                    parsed_trace = {
+                        "unknown_props": parsed.get("unknown_props")
+                        if isinstance(parsed.get("unknown_props"), list)
+                        else [],
+                        "ignored_readonly_props": parsed.get("ignored_readonly_props")
+                        if isinstance(parsed.get("ignored_readonly_props"), list)
+                        else [],
+                    }
+
+                # Legacy: no prompt -> only map explicit structured fields.
+                if not raw_prompt:
+                    if title:
+                        property_specs[title_prop_name] = {
+                            "type": "title",
+                            "text": title,
+                        }
                 if description:
                     property_specs["Description"] = {
                         "type": "rich_text",
@@ -4741,7 +5103,9 @@ async def execute_preview_command(
                     property_specs.update(extra_specs)
 
                 built = _build_specs_for_preview(
-                    db_key=db_key, property_specs=property_specs
+                    db_key=db_key,
+                    property_specs=property_specs,
+                    wrapper_patch_override=wrapper_patch_eff,
                 )
 
                 property_specs = _sanitize_property_specs_for_preview(
@@ -4775,6 +5139,28 @@ async def execute_preview_command(
                     ),
                     "note": "Preview does not hit Notion. create_goal/create_task/create_project derive properties at execution time; this mirrors that mapping.",
                 }
+
+                # Observability: only for prompt-based parsing (enterprise debugging).
+                if isinstance(parsed_trace, dict):
+                    parsed_props: Dict[str, Any] = {}
+                    for k0, v0 in property_specs.items():
+                        if not isinstance(k0, str) or not k0.strip():
+                            continue
+                        if not isinstance(v0, dict):
+                            continue
+                        pv = _extract_preview_value(v0)
+                        if pv is None:
+                            continue
+                        parsed_props[k0.strip()] = pv
+
+                    nb_build = notion_block.get("build")
+                    if isinstance(nb_build, dict):
+                        nb_build["parsed_props"] = parsed_props
+                        nb_build["unknown_props"] = parsed_trace.get("unknown_props")
+                        nb_build["ignored_readonly_props"] = parsed_trace.get(
+                            "ignored_readonly_props"
+                        )
+                        notion_block["build"] = nb_build
 
             # batch_request: preview each operation as a table row
             elif intent in {"batch_request", "batch", "branch_request"}:
