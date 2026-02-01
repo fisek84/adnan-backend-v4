@@ -1526,6 +1526,133 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         )
         armed = bool(st.get("armed") is True)
 
+        # ------------------------------------------------------------
+        # CANON: write intent -> always route to notion_ops (proposal-only)
+        # - ARMED must NOT block proposal generation; it only gates execution.
+        # - CEO advisor remains advisory/read-only and must not swallow write intents.
+        # ------------------------------------------------------------
+        try:
+            from services.notion_keyword_mapper import NotionKeywordMapper  # noqa: PLC0415
+
+            detected_intent = NotionKeywordMapper.detect_intent(prompt or "")
+        except Exception:
+            detected_intent = None
+
+        write_intent_kw = detected_intent in {
+            "create_goal",
+            "create_task",
+            "create_project",
+            "batch_request",
+        }
+        write_intent = bool(write_intent_kw or _looks_like_write_intent(prompt))
+
+        if write_intent:
+            try:
+                from services.notion_ops_agent import notion_ops_agent  # noqa: PLC0415
+
+                # Ensure the agent sees the correct session_id.
+                try:
+                    payload.session_id = session_id  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+
+                # Force proposal-mode semantics for notion_ops in /api/chat.
+                mdw = getattr(payload, "metadata", None)
+                mdw = dict(mdw) if isinstance(mdw, dict) else {}
+                mdw.setdefault("session_id", session_id)
+                mdw.setdefault("initiator", "ceo_chat")
+                # /api/chat is canonical read-only (proposal-only). Execution happens via /api/execute.
+                mdw["read_only"] = True
+                payload.metadata = mdw  # type: ignore[assignment]
+
+                # Hint the router/agent selection for downstream traces.
+                try:
+                    payload.preferred_agent_id = "notion_ops"  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+
+                out = await notion_ops_agent(payload, ctx={"memory": mem_snapshot})
+
+                pcs = getattr(out, "proposed_commands", None)
+                normalized = _normalize_proposed_commands(pcs)
+
+                actionable = [pc for pc in normalized if _is_actionable(pc)]
+                if actionable:
+                    for pc in actionable:
+                        _finalize_actionable(pc)
+
+                pcs_out: List[Dict[str, Any]] = []
+                for pc in actionable or normalized:
+                    d = (
+                        pc.model_dump(by_alias=False)
+                        if hasattr(pc, "model_dump")
+                        else pc.dict(by_alias=False)
+                    )
+                    if isinstance(d, dict):
+                        pcs_out.append(_ensure_payload_summary_contract(d))
+
+                # Hard guarantee: write intent must always produce an approval proposal.
+                if not pcs_out:
+                    fallback = _build_approval_wrapper(
+                        prompt,
+                        reason="Approval required (write intent; routed to notion_ops).",
+                    )
+                    pcs_out = [
+                        _ensure_payload_summary_contract(
+                            _pc_to_dict(fallback, prompt=prompt)
+                        )
+                    ]
+
+                _persist_pending_proposal(proposal_key, pcs_out)
+
+                tr0 = getattr(out, "trace", None)
+                tr0 = tr0 if isinstance(tr0, dict) else {}
+                tr0.setdefault("phase6_notion_ops_gate", {})
+                tr0["phase6_notion_ops_gate"] = {
+                    "armed": bool(armed),
+                    "session_id_present": bool(session_id),
+                    "canon": "write_intent_routes_to_notion_ops",
+                    "detected_intent": detected_intent,
+                }
+
+                content: Dict[str, Any] = {
+                    "text": getattr(out, "text", "") or "",
+                    "proposed_commands": pcs_out,
+                    "agent_id": getattr(out, "agent_id", None) or "notion_ops",
+                    "read_only": True,
+                    "notion_ops": {
+                        "armed": bool(armed),
+                        "armed_at": st.get("armed_at") if armed else None,
+                        "session_id": session_id,
+                        "armed_state": st,
+                    },
+                }
+
+                if debug_on:
+                    tr0["memory_provider"] = memory_provider
+                    tr0["memory_items_count"] = memory_items_count
+                    tr0["memory_error"] = memory_error
+                    content["trace"] = tr0
+                    content.update(kb)
+                    content.update(
+                        _grounding_bundle(
+                            prompt=prompt,
+                            knowledge_snapshot=ks_for_gp,
+                            memory_snapshot=mem_snapshot,
+                            legacy_trace=tr0,
+                            agent_id=getattr(out, "agent_id", None),
+                        )
+                    )
+                else:
+                    minimal_trace = _minimal_trace_intent(tr0)
+                    if minimal_trace:
+                        content["trace"] = minimal_trace
+
+                return JSONResponse(content=_attach_session_id(content, session_id))
+            except Exception:
+                # Fail-soft: fall back to existing advisor routing.
+                pass
+
         # Build a first grounding pack early so the agent can cite KB ids deterministically.
         pre_grounding = _grounding_bundle(
             prompt=prompt,

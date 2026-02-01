@@ -192,7 +192,7 @@ async def notion_ops_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> Agen
                 text="Notion Ops nije aktivan. Želiš aktivirati? (napiši: 'notion ops aktiviraj' / 'notion ops uključi') / Notion Ops is not armed. Want to activate? (write: 'notion ops activate' / 'notion ops enable')",
                 proposed_commands=proposed,
                 agent_id="notion_ops",
-                read_only=True,
+                read_only=read_only,
                 trace=trace,
             )
 
