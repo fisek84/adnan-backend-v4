@@ -789,6 +789,8 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
     abortRef.current = controller;
 
     try {
+      const agentId = notionOpsArmed ? "notion_ops" : "ceo_advisor";
+
       const req: any = {
         message: trimmed,
         text: trimmed,
@@ -797,7 +799,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         initiator: "ceo_chat",
         session_id: sessionId,  // Also include at top level for compatibility
         source: "ceo_dashboard",
-        preferred_agent_id: "ceo_advisor",
+        preferred_agent_id: agentId,
         output_lang: outputLanguage,
         
         // CRITICAL: metadata with session_id per test protocol
@@ -808,7 +810,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         },
         
         context_hint: {
-          preferred_agent_id: "ceo_advisor",
+          preferred_agent_id: agentId,
           ui_output_lang: outputLanguage,
         },
       };
