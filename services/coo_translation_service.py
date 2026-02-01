@@ -86,7 +86,7 @@ class COOTranslationService:
         try:
             from services.notion_keyword_mapper import NotionKeywordMapper  # noqa: PLC0415
 
-            if NotionKeywordMapper.is_batch_request(text):
+            if NotionKeywordMapper.detect_intent(text) == "batch_request":
                 import inspect
                 from services import goal_task_batch_parser as gtbp  # noqa: PLC0415
                 from models.ai_command import AICommand  # noqa: PLC0415

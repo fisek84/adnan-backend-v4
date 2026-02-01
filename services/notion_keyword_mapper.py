@@ -409,12 +409,6 @@ class NotionKeywordMapper:
         Returns:
             True if this is a batch request
         """
-        t = (text or "").lower()
-
-        # Heuristika: ako u istom inputu ima i (goal/cilj) i (task/zadatak), to je GROUP/BATCH.
-        if (("task" in t) or ("zad" in t)) and (("goal" in t) or ("cilj" in t)):
-            return True
-
         return cls.detect_intent(text) == "batch_request"
 
     @classmethod
