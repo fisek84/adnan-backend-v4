@@ -8,8 +8,13 @@ requests in both languages seamlessly.
 
 from __future__ import annotations
 
+import logging
+import os
 import re
 from typing import Any, Dict, Optional
+
+
+logger = logging.getLogger(__name__)
 
 
 class NotionKeywordMapper:
@@ -334,13 +339,15 @@ class NotionKeywordMapper:
         Returns:
             Intent identifier or None if not detected
         """
-        text_lower = text.lower()
+        text_lower = (text or "").lower()
 
-        # Hard override: explicit CREATE TASK only when command starts the input.
-        # Must NOT trigger inside batch numbered lists.
-        # NOTE: batch_request override below retains priority for "Kreiraj cilj...\nZadaci:...".
-        if re.search(r"(?i)^\s*(kreiraj|create)\s+(task|zadatak)\b", text or ""):
-            return "create_task"
+        def _maybe_debug(intent: Optional[str]) -> Optional[str]:
+            if os.getenv("DEBUG_INTENT") in {"1", "true", "True", "yes", "YES"}:
+                snippet = (text or "").replace("\n", " ").strip()
+                if len(snippet) > 220:
+                    snippet = f"{snippet[:220]}…"
+                logger.debug("detect_intent: intent=%s text=%r", intent, snippet)
+            return intent
 
         # Hard override: batch/branch ako se u istom inputu traži i kreiranje CILJA i kreiranje ZADATKA
         # (mora imati "goal/cilj" + indikator task segmenta; ne smije okinuti na "novi zadatak za cilj")
@@ -384,10 +391,39 @@ class NotionKeywordMapper:
             or inline_task_colon
         )
         if goal_create_hint and task_indicator and not excluded_task_for_goal:
-            return "batch_request"
+            return _maybe_debug("batch_request")
+
+        # Hard override: explicit CREATE TASK anywhere in the text.
+        # Must NOT trigger for real multi-line batch lists (batch should win above).
+        explicit_task_match = re.search(
+            r"(?i)\b(kreiraj|napravi|create)\s+(task|zadatak)\b", text or ""
+        )
+        if explicit_task_match is not None:
+            # Guard: if the match is on an enumerated/bulleted line AND the input looks like
+            # a real multi-item list, do not treat it as a single create_task.
+            match_start = explicit_task_match.start()
+            line_start = (text or "").rfind("\n", 0, match_start) + 1
+            line_prefix = (text or "")[line_start:match_start]
+            on_list_item_line = (
+                re.search(r"(?m)^\s*(\d+\s*[.)-]\s+|[-*]\s+)", line_prefix)
+                is not None
+            )
+
+            has_tasks_header = (
+                re.search(r"(?m)^\s*(zadaci|tasks)\s*:\s*", text_lower) is not None
+            )
+            list_item_count = len(
+                re.findall(r"(?m)^\s*(\d+\s*[.)-]\s+|[-*]\s+)", text_lower)
+            )
+            looks_like_multi_item_list = has_tasks_header or list_item_count >= 2
+
+            if on_list_item_line and looks_like_multi_item_list:
+                pass
+            else:
+                return _maybe_debug("create_task")
 
         # Check batch_request first as it's more specific
-        intent_order = ["batch_request", "create_goal", "create_task", "create_project"]
+        intent_order = ["batch_request", "create_task", "create_goal", "create_project"]
 
         for intent in intent_order:
             keywords = cls.INTENT_KEYWORDS.get(intent, [])
@@ -396,13 +432,13 @@ class NotionKeywordMapper:
                 if keyword.startswith(r"\d") or "\\" in keyword:
                     # It's a regex pattern
                     if re.search(keyword, text_lower):
-                        return intent
+                        return _maybe_debug(intent)
                 else:
                     # It's a simple string
                     if keyword in text_lower:
-                        return intent
+                        return _maybe_debug(intent)
 
-        return None
+        return _maybe_debug(None)
 
     @classmethod
     def is_batch_request(cls, text: str) -> bool:
