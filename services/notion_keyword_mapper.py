@@ -336,6 +336,12 @@ class NotionKeywordMapper:
         """
         text_lower = text.lower()
 
+        # Hard override: explicit CREATE TASK only when command starts the input.
+        # Must NOT trigger inside batch numbered lists.
+        # NOTE: batch_request override below retains priority for "Kreiraj cilj...\nZadaci:...".
+        if re.search(r"(?i)^\s*(kreiraj|create)\s+(task|zadatak)\b", text or ""):
+            return "create_task"
+
         # Hard override: batch/branch ako se u istom inputu traži i kreiranje CILJA i kreiranje ZADATKA
         # (mora imati "goal/cilj" + indikator task segmenta; ne smije okinuti na "novi zadatak za cilj")
         goal_create_hint = any(
