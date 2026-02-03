@@ -405,8 +405,7 @@ class NotionKeywordMapper:
             line_start = (text or "").rfind("\n", 0, match_start) + 1
             line_prefix = (text or "")[line_start:match_start]
             on_list_item_line = (
-                re.search(r"(?m)^\s*(\d+\s*[.)-]\s+|[-*]\s+)", line_prefix)
-                is not None
+                re.search(r"(?m)^\s*(\d+\s*[.)-]\s+|[-*]\s+)", line_prefix) is not None
             )
 
             has_tasks_header = (

@@ -806,5 +806,16 @@ def _reset_cache_for_tests() -> None:
         _IN_FLIGHT_BY_DB.clear()
 
 
+def clear_kb_notion_process_cache() -> None:
+    """Clear process-local KB Notion cache.
+
+    This is safe to call in production. It does not perform any IO.
+    """
+
+    with _CACHE_LOCK:
+        _CACHE_BY_DB.clear()
+        _IN_FLIGHT_BY_DB.clear()
+
+
 # Back-compat alias
 NotionKBStore = KBNotionStore

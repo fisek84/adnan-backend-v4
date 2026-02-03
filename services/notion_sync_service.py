@@ -1,5 +1,8 @@
 import asyncio
 import logging
+import os
+import time
+from typing import Any, Dict, List, Optional
 
 from services.knowledge_snapshot_service import KnowledgeSnapshotService
 
@@ -34,6 +37,78 @@ class NotionSyncService:
         # Logger
         self.logger = logging.getLogger(__name__)
         self.logger.setLevel(logging.INFO)
+
+        # Last refresh diagnostics (used by refresh_snapshot read-only directive).
+        # Must never include secrets.
+        self.last_refresh_ok: Optional[bool] = None
+        self.last_refresh_errors: List[Any] = []
+        self.last_refresh_meta: Dict[str, Any] = {}
+
+    # ------------------------------------------------------
+    # DB REGISTRY (ENV)
+    # ------------------------------------------------------
+    @staticmethod
+    def _discover_env_db_registry() -> List[Dict[str, str]]:
+        """Discover all configured Notion databases from environment.
+
+        Contract:
+        - include every env var that endswith _DB_ID or _DATABASE_ID
+        - prefer *_DATABASE_ID over *_DB_ID when both exist for the same logical key
+        - only include NOTION_* entries (NotionService db_key convention)
+
+        Returns list entries:
+          {"env_name": str, "db_key": str, "db_id": str, "logical_name": str}
+        where logical_name is the NOTION_<LOGICAL>_... part (upper-case).
+        """
+
+        # First pass: collect preferred IDs per logical key.
+        best: Dict[str, Dict[str, str]] = {}
+        for name, value in os.environ.items():
+            if not isinstance(name, str) or not isinstance(value, str):
+                continue
+            if not name.startswith("NOTION_"):
+                continue
+            v = value.strip()
+            if not v:
+                continue
+
+            if name.endswith("_DATABASE_ID"):
+                logical = name[len("NOTION_") : -len("_DATABASE_ID")].strip()
+                if not logical:
+                    continue
+                best[logical.upper()] = {
+                    "env_name": name,
+                    "db_key": logical.lower(),
+                    "db_id": v,
+                    "logical_name": logical.upper(),
+                }
+                continue
+
+            if name.endswith("_DB_ID"):
+                logical = name[len("NOTION_") : -len("_DB_ID")].strip()
+                if not logical:
+                    continue
+                # Do not override an existing *_DATABASE_ID mapping.
+                best.setdefault(
+                    logical.upper(),
+                    {
+                        "env_name": name,
+                        "db_key": logical.lower(),
+                        "db_id": v,
+                        "logical_name": logical.upper(),
+                    },
+                )
+
+        # Stable ordering: prioritize core keys first, then alpha by logical name.
+        core = ["TASKS", "PROJECTS", "GOALS"]
+        rest = sorted([k for k in best.keys() if k not in set(core)])
+        ordered = core + rest
+        out: List[Dict[str, str]] = []
+        for logical in ordered:
+            ent = best.get(logical)
+            if isinstance(ent, dict) and ent.get("db_id"):
+                out.append(ent)
+        return out
 
     # ------------------------------------------------------
     # INTERNAL DEBOUNCE WRAPPER
@@ -214,37 +289,140 @@ class NotionSyncService:
         - Read-only
         - MUST NOT raise (best-effort)
         """
-        self.logger.info("🧠 Syncing Notion knowledge snapshot...")
+        self.logger.info("🧠 Syncing Notion knowledge snapshot (ALL configured DBs)...")
 
+        # Reset per-call diagnostics.
+        self.last_refresh_ok = None
+        self.last_refresh_errors = []
+        self.last_refresh_meta = {}
+
+        registry = self._discover_env_db_registry()
+        db_keys = [r.get("db_key") for r in registry if isinstance(r, dict)]
+        db_keys = [k for k in db_keys if isinstance(k, str) and k.strip()]
+
+        t0 = time.monotonic()
         try:
-            snapshot = await self.notion.build_knowledge_snapshot()
+            snapshot = await self.notion.build_knowledge_snapshot(db_keys=db_keys)
         except Exception as exc:
             self.logger.exception(
                 "Knowledge snapshot sync failed (best-effort): %s", exc
             )
-            # keep snapshot service consistent even on failure
-            try:
-                KnowledgeSnapshotService.update_snapshot(
-                    {
-                        "payload": {"goals": [], "tasks": [], "projects": []},
-                        "meta": {"ok": False, "error": str(exc)},
-                    }
-                )
-            except Exception:
-                pass
+
+            self.last_refresh_ok = False
+            self.last_refresh_errors = [
+                {
+                    "type": type(exc).__name__,
+                    "message": str(exc),
+                }
+            ]
+            self.last_refresh_meta = {
+                "ok": False,
+                "error": str(exc),
+                "db_registry": registry,
+                "refresh_duration_ms": int(round((time.monotonic() - t0) * 1000.0)),
+            }
             return False
 
-        if not snapshot:
+        if not snapshot or not isinstance(snapshot, dict):
             self.logger.warning("⚠️ Knowledge snapshot empty or failed")
-            try:
-                KnowledgeSnapshotService.update_snapshot(
-                    {
-                        "payload": {"goals": [], "tasks": [], "projects": []},
-                        "meta": {"ok": False, "error": "empty_snapshot"},
-                    }
-                )
-            except Exception:
-                pass
+
+            self.last_refresh_ok = False
+            self.last_refresh_errors = ["empty_snapshot"]
+            self.last_refresh_meta = {
+                "ok": False,
+                "error": "empty_snapshot",
+                "db_registry": registry,
+                "refresh_duration_ms": int(round((time.monotonic() - t0) * 1000.0)),
+            }
+            return False
+
+        # Attach registry for debugging/observability (no secrets).
+        try:
+            meta = (
+                snapshot.get("meta") if isinstance(snapshot.get("meta"), dict) else {}
+            )
+            meta["db_registry"] = registry
+            meta["refresh_duration_ms"] = int(round((time.monotonic() - t0) * 1000.0))
+            snapshot["meta"] = meta
+        except Exception:
+            pass
+
+        # Determine success strictly from meta.ok + meta.errors.
+        try:
+            meta_out = (
+                snapshot.get("meta") if isinstance(snapshot.get("meta"), dict) else {}
+            )
+            ok_meta = bool(meta_out.get("ok") is True)
+            errors_out = (
+                meta_out.get("errors")
+                if isinstance(meta_out.get("errors"), list)
+                else []
+            )
+            ok = bool(ok_meta and not errors_out)
+        except Exception:
+            ok = False
+            meta_out = {}
+            errors_out = []
+
+        self.last_refresh_ok = bool(ok)
+        self.last_refresh_errors = (
+            list(errors_out) if isinstance(errors_out, list) else []
+        )
+        self.last_refresh_meta = dict(meta_out) if isinstance(meta_out, dict) else {}
+
+        # Structured logs per DB
+        try:
+            meta0 = (
+                snapshot.get("meta") if isinstance(snapshot.get("meta"), dict) else {}
+            )
+            stats = (
+                meta0.get("db_stats") if isinstance(meta0.get("db_stats"), dict) else {}
+            )
+            succeeded = 0
+            failed = 0
+            for r in registry:
+                db_key = r.get("db_key")
+                st = stats.get(db_key) if isinstance(db_key, str) else None
+                if not isinstance(st, dict):
+                    continue
+                ok_db = bool(st.get("ok") is True)
+                if ok_db:
+                    succeeded += 1
+                    self.logger.info(
+                        "snapshot_refresh_db_ok env=%s db_id=%s count=%s duration_ms=%s",
+                        r.get("env_name"),
+                        r.get("db_id"),
+                        st.get("count"),
+                        st.get("duration_ms"),
+                    )
+                else:
+                    failed += 1
+                    self.logger.warning(
+                        "snapshot_refresh_db_fail env=%s db_id=%s error=%s duration_ms=%s",
+                        r.get("env_name"),
+                        r.get("db_id"),
+                        st.get("error"),
+                        st.get("duration_ms"),
+                    )
+
+            self.logger.info(
+                "snapshot_refresh_summary total_dbs=%s succeeded=%s failed=%s duration_ms=%s",
+                len(registry),
+                succeeded,
+                failed,
+                int(round((time.monotonic() - t0) * 1000.0)),
+            )
+        except Exception:
+            pass
+
+        # STRICT: do NOT overwrite SSOT snapshot on refresh failure.
+        if not ok:
+            self.logger.warning(
+                "⚠️ Knowledge snapshot refresh failed (no overwrite). errors=%s",
+                len(self.last_refresh_errors)
+                if isinstance(self.last_refresh_errors, list)
+                else 0,
+            )
             return False
 
         try:
@@ -253,6 +431,13 @@ class NotionSyncService:
             self.logger.exception(
                 "KnowledgeSnapshotService.update_snapshot failed: %s", exc
             )
+            self.last_refresh_ok = False
+            self.last_refresh_errors = [
+                {
+                    "type": type(exc).__name__,
+                    "message": str(exc),
+                }
+            ]
             return False
 
         self.logger.info("✅ Knowledge snapshot synced")

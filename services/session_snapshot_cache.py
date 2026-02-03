@@ -50,6 +50,15 @@ class SessionSnapshotCache:
         key = (session_id, db_keys_csv)
         self._store[key] = _CacheEntry(expires_at=now + float(ttl), value=value)
 
+    def clear(self) -> int:
+        """Clear all cached snapshots.
+
+        Returns number of entries removed.
+        """
+        n = len(self._store)
+        self._store.clear()
+        return int(n)
+
 
 # SSOT singleton cache
 SESSION_SNAPSHOT_CACHE = SessionSnapshotCache()

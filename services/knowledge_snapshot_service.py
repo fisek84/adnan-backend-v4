@@ -215,9 +215,10 @@ class KnowledgeSnapshotService:
     @classmethod
     def get_snapshot(cls) -> Dict[str, Any]:
         expired = cls.is_expired()
-        payload = cls.get_payload()
-        if not isinstance(payload, dict):
-            payload = {}
+        payload_raw = cls.get_payload()
+        payload: Dict[str, Any] = (
+            dict(payload_raw) if isinstance(payload_raw, dict) else {}
+        )
 
         generated_at = cls._utc_now_iso()
         # Contract: last_sync must always be present as a string (UI never renders empty state).
@@ -232,6 +233,21 @@ class KnowledgeSnapshotService:
         if not payload:
             payload = {"goals": [], "tasks": [], "projects": []}
         else:
+            # If payload.databases exists, treat it as SSOT for list-shaped payload keys.
+            # This prevents any legacy list from contradicting per-db snapshot sections.
+            dbs = payload.get("databases")
+            if isinstance(dbs, dict) and dbs:
+                try:
+                    for db_key, section in dbs.items():
+                        if not isinstance(db_key, str) or not db_key.strip():
+                            continue
+                        if not isinstance(section, dict):
+                            continue
+                        items = section.get("items")
+                        payload[db_key] = items if isinstance(items, list) else []
+                except Exception:
+                    pass
+
             # Ensure core collections exist and are lists.
             for k in ("goals", "tasks", "projects"):
                 v = payload.get(k)

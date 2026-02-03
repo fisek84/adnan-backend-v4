@@ -200,6 +200,33 @@ class ExecutionOrchestrator:
                         KnowledgeSnapshotService,
                     )  # type: ignore
 
+                    # Invalidate all relevant process-local caches so chat/advisor cannot
+                    # keep serving stale snapshots after an explicit refresh.
+                    try:
+                        from services.session_snapshot_cache import (
+                            SESSION_SNAPSHOT_CACHE,
+                        )  # type: ignore
+
+                        SESSION_SNAPSHOT_CACHE.clear()
+                    except Exception:
+                        pass
+
+                    try:
+                        from services.kb_notion_store import (
+                            clear_kb_notion_process_cache,
+                        )  # type: ignore
+
+                        clear_kb_notion_process_cache()
+                    except Exception:
+                        pass
+
+                    try:
+                        notion = get_notion_service()
+                        if hasattr(notion, "clear_caches"):
+                            notion.clear_caches()  # type: ignore[attr-defined]
+                    except Exception:
+                        pass
+
                     # Use the configured sync service (properly constructed in dependencies).
                     # This avoids instantiating NotionSyncService() without required args.
                     try:
@@ -209,23 +236,29 @@ class ExecutionOrchestrator:
                         ok = await sync_service.sync_knowledge_snapshot()
                     except Exception as exc:
                         ok = False
-                        # Preserve reason in snapshot meta (non-fatal)
-                        try:
-                            KnowledgeSnapshotService.update_snapshot(
-                                {
-                                    "payload": {
-                                        "goals": [],
-                                        "tasks": [],
-                                        "projects": [],
-                                    },
-                                    "meta": {
-                                        "ok": False,
-                                        "error": f"refresh_snapshot_sync_service_failed:{exc}",
-                                    },
-                                }
-                            )
-                        except Exception:
-                            pass
+
+                        refresh_errors = [
+                            {
+                                "type": exc.__class__.__name__,
+                                "message": str(exc),
+                            }
+                        ]
+                        refresh_meta = {
+                            "ok": False,
+                            "error": f"refresh_snapshot_sync_service_failed:{exc}",
+                        }
+                    else:
+                        refresh_errors = (
+                            getattr(sync_service, "last_refresh_errors", None)
+                            if ok is False
+                            else []
+                        )
+                        refresh_meta = (
+                            getattr(sync_service, "last_refresh_meta", None)
+                            if ok is False
+                            else {}
+                        )
+
                     ks = KnowledgeSnapshotService.get_snapshot()
                     snapshot_meta = {
                         "last_sync": ks.get("last_sync"),
@@ -280,6 +313,12 @@ class ExecutionOrchestrator:
                         "success": bool(ok),
                         "read_only": True,
                         "intent": "refresh_snapshot",
+                        "refresh_errors": refresh_errors
+                        if isinstance(refresh_errors, list)
+                        else [],
+                        "refresh_meta": refresh_meta
+                        if isinstance(refresh_meta, dict)
+                        else {},
                         "snapshot_meta": snapshot_meta,
                         "knowledge_snapshot": ks,
                         "grounding_refresh": grounding_refresh,

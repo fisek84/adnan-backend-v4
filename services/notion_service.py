@@ -340,6 +340,22 @@ class NotionService:
             (os.getenv("NOTION_USERS_CACHE_TTL_SECONDS") or "600").strip() or "600"
         )
 
+    def clear_caches(self) -> None:
+        """Clear internal in-memory caches.
+
+        Safe to call in production; performs no IO.
+        """
+
+        try:
+            self._db_schema_cache.clear()
+        except Exception:
+            pass
+        try:
+            self._users_cache.clear()
+            self._users_cache_fetched_at = 0.0
+        except Exception:
+            pass
+
     @staticmethod
     def _discover_all_db_keys_from_env() -> Dict[str, str]:
         """Discover all Notion DB ids from env.
@@ -1514,6 +1530,7 @@ class NotionService:
             "goals": [],
             "tasks": [],
             "projects": [],
+            "databases": {},
             "last_sync": synced_at,
         }
         meta: Dict[str, Any] = {
@@ -1568,22 +1585,45 @@ class NotionService:
         db_stats: Dict[str, Any] = {}
 
         # Default: tasks-first priority (minimum viable context under strict budgets).
-        keys = (
-            db_keys
-            if isinstance(db_keys, list) and db_keys
-            else ["tasks", "projects", "goals"]
-        )
-        # Ensure deterministic ordering and allow only known keys.
-        keys = [
-            k
-            for k in ("tasks", "projects", "goals")
-            if k in set([str(x) for x in keys])
-        ]
-        if not keys:
-            keys = ["tasks", "projects", "goals"]
+        core_order = ["tasks", "projects", "goals"]
+
+        def _normalize_keys(raw: Any) -> List[str]:
+            if not isinstance(raw, list):
+                return []
+            out0: List[str] = []
+            seen = set()
+            for x in raw:
+                s = _ensure_str(x).lower()
+                if not s:
+                    continue
+                if s in seen:
+                    continue
+                seen.add(s)
+                out0.append(s)
+            return out0
+
+        keys = _normalize_keys(db_keys)
+        if keys:
+            # Only keep keys we can resolve.
+            keys = [
+                k
+                for k in keys
+                if isinstance(self.db_ids.get(k), str) and self.db_ids.get(k).strip()
+            ]
+        else:
+            keys = list(core_order)
+
+        # For full refresh flows (explicit db_keys passed), keep a stable order:
+        # core keys first (if present), then the rest alpha.
+        if isinstance(db_keys, list) and db_keys:
+            rest = sorted([k for k in keys if k not in set(core_order)])
+            keys = [k for k in core_order if k in set(keys)] + rest
 
         limits = max_items_by_db if isinstance(max_items_by_db, dict) else {}
         default_limits = {"tasks": 50, "projects": 30, "goals": 30}
+
+        # Per-db snapshot sections (new; backward-compatible).
+        databases: Dict[str, Any] = {}
 
         async with notion_budget_context(
             max_calls=max_calls,
@@ -1591,6 +1631,7 @@ class NotionService:
         ) as budget_state:
             for idx, db_key in enumerate(keys):
                 try:
+                    t_db0 = time.monotonic()
                     # Apply per-DB latency budget *for this db_key*.
                     # Calls budget remains shared across the whole snapshot.
                     try:
@@ -1694,11 +1735,20 @@ class NotionService:
                         "db_id": db_id,
                         "title_property": title_prop,
                         "count": int(len(items)),
+                        "duration_ms": int(round((time.monotonic() - t_db0) * 1000.0)),
                         "sample_titles": [
                             it.get("title")
                             for it in items[:3]
                             if isinstance(it, dict) and isinstance(it.get("title"), str)
                         ],
+                    }
+
+                    databases[db_key] = {
+                        "db_id": db_id,
+                        "items": items,
+                        "row_count": int(len(items)),
+                        "last_refreshed_at": synced_at,
+                        "last_error": None,
                     }
                 except NotionBudgetExceeded as exc:
                     meta["ok"] = False
@@ -1714,10 +1764,24 @@ class NotionService:
                         "ok": False,
                         "error": f"budget_exceeded:{exc.kind}",
                         "budget": exc.detail,
+                        "duration_ms": int(round((time.monotonic() - t_db0) * 1000.0)),
+                    }
+
+                    databases[db_key] = {
+                        "db_id": self.db_ids.get(db_key) or None,
+                        "items": [],
+                        "row_count": 0,
+                        "last_refreshed_at": synced_at,
+                        "last_error": {
+                            "type": "NotionBudgetExceeded",
+                            "message": f"budget_exceeded:{exc.kind}",
+                            "at": synced_at,
+                            "detail": exc.detail,
+                        },
                     }
 
                     # Deterministic: stop additional calls once budget exceeded.
-                    for rest in ("goals", "tasks", "projects"):
+                    for rest in keys[idx + 1 :]:
                         if rest == db_key:
                             continue
                         db_stats.setdefault(
@@ -1726,6 +1790,21 @@ class NotionService:
                                 "ok": False,
                                 "error": f"budget_exceeded:{exc.kind}",
                                 "budget": exc.detail,
+                            },
+                        )
+                        databases.setdefault(
+                            rest,
+                            {
+                                "db_id": self.db_ids.get(rest) or None,
+                                "items": [],
+                                "row_count": 0,
+                                "last_refreshed_at": synced_at,
+                                "last_error": {
+                                    "type": "NotionBudgetExceeded",
+                                    "message": f"budget_exceeded:{exc.kind}",
+                                    "at": synced_at,
+                                    "detail": exc.detail,
+                                },
                             },
                         )
                     break
@@ -1741,6 +1820,19 @@ class NotionService:
                     db_stats[db_key] = {
                         "ok": False,
                         "error": f"{type(exc).__name__}:{str(exc)}",
+                        "duration_ms": int(round((time.monotonic() - t_db0) * 1000.0)),
+                    }
+
+                    databases[db_key] = {
+                        "db_id": self.db_ids.get(db_key) or None,
+                        "items": [],
+                        "row_count": 0,
+                        "last_refreshed_at": synced_at,
+                        "last_error": {
+                            "type": type(exc).__name__,
+                            "message": str(exc),
+                            "at": synced_at,
+                        },
                     }
 
             # Export budget stats for downstream trace/grounding_pack
@@ -1754,6 +1846,7 @@ class NotionService:
                 pass
 
         meta["db_stats"] = db_stats
+        payload["databases"] = databases
         return {"payload": payload, "meta": meta}
 
     async def query_database(
