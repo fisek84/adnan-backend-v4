@@ -138,7 +138,10 @@ def test_refresh_snapshot_empty_dbs_multi_db(monkeypatch: pytest.MonkeyPatch):
     from services.session_snapshot_cache import SESSION_SNAPSHOT_CACHE
 
     SESSION_SNAPSHOT_CACHE.set(
-        session_id="sess1", db_keys_csv="goals,tasks", value={"payload": {"goals": [{"id": "old"}]}}, ttl_seconds=999
+        session_id="sess1",
+        db_keys_csv="goals,tasks",
+        value={"payload": {"goals": [{"id": "old"}]}},
+        ttl_seconds=999,
     )
 
     app = _get_app()
@@ -146,7 +149,11 @@ def test_refresh_snapshot_empty_dbs_multi_db(monkeypatch: pytest.MonkeyPatch):
 
     r = client.post(
         "/api/execute/raw",
-        json={"intent": "refresh_snapshot", "command": "refresh_snapshot", "params": {}},
+        json={
+            "intent": "refresh_snapshot",
+            "command": "refresh_snapshot",
+            "params": {},
+        },
     )
     assert r.status_code == 200, r.text
     body = r.json()
@@ -171,10 +178,15 @@ def test_refresh_snapshot_empty_dbs_multi_db(monkeypatch: pytest.MonkeyPatch):
         assert dbs[k].get("items") == []
 
     # Cache must be cleared on refresh.
-    assert SESSION_SNAPSHOT_CACHE.get(session_id="sess1", db_keys_csv="goals,tasks") is None
+    assert (
+        SESSION_SNAPSHOT_CACHE.get(session_id="sess1", db_keys_csv="goals,tasks")
+        is None
+    )
 
 
-def test_refresh_snapshot_partial_failure_reports_failure(monkeypatch: pytest.MonkeyPatch):
+def test_refresh_snapshot_partial_failure_reports_failure(
+    monkeypatch: pytest.MonkeyPatch,
+):
     _ensure_test_env(monkeypatch)
 
     from services.knowledge_snapshot_service import KnowledgeSnapshotService
@@ -182,7 +194,12 @@ def test_refresh_snapshot_partial_failure_reports_failure(monkeypatch: pytest.Mo
     # Seed old data; refresh must NOT overwrite it on failure.
     KnowledgeSnapshotService.update_snapshot(
         {
-            "payload": {"goals": [{"id": "g_old"}], "tasks": [], "projects": [], "last_sync": "2026-01-01T00:00:00Z"},
+            "payload": {
+                "goals": [{"id": "g_old"}],
+                "tasks": [],
+                "projects": [],
+                "last_sync": "2026-01-01T00:00:00Z",
+            },
             "meta": {"ok": True, "synced_at": "2026-01-01T00:00:00Z", "errors": []},
         }
     )
@@ -212,7 +229,11 @@ def test_refresh_snapshot_partial_failure_reports_failure(monkeypatch: pytest.Mo
 
     r = client.post(
         "/api/execute/raw",
-        json={"intent": "refresh_snapshot", "command": "refresh_snapshot", "params": {}},
+        json={
+            "intent": "refresh_snapshot",
+            "command": "refresh_snapshot",
+            "params": {},
+        },
     )
     assert r.status_code == 200, r.text
     body = r.json()
@@ -275,7 +296,11 @@ def test_refresh_snapshot_overwrites_previous_snapshot(monkeypatch: pytest.Monke
     stub.set_next_payload(by_key={"goals": [{"id": "g1"}]})
     r1 = client.post(
         "/api/execute/raw",
-        json={"intent": "refresh_snapshot", "command": "refresh_snapshot", "params": {}},
+        json={
+            "intent": "refresh_snapshot",
+            "command": "refresh_snapshot",
+            "params": {},
+        },
     )
     assert r1.status_code == 200, r1.text
     b1 = r1.json()
@@ -289,7 +314,11 @@ def test_refresh_snapshot_overwrites_previous_snapshot(monkeypatch: pytest.Monke
     stub.set_next_payload(by_key={"goals": []})
     r2 = client.post(
         "/api/execute/raw",
-        json={"intent": "refresh_snapshot", "command": "refresh_snapshot", "params": {}},
+        json={
+            "intent": "refresh_snapshot",
+            "command": "refresh_snapshot",
+            "params": {},
+        },
     )
     assert r2.status_code == 200, r2.text
     b2 = r2.json()

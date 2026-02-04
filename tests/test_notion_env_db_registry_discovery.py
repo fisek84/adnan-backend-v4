@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import os
-
 import pytest
 
 
-def test_discover_env_db_registry_filters_only_notion_db_vars(monkeypatch: pytest.MonkeyPatch):
+def test_discover_env_db_registry_filters_only_notion_db_vars(
+    monkeypatch: pytest.MonkeyPatch,
+):
     # Should include only NOTION_* vars ending with _DB_ID or _DATABASE_ID.
     from services.notion_sync_service import NotionSyncService
 
@@ -48,4 +48,6 @@ def test_discover_env_db_registry_ignores_empty_values(monkeypatch: pytest.Monke
     monkeypatch.setenv("NOTION_SPACES_DATABASE_ID", "   ")
 
     reg = NotionSyncService._discover_env_db_registry()
-    assert all((x.get("db_key") not in {"empty", "spaces"}) for x in reg if isinstance(x, dict))
+    assert all(
+        (x.get("db_key") not in {"empty", "spaces"}) for x in reg if isinstance(x, dict)
+    )

@@ -62,7 +62,9 @@ def _get_app():
     return app
 
 
-def test_refresh_snapshot_clears_session_targeted_reads_cache(monkeypatch: pytest.MonkeyPatch):
+def test_refresh_snapshot_clears_session_targeted_reads_cache(
+    monkeypatch: pytest.MonkeyPatch,
+):
     # Make chat_router targeted reads eligible (it is normally disabled in tests).
     monkeypatch.setenv("TESTING", "0")
     monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
@@ -76,7 +78,11 @@ def test_refresh_snapshot_clears_session_targeted_reads_cache(monkeypatch: pytes
     # Patch prompt classifier to always request Notion targeted reads.
     import services.grounding_policy as gp
 
-    monkeypatch.setattr(gp, "classify_prompt", lambda prompt: _Pol(needs_notion=True, notion_db_keys=["goals"]))
+    monkeypatch.setattr(
+        gp,
+        "classify_prompt",
+        lambda prompt: _Pol(needs_notion=True, notion_db_keys=["goals"]),
+    )
 
     # Patch Notion service getter used by chat targeted reads.
     stub_notion = _StubNotionForChat()
@@ -137,7 +143,11 @@ def test_refresh_snapshot_clears_session_targeted_reads_cache(monkeypatch: pytes
     # 3) refresh_snapshot -> clears session cache.
     rr = client.post(
         "/api/execute/raw",
-        json={"intent": "refresh_snapshot", "command": "refresh_snapshot", "params": {}},
+        json={
+            "intent": "refresh_snapshot",
+            "command": "refresh_snapshot",
+            "params": {},
+        },
     )
     assert rr.status_code == 200, rr.text
     br = rr.json()
