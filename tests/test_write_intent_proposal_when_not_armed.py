@@ -44,4 +44,10 @@ def test_write_intent_generates_proposal_when_not_armed():
     pcs = data.get("proposed_commands")
     assert isinstance(pcs, list)
     assert len(pcs) > 0
-    assert any((pc or {}).get("requires_approval") is True for pc in pcs)
+
+    wrappers = [pc for pc in pcs if (pc or {}).get("command") == "ceo.command.propose"]
+    assert wrappers
+
+    assert all((pc or {}).get("scope") == "none" for pc in wrappers)
+    assert all((pc or {}).get("requires_approval") is False for pc in wrappers)
+    assert all((pc or {}).get("dry_run") is True for pc in wrappers)
