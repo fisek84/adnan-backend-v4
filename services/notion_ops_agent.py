@@ -79,6 +79,24 @@ def create_notion_ops_agent() -> NotionOpsAgent:
     return NotionOpsAgent(get_notion_service())
 
 
+def _force_disarmed_wrapper_contract(proposed: List[ProposedCommand]) -> None:
+    """
+    Disarmed contract (E2E):
+    - wrapper must be non-executable: scope="none"
+    - must NOT require approval while disarmed: requires_approval=False
+    - dry_run=True
+    """
+    for pc in proposed or []:
+        try:
+            cmd = getattr(pc, "command", None)
+            if isinstance(cmd, str) and cmd.strip() == "ceo.command.propose":
+                pc.scope = "none"
+                pc.requires_approval = False
+                pc.dry_run = True
+        except Exception:
+            pass
+
+
 # ============================================================
 # ROUTER ENTRYPOINT (PROPOSAL-ONLY)
 # ============================================================
@@ -186,8 +204,10 @@ async def notion_ops_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> Agen
         armed = state.get("armed", False)
 
         if not armed:
-            # Disarmed: keep standard AgentOutput contract (proposal-only).
+            # Disarmed: enforce non-executable wrapper contract for E2E.
             trace["notion_ops_armed"] = False
+            _force_disarmed_wrapper_contract(proposed)
+
             return AgentOutput(
                 text="Notion Ops nije aktivan. Želiš aktivirati? (napiši: 'notion ops aktiviraj' / 'notion ops uključi') / Notion Ops is not armed. Want to activate? (write: 'notion ops activate' / 'notion ops enable')",
                 proposed_commands=proposed,
