@@ -42,7 +42,9 @@ def _contains_key_recursive(x: Any, needle_key: str) -> bool:
     return False
 
 
-def test_execute_raw_multitask_blocks_approve_executes_batch_and_returns_urls(monkeypatch):
+def test_execute_raw_multitask_blocks_approve_executes_batch_and_returns_urls(
+    monkeypatch,
+):
     app = _load_app()
 
     # Provide deterministic dummy env vars if the developer shell doesn't have them.
@@ -152,8 +154,12 @@ def test_execute_raw_multitask_blocks_approve_executes_batch_and_returns_urls(mo
     # Prove block-local Description mapping on EXECUTE path by inspecting the Notion payloads.
     assert len(captured_page_create_payloads) == 2
 
-    assert not _contains_key_recursive(captured_page_create_payloads[0], "supports_bilingual")
-    assert not _contains_key_recursive(captured_page_create_payloads[1], "supports_bilingual")
+    assert not _contains_key_recursive(
+        captured_page_create_payloads[0], "supports_bilingual"
+    )
+    assert not _contains_key_recursive(
+        captured_page_create_payloads[1], "supports_bilingual"
+    )
 
     p0 = captured_page_create_payloads[0].get("properties") or {}
     p1 = captured_page_create_payloads[1].get("properties") or {}

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 
 _TASK_HEADING_RE = re.compile(r"(?mi)^\s*Task\s+(?P<num>\d+)\s*$")
@@ -152,7 +152,9 @@ def _field(fields: Dict[str, str], key: str) -> str:
     return (fields.get(key.lower()) or "").strip()
 
 
-def build_create_task_batch_operations_from_task_blocks(text: str) -> List[Dict[str, Any]]:
+def build_create_task_batch_operations_from_task_blocks(
+    text: str,
+) -> List[Dict[str, Any]]:
     """Build notion_write batch operations for multi Task blocks.
 
     Output operations use op_id as stable client_ref (task_<n> when available).
@@ -228,12 +230,17 @@ def build_create_task_batch_operations_from_task_blocks(text: str) -> List[Dict[
             ps[get_notion_field_name("order")] = {"type": "number", "number": order_val}
 
         if assignees:
-            ps[get_notion_field_name("ai_agent")] = {"type": "people", "names": assignees}
+            ps[get_notion_field_name("ai_agent")] = {
+                "type": "people",
+                "names": assignees,
+            }
 
         if ps:
             payload["property_specs"] = ps
 
-        op_id = f"task_{blk.heading_num}" if blk.heading_num is not None else f"task_{i}"
+        op_id = (
+            f"task_{blk.heading_num}" if blk.heading_num is not None else f"task_{i}"
+        )
         if op_id in used_ids:
             op_id = f"task_{i}"
         used_ids.add(op_id)

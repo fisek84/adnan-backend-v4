@@ -42,7 +42,9 @@ def _contains_key_recursive(x: Any, needle_key: str) -> bool:
     return False
 
 
-def test_execute_raw_multitask_blocks_task_9_10_approve_executes_batch_and_returns_urls(monkeypatch):
+def test_execute_raw_multitask_blocks_task_9_10_approve_executes_batch_and_returns_urls(
+    monkeypatch,
+):
     app = _load_app()
 
     # Deterministic dummy env vars (gateway startup initializes NotionService from env).
