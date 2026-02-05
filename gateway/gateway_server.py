@@ -1315,6 +1315,7 @@ def _extract_wrapper_patch_from_params(params: Dict[str, Any]) -> Dict[str, Any]
         "metadata",
         "session_id",
         "source",
+        "supports_bilingual",
         "db_key",
         "database",
         "operations",
@@ -1510,6 +1511,44 @@ def _unwrap_proposal_wrapper_or_raise(
             status_code=400,
             detail="ceo.command.propose cannot enter execution. Missing prompt for unwrap/translation (expected params.prompt or metadata.wrapper.prompt).",
         )
+
+    # ============================================================
+    # MULTI-TASK BLOCK BATCH (deterministic; must run before SSOT KV extraction)
+    # ============================================================
+    try:
+        from services.task_blocks_batch_parser import (  # noqa: PLC0415
+            build_create_task_batch_operations_from_task_blocks,
+            is_multi_task_block_request,
+        )
+
+        if is_multi_task_block_request(prompt):
+            ops = build_create_task_batch_operations_from_task_blocks(prompt)
+            if ops:
+                ai_command = AICommand(
+                    command="notion_write",
+                    intent="batch_request",
+                    read_only=False,
+                    params={
+                        "operations": ops,
+                        "source_prompt": prompt.strip(),
+                        # Do NOT propagate wrapper_patch globally; per-task fields come from blocks.
+                        "wrapper_patch": None,
+                    },
+                    initiator=initiator,
+                    validated=True,
+                    metadata={
+                        **(metadata if isinstance(metadata, dict) else {}),
+                        "canon": "execute_raw_unwrap_multi_task_blocks_batch",
+                        "endpoint": "/api/execute/raw",
+                        "wrapper": {
+                            "prompt": prompt.strip(),
+                            "wrapper_patch": wrapper_patch,
+                        },
+                    },
+                )
+                return ai_command
+    except Exception:
+        pass
 
     # Merge prompt-derived patches with explicit UI patch (UI wins).
     try:

@@ -2153,10 +2153,12 @@ class NotionService:
 
                 # capture created ids for reference resolution
                 page_id = ""
+                page_url = ""
                 if isinstance(sub_res, dict):
                     r = sub_res.get("result")
                     if isinstance(r, dict):
                         page_id = _ensure_str(r.get("page_id") or r.get("id") or "")
+                        page_url = _ensure_str(r.get("url") or "")
                 if op_id and page_id:
                     ref_map[op_id] = page_id
 
@@ -2164,9 +2166,11 @@ class NotionService:
                     {
                         "index": idx,
                         "op_id": op_id or None,
+                        "client_ref": op_id or None,
                         "intent": op_intent,
                         "ok": True,
                         "page_id": page_id or None,
+                        "url": page_url or None,
                         "result": sub_res,
                     }
                 )
@@ -2175,6 +2179,7 @@ class NotionService:
                     {
                         "index": idx,
                         "op_id": op_id or None,
+                        "client_ref": op_id or None,
                         "intent": op_intent,
                         "ok": False,
                         "reason": str(exc),
@@ -2553,6 +2558,19 @@ class NotionService:
                 else:
                     warnings.append(
                         f"goal_link_not_resolved:{_ensure_str(rr.get('reason') or '')}"
+                    )
+
+        if not project_id:
+            project_title = _ensure_str(params.get("project_title") or "")
+            if project_title:
+                rr = await self._resolve_page_id_by_title_best_effort(
+                    db_key="projects", title=project_title
+                )
+                if rr.get("ok") is True and _ensure_str(rr.get("page_id")):
+                    project_id = _ensure_str(rr.get("page_id"))
+                else:
+                    warnings.append(
+                        f"project_link_not_resolved:{_ensure_str(rr.get('reason') or '')}"
                     )
 
         # Update relations if provided

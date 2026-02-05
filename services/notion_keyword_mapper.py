@@ -349,6 +349,13 @@ class NotionKeywordMapper:
                 logger.debug("detect_intent: intent=%s text=%r", intent, snippet)
             return intent
 
+        # Deterministic override: multi-Task block paste (Task 1\nName: ...)
+        # Must win over create_task fast-path.
+        if isinstance(text, str) and text:
+            task_headings = re.findall(r"(?mi)^\s*Task\s+\d+\s*$", text)
+            if len(task_headings) >= 2:
+                return _maybe_debug("batch_request")
+
         # Hard override: batch/branch ako se u istom inputu traži i kreiranje CILJA i kreiranje ZADATKA
         # (mora imati "goal/cilj" + indikator task segmenta; ne smije okinuti na "novi zadatak za cilj")
         goal_create_hint = any(

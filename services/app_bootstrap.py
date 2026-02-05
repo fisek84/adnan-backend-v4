@@ -13,6 +13,8 @@ Garantuje:
 - ARCH_LOCK enforcement
 """
 
+import os
+
 from services.coo_translation_service import COOTranslationService
 from services.coo_conversation_service import COOConversationService
 from services.ai_command_service import AICommandService
@@ -66,6 +68,12 @@ def bootstrap_application() -> None:
     global _BOOTSTRAPPED
 
     if _BOOTSTRAPPED:
+        # In pytest we may create multiple TestClient instances, each of which
+        # runs lifespan/startup. Boot must be idempotent in tests.
+        if (os.getenv("TESTING") or "").strip() == "1" or (
+            "PYTEST_CURRENT_TEST" in os.environ
+        ):
+            return
         raise RuntimeError("Application already bootstrapped")
 
     # ARCH LOCK

@@ -1,6 +1,30 @@
 from fastapi.testclient import TestClient
 
 
+def _title_text_from_props_preview(props_preview: dict) -> str:
+    name = props_preview.get("Name") or props_preview.get("Project Name") or {}
+    title = name.get("title") if isinstance(name, dict) else None
+    if isinstance(title, list) and title:
+        t0 = title[0]
+        if isinstance(t0, dict):
+            txt = t0.get("text")
+            if isinstance(txt, dict):
+                return str(txt.get("content") or "")
+    return ""
+
+
+def _rich_text_plain(props_preview: dict, key: str) -> str:
+    v = props_preview.get(key) or {}
+    rt = v.get("rich_text") if isinstance(v, dict) else None
+    if isinstance(rt, list) and rt:
+        t0 = rt[0]
+        if isinstance(t0, dict):
+            txt = t0.get("text")
+            if isinstance(txt, dict):
+                return str(txt.get("content") or "")
+    return ""
+
+
 def _get_app():
     from gateway.gateway_server import app  # noqa: PLC0415
 
@@ -153,29 +177,182 @@ def test_execute_preview_batch_request_rows():
     body = r.json()
 
     assert body.get("ok") is True
-    assert body.get("read_only") is True
+
+    cmd = body.get("command")
+    assert isinstance(cmd, dict)
+    assert cmd.get("command") == "notion_write"
+    assert cmd.get("intent") == "batch_request"
 
     notion = body.get("notion")
     assert isinstance(notion, dict)
     assert notion.get("type") == "batch_preview"
-
     rows = notion.get("rows")
     assert isinstance(rows, list)
-    assert len(rows) >= 2
+    assert len(rows) == 2
 
-    r0 = rows[0]
-    assert r0.get("op_id") == "goal_1"
-    assert r0.get("intent") == "create_goal"
-    assert r0.get("db_key") == "goals"
-    assert isinstance(r0.get("properties_preview"), dict)
-    assert "Name" in r0["properties_preview"]
+    goal_rows = [
+        x for x in rows if isinstance(x, dict) and x.get("intent") == "create_goal"
+    ]
+    task_rows = [
+        x for x in rows if isinstance(x, dict) and x.get("intent") == "create_task"
+    ]
+    assert len(goal_rows) == 1
+    assert len(task_rows) == 1
 
-    r1 = rows[1]
-    assert r1.get("op_id") == "task_1"
-    assert r1.get("intent") == "create_task"
-    assert r1.get("db_key") == "tasks"
-    # Relationship reference should be human-readable (from "$goal_1" -> "ref:goal_1")
-    assert r1.get("Goal Ref") == "ref:goal_1"
+    goal_pp = goal_rows[0].get("properties_preview")
+    task_pp = task_rows[0].get("properties_preview")
+    assert isinstance(goal_pp, dict)
+    assert isinstance(task_pp, dict)
+    assert _title_text_from_props_preview(goal_pp) == "Batch Goal"
+    assert _title_text_from_props_preview(task_pp).startswith("Task 1")
+
+    # Task should reference the goal by ref:goal_1 in preview.
+    assert isinstance(task_rows[0].get("Goal Ref"), str)
+    assert str(task_rows[0].get("Goal Ref")).startswith("ref:goal_")
+
+
+def test_execute_preview_wrapper_multi_task_blocks_batch_request_clean_fields():
+    app = _get_app()
+    client = TestClient(app)
+
+    prompt = (
+        "kreiraj taskove:\n\n"
+        "Task 1\n"
+        "Name: Zaklju\u010daj ponudu \u201cGUT RESET Sistem (14 dana)\u201d\n"
+        "Status: To do\n"
+        "Assigned To: Ad\n"
+        "Goal: GUT RESET \u2013 prvih 5 prodaja\n"
+        "Due Date: 2026-02-05\n"
+        "Deadline: 2026-02-05\n"
+        "Priority: High\n"
+        "Order: 1\n"
+        "Description: Defini\u0161i 1 publiku...\n\n"
+        "Task 2\n"
+        "Name: Defini\u0161i Starter/Plus sadr\u017eaj (core + add-on)\n"
+        "Status: To do\n"
+        "Assigned To: Ad\n"
+        "Goal: GUT RESET \u2013 prvih 5 prodaja\n"
+        "Deadline: 2026-02-06\n"
+        "Priority: High\n"
+        "Order: 2\n"
+        "Description: Ovo je samo Task 2 opis.\n"
+    )
+
+    payload = {
+        "command": "ceo.command.propose",
+        "intent": "ceo.command.propose",
+        "params": {
+            "prompt": prompt,
+            "supports_bilingual": True,
+        },
+    }
+
+    r = client.post(
+        "/api/execute/preview",
+        headers={"X-Initiator": "ceo_chat"},
+        json=payload,
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+
+    cmd = body.get("command")
+    assert isinstance(cmd, dict)
+    assert cmd.get("command") == "notion_write"
+    assert cmd.get("intent") == "batch_request"
+    params = cmd.get("params") or {}
+    assert "supports_bilingual" not in (params.get("wrapper_patch") or {})
+
+    notion = body.get("notion")
+    assert isinstance(notion, dict)
+    assert notion.get("type") == "batch_preview"
+    rows = notion.get("rows")
+    assert isinstance(rows, list)
+
+    task_rows = [
+        x for x in rows if isinstance(x, dict) and x.get("intent") == "create_task"
+    ]
+    assert len(task_rows) == 2, rows
+
+    p0 = task_rows[0].get("properties_preview")
+    p1 = task_rows[1].get("properties_preview")
+    assert isinstance(p0, dict)
+    assert isinstance(p1, dict)
+
+    t0 = _title_text_from_props_preview(p0)
+    t1 = _title_text_from_props_preview(p1)
+    assert t0 == "Zaklju\u010daj ponudu \u201cGUT RESET Sistem (14 dana)\u201d"
+    assert t1 == "Defini\u0161i Starter/Plus sadr\u017eaj (core + add-on)"
+    assert t0 != "Task 1"
+    assert not t0.startswith(",")
+
+    d0 = _rich_text_plain(p0, "Description")
+    d1 = _rich_text_plain(p1, "Description")
+    assert "Task 2" not in d0
+    assert d1.strip() == "Ovo je samo Task 2 opis."
+
+
+def test_execute_preview_wrapper_single_task_still_single_create_task():
+    app = _get_app()
+    client = TestClient(app)
+
+    payload = {
+        "command": "ceo.command.propose",
+        "intent": "ceo.command.propose",
+        "params": {"prompt": "Kreiraj task: Samo jedan task"},
+    }
+
+    r = client.post(
+        "/api/execute/preview",
+        headers={"X-Initiator": "ceo_chat"},
+        json=payload,
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    notion = body.get("notion")
+    assert isinstance(notion, dict)
+    assert notion.get("type") != "batch_preview"
+    assert notion.get("db_key") == "tasks"
+
+
+def test_execute_preview_wrapper_multi_task_blocks_splits_task_9_and_10():
+    app = _get_app()
+    client = TestClient(app)
+
+    prompt = (
+        "kreiraj taskove:\n"
+        "Task 9\n"
+        "Name: Deveto\n"
+        "Description: Opis 9\n"
+        "Task 10\n"
+        "Name: Deseto\n"
+        "Description: Opis 10\n"
+    )
+
+    payload = {
+        "command": "ceo.command.propose",
+        "intent": "ceo.command.propose",
+        "params": {"prompt": prompt},
+    }
+
+    r = client.post(
+        "/api/execute/preview",
+        headers={"X-Initiator": "ceo_chat"},
+        json=payload,
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    notion = body.get("notion")
+    assert isinstance(notion, dict)
+    assert notion.get("type") == "batch_preview"
+    rows = notion.get("rows")
+    assert isinstance(rows, list)
+
+    task_rows = [
+        x for x in rows if isinstance(x, dict) and x.get("intent") == "create_task"
+    ]
+    assert len(task_rows) == 2
+    op_ids = [str(x.get("op_id") or "") for x in task_rows]
+    assert op_ids == ["task_9", "task_10"], task_rows
 
 
 def test_execute_preview_wrapper_autodetect_intent_builds_table():
