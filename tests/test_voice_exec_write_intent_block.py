@@ -6,8 +6,8 @@ from gateway.gateway_server import app
 
 
 def _set_required_gateway_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    # gateway.gateway_server.validate_runtime_env_or_raise() runs during lifespan boot.
-    # In tests, OPENAI_API_KEY is optional, but Notion vars are still required.
+    # gateway.gateway_server.validate_runtime_env_or_raise() runs during lifespan.
+    # In tests, OPENAI_API_KEY is optional; Notion vars are still required.
     monkeypatch.setenv("NOTION_API_KEY", "test")
     monkeypatch.setenv("NOTION_GOALS_DB_ID", "test")
     monkeypatch.setenv("NOTION_TASKS_DB_ID", "test")
@@ -27,6 +27,10 @@ def test_voice_exec_blocks_write_intent_when_guard_enabled(
     _set_required_gateway_env(monkeypatch)
     monkeypatch.setenv("ENABLE_WRITE_INTENT_GUARD", "1")
 
+    notion_cmd = {"command": "notion_write", "payload": {"x": 1}}
+    decision = {"operational_output": {"notion_command": notion_cmd}}
+    agent_result = {"agent": "noop", "agent_response": {}}
+
     with (
         patch(
             "routers.voice_router.voice_service.transcribe",
@@ -34,18 +38,11 @@ def test_voice_exec_blocks_write_intent_when_guard_enabled(
         ) as m_transcribe,
         patch(
             "routers.voice_router.decision_engine.process_ceo_instruction",
-            return_value={
-                "operational_output": {
-                    "notion_command": {
-                        "command": "notion_write",
-                        "payload": {"x": 1},
-                    }
-                }
-            },
+            return_value=decision,
         ) as m_decision,
         patch(
             "routers.voice_router.agent_router.execute",
-            new=AsyncMock(return_value={"agent": "noop", "agent_response": {}}),
+            new=AsyncMock(return_value=agent_result),
         ) as m_execute,
     ):
         with TestClient(app) as client:
@@ -76,6 +73,10 @@ def test_voice_exec_does_not_block_when_guard_disabled(
     _set_required_gateway_env(monkeypatch)
     monkeypatch.setenv("ENABLE_WRITE_INTENT_GUARD", "0")
 
+    notion_cmd = {"command": "notion_write", "payload": {"x": 1}}
+    decision = {"operational_output": {"notion_command": notion_cmd}}
+    agent_result = {"agent": "noop", "agent_response": {}}
+
     with (
         patch(
             "routers.voice_router.voice_service.transcribe",
@@ -83,18 +84,11 @@ def test_voice_exec_does_not_block_when_guard_disabled(
         ),
         patch(
             "routers.voice_router.decision_engine.process_ceo_instruction",
-            return_value={
-                "operational_output": {
-                    "notion_command": {
-                        "command": "notion_write",
-                        "payload": {"x": 1},
-                    }
-                }
-            },
+            return_value=decision,
         ),
         patch(
             "routers.voice_router.agent_router.execute",
-            new=AsyncMock(return_value={"agent": "noop", "agent_response": {}}),
+            new=AsyncMock(return_value=agent_result),
         ) as m_execute,
     ):
         with TestClient(app) as client:
