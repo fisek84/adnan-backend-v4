@@ -17,7 +17,7 @@ def _set_required_gateway_env(monkeypatch: pytest.MonkeyPatch) -> None:
 def _post_voice_exec(client: TestClient):
     return client.post(
         "/api/voice/exec",
-        files={"audio": ("audio.wav", b"fake-audio", "audio/wav")},
+        files={"audio": ("t.wav", b"fake", "audio/wav")},
     )
 
 
@@ -36,7 +36,10 @@ def test_voice_exec_blocks_write_intent_when_guard_enabled(
             "routers.voice_router.decision_engine.process_ceo_instruction",
             return_value={
                 "operational_output": {
-                    "notion_command": {"command": "notion_write", "payload": {"x": 1}}
+                    "notion_command": {
+                        "command": "notion_write",
+                        "payload": {"x": 1},
+                    }
                 }
             },
         ) as m_decision,
@@ -67,7 +70,9 @@ def test_voice_exec_blocks_write_intent_when_guard_enabled(
         assert m_decision.call_count == 1
 
 
-def test_voice_exec_does_not_block_when_guard_disabled(monkeypatch: pytest.MonkeyPatch):
+def test_voice_exec_does_not_block_when_guard_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+):
     _set_required_gateway_env(monkeypatch)
     monkeypatch.setenv("ENABLE_WRITE_INTENT_GUARD", "0")
 
@@ -80,7 +85,10 @@ def test_voice_exec_does_not_block_when_guard_disabled(monkeypatch: pytest.Monke
             "routers.voice_router.decision_engine.process_ceo_instruction",
             return_value={
                 "operational_output": {
-                    "notion_command": {"command": "notion_write", "payload": {"x": 1}}
+                    "notion_command": {
+                        "command": "notion_write",
+                        "payload": {"x": 1},
+                    }
                 }
             },
         ),
