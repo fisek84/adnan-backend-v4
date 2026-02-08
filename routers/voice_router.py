@@ -1,3 +1,5 @@
+import os
+
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from pydantic import BaseModel
 
@@ -11,6 +13,26 @@ router = APIRouter(prefix="/voice", tags=["Voice Input"])
 decision_engine = AdnanAIDecisionService()
 voice_service = VoiceService()
 agent_router = AgentRouter()  # <<< NOVO — mozak delegacije
+
+
+_WRITE_INTENTS = {
+    "notion_write",
+    "goal_write",
+    "update_goal",
+    "goal_task_workflow",
+    "memory_write",
+}
+
+
+def _guard_enabled() -> bool:
+    v = (os.getenv("ENABLE_WRITE_INTENT_GUARD", "0") or "0").strip()
+    return v in {"1", "true", "True"}
+
+
+def _extract_command_name(notion_cmd):
+    if isinstance(notion_cmd, dict):
+        return notion_cmd.get("command")
+    return getattr(notion_cmd, "command", None)
 
 
 class VoiceText(BaseModel):
@@ -51,6 +73,21 @@ async def voice_exec(audio: UploadFile = File(...)):
                 "transcribed_text": text,
                 "reason": "Adnan.ai did not produce a Notion command.",
                 "engine_output": decision,
+            }
+
+        cmd_name = _extract_command_name(notion_cmd)
+        if _guard_enabled() and isinstance(cmd_name, str) and cmd_name in _WRITE_INTENTS:
+            return {
+                "proposal_required": True,
+                "success": False,
+                "blocked_by": "write_intent_guard",
+                "reason": "write_intent_not_allowed_on_voice_exec",
+                "transcribed_text": text,
+                "engine_output": decision,
+                "suggested_action": {
+                    "endpoint": "POST /api/chat",
+                    "payload": {"message": text},
+                },
             }
 
         # 3. AGENT ROUTER → delegira pravom agentu
