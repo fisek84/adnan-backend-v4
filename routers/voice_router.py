@@ -76,7 +76,11 @@ async def voice_exec(audio: UploadFile = File(...)):
             }
 
         cmd_name = _extract_command_name(notion_cmd)
-        if _guard_enabled() and isinstance(cmd_name, str) and cmd_name in _WRITE_INTENTS:
+        if (
+            _guard_enabled()
+            and isinstance(cmd_name, str)
+            and cmd_name in _WRITE_INTENTS
+        ):
             return {
                 "proposal_required": True,
                 "success": False,

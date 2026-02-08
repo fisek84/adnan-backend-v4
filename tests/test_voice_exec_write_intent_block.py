@@ -21,7 +21,9 @@ def _post_voice_exec(client: TestClient):
     )
 
 
-def test_voice_exec_blocks_write_intent_when_guard_enabled(monkeypatch: pytest.MonkeyPatch):
+def test_voice_exec_blocks_write_intent_when_guard_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+):
     _set_required_gateway_env(monkeypatch)
     monkeypatch.setenv("ENABLE_WRITE_INTENT_GUARD", "1")
 
