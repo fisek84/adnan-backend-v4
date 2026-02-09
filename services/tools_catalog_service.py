@@ -64,9 +64,7 @@ class ToolsCatalogService:
         self._version: str = ""
         self._tools_by_id: Dict[str, ToolCatalogEntry] = {}
 
-    def load_from_tools_json(
-        self, path: str = "config/tools.json", *, clear: bool = True
-    ) -> Dict[str, Any]:
+    def load_from_tools_json(self, path: str = "config/tools.json", *, clear: bool = True) -> Dict[str, Any]:
         p = _resolve_tools_json_path(path)
         data = json.loads(p.read_text(encoding="utf-8"))
         tools_by_id, version = self._validate_and_normalize(data)
@@ -98,9 +96,7 @@ class ToolsCatalogService:
 
     def is_executable(self, tool_id: str) -> bool:
         t = self.get(tool_id)
-        return bool(
-            t and t.status == "mvp_executable" and (t.runtime_action or "").strip()
-        )
+        return bool(t and t.status == "mvp_executable" and (t.runtime_action or "").strip())
 
     def snapshot(self) -> Dict[str, Any]:
         with self._lock:
@@ -108,15 +104,10 @@ class ToolsCatalogService:
                 "loaded": self._loaded,
                 "path": self._path,
                 "version": self._version,
-                "tools": {
-                    k: self._tools_by_id[k].__dict__
-                    for k in sorted(self._tools_by_id.keys())
-                },
+                "tools": {k: self._tools_by_id[k].__dict__ for k in sorted(self._tools_by_id.keys())},
             }
 
-    def _validate_and_normalize(
-        self, data: Any
-    ) -> tuple[Dict[str, ToolCatalogEntry], str]:
+    def _validate_and_normalize(self, data: Any) -> tuple[Dict[str, ToolCatalogEntry], str]:
         if not isinstance(data, dict):
             raise ValueError("tools.json must be a JSON object")
 
