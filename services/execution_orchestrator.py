@@ -15,6 +15,7 @@ from services.notion_service import get_notion_service
 from services.memory_ops_executor import MemoryOpsExecutor
 from services.notion_ops_state import is_armed as notion_ops_is_armed
 from services.agent_registry_service import AgentRegistryService
+from services.memory_service import MemoryService
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -507,6 +508,17 @@ class ExecutionOrchestrator:
                 "action": action.strip(),
             }
 
+        approval_id = getattr(cmd, "approval_id", None)
+        if not isinstance(approval_id, str) or not approval_id.strip():
+            return {
+                "ok": False,
+                "success": False,
+                "execution_state": "BLOCKED",
+                "reason": "approval_required",
+                "agent_id": agent_id.strip(),
+                "action": action.strip(),
+            }
+
         reg = AgentRegistryService()
         reg.load_from_agents_json("config/agents.json", clear=True)
         entry = reg.get_agent(agent_id.strip())
@@ -536,15 +548,65 @@ class ExecutionOrchestrator:
                 "action": action.strip(),
             }
 
-        # Repo has no tool runtime. Even if allowlisted, do not pretend execution.
-        return {
-            "ok": False,
-            "success": False,
-            "execution_state": "BLOCKED",
-            "agent_id": agent_id.strip(),
-            "action": action.strip(),
-            "reason": "tool_runtime_missing",
-        }
+        # Execute safe offline tool runtime (read-only + draft only).
+        try:
+            from services.tool_runtime_executor import execute as run_tool
+
+            result = await run_tool(
+                action.strip(),
+                params,
+                agent_id=agent_id.strip(),
+                execution_id=str(getattr(cmd, "execution_id", "") or "").strip(),
+            )
+        except NotImplementedError:
+            # Allowlisted but not implemented at runtime.
+            return {
+                "ok": False,
+                "success": False,
+                "execution_state": "BLOCKED",
+                "agent_id": agent_id.strip(),
+                "action": action.strip(),
+                "reason": "tool_runtime_missing",
+            }
+        except Exception as exc:
+            return {
+                "ok": False,
+                "success": False,
+                "execution_state": "FAILED",
+                "agent_id": agent_id.strip(),
+                "action": action.strip(),
+                "reason": "tool_runtime_error",
+                "error_type": exc.__class__.__name__,
+                "error": str(exc),
+            }
+
+        # Audit hook: append a minimal execution event to the existing audit surface.
+        try:
+            MemoryService().append_write_audit_event(
+                {
+                    "event_type": "tool_runtime",
+                    "execution_id": getattr(cmd, "execution_id", None),
+                    "approval_id": approval_id.strip(),
+                    "agent_id": agent_id.strip(),
+                    "action": action.strip(),
+                    "ok": bool(isinstance(result, dict) and result.get("ok") is True),
+                }
+            )
+        except Exception:
+            pass
+
+        return (
+            result
+            if isinstance(result, dict)
+            else {
+                "ok": True,
+                "success": True,
+                "execution_state": "COMPLETED",
+                "agent_id": agent_id.strip(),
+                "action": action.strip(),
+                "data": {"source": "local"},
+            }
+        )
 
     async def _log_handoff_completion(self, cmd: AICommand, result: Any) -> None:
         md = cmd.metadata if isinstance(getattr(cmd, "metadata", None), dict) else {}
@@ -568,12 +630,35 @@ class ExecutionOrchestrator:
             str(desc).strip() if isinstance(desc, str) and desc.strip() else "completed"
         )
 
+        job_id = ""
+        agent_id = ""
+        if isinstance(md, dict):
+            job_id = str(md.get("job_id") or "").strip()
+            agent_id = str(md.get("agent_id") or "").strip()
+
+        state = str(getattr(cmd, "execution_state", None) or "").strip() or "COMPLETED"
+        # This hook is called post-execution (or explicitly on BLOCKED).
+        # Standardize state to terminal values for downstream consumers.
+        if state == "EXECUTING":
+            state = "COMPLETED"
+        payload = {
+            "job_id": job_id,
+            "agent_id": agent_id,
+            "execution_id": cmd.execution_id,
+            "state": state,
+            "summary": desc_str,
+        }
+
         try:
             await self.notion_agent.execute(
                 AICommand(
                     command="create_task",
                     intent="create_task",
-                    params={"title": title, "description": desc_str},
+                    params={
+                        "title": title,
+                        "description": desc_str,
+                        "handoff": payload,
+                    },
                     initiator=cmd.initiator or "system",
                     execution_id=cmd.execution_id,
                     approval_id=approval_id.strip(),

@@ -268,6 +268,14 @@ class AgentRegistryService:
             merged_meta["entrypoint"] = entrypoint
             merged_meta["priority"] = priority_int
             merged_meta["keywords"] = keywords
+            # SSOT fields needed for assignment rules (Job Runner MVP).
+            role = a.get("role")
+            if isinstance(role, str) and role.strip():
+                merged_meta["role"] = role.strip().lower()
+
+            job_contract = a.get("job_contract")
+            if isinstance(job_contract, dict) and job_contract:
+                merged_meta["job_contract"] = deepcopy(job_contract)
             merged_meta["source"] = str(p)
             merged_meta["read_only"] = True
             merged_meta["loaded_at"] = datetime.utcnow().isoformat()
