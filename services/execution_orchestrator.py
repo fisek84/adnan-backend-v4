@@ -14,6 +14,7 @@ from services.notion_ops_agent import NotionOpsAgent
 from services.notion_service import get_notion_service
 from services.memory_ops_executor import MemoryOpsExecutor
 from services.notion_ops_state import is_armed as notion_ops_is_armed
+from services.agent_registry_service import AgentRegistryService
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -54,6 +55,10 @@ class ExecutionOrchestrator:
     @staticmethod
     def _is_memory_write(cmd: AICommand) -> bool:
         return cmd.command == "memory_write" or cmd.intent == "memory_write"
+
+    @staticmethod
+    def _is_tool_call(cmd: AICommand) -> bool:
+        return cmd.command == "tool_call" or cmd.intent == "tool_call"
 
     @staticmethod
     def _is_failure_result(result: Any) -> bool:
@@ -388,6 +393,23 @@ class ExecutionOrchestrator:
                 result = await self._execute_goal_task_workflow(cmd)
             elif self._is_memory_write(cmd):
                 result = await self.memory_ops.execute(cmd)
+            elif self._is_tool_call(cmd):
+                result = await self._execute_tool_call(cmd)
+
+                # Tool calls are execution-capable directives. If runtime is missing or
+                # policy blocks the action, treat as BLOCKED (not FAILED).
+                if (
+                    isinstance(result, dict)
+                    and result.get("execution_state") == "BLOCKED"
+                ):
+                    cmd.execution_state = "BLOCKED"
+                    self.registry.block(cmd.execution_id, result)
+                    return {
+                        "execution_id": cmd.execution_id,
+                        "execution_state": "BLOCKED",
+                        "approval_id": cmd.approval_id,
+                        "result": result,
+                    }
             else:
                 result = await self.notion_agent.execute(cmd)
 
@@ -432,6 +454,13 @@ class ExecutionOrchestrator:
                     "text": f"Execution FAILED: {reason_str}",
                 }
 
+            # Operational seam: emit a governed notion_ops write request for
+            # handoff/completion logging (post-approval only). Fail-soft.
+            try:
+                await self._log_handoff_completion(cmd, result)
+            except Exception:
+                pass
+
             cmd.execution_state = "COMPLETED"
             self.registry.complete(cmd.execution_id, result)
             return {
@@ -455,6 +484,104 @@ class ExecutionOrchestrator:
                 "ok": False,
                 "text": f"Execution FAILED: {reason_str}",
             }
+
+    async def _execute_tool_call(self, cmd: AICommand) -> Dict[str, Any]:
+        params = cmd.params if isinstance(getattr(cmd, "params", None), dict) else {}
+        action = params.get("action")
+        if not isinstance(action, str) or not action.strip():
+            return {
+                "ok": False,
+                "success": False,
+                "execution_state": "FAILED",
+                "reason": "missing_action",
+            }
+
+        md = cmd.metadata if isinstance(getattr(cmd, "metadata", None), dict) else {}
+        agent_id = md.get("agent_id") if isinstance(md, dict) else None
+        if not isinstance(agent_id, str) or not agent_id.strip():
+            return {
+                "ok": False,
+                "success": False,
+                "execution_state": "BLOCKED",
+                "reason": "missing_agent_id",
+                "action": action.strip(),
+            }
+
+        reg = AgentRegistryService()
+        reg.load_from_agents_json("config/agents.json", clear=True)
+        entry = reg.get_agent(agent_id.strip())
+        allowlist = None
+        if entry is not None and isinstance(entry.metadata, dict):
+            allowlist = entry.metadata.get("tool_allowlist")
+
+        if not isinstance(allowlist, list) or not all(
+            isinstance(x, str) and x.strip() for x in allowlist
+        ):
+            return {
+                "ok": False,
+                "success": False,
+                "execution_state": "BLOCKED",
+                "reason": "tool_allowlist_missing",
+                "agent_id": agent_id.strip(),
+                "action": action.strip(),
+            }
+
+        if action.strip() not in {x.strip() for x in allowlist}:
+            return {
+                "ok": False,
+                "success": False,
+                "execution_state": "BLOCKED",
+                "reason": "action_not_allowed",
+                "agent_id": agent_id.strip(),
+                "action": action.strip(),
+            }
+
+        # Repo has no tool runtime. Even if allowlisted, do not pretend execution.
+        return {
+            "ok": False,
+            "success": False,
+            "execution_state": "BLOCKED",
+            "agent_id": agent_id.strip(),
+            "action": action.strip(),
+            "reason": "tool_runtime_missing",
+        }
+
+    async def _log_handoff_completion(self, cmd: AICommand, result: Any) -> None:
+        md = cmd.metadata if isinstance(getattr(cmd, "metadata", None), dict) else {}
+        # Only emit handoff/completion records when explicitly requested.
+        # This avoids adding extra Notion writes to every successful execution.
+        if not (isinstance(md, dict) and md.get("emit_handoff_log") is True):
+            return
+
+        if isinstance(md, dict) and md.get("handoff_log") is True:
+            return
+
+        approval_id = getattr(cmd, "approval_id", None)
+        if not isinstance(approval_id, str) or not approval_id.strip():
+            return
+
+        title = f"handoff:{cmd.execution_id}"
+        desc = None
+        if isinstance(result, dict):
+            desc = result.get("reason") or result.get("message") or result.get("detail")
+        desc_str = (
+            str(desc).strip() if isinstance(desc, str) and desc.strip() else "completed"
+        )
+
+        try:
+            await self.notion_agent.execute(
+                AICommand(
+                    command="create_task",
+                    intent="create_task",
+                    params={"title": title, "description": desc_str},
+                    initiator=cmd.initiator or "system",
+                    execution_id=cmd.execution_id,
+                    approval_id=approval_id.strip(),
+                    metadata={"handoff_log": True},
+                )
+            )
+        except Exception:
+            return
 
     # --------------------------------------------------
     # WORKFLOWS

@@ -1,8 +1,8 @@
-from ext.notion.writer import create_page, append_text
+from ext.notion.writer import create_page
 from ext.notion.linker import link_to_relation
 
 
-def orchestrate_document(payload: dict):
+async def orchestrate_document(payload: dict):
     """
     payload expected:
     {
@@ -16,20 +16,45 @@ def orchestrate_document(payload: dict):
     }
     """
 
-    title = payload.get("title")
     content = payload.get("content")
-    parent_db = payload.get("parent_db")
     relations = payload.get("relations", {})
 
     # 1. Create page
-    page = create_page(title, parent_db)
-    page_id = page["id"]
+    approval_id = payload.get("approval_id")
+    execution_id = payload.get("execution_id")
+    initiator = payload.get("initiator") or "unknown"
+    db_key = payload.get("db_key")
 
-    # 2. Write content (chunking applied)
-    append_text(page_id, content)
+    page_res = await create_page(
+        db_key=db_key,
+        property_specs=payload.get("property_specs") or {},
+        wrapper_patch=payload.get("wrapper_patch") or {},
+        approval_id=approval_id,
+        execution_id=execution_id,
+        initiator=initiator,
+    )
+    page_id = (
+        ((page_res.get("result") or {}).get("result") or {}).get("page_id")
+        if isinstance(page_res, dict)
+        else None
+    )
+
+    # 2. Content writes are DISABLED here: use governed notion_ops flow.
+    if content:
+        raise RuntimeError(
+            "DISABLED: ext.documents.orchestrator content writes must use governed notion_ops flow"
+        )
 
     # 3. Add relations if provided
     for rel_name, rel_id in relations.items():
-        link_to_relation(page_id, rel_name, rel_id)
+        await link_to_relation(
+            page_id,
+            rel_name,
+            rel_id,
+            db_key=db_key,
+            approval_id=approval_id,
+            execution_id=execution_id,
+            initiator=initiator,
+        )
 
-    return {"page_id": page_id}
+    return {"page_id": page_id, "create_result": page_res}

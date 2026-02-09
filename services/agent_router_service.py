@@ -322,6 +322,16 @@ class AgentRouterService:
                     "intent": intent,
                 }
 
+        # mini-firma routing safety: dept_* agents are enabled in SSOT but must not
+        # be auto-selected unless explicitly requested or operational mode is enabled.
+        md = getattr(agent_input, "metadata", None)
+        md = md if isinstance(md, dict) else {}
+        operational_mode = md.get("operational_mode") is True
+        if not operational_mode:
+            non_dept = [a for a in agents if not str(a.id).startswith("dept_")]
+            if non_dept:
+                agents = non_dept
+
         forced_id = None
         forced_reason = None
         if intent == "deliverable":
