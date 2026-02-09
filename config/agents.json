@@ -121,7 +121,8 @@
       "keywords": [],
       "role": "growth",
       "metadata": {
-        "tool_allowlist": ["read_only.query", "draft.outreach"]
+        "tool_allowlist": ["draft.outreach"],
+        "planned_tools_allowlist": ["email.read", "email.draft", "email.send", "leads.search", "leads.create", "leads.sequence_draft"]
       },
       "job_contract": {
         "does": "Growth planning, outreach drafting, funnel diagnosis; read-only analysis by default.",
@@ -152,7 +153,8 @@
       "keywords": [],
       "role": "product",
       "metadata": {
-        "tool_allowlist": ["read_only.query", "draft.spec", "draft.issue"]
+        "tool_allowlist": ["draft.spec", "draft.issue"],
+        "planned_tools_allowlist": ["docs.write", "tickets.create", "tickets.update"]
       },
       "job_contract": {
         "does": "Product discovery, spec drafting, issue breakdown; read-only analysis by default.",
@@ -183,7 +185,8 @@
       "keywords": [],
       "role": "finance",
       "metadata": {
-        "tool_allowlist": ["read_only.query", "analysis.run"]
+        "tool_allowlist": ["analysis.run", "read_only.query"],
+        "planned_tools_allowlist": ["finance.report_generate", "finance.categorize", "import_bank", "sheets.read", "sheets.write", "sheets.export"]
       },
       "job_contract": {
         "does": "Budgeting, unit economics, risk review; read-only analysis by default.",
@@ -214,7 +217,8 @@
       "keywords": [],
       "role": "ops",
       "metadata": {
-        "tool_allowlist": ["read_only.query", "sop.query", "process.query"]
+        "tool_allowlist": ["read_only.query"],
+        "planned_tools_allowlist": ["calendar.read", "calendar.propose", "sheets.read", "sheets.export"]
       },
       "job_contract": {
         "does": "SOP/process diagnosis, ops planning, operational checklists; read-only analysis by default.",
