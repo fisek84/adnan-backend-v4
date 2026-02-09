@@ -1,0 +1,188 @@
+{
+  "version": "1.0",
+  "tools": [
+    {
+      "id": "read_only.query",
+      "description": "Deterministic local read-only query against configured knowledge snapshots / local echoes.",
+      "risk_level": "read_only",
+      "approval_required": true,
+      "runtime_action": "read_only.query",
+      "status": "mvp_executable"
+    },
+    {
+      "id": "analysis.run",
+      "description": "Deterministic local arithmetic evaluation for analysis/checks.",
+      "risk_level": "read_only",
+      "approval_required": true,
+      "runtime_action": "analysis.run",
+      "status": "mvp_executable"
+    },
+    {
+      "id": "draft.outreach",
+      "description": "Generate an outreach message draft (no sending).",
+      "risk_level": "write",
+      "approval_required": true,
+      "runtime_action": "draft.outreach",
+      "status": "mvp_executable"
+    },
+    {
+      "id": "draft.spec",
+      "description": "Generate a product spec/PRD draft (offline).",
+      "risk_level": "write",
+      "approval_required": true,
+      "runtime_action": "draft.spec",
+      "status": "mvp_executable"
+    },
+    {
+      "id": "draft.issue",
+      "description": "Generate an issue/ticket draft (offline).",
+      "risk_level": "write",
+      "approval_required": true,
+      "runtime_action": "draft.issue",
+      "status": "mvp_executable"
+    },
+
+    {
+      "id": "email.read",
+      "description": "Read emails (capability only; not implemented).",
+      "risk_level": "read_only",
+      "approval_required": true,
+      "runtime_action": null,
+      "status": "planned"
+    },
+    {
+      "id": "email.draft",
+      "description": "Draft an email (capability only; not implemented).",
+      "risk_level": "write",
+      "approval_required": true,
+      "runtime_action": null,
+      "status": "planned"
+    },
+    {
+      "id": "email.send",
+      "description": "Send an email (capability only; not implemented).",
+      "risk_level": "restricted",
+      "approval_required": true,
+      "runtime_action": null,
+      "status": "planned"
+    },
+
+    {
+      "id": "sheets.read",
+      "description": "Read spreadsheets (capability only; not implemented).",
+      "risk_level": "read_only",
+      "approval_required": true,
+      "runtime_action": null,
+      "status": "planned"
+    },
+    {
+      "id": "sheets.write",
+      "description": "Write spreadsheets (capability only; not implemented).",
+      "risk_level": "restricted",
+      "approval_required": true,
+      "runtime_action": null,
+      "status": "planned"
+    },
+    {
+      "id": "sheets.export",
+      "description": "Export spreadsheets (capability only; not implemented).",
+      "risk_level": "restricted",
+      "approval_required": true,
+      "runtime_action": null,
+      "status": "planned"
+    },
+
+    {
+      "id": "leads.search",
+      "description": "Search leads (capability only; not implemented).",
+      "risk_level": "read_only",
+      "approval_required": true,
+      "runtime_action": null,
+      "status": "planned"
+    },
+    {
+      "id": "leads.create",
+      "description": "Create a lead record (capability only; not implemented).",
+      "risk_level": "restricted",
+      "approval_required": true,
+      "runtime_action": null,
+      "status": "planned"
+    },
+    {
+      "id": "leads.sequence_draft",
+      "description": "Draft a lead sequence (capability only; not implemented).",
+      "risk_level": "write",
+      "approval_required": true,
+      "runtime_action": null,
+      "status": "planned"
+    },
+
+    {
+      "id": "tickets.create",
+      "description": "Create a ticket (capability only; not implemented).",
+      "risk_level": "restricted",
+      "approval_required": true,
+      "runtime_action": null,
+      "status": "planned"
+    },
+    {
+      "id": "tickets.update",
+      "description": "Update a ticket (capability only; not implemented).",
+      "risk_level": "restricted",
+      "approval_required": true,
+      "runtime_action": null,
+      "status": "planned"
+    },
+
+    {
+      "id": "docs.write",
+      "description": "Write documents (capability only; not implemented).",
+      "risk_level": "restricted",
+      "approval_required": true,
+      "runtime_action": null,
+      "status": "planned"
+    },
+
+    {
+      "id": "calendar.read",
+      "description": "Read calendar (capability only; not implemented).",
+      "risk_level": "read_only",
+      "approval_required": true,
+      "runtime_action": null,
+      "status": "planned"
+    },
+    {
+      "id": "calendar.propose",
+      "description": "Propose calendar changes (capability only; not implemented).",
+      "risk_level": "restricted",
+      "approval_required": true,
+      "runtime_action": null,
+      "status": "planned"
+    },
+
+    {
+      "id": "finance.report_generate",
+      "description": "Generate financial reports (capability only; not implemented).",
+      "risk_level": "restricted",
+      "approval_required": true,
+      "runtime_action": null,
+      "status": "planned"
+    },
+    {
+      "id": "finance.categorize",
+      "description": "Categorize transactions (capability only; not implemented).",
+      "risk_level": "restricted",
+      "approval_required": true,
+      "runtime_action": null,
+      "status": "planned"
+    },
+    {
+      "id": "import_bank",
+      "description": "Import bank data (capability only; not implemented).",
+      "risk_level": "restricted",
+      "approval_required": true,
+      "runtime_action": null,
+      "status": "planned"
+    }
+  ]
+}
