@@ -20,9 +20,7 @@ def _resolve_job_templates_json_path(path: str) -> Path:
         p = Path(env_override).expanduser()
         if p.is_file():
             return p
-        raise FileNotFoundError(
-            f"JOB_TEMPLATES_JSON_PATH points to missing file: {p}"
-        )
+        raise FileNotFoundError(f"JOB_TEMPLATES_JSON_PATH points to missing file: {p}")
 
     raw = (path or "config/job_templates.json").strip()
     p0 = Path(raw).expanduser()
@@ -30,9 +28,7 @@ def _resolve_job_templates_json_path(path: str) -> Path:
     if p0.is_absolute():
         if p0.is_file():
             return p0
-        raise FileNotFoundError(
-            f"job_templates.json not found at absolute path: {p0}"
-        )
+        raise FileNotFoundError(f"job_templates.json not found at absolute path: {p0}")
 
     cwd_candidate = Path.cwd() / p0
     if cwd_candidate.is_file():
@@ -110,7 +106,9 @@ class JobTemplatesService:
 
     def list_all(self) -> List[JobTemplate]:
         with self._lock:
-            return [self._templates_by_id[k] for k in sorted(self._templates_by_id.keys())]
+            return [
+                self._templates_by_id[k] for k in sorted(self._templates_by_id.keys())
+            ]
 
     def snapshot(self) -> Dict[str, Any]:
         with self._lock:
@@ -118,7 +116,10 @@ class JobTemplatesService:
                 "loaded": self._loaded,
                 "path": self._path,
                 "version": self._version,
-                "job_templates": {k: self._templates_by_id[k].__dict__ for k in sorted(self._templates_by_id.keys())},
+                "job_templates": {
+                    k: self._templates_by_id[k].__dict__
+                    for k in sorted(self._templates_by_id.keys())
+                },
             }
 
     def _validate_and_normalize(
@@ -132,14 +133,18 @@ class JobTemplatesService:
         version = str(data.get("version") or "").strip() or "1"
         templates = data.get("job_templates")
         if not isinstance(templates, list) or not templates:
-            raise ValueError("job_templates.json must contain non-empty 'job_templates' list")
+            raise ValueError(
+                "job_templates.json must contain non-empty 'job_templates' list"
+            )
 
         seen: set[str] = set()
         out: Dict[str, JobTemplate] = {}
 
         for idx, t in enumerate(templates):
             if not isinstance(t, dict):
-                raise ValueError(f"job_templates.json job_templates[{idx}] must be an object")
+                raise ValueError(
+                    f"job_templates.json job_templates[{idx}] must be an object"
+                )
 
             template_id = str(t.get("id") or "").strip()
             if not template_id:
@@ -158,7 +163,9 @@ class JobTemplatesService:
 
             steps_in = t.get("steps")
             if not isinstance(steps_in, list) or not steps_in:
-                raise ValueError(f"Job template '{template_id}' must have non-empty steps")
+                raise ValueError(
+                    f"Job template '{template_id}' must have non-empty steps"
+                )
 
             steps: List[JobTemplateStep] = []
             for s_idx, s in enumerate(steps_in):
@@ -203,7 +210,9 @@ class JobTemplatesService:
             expected_outputs_raw = t.get("expected_outputs") or []
             if not isinstance(expected_outputs_raw, list):
                 expected_outputs_raw = []
-            expected_outputs = [str(x).strip() for x in expected_outputs_raw if str(x).strip()]
+            expected_outputs = [
+                str(x).strip() for x in expected_outputs_raw if str(x).strip()
+            ]
 
             out[template_id] = JobTemplate(
                 id=template_id,

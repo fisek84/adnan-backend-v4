@@ -164,7 +164,9 @@ async def test_run_template_prod_pending_then_executes(monkeypatch) -> None:
 
 
 @pytest.mark.anyio
-async def test_run_template_planned_tool_blocks_tool_not_executable(monkeypatch, tmp_path: Path) -> None:
+async def test_run_template_planned_tool_blocks_tool_not_executable(
+    monkeypatch, tmp_path: Path
+) -> None:
     from services.job_runner import JobRunner
 
     # Create a minimal template that references a planned tool.
