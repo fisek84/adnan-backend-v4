@@ -2101,43 +2101,6 @@ async def _boot_once() -> None:
                 _append_boot_error(f"agents_registry_load_failed:{exc}")
                 logger.warning("Agent registry load failed: %s", exc)
 
-            # SSOT: tools catalog + job templates (FAIL FAST)
-            try:
-                from services.job_templates_service import get_job_templates_service
-                from services.tools_catalog_service import get_tools_catalog_service
-
-                tools_catalog = get_tools_catalog_service()
-                tools_load = tools_catalog.load_from_tools_json(
-                    os.getenv("TOOLS_JSON_PATH") or "config/tools.json",
-                    clear=True,
-                )
-                logger.info(
-                    "Tools catalog loaded (SSOT): path=%s loaded=%s version=%s",
-                    tools_load.get("path"),
-                    tools_load.get("loaded"),
-                    tools_load.get("version"),
-                )
-
-                templates = get_job_templates_service()
-                templates_load = templates.load_from_job_templates_json(
-                    tools_catalog,
-                    os.getenv("JOB_TEMPLATES_JSON_PATH") or "config/job_templates.json",
-                    clear=True,
-                )
-                logger.info(
-                    "Job templates loaded (SSOT): path=%s loaded=%s version=%s",
-                    templates_load.get("path"),
-                    templates_load.get("loaded"),
-                    templates_load.get("version"),
-                )
-            except Exception as exc:  # noqa: BLE001
-                _append_boot_error(f"tools_templates_load_failed:{exc}")
-                logger.critical(
-                    "Tools catalog / job templates load failed (SSOT, fail-fast): %s",
-                    exc,
-                )
-                raise
-
             # inject AI router services (now guaranteed initialized)
             try:
                 if not hasattr(ai_router_module, "set_ai_services"):

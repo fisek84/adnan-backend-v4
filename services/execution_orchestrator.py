@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Union
 
 from models.ai_command import AICommand
 from models.canon import PROPOSAL_WRAPPER_INTENT
@@ -525,23 +525,10 @@ class ExecutionOrchestrator:
         allowlist = None
         if entry is not None and isinstance(entry.metadata, dict):
             allowlist = entry.metadata.get("tool_allowlist")
-            planned_allowlist = entry.metadata.get("planned_tools_allowlist")
-        else:
-            planned_allowlist = None
 
-        allowed_actions: Optional[set[str]] = None
-        if isinstance(allowlist, list) and all(
+        if not isinstance(allowlist, list) or not all(
             isinstance(x, str) and x.strip() for x in allowlist
         ):
-            allowed_actions = {x.strip() for x in allowlist}
-        if isinstance(planned_allowlist, list) and all(
-            isinstance(x, str) and x.strip() for x in planned_allowlist
-        ):
-            if allowed_actions is None:
-                allowed_actions = set()
-            allowed_actions |= {x.strip() for x in planned_allowlist}
-
-        if not isinstance(allowed_actions, set) or not allowed_actions:
             return {
                 "ok": False,
                 "success": False,
@@ -551,50 +538,12 @@ class ExecutionOrchestrator:
                 "action": action.strip(),
             }
 
-        if action.strip() not in allowed_actions:
+        if action.strip() not in {x.strip() for x in allowlist}:
             return {
                 "ok": False,
                 "success": False,
                 "execution_state": "BLOCKED",
                 "reason": "action_not_allowed",
-                "agent_id": agent_id.strip(),
-                "action": action.strip(),
-            }
-
-        # SSOT tools catalog enforcement: planned tools must never execute.
-        try:
-            from services.tools_catalog_service import get_tools_catalog_service
-
-            tools_catalog = get_tools_catalog_service()
-            if tools_catalog.is_loaded() is not True:
-                tools_catalog.load_from_tools_json("config/tools.json", clear=True)
-            tool = tools_catalog.get(action.strip())
-        except Exception as exc:
-            return {
-                "ok": False,
-                "success": False,
-                "execution_state": "BLOCKED",
-                "reason": "tools_catalog_unavailable",
-                "agent_id": agent_id.strip(),
-                "action": action.strip(),
-                "error": str(exc),
-            }
-
-        if tool is None:
-            return {
-                "ok": False,
-                "success": False,
-                "execution_state": "BLOCKED",
-                "reason": "tool_unknown",
-                "agent_id": agent_id.strip(),
-                "action": action.strip(),
-            }
-        if tool.status != "mvp_executable":
-            return {
-                "ok": False,
-                "success": False,
-                "execution_state": "BLOCKED",
-                "reason": "tool_not_executable",
                 "agent_id": agent_id.strip(),
                 "action": action.strip(),
             }
