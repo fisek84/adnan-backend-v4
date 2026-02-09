@@ -115,34 +115,126 @@
     {
       "id": "dept_growth",
       "name": "Department Agent — Growth",
-      "enabled": false,
+      "enabled": true,
       "priority": 30,
       "entrypoint": "services.department_agents:dept_growth_agent",
-      "keywords": []
+      "keywords": [],
+      "role": "growth",
+      "metadata": {
+        "tool_allowlist": ["read_only.query", "draft.outreach"]
+      },
+      "job_contract": {
+        "does": "Growth planning, outreach drafting, funnel diagnosis; read-only analysis by default.",
+        "does_not": "No sending emails/messages; no direct external writes without approval.",
+        "input": "Goal context, constraints, ICP, channel, draft brief.",
+        "output": "Summary, evidence links, next actions, approval need.",
+        "approval_rule": "Any side-effect write/tool/notion write requires proposal→approval→dispatch.",
+        "notion_ops_write_rule": "All Notion writes must be executed via notion_ops with approval_id.",
+        "what_it_does": "Growth planning, outreach drafting, funnel diagnosis.",
+        "what_it_does_not": "Does not send communications or write without approval.",
+        "inputs": "Goal context, ICP, constraints.",
+        "outputs": "Drafts and action plan.",
+        "when_needs_approval": "Before any write/send/tool-call or Notion change."
+      },
+      "output_schema": {
+        "summary": "string",
+        "evidence_links": "string[]",
+        "next_actions": "string[]",
+        "needs_approval": "boolean"
+      }
     },
     {
       "id": "dept_product",
       "name": "Department Agent — Product",
-      "enabled": false,
+      "enabled": true,
       "priority": 30,
       "entrypoint": "services.department_agents:dept_product_agent",
-      "keywords": []
+      "keywords": [],
+      "role": "product",
+      "metadata": {
+        "tool_allowlist": ["read_only.query", "draft.spec", "draft.issue"]
+      },
+      "job_contract": {
+        "does": "Product discovery, spec drafting, issue breakdown; read-only analysis by default.",
+        "does_not": "No external writes; no Notion updates except via notion_ops with approval.",
+        "input": "Problem statement, constraints, artifacts, backlog context.",
+        "output": "Summary, evidence links, next actions, approval need.",
+        "approval_rule": "Any side-effect write/tool/notion write requires proposal→approval→dispatch.",
+        "notion_ops_write_rule": "All Notion writes must be executed via notion_ops with approval_id.",
+        "what_it_does": "Discovery, PRD/spec drafting, backlog shaping.",
+        "what_it_does_not": "Does not perform writes without approval.",
+        "inputs": "Problem + context + constraints.",
+        "outputs": "Spec, ticket drafts, recommendations.",
+        "when_needs_approval": "Before any write/tool-call or Notion change."
+      },
+      "output_schema": {
+        "summary": "string",
+        "evidence_links": "string[]",
+        "next_actions": "string[]",
+        "needs_approval": "boolean"
+      }
     },
     {
       "id": "dept_finance",
       "name": "Department Agent — Finance",
-      "enabled": false,
+      "enabled": true,
       "priority": 30,
       "entrypoint": "services.department_agents:dept_finance_agent",
-      "keywords": []
+      "keywords": [],
+      "role": "finance",
+      "metadata": {
+        "tool_allowlist": ["read_only.query", "analysis.run"]
+      },
+      "job_contract": {
+        "does": "Budgeting, unit economics, risk review; read-only analysis by default.",
+        "does_not": "No payments, no bank actions, no ledger writes; no Notion writes without approval.",
+        "input": "Numbers, assumptions, timeframe, constraints.",
+        "output": "Summary, evidence links, next actions, approval need.",
+        "approval_rule": "Any side-effect write/tool/notion write requires proposal→approval→dispatch.",
+        "notion_ops_write_rule": "All Notion writes must be executed via notion_ops with approval_id.",
+        "what_it_does": "Financial analysis and planning.",
+        "what_it_does_not": "Does not execute transactions or writes.",
+        "inputs": "Assumptions + figures.",
+        "outputs": "Recommendations and checks.",
+        "when_needs_approval": "Before any write/tool-call or Notion change."
+      },
+      "output_schema": {
+        "summary": "string",
+        "evidence_links": "string[]",
+        "next_actions": "string[]",
+        "needs_approval": "boolean"
+      }
     },
     {
       "id": "dept_ops",
       "name": "Department Agent — Ops",
-      "enabled": false,
+      "enabled": true,
       "priority": 30,
       "entrypoint": "services.department_agents:dept_ops_agent",
-      "keywords": []
+      "keywords": [],
+      "role": "ops",
+      "metadata": {
+        "tool_allowlist": ["read_only.query", "sop.query", "process.query"]
+      },
+      "job_contract": {
+        "does": "SOP/process diagnosis, ops planning, operational checklists; read-only analysis by default.",
+        "does_not": "No external writes; no Notion updates except via notion_ops with approval.",
+        "input": "Process description, constraints, current SOPs.",
+        "output": "Summary, evidence links, next actions, approval need.",
+        "approval_rule": "Any side-effect write/tool/notion write requires proposal→approval→dispatch.",
+        "notion_ops_write_rule": "All Notion writes must be executed via notion_ops with approval_id.",
+        "what_it_does": "Operational review and SOP improvement proposals.",
+        "what_it_does_not": "Does not perform writes without approval.",
+        "inputs": "SOPs + context.",
+        "outputs": "Improvement plan.",
+        "when_needs_approval": "Before any write/tool-call or Notion change."
+      },
+      "output_schema": {
+        "summary": "string",
+        "evidence_links": "string[]",
+        "next_actions": "string[]",
+        "needs_approval": "boolean"
+      }
     }
   ]
 }

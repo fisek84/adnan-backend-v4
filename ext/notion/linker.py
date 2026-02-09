@@ -1,4 +1,7 @@
-from ext.notion.client import notion
+from typing import Any, Dict
+
+from models.ai_command import AICommand
+from services.execution_orchestrator import ExecutionOrchestrator
 
 
 def _canonicalize_notion_id(id_str: str) -> str:
@@ -19,7 +22,22 @@ def _canonicalize_notion_id(id_str: str) -> str:
     return f"{clean[0:8]}-{clean[8:12]}-{clean[12:16]}-{clean[16:20]}-{clean[20:32]}"
 
 
-def link_to_relation(page_id: str, relation_name: str, target_id: str):
+def _require_str(v: Any, name: str) -> str:
+    if not isinstance(v, str) or not v.strip():
+        raise RuntimeError(f"{name} is required")
+    return v.strip()
+
+
+async def link_to_relation(
+    page_id: str,
+    relation_name: str,
+    target_id: str,
+    *,
+    db_key: str,
+    approval_id: str,
+    execution_id: str,
+    initiator: str = "unknown",
+) -> Dict[str, Any]:
     """
     Dodaje relation link na Notion stranicu.
     relation_name = ime relation property-ja u bazi (npr. "Project", "Goal")
@@ -30,7 +48,21 @@ def link_to_relation(page_id: str, relation_name: str, target_id: str):
     page_id_fmt = _canonicalize_notion_id(page_id)
     target_id_fmt = _canonicalize_notion_id(target_id)
 
-    notion.pages.update(
-        page_id=page_id_fmt,
-        properties={relation_name: {"relation": [{"id": target_id_fmt}]}},
+    cmd = AICommand(
+        command="update_page",
+        intent="update_page",
+        params={
+            "db_key": _require_str(db_key, "db_key"),
+            "page_id": page_id_fmt,
+            "properties": {
+                _require_str(relation_name, "relation_name"): {
+                    "relation": [{"id": target_id_fmt}]
+                }
+            },
+        },
+        initiator=_require_str(initiator, "initiator"),
+        execution_id=_require_str(execution_id, "execution_id"),
+        approval_id=_require_str(approval_id, "approval_id"),
     )
+
+    return await ExecutionOrchestrator().execute(cmd)

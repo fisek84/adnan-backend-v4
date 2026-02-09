@@ -42,25 +42,25 @@ def _set_agent_status(
 
 
 @pytest.mark.anyio
-async def test_preferred_agent_id_does_not_select_disabled_dept_agent():
+async def test_enabled_dept_agent_is_not_auto_selected_without_preferred_agent_id():
     reg = _load_registry_from_agents_json()
     router = AgentRouterService(reg)
 
-    # Dept agents are prod-default disabled.
+    # Dept agents are enabled in SSOT.
     entry = reg.get_agent("dept_growth")
     assert entry is not None
-    assert entry.enabled is False
+    assert entry.enabled is True
 
     agent_input = AgentInput(
         message="hello",
-        preferred_agent_id="dept_growth",
         metadata={"read_only": True, "require_approval": True},
     )
 
     out = await router.route(agent_input)
 
+    # Dept agents must not steal default routing unless explicitly requested.
     assert out.agent_id != "dept_growth"
-    # With score=0 prompts, highest priority enabled agent should win (ceo_advisor).
+    # With score=0 prompts, highest priority enabled non-dept agent should win (ceo_advisor).
     assert out.agent_id == "ceo_advisor"
 
 
