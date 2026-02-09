@@ -1,8 +1,6 @@
 import json
 from pathlib import Path
 
-import pytest
-
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]

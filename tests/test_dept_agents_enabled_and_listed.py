@@ -1,7 +1,4 @@
-import json
 from pathlib import Path
-
-import pytest
 
 from services.agent_registry_service import AgentRegistryService
 

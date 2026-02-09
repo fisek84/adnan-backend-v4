@@ -3,8 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-import pytest
-
 
 PATTERNS = [
     "notion.pages.create",
@@ -37,7 +35,11 @@ def _iter_py_files(root: Path) -> list[Path]:
     for p in root.rglob("*.py"):
         rp = p.relative_to(root).as_posix()
         # Skip common junk / vendored dirs if any.
-        if rp.startswith(".venv/") or rp.startswith("venv/") or rp.startswith("node_modules/"):
+        if (
+            rp.startswith(".venv/")
+            or rp.startswith("venv/")
+            or rp.startswith("node_modules/")
+        ):
             continue
         # Skip tests to avoid self-matching on pattern literals.
         if rp.startswith("tests/"):
@@ -71,15 +73,27 @@ def test_direct_notion_client_writes_forbidden_outside_notion_ops() -> None:
         for i, line in enumerate(lines, start=1):
             for pat in PATTERNS:
                 if pat in line:
-                    allowed = any(rel.endswith(suf.replace("\\", "/")) for suf in ALLOWED_PATH_SUFFIXES)
+                    allowed = any(
+                        rel.endswith(suf.replace("\\", "/"))
+                        for suf in ALLOWED_PATH_SUFFIXES
+                    )
                     if not allowed:
-                        hits.append(Hit(rel_path=rel, line_no=i, line_text=line.strip(), pattern=pat))
+                        hits.append(
+                            Hit(
+                                rel_path=rel,
+                                line_no=i,
+                                line_text=line.strip(),
+                                pattern=pat,
+                            )
+                        )
 
     if hits:
         # Keep the failure message compact but evidence-rich.
         evidence = "\n".join(
-            f"- {h.rel_path}:{h.line_no}: {h.pattern} :: {h.line_text}" for h in hits[:25]
+            f"- {h.rel_path}:{h.line_no}: {h.pattern} :: {h.line_text}"
+            for h in hits[:25]
         )
         raise AssertionError(
-            "Direct Notion client writes are forbidden outside notion_ops. Offenders:\n" + evidence
+            "Direct Notion client writes are forbidden outside notion_ops. Offenders:\n"
+            + evidence
         )
