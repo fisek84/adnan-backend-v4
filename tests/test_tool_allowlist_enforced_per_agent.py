@@ -9,10 +9,10 @@ from models.ai_command import AICommand
 async def test_tool_call_enforces_per_agent_allowlist_and_blocks_without_runtime(
     monkeypatch,
 ) -> None:
-    """tool_call must be allowlisted per agent, and BLOCKED when runtime is missing.
+    """tool_call must be allowlisted per agent.
 
-    Repo evidence: there is no tool runtime implementation. Therefore even an
-    allowlisted action must return BLOCKED reason=tool_runtime_missing.
+    - non-allowlisted action => BLOCKED action_not_allowed
+    - allowlisted action + approval => executes via tool runtime
     """
 
     import services.execution_orchestrator as eo
@@ -46,19 +46,22 @@ async def test_tool_call_enforces_per_agent_allowlist_and_blocks_without_runtime
     assert inner1.get("reason") == "action_not_allowed"
     assert inner1.get("agent_id") == "dept_finance"
 
-    # (b) Action IN allowlist (dept_finance has analysis.run) => BLOCKED tool_runtime_missing
+    # (b) Action IN allowlist (dept_finance has analysis.run) => executes
     cmd2 = AICommand(
         **{
             **base,
             "execution_id": "exec_test_tool_allowlisted",
-            "params": {"action": "analysis.run"},
+            "params": {"action": "analysis.run", "expression": "1 + 2 * 3"},
         }
     )
     res2 = await orch._execute_after_approval(cmd2)
     assert isinstance(res2, dict)
-    assert res2.get("execution_state") == "BLOCKED"
+    assert res2.get("execution_state") == "COMPLETED"
     inner2 = res2.get("result")
     assert isinstance(inner2, dict)
-    assert inner2.get("reason") == "tool_runtime_missing"
+    assert inner2.get("ok") is True
     assert inner2.get("agent_id") == "dept_finance"
     assert inner2.get("action") == "analysis.run"
+    data2 = inner2.get("data")
+    assert isinstance(data2, dict)
+    assert data2.get("result") == 7.0
