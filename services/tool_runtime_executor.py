@@ -38,7 +38,9 @@ class _SafeArithmetic:
             if isinstance(node, ast.Num) and isinstance(node.n, (int, float)):
                 return float(node.n)
 
-            if isinstance(node, ast.UnaryOp) and isinstance(node.op, cls._ALLOWED_UNARYOPS):
+            if isinstance(node, ast.UnaryOp) and isinstance(
+                node.op, cls._ALLOWED_UNARYOPS
+            ):
                 v = _eval(node.operand)
                 return v if isinstance(node.op, ast.UAdd) else -v
 
@@ -178,7 +180,9 @@ async def execute(
 
     if action_norm == "draft.issue":
         title = _ensure_str(params_norm.get("title") or "")
-        body = _ensure_str(params_norm.get("body") or params_norm.get("description") or "")
+        body = _ensure_str(
+            params_norm.get("body") or params_norm.get("description") or ""
+        )
         text = (
             f"Issue: {title or '[untitled]'}\n\n"
             f"Description:\n{body or '-'}\n\n"

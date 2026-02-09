@@ -630,12 +630,35 @@ class ExecutionOrchestrator:
             str(desc).strip() if isinstance(desc, str) and desc.strip() else "completed"
         )
 
+        job_id = ""
+        agent_id = ""
+        if isinstance(md, dict):
+            job_id = str(md.get("job_id") or "").strip()
+            agent_id = str(md.get("agent_id") or "").strip()
+
+        state = str(getattr(cmd, "execution_state", None) or "").strip() or "COMPLETED"
+        # This hook is called post-execution (or explicitly on BLOCKED).
+        # Standardize state to terminal values for downstream consumers.
+        if state == "EXECUTING":
+            state = "COMPLETED"
+        payload = {
+            "job_id": job_id,
+            "agent_id": agent_id,
+            "execution_id": cmd.execution_id,
+            "state": state,
+            "summary": desc_str,
+        }
+
         try:
             await self.notion_agent.execute(
                 AICommand(
                     command="create_task",
                     intent="create_task",
-                    params={"title": title, "description": desc_str},
+                    params={
+                        "title": title,
+                        "description": desc_str,
+                        "handoff": payload,
+                    },
                     initiator=cmd.initiator or "system",
                     execution_id=cmd.execution_id,
                     approval_id=approval_id.strip(),

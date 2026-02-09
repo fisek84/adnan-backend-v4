@@ -16,7 +16,9 @@ def _mk_orchestrator(monkeypatch):
     orch = eo.ExecutionOrchestrator()
 
     # Guardrail: tool runtime must never dispatch to NotionOpsAgent.
-    orch.notion_agent.execute = AsyncMock(side_effect=AssertionError("notion_execute_called"))
+    orch.notion_agent.execute = AsyncMock(
+        side_effect=AssertionError("notion_execute_called")
+    )
     return orch
 
 
@@ -124,7 +126,9 @@ async def test_draft_tools_return_text_and_never_send(monkeypatch) -> None:
         monkeypatch.setattr(
             gmail_sender,
             "send_email",
-            lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("send_email_called")),
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("send_email_called")
+            ),
         )
     except Exception:
         # If module doesn't exist, fine.
