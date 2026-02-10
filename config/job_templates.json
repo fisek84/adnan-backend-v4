@@ -71,6 +71,36 @@
         }
       ],
       "expected_outputs": ["report"]
+    },
+    {
+      "id": "JT-OPS-02",
+      "title": "Ops Daily Brief (read_only.query: ops.daily_brief)",
+      "role": "ops",
+      "steps": [
+        {
+          "tool_action": "read_only.query",
+          "requires_approval": false,
+          "params_schema": {
+            "query": {"type": "string", "default": "ops.daily_brief"}
+          }
+        }
+      ],
+      "expected_outputs": ["daily_brief"]
+    },
+    {
+      "id": "JT-OPS-03",
+      "title": "Snapshot Health Check (read_only.query: ops.snapshot_health)",
+      "role": "ops",
+      "steps": [
+        {
+          "tool_action": "read_only.query",
+          "requires_approval": false,
+          "params_schema": {
+            "query": {"type": "string", "default": "ops.snapshot_health"}
+          }
+        }
+      ],
+      "expected_outputs": ["snapshot_health"]
     }
   ]
 }
