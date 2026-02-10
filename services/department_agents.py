@@ -110,11 +110,15 @@ def _evidence_lines_from_inputs(
 
 def _format_dept_text(
     *,
+    summary: str,
     recommendation: str,
     evidence_lines: List[str],
     proposed_commands: List[ProposedCommand],
-    risks: List[str],
 ) -> str:
+    sm = (summary or "").strip()
+    if not sm:
+        sm = "No summary available."
+
     rec = (recommendation or "").strip()
     if not rec:
         rec = "No recommendation available. Provide a clearer prompt or more snapshot context."
@@ -140,18 +144,16 @@ def _format_dept_text(
     else:
         pa = "- (no proposed actions)"
 
-    rk = "\n".join(f"- {r}" for r in risks) if risks else "- (none)"
-
     # MUST: EXACT 4 sections in order.
     return (
-        "Recommendation\n"
-        f"{rec}\n\n"
+        "Summary\n"
+        f"{sm}\n\n"
         "Evidence\n"
         f"{ev}\n\n"
+        "Recommendation\n"
+        f"{rec}\n\n"
         "Proposed Actions\n"
-        f"{pa}\n\n"
-        "Risks / Dependencies\n"
-        f"{rk}".strip()
+        f"{pa}".strip()
     )
 
 
@@ -313,21 +315,81 @@ async def _dept_entrypoint(
         dept_pcs = _ops_default_proposals(brief_text=delegated_text) + dept_pcs
 
     evidence_lines = _evidence_lines_from_inputs(agent_input=agent_input, ctx=ctx2)
-    risks = [
-        "All actions are proposals only; execution requires approval.",
-        "Notion writes (if any) must go through the existing approval + orchestrator pipeline.",
-        "Recommendations may be limited by missing SSOT snapshot/grounding coverage.",
-    ]
+
+    # Dept Ops: enrich Summary with deterministic snapshot-driven data.
+    summary_lines: List[str] = []
+    if agent_id == "dept_ops":
+        try:
+            from services.tool_runtime_executor import execute as tool_execute
+
+            conv_id = getattr(agent_input, "conversation_id", None)
+            exec_id = f"{conv_id or 'dept_ops'}:ops.daily_brief"
+            res = await tool_execute(
+                "read_only.query",
+                {"action": "read_only.query", "query": "ops.daily_brief"},
+                agent_id="dept_ops",
+                execution_id=exec_id,
+            )
+            data = res.get("data") if isinstance(res, dict) else None
+            if isinstance(data, dict) and data.get("kind") == "ops.daily_brief":
+                counts = (
+                    data.get("summary", {}).get("counts")
+                    if isinstance(data.get("summary"), dict)
+                    and isinstance(data.get("summary", {}).get("counts"), dict)
+                    else {}
+                )
+                open_tasks = counts.get("open_tasks")
+                overdue = counts.get("overdue_tasks")
+                active_goals = counts.get("active_goals")
+                active_projects = counts.get("active_projects")
+                summary_lines.append(
+                    "Daily Ops Brief (snapshot-driven): "
+                    + f"open_tasks={open_tasks} overdue_tasks={overdue} "
+                    + f"active_goals={active_goals} active_projects={active_projects}"
+                )
+        except Exception:
+            summary_lines.append("Daily Ops Brief (snapshot-driven): unavailable")
+
+        # KPI preview only if user asked about KPI/weekly.
+        try:
+            msg = (getattr(agent_input, "message", None) or "").lower()
+        except Exception:
+            msg = ""
+        if any(tok in msg for tok in ("kpi", "weekly", "tjed", "week", "metric")):
+            try:
+                from services.tool_runtime_executor import execute as tool_execute
+
+                conv_id = getattr(agent_input, "conversation_id", None)
+                exec_id = f"{conv_id or 'dept_ops'}:ops.kpi_weekly_summary_preview"
+                res = await tool_execute(
+                    "read_only.query",
+                    {"action": "read_only.query", "query": "ops.kpi_weekly_summary_preview"},
+                    agent_id="dept_ops",
+                    execution_id=exec_id,
+                )
+                data = res.get("data") if isinstance(res, dict) else None
+                if isinstance(data, dict) and data.get("kind") == "ops.kpi_weekly_summary_preview":
+                    periods = data.get("periods") if isinstance(data.get("periods"), dict) else {}
+                    metrics = data.get("metrics") if isinstance(data.get("metrics"), list) else []
+                    summary_lines.append(
+                        "KPI weekly preview (snapshot-driven): "
+                        + f"period_current={periods.get('current')} metrics={len(metrics)}"
+                    )
+            except Exception:
+                summary_lines.append("KPI weekly preview (snapshot-driven): unavailable")
+
+    if not summary_lines:
+        summary_lines.append("Read-only + proposal-only. Execution requires approval for writes.")
 
     rec_text = delegated_text
     if agent_id == "dept_ops":
         rec_text = _format_ops_daily_brief(recommendation=delegated_text)
 
     text = _format_dept_text(
+        summary="\n".join(f"- {ln}" for ln in summary_lines if isinstance(ln, str) and ln.strip()),
         recommendation=rec_text,
         evidence_lines=evidence_lines,
         proposed_commands=dept_pcs,
-        risks=risks,
     )
 
     out = AgentOutput(

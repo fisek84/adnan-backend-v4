@@ -36,6 +36,48 @@ Primjeri inputs fajlova (za JT-OPS-02/03):
 - `docs/examples/inputs_ops_daily_brief.json`
 - `docs/examples/inputs_ops_snapshot_health.json`
 
+## How to make Dept Ops actually useful
+
+Dept Ops (`dept_ops`) je striktno read-only (tool allowlist: `read_only.query`) + proposal-only Notion writes (dry-run + requires approval). Realni izvještaji dolaze isključivo iz postojećeg Notion knowledge snapshot-a.
+
+### 1) Refresh snapshot (SSOT)
+
+- Pokreni `refresh_snapshot` kroz postojeći orchestrator/approval flow.
+- Snapshot mora imati `ready:true` da bi `ops.*` modovi imali smislen output.
+
+### 2) Full Notion visibility = env varovi (db_key mapping)
+
+Snapshot automatski uključuje SVE env varove oblika:
+
+- `NOTION_<LOGICAL>_DB_ID`
+- `NOTION_<LOGICAL>_DATABASE_ID`
+
+gdje `db_key = <logical>.lower()`.
+
+Preporučeni (bez hardkodiranja ID-eva):
+
+- `NOTION_GOALS_DB_ID`
+- `NOTION_TASKS_DB_ID`
+- `NOTION_PROJECTS_DB_ID`
+- `NOTION_KPI_DATABASE_ID` (ili `NOTION_KPI_DB_ID`)
+- `NOTION_AGENT_EXCHANGE_DB_ID`
+- `NOTION_AGENT_PROJECT_DB_ID`
+- `NOTION_AI_SUMMARY_DB_ID`
+
+Ako neki DB nije u snapshot-u → to je deployment/config problem: dodaj odgovarajući `NOTION_<LOGICAL>_DB_ID` / `_DATABASE_ID` pa refresh snapshot.
+
+### 3) Snapshot fields (production-safe)
+
+Snapshot exportuje samo allowlisted `item.fields` (nema full Notion dump). Tipovi u `fields` su normalizovani i capped (anti-bloat): string/number/boolean/date-range/list[str]. Ako je nešto preveliko → truncation + `item.truncated=true`.
+
+### 4) KPI preview ograničenje
+
+`ops.kpi_weekly_summary_preview` radi samo ako KPI rows imaju numerička polja u snapshot-u (number/formula/rollup koji rezultiraju brojem). Ako toga nema, vraća `missing_reason=no_numeric_kpi_fields_in_snapshot` (expected).
+
+### 5) Planned tools
+
+Planned tools ostaju blokirani; Dept Ops je read-only + proposals. Nema write izvršavanja bez approval.
+
 ## 0) Pre-requisites
 - `DATABASE_URL` mora biti postavljen (Postgres).
 - Alembic migracije moraju biti na `head`.

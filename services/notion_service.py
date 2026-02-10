@@ -1499,6 +1499,345 @@ class NotionService:
             # Default (Notion common case)
             return "Name"
 
+        # ------------------------------------------------------------
+        # Snapshot item fields extraction (SSOT allowlist + capped)
+        # ------------------------------------------------------------
+        from services.snapshot_fields_allowlist import (  # noqa: PLC0415
+            FieldSpec,
+            allowlist_for_db_key,
+        )
+
+        MAX_ITEMS_PER_DB = 200
+        MAX_FIELDS_PER_ROW = 50
+        MAX_STRING_LEN = 500
+        MAX_LIST_LEN = 50
+
+        def _truncate_str(s: Any, max_len: int = MAX_STRING_LEN) -> str:
+            if not isinstance(s, str):
+                return ""
+            txt = s.strip()
+            if not txt:
+                return ""
+            if max_len <= 0:
+                return ""
+            if len(txt) <= max_len:
+                return txt
+            return txt[: max(0, max_len - 1)].rstrip() + "…"
+
+        def _normalize_id(s: Any) -> str:
+            ss = _ensure_str(s)
+            return ss.replace("-", "") if ss else ""
+
+        def _prop_plain_text(prop: Dict[str, Any]) -> str:
+            # Notion title/rich_text: list of segments with plain_text.
+            try:
+                t = prop.get("type")
+                if t == "title":
+                    arr = prop.get("title")
+                else:
+                    arr = prop.get("rich_text")
+                if not isinstance(arr, list):
+                    return ""
+                parts = []
+                for seg in arr[:MAX_LIST_LEN]:
+                    if isinstance(seg, dict):
+                        pt = seg.get("plain_text")
+                        if isinstance(pt, str) and pt.strip():
+                            parts.append(pt.strip())
+                return _truncate_str(" ".join(parts))
+            except Exception:
+                return ""
+
+        def _prop_checkbox(prop: Dict[str, Any]) -> Optional[bool]:
+            try:
+                v = prop.get("checkbox")
+                if isinstance(v, bool):
+                    return bool(v)
+                return None
+            except Exception:
+                return None
+
+        def _prop_select_name(prop: Dict[str, Any]) -> str:
+            try:
+                sel = prop.get("select")
+                if isinstance(sel, dict):
+                    return _truncate_str(sel.get("name"))
+                return ""
+            except Exception:
+                return ""
+
+        def _prop_multi_select(prop: Dict[str, Any]) -> List[str]:
+            try:
+                arr = prop.get("multi_select")
+                if not isinstance(arr, list):
+                    return []
+                out: List[str] = []
+                for it in arr[:MAX_LIST_LEN]:
+                    if isinstance(it, dict):
+                        nm = it.get("name")
+                        if isinstance(nm, str) and nm.strip():
+                            out.append(_truncate_str(nm))
+                return out
+            except Exception:
+                return []
+
+        def _prop_status_name(prop: Dict[str, Any]) -> str:
+            try:
+                st = prop.get("status")
+                if isinstance(st, dict):
+                    return _truncate_str(st.get("name"))
+                return ""
+            except Exception:
+                return ""
+
+        def _prop_date_range(prop: Dict[str, Any]) -> Optional[Dict[str, str]]:
+            try:
+                dt = prop.get("date")
+                if isinstance(dt, dict):
+                    start = _truncate_str(dt.get("start"), 40)
+                    end = _truncate_str(dt.get("end"), 40)
+                    if start or end:
+                        out: Dict[str, str] = {}
+                        if start:
+                            out["start"] = start
+                        if end:
+                            out["end"] = end
+                        return out
+                return None
+            except Exception:
+                return None
+
+        def _prop_number(prop: Dict[str, Any]) -> Optional[float]:
+            try:
+                v = prop.get("number")
+                if isinstance(v, (int, float)):
+                    return float(v)
+                return None
+            except Exception:
+                return None
+
+        def _prop_formula_number(prop: Dict[str, Any]) -> Optional[float]:
+            try:
+                f = prop.get("formula")
+                if not isinstance(f, dict):
+                    return None
+                if f.get("type") == "number" and isinstance(f.get("number"), (int, float)):
+                    return float(f.get("number"))
+                return None
+            except Exception:
+                return None
+
+        def _prop_rollup_number(prop: Dict[str, Any]) -> Optional[float]:
+            try:
+                r = prop.get("rollup")
+                if not isinstance(r, dict):
+                    return None
+                if r.get("type") == "number" and isinstance(r.get("number"), (int, float)):
+                    return float(r.get("number"))
+                return None
+            except Exception:
+                return None
+
+        def _prop_people_ids(prop: Dict[str, Any]) -> List[str]:
+            try:
+                ppl = prop.get("people")
+                if not isinstance(ppl, list):
+                    return []
+                out: List[str] = []
+                for p in ppl[:MAX_LIST_LEN]:
+                    if isinstance(p, dict):
+                        # Deterministic preference: email -> name -> id
+                        email = (
+                            p.get("person", {}).get("email")
+                            if isinstance(p.get("person"), dict)
+                            else None
+                        )
+                        if isinstance(email, str) and email.strip():
+                            out.append(_truncate_str(email.strip(), 120))
+                            continue
+                        nm = p.get("name")
+                        if isinstance(nm, str) and nm.strip():
+                            out.append(_truncate_str(nm.strip(), 120))
+                            continue
+                        pid = _normalize_id(p.get("id"))
+                        if pid:
+                            out.append(pid)
+
+                # Sort for stability
+                out2 = sorted([x for x in out if isinstance(x, str) and x.strip()])
+                return out2[:MAX_LIST_LEN]
+            except Exception:
+                return []
+
+        def _prop_relation_ids(prop: Dict[str, Any]) -> List[str]:
+            try:
+                rel = prop.get("relation")
+                if not isinstance(rel, list):
+                    return []
+                out: List[str] = []
+                for r in rel[:MAX_LIST_LEN]:
+                    if isinstance(r, dict):
+                        rid = _normalize_id(r.get("id"))
+                        if rid:
+                            out.append(rid)
+                return sorted(out)[:MAX_LIST_LEN]
+            except Exception:
+                return []
+
+        def _props_by_lower(page: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+            props = page.get("properties")
+            if not isinstance(props, dict):
+                return {}
+            out: Dict[str, Dict[str, Any]] = {}
+            for k, v in props.items():
+                if isinstance(k, str) and k.strip() and isinstance(v, dict):
+                    out[k.strip().lower()] = v
+            return out
+
+        def _pick_prop(props_lc: Dict[str, Dict[str, Any]], names: List[str]) -> Optional[Dict[str, Any]]:
+            for nm in names:
+                key = (nm or "").strip().lower()
+                if not key:
+                    continue
+                v = props_lc.get(key)
+                if isinstance(v, dict):
+                    return v
+            return None
+
+        def _extract_allowlisted_fields(
+            db_key: str, page: Dict[str, Any]
+        ) -> tuple[Dict[str, Any], bool]:
+            """Return (fields, truncated_flag). Never raises."""
+            try:
+                allow = allowlist_for_db_key(db_key)
+                if not allow:
+                    return {}, False
+
+                props_lc = _props_by_lower(page)
+                out: Dict[str, Any] = {}
+                truncated = False
+
+                def _add_value(spec: FieldSpec) -> None:
+                    nonlocal truncated
+
+                    # Special: KPI numeric wildcard
+                    if spec.kind == "kpi_numeric_all":
+                        numeric: List[tuple[str, float]] = []
+                        for prop_name_lc, prop in props_lc.items():
+                            if not isinstance(prop, dict):
+                                continue
+                            t = prop.get("type")
+                            val: Optional[float] = None
+                            if t == "number":
+                                val = _prop_number(prop)
+                            elif t == "formula":
+                                val = _prop_formula_number(prop)
+                            elif t == "rollup":
+                                val = _prop_rollup_number(prop)
+                            if val is None:
+                                continue
+
+                            name_out = _truncate_str(str(prop_name_lc), MAX_STRING_LEN).lower()
+                            if name_out in {"period", "week", "cycle", "date", "__numeric__"}:
+                                continue
+                            numeric.append((name_out, float(val)))
+
+                        for name_out, val in sorted(numeric, key=lambda x: x[0]):
+                            if len(out) >= MAX_FIELDS_PER_ROW:
+                                truncated = True
+                                break
+                            out[name_out] = float(val)
+                        return
+
+                    prop = _pick_prop(props_lc, list(spec.names or []))
+                    if not prop:
+                        return
+
+                    t = prop.get("type")
+                    kind = spec.kind
+
+                    if kind == "string":
+                        val_s = ""
+                        if t in {"title", "rich_text"}:
+                            val_s = _prop_plain_text(prop)
+                        elif t == "select":
+                            val_s = _prop_select_name(prop)
+                        elif t == "status":
+                            val_s = _prop_status_name(prop)
+                        if val_s:
+                            out[spec.out_key] = _truncate_str(val_s, MAX_STRING_LEN)
+                        return
+
+                    if kind == "select":
+                        val_s = ""
+                        if t == "select":
+                            val_s = _prop_select_name(prop)
+                        elif t == "status":
+                            val_s = _prop_status_name(prop)
+                        if val_s:
+                            out[spec.out_key] = _truncate_str(val_s, MAX_STRING_LEN)
+                        return
+
+                    if kind == "multi_select":
+                        if t == "multi_select":
+                            arr = _prop_multi_select(prop)
+                            if len(arr) > MAX_LIST_LEN:
+                                truncated = True
+                            out[spec.out_key] = sorted(arr)[:MAX_LIST_LEN]
+                        return
+
+                    if kind == "date":
+                        if t == "date":
+                            dr = _prop_date_range(prop)
+                            if isinstance(dr, dict) and dr:
+                                out[spec.out_key] = dr
+                        return
+
+                    if kind == "people":
+                        if t == "people":
+                            arr = _prop_people_ids(prop)
+                            if len(arr) > MAX_LIST_LEN:
+                                truncated = True
+                            out[spec.out_key] = arr[:MAX_LIST_LEN]
+                        return
+
+                    if kind == "relation":
+                        if t == "relation":
+                            arr = _prop_relation_ids(prop)
+                            if len(arr) > MAX_LIST_LEN:
+                                truncated = True
+                            out[spec.out_key] = arr[:MAX_LIST_LEN]
+                        return
+
+                    if kind == "boolean":
+                        if t == "checkbox":
+                            b = _prop_checkbox(prop)
+                            if b is not None:
+                                out[spec.out_key] = bool(b)
+                        return
+
+                    if kind == "number":
+                        valn: Optional[float] = None
+                        if t == "number":
+                            valn = _prop_number(prop)
+                        elif t == "formula":
+                            valn = _prop_formula_number(prop)
+                        elif t == "rollup":
+                            valn = _prop_rollup_number(prop)
+                        if valn is not None:
+                            out[spec.out_key] = float(valn)
+                        return
+
+                for spec in allow:
+                    if len(out) >= MAX_FIELDS_PER_ROW:
+                        truncated = True
+                        break
+                    _add_value(spec)
+
+                return out, bool(truncated)
+            except Exception:
+                return {}, False
+
         async def _query_all_pages(
             *, db_key: str, page_size: int = 50, max_items: int = 200
         ) -> List[Dict[str, Any]]:
@@ -1642,42 +1981,9 @@ class NotionService:
 
                     db_id = self._resolve_db_id(db_key)
 
-                    # Discover true title property (schema-driven). Best-effort: if schema unavailable, default to "Name".
+                    # Production-safe: avoid extra schema network calls.
+                    # Title extraction uses page properties fallback when needed.
                     title_prop = "Name"
-                    try:
-                        # Under strict budgets, reserve calls for the actual DB queries (one per db_key minimum).
-                        max_calls_total = budget_state.max_calls
-                        if max_calls_total is not None and int(max_calls_total) >= 0:
-                            remaining_budget = int(max_calls_total) - int(
-                                budget_state.calls
-                            )
-                            remaining_queries_min = int(len(keys) - int(idx))
-                            allow_schema_call = remaining_budget > remaining_queries_min
-                        else:
-                            allow_schema_call = True
-
-                        schema = (
-                            await self._get_database_schema(db_id)
-                            if allow_schema_call
-                            else {}
-                        )
-                        props = (
-                            schema.get("properties")
-                            if isinstance(schema, dict)
-                            else None
-                        )
-                        if isinstance(props, dict):
-                            for k, v in props.items():
-                                if (
-                                    isinstance(k, str)
-                                    and k.strip()
-                                    and isinstance(v, dict)
-                                    and v.get("type") == "title"
-                                ):
-                                    title_prop = k.strip()
-                                    break
-                    except Exception:
-                        title_prop = "Name"
 
                     max_items = limits.get(db_key)
                     try:
@@ -1690,6 +1996,10 @@ class NotionService:
                         max_items_i = int(default_limits.get(db_key, 50))
                     if max_items_i <= 0:
                         max_items_i = int(default_limits.get(db_key, 50))
+
+                    # Hard cap for deterministic payload size.
+                    if max_items_i > MAX_ITEMS_PER_DB:
+                        max_items_i = int(MAX_ITEMS_PER_DB)
 
                     page_size = min(50, max_items_i)
                     pages = await _query_all_pages(
@@ -1718,6 +2028,11 @@ class NotionService:
                         url = _ensure_str(p.get("url"))
                         last_edited_time = _ensure_str(p.get("last_edited_time"))
                         created_time = _ensure_str(p.get("created_time"))
+
+                        try:
+                            fields, truncated = _extract_allowlisted_fields(db_key, p)
+                        except Exception:
+                            fields, truncated = {}, False
                         items.append(
                             {
                                 "id": pid.replace("-", "") if pid else pid,
@@ -1726,6 +2041,8 @@ class NotionService:
                                 "url": url,
                                 "created_time": created_time,
                                 "last_edited_time": last_edited_time,
+                                "fields": fields,
+                                "truncated": bool(truncated),
                             }
                         )
 
