@@ -155,6 +155,72 @@ def _format_dept_text(
     )
 
 
+def _format_ops_daily_brief(*, recommendation: str) -> str:
+    base = (recommendation or "").strip()
+    if not base:
+        base = "No recommendation available. Provide a clearer prompt or more snapshot context."
+
+    # Standardized, repeatable brief header.
+    # NOTE: This is still proposal-only; execution remains approval-gated.
+    return (
+        "Daily Ops Brief\n"
+        "- Snapshot: check ops.snapshot_health before acting\n"
+        "- Approvals: review pending approvals and unblock runs\n"
+        "- Priorities: focus on the top 3 operational blockers\n\n"
+        f"{base}".strip()
+    )
+
+
+def _ops_default_proposals(*, brief_text: str) -> List[ProposedCommand]:
+    desc = (brief_text or "").strip()
+    if not desc:
+        desc = "Ops daily brief (no content)."
+
+    # Deterministic minimal proposals that create a Notion handoff artifact.
+    # These remain dry_run + requires_approval and rely on existing approval pipeline.
+    pcs: List[ProposedCommand] = []
+
+    pcs.append(
+        ProposedCommand(
+            command="create_task",
+            args={
+                "title": "handoff:ops.daily_brief",
+                "description": desc,
+            },
+            reason="Create a Notion handoff task for the daily ops brief (proposal-only).",
+            requires_approval=True,
+            dry_run=True,
+            risk="LOW",
+            scope="api_execute_raw",
+            payload_summary={
+                "endpoint": "/api/execute/raw",
+                "canon": "DEPT_OPS_DAILY_BRIEF",
+            },
+        )
+    )
+
+    pcs.append(
+        ProposedCommand(
+            command="create_page",
+            args={
+                "title": "Ops Daily Brief",
+                "content": desc,
+            },
+            reason="Create a Notion page artifact for the daily ops brief (proposal-only).",
+            requires_approval=True,
+            dry_run=True,
+            risk="LOW",
+            scope="api_execute_raw",
+            payload_summary={
+                "endpoint": "/api/execute/raw",
+                "canon": "DEPT_OPS_DAILY_BRIEF",
+            },
+        )
+    )
+
+    return pcs
+
+
 def _normalize_proposals_for_dept(
     pcs: Any,
     *,
@@ -218,6 +284,13 @@ async def _dept_entrypoint(
         f"Do not execute writes. If proposing actions, use the existing proposal wrapper flow.\n\n"
     )
 
+    if agent_id == "dept_ops":
+        pref = (
+            "You are the Operations department agent.\n"
+            "Constraints: proposal-only, read-only context, no execution.\n"
+            "Output must follow a Daily Ops Brief structure and include concrete Notion proposals (create_task/create_page).\n\n"
+        )
+
     dept_input = _clone_agent_input_with_prefix(
         agent_input,
         message_prefix=pref,
@@ -233,6 +306,12 @@ async def _dept_entrypoint(
         dept_agent_id=agent_id,
     )
 
+    delegated_text = getattr(delegated, "text", "") or ""
+    if agent_id == "dept_ops":
+        # Ensure ops always has concrete Notion proposals even if delegated output is vague.
+        # Keep it deterministic and proposal-only.
+        dept_pcs = _ops_default_proposals(brief_text=delegated_text) + dept_pcs
+
     evidence_lines = _evidence_lines_from_inputs(agent_input=agent_input, ctx=ctx2)
     risks = [
         "All actions are proposals only; execution requires approval.",
@@ -240,8 +319,12 @@ async def _dept_entrypoint(
         "Recommendations may be limited by missing SSOT snapshot/grounding coverage.",
     ]
 
+    rec_text = delegated_text
+    if agent_id == "dept_ops":
+        rec_text = _format_ops_daily_brief(recommendation=delegated_text)
+
     text = _format_dept_text(
-        recommendation=getattr(delegated, "text", "") or "",
+        recommendation=rec_text,
         evidence_lines=evidence_lines,
         proposed_commands=dept_pcs,
         risks=risks,

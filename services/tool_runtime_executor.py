@@ -90,9 +90,147 @@ async def execute(
 
     # ------------------- READ-ONLY -------------------
     if action_norm == "read_only.query":
-        data = {
+        q = _ensure_str(params_norm.get("query") or params_norm.get("q") or "")
+        meta: Dict[str, Any] = {
             "source": "local",
-            "echo": {k: v for k, v in params_norm.items() if k != "action"},
+            "query": q,
+            "router_version": "read_only.query.ops.v1",
+            "missing_inputs": [],
+        }
+
+        snapshot: Dict[str, Any] = {}
+        try:
+            from services.knowledge_snapshot_service import KnowledgeSnapshotService
+
+            snapshot = KnowledgeSnapshotService.get_snapshot()
+            snapshot = snapshot if isinstance(snapshot, dict) else {}
+        except Exception:
+            snapshot = {}
+
+        if not q:
+            meta["missing_inputs"] = ["query"]
+            data = {
+                "kind": "read_only.query",
+                "supported_queries": [
+                    "ops.daily_brief",
+                    "ops.snapshot_health",
+                    "ops.kpi_weekly_summary_preview",
+                ],
+            }
+            return {
+                "ok": True,
+                "success": True,
+                "execution_state": "COMPLETED",
+                "action": action_norm,
+                "agent_id": agent_id_norm,
+                "data": data,
+                "meta": meta,
+            }
+
+        if q == "ops.snapshot_health":
+            if not snapshot:
+                meta["missing_inputs"] = ["knowledge_snapshot"]
+            data = {
+                "kind": "ops.snapshot_health",
+                "snapshot_meta": {
+                    "schema_version": snapshot.get("schema_version"),
+                    "status": snapshot.get("status"),
+                    "generated_at": snapshot.get("generated_at"),
+                    "last_sync": snapshot.get("last_sync"),
+                    "expired": bool(snapshot.get("expired")),
+                    "ready": bool(snapshot.get("ready")),
+                    "ttl_seconds": snapshot.get("ttl_seconds"),
+                    "age_seconds": snapshot.get("age_seconds"),
+                },
+            }
+            return {
+                "ok": True,
+                "success": True,
+                "execution_state": "COMPLETED",
+                "action": action_norm,
+                "agent_id": agent_id_norm,
+                "data": data,
+                "meta": meta,
+            }
+
+        if q == "ops.daily_brief":
+            pending_count = None
+            try:
+                from services.approval_state_service import get_approval_state
+
+                pending = get_approval_state().list_pending()
+                if isinstance(pending, list):
+                    pending_count = len(pending)
+            except Exception:
+                pending_count = None
+
+            if not snapshot:
+                meta["missing_inputs"] = ["knowledge_snapshot"]
+
+            data = {
+                "kind": "ops.daily_brief",
+                "snapshot_health": {
+                    "ready": bool(snapshot.get("ready")),
+                    "status": snapshot.get("status"),
+                    "age_seconds": snapshot.get("age_seconds"),
+                    "expired": bool(snapshot.get("expired")),
+                },
+                "approvals": {
+                    "pending_count": pending_count,
+                },
+                "brief": {
+                    "highlights": [
+                        "Review pending approvals and unblock executions.",
+                        "Check snapshot health before acting on stale data.",
+                    ],
+                    "next_actions": [
+                        "Run ops.snapshot_health and confirm snapshot ready.",
+                        "Approve/reject pending items as needed.",
+                    ],
+                },
+            }
+            return {
+                "ok": True,
+                "success": True,
+                "execution_state": "COMPLETED",
+                "action": action_norm,
+                "agent_id": agent_id_norm,
+                "data": data,
+                "meta": meta,
+            }
+
+        if q == "ops.kpi_weekly_summary_preview":
+            if not snapshot:
+                meta["missing_inputs"] = ["knowledge_snapshot"]
+            data = {
+                "kind": "ops.kpi_weekly_summary_preview",
+                "note": "Preview only (read-only). Uses local snapshot metadata; KPI extraction is best-effort.",
+                "snapshot_meta": {
+                    "ready": bool(snapshot.get("ready")),
+                    "status": snapshot.get("status"),
+                    "generated_at": snapshot.get("generated_at"),
+                },
+                "kpis": {},
+            }
+            return {
+                "ok": True,
+                "success": True,
+                "execution_state": "COMPLETED",
+                "action": action_norm,
+                "agent_id": agent_id_norm,
+                "data": data,
+                "meta": meta,
+            }
+
+        # Unknown read-only query: deterministic response.
+        data = {
+            "kind": "read_only.query",
+            "query": q,
+            "supported_queries": [
+                "ops.daily_brief",
+                "ops.snapshot_health",
+                "ops.kpi_weekly_summary_preview",
+            ],
         }
         return {
             "ok": True,
@@ -101,6 +239,7 @@ async def execute(
             "action": action_norm,
             "agent_id": agent_id_norm,
             "data": data,
+            "meta": meta,
         }
 
     if action_norm in {"sop.query", "process.query"}:

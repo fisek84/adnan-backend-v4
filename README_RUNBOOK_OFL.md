@@ -26,6 +26,16 @@ $env:OPENAI_API_MODE = "assistants"; $env:REVENUE_GROWTH_OPERATOR_ASSISTANT_ID =
 pytest -q -s tests\test_smoke_revenue_growth_operator_adnan_ai_input.py
 ```
 
+## JobRunner CLI (SSOT templates)
+
+- Notifikacija = chat output + (opcionalno) handoff:* artefakt kad `emit_handoff_log` može proći kroz metadata do postojećeg ExecutionOrchestrator hook-a; trenutno `scripts/jobrunner_cli.py` ne prosljeđuje `emit_handoff_log` u payload metadata (CLI-inert).
+- Planned tools su blokirani u ExecutionOrchestrator kao `tool_not_executable` (nema izvršavanja planned/non-MVP tool-ova).
+
+Primjeri inputs fajlova (za JT-OPS-02/03):
+
+- `docs/examples/inputs_ops_daily_brief.json`
+- `docs/examples/inputs_ops_snapshot_health.json`
+
 ## 0) Pre-requisites
 - `DATABASE_URL` mora biti postavljen (Postgres).
 - Alembic migracije moraju biti na `head`.

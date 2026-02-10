@@ -253,7 +253,9 @@ class JobRunner:
                 "job_id": jid,
                 "template_id": tid,
                 "step_id": step_id,
-                "emit_handoff_log": False,
+                # Passthrough: callers may request a Notion handoff artifact via existing
+                # ExecutionOrchestrator hook. Default remains False.
+                "emit_handoff_log": bool(inputs_norm.get("emit_handoff_log") is True),
             }
 
             approval_id = self._approval_id_for_step(inputs_norm, step_id)
