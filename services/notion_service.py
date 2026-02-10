@@ -1621,7 +1621,9 @@ class NotionService:
                 f = prop.get("formula")
                 if not isinstance(f, dict):
                     return None
-                if f.get("type") == "number" and isinstance(f.get("number"), (int, float)):
+                if f.get("type") == "number" and isinstance(
+                    f.get("number"), (int, float)
+                ):
                     return float(f.get("number"))
                 return None
             except Exception:
@@ -1632,7 +1634,9 @@ class NotionService:
                 r = prop.get("rollup")
                 if not isinstance(r, dict):
                     return None
-                if r.get("type") == "number" and isinstance(r.get("number"), (int, float)):
+                if r.get("type") == "number" and isinstance(
+                    r.get("number"), (int, float)
+                ):
                     return float(r.get("number"))
                 return None
             except Exception:
@@ -1694,7 +1698,9 @@ class NotionService:
                     out[k.strip().lower()] = v
             return out
 
-        def _pick_prop(props_lc: Dict[str, Dict[str, Any]], names: List[str]) -> Optional[Dict[str, Any]]:
+        def _pick_prop(
+            props_lc: Dict[str, Dict[str, Any]], names: List[str]
+        ) -> Optional[Dict[str, Any]]:
             for nm in names:
                 key = (nm or "").strip().lower()
                 if not key:
@@ -1737,8 +1743,16 @@ class NotionService:
                             if val is None:
                                 continue
 
-                            name_out = _truncate_str(str(prop_name_lc), MAX_STRING_LEN).lower()
-                            if name_out in {"period", "week", "cycle", "date", "__numeric__"}:
+                            name_out = _truncate_str(
+                                str(prop_name_lc), MAX_STRING_LEN
+                            ).lower()
+                            if name_out in {
+                                "period",
+                                "week",
+                                "cycle",
+                                "date",
+                                "__numeric__",
+                            }:
                                 continue
                             numeric.append((name_out, float(val)))
 

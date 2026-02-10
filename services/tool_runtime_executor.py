@@ -237,7 +237,11 @@ def _ops_daily_brief_from_snapshot(
         )
         progress = _pick_field_value(fields, ("Progress", "%", "Percent"))
         try:
-            progress_num = float(progress) if isinstance(progress, (int, float, str)) and str(progress).strip() else None
+            progress_num = (
+                float(progress)
+                if isinstance(progress, (int, float, str)) and str(progress).strip()
+                else None
+            )
         except Exception:
             progress_num = None
 
@@ -252,8 +256,16 @@ def _ops_daily_brief_from_snapshot(
             "url": _ensure_str(it.get("url") or "") or None,
         }
 
-    active_goals = [g for g in goals if not _is_done_status(_pick_field_value(_item_fields(g), ("Status", "State")))]
-    active_projects = [p for p in projects if not _is_done_status(_pick_field_value(_item_fields(p), ("Status", "State")))]
+    active_goals = [
+        g
+        for g in goals
+        if not _is_done_status(_pick_field_value(_item_fields(g), ("Status", "State")))
+    ]
+    active_projects = [
+        p
+        for p in projects
+        if not _is_done_status(_pick_field_value(_item_fields(p), ("Status", "State")))
+    ]
 
     active_goals = _stable_sort_items(active_goals)
     active_projects = _stable_sort_items(active_projects)
@@ -458,7 +470,11 @@ def _ops_snapshot_health_from_snapshot(snapshot: Dict[str, Any]) -> Dict[str, An
             continue
         row_count = section.get("row_count")
         try:
-            db_counts[k] = int(row_count) if row_count is not None else int(len(_ensure_list(section.get("items"))))
+            db_counts[k] = (
+                int(row_count)
+                if row_count is not None
+                else int(len(_ensure_list(section.get("items"))))
+            )
         except Exception:
             db_counts[k] = int(len(_ensure_list(section.get("items"))))
 
@@ -633,7 +649,11 @@ async def execute(
             data = _ops_daily_brief_from_snapshot(snapshot)
             # Preserve approvals in stable location.
             try:
-                approvals = data.get("approvals") if isinstance(data.get("approvals"), dict) else {}
+                approvals = (
+                    data.get("approvals")
+                    if isinstance(data.get("approvals"), dict)
+                    else {}
+                )
                 approvals["pending_count"] = pending_count
                 data["approvals"] = approvals
             except Exception:
