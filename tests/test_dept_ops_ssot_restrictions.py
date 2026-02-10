@@ -11,5 +11,7 @@ def test_dept_ops_tool_allowlist_excludes_analysis_run() -> None:
     assert entry is not None
     md = entry.metadata
     allow = md.get("tool_allowlist") if isinstance(md, dict) else None
-    assert allow == ["read_only.query"], "dept_ops must be proposal-only + read_only.query only"
+    assert allow == [
+        "read_only.query"
+    ], "dept_ops must be proposal-only + read_only.query only"
     assert "analysis.run" not in set(allow or [])
