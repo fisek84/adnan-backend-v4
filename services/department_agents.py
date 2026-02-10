@@ -363,30 +363,50 @@ async def _dept_entrypoint(
                 exec_id = f"{conv_id or 'dept_ops'}:ops.kpi_weekly_summary_preview"
                 res = await tool_execute(
                     "read_only.query",
-                    {"action": "read_only.query", "query": "ops.kpi_weekly_summary_preview"},
+                    {
+                        "action": "read_only.query",
+                        "query": "ops.kpi_weekly_summary_preview",
+                    },
                     agent_id="dept_ops",
                     execution_id=exec_id,
                 )
                 data = res.get("data") if isinstance(res, dict) else None
-                if isinstance(data, dict) and data.get("kind") == "ops.kpi_weekly_summary_preview":
-                    periods = data.get("periods") if isinstance(data.get("periods"), dict) else {}
-                    metrics = data.get("metrics") if isinstance(data.get("metrics"), list) else []
+                if (
+                    isinstance(data, dict)
+                    and data.get("kind") == "ops.kpi_weekly_summary_preview"
+                ):
+                    periods = (
+                        data.get("periods")
+                        if isinstance(data.get("periods"), dict)
+                        else {}
+                    )
+                    metrics = (
+                        data.get("metrics")
+                        if isinstance(data.get("metrics"), list)
+                        else []
+                    )
                     summary_lines.append(
                         "KPI weekly preview (snapshot-driven): "
                         + f"period_current={periods.get('current')} metrics={len(metrics)}"
                     )
             except Exception:
-                summary_lines.append("KPI weekly preview (snapshot-driven): unavailable")
+                summary_lines.append(
+                    "KPI weekly preview (snapshot-driven): unavailable"
+                )
 
     if not summary_lines:
-        summary_lines.append("Read-only + proposal-only. Execution requires approval for writes.")
+        summary_lines.append(
+            "Read-only + proposal-only. Execution requires approval for writes."
+        )
 
     rec_text = delegated_text
     if agent_id == "dept_ops":
         rec_text = _format_ops_daily_brief(recommendation=delegated_text)
 
     text = _format_dept_text(
-        summary="\n".join(f"- {ln}" for ln in summary_lines if isinstance(ln, str) and ln.strip()),
+        summary="\n".join(
+            f"- {ln}" for ln in summary_lines if isinstance(ln, str) and ln.strip()
+        ),
         recommendation=rec_text,
         evidence_lines=evidence_lines,
         proposed_commands=dept_pcs,

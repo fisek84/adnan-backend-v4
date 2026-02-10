@@ -216,7 +216,9 @@ async def test_read_only_query_ops_kpi_weekly_preview_is_deterministic() -> None
 
 
 @pytest.mark.anyio
-async def test_kpi_weekly_preview_reports_missing_reason_when_no_numeric_fields() -> None:
+async def test_kpi_weekly_preview_reports_missing_reason_when_no_numeric_fields() -> (
+    None
+):
     from services.tool_runtime_executor import execute
     from services.knowledge_snapshot_service import KnowledgeSnapshotService
 
