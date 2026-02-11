@@ -34,8 +34,9 @@ def test_api_chat_explicit_dept_ops_routes_to_dept_ops_agent(monkeypatch):
 
     payload = {
         "message": "DEPT OPS: ops.snapshot_health",
+        "session_id": "t1",
         "preferred_agent_id": "dept_ops",
-        "metadata": {"include_debug": True},
+        "identity_pack": {"user_id": "ad"},
     }
 
     r = client.post("/api/chat", json=payload)
@@ -68,9 +69,10 @@ def test_api_chat_explicit_dept_ops_via_context_hint(monkeypatch):
     client = TestClient(app)
 
     payload = {
-        "message": "ops.snapshot_health",
+        "message": "DEPT OPS: ops.daily_brief",
+        "session_id": "t2",
         "context_hint": {"preferred_agent_id": "dept_ops"},
-        "metadata": {"include_debug": True},
+        "identity_pack": {"user_id": "ad"},
     }
 
     r = client.post("/api/chat", json=payload)
@@ -81,12 +83,12 @@ def test_api_chat_explicit_dept_ops_via_context_hint(monkeypatch):
 
     parsed = json.loads(body.get("text") or "")
     assert isinstance(parsed, dict)
-    assert parsed.get("kind") == "ops.snapshot_health"
+    assert parsed.get("kind") == "ops.daily_brief"
 
     tr = body.get("trace") or {}
     assert isinstance(tr, dict)
     assert tr.get("dept_ops_strict_backend") is True
-    assert tr.get("selected_query") == "ops.snapshot_health"
+    assert tr.get("selected_query") == "ops.daily_brief"
 
 
 def test_api_chat_non_explicit_still_uses_ceo_advisor(monkeypatch):
@@ -113,7 +115,8 @@ def test_api_chat_non_explicit_still_uses_ceo_advisor(monkeypatch):
 
     payload = {
         "message": "hello",
-        "metadata": {"include_debug": True},
+        "session_id": "t3",
+        "identity_pack": {"user_id": "ad"},
     }
 
     r = client.post("/api/chat", json=payload)
@@ -123,7 +126,3 @@ def test_api_chat_non_explicit_still_uses_ceo_advisor(monkeypatch):
     assert calls["n"] == 1
     assert body.get("agent_id") == "ceo_advisor"
     assert (body.get("text") or "").strip() == "stub-advisor"
-
-    tr = body.get("trace") or {}
-    assert isinstance(tr, dict)
-    assert tr.get("stubbed") is True

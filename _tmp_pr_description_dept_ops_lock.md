@@ -19,7 +19,7 @@
 
 ### 3b) /api/chat minimal explicit routing
 - Pre-check in /api/chat: if preferred_agent_id==dept_ops (payload or context_hint) or prefix "dept ops:", call dept_ops_agent directly and skip CEO Advisor:
-  - [routers/chat_router.py](routers/chat_router.py#L1722-L1780)
+  - [routers/chat_router.py](routers/chat_router.py#L1049-L1168)
 
 ### 4) JSON-only output contract (no narrative)
 - Output.text is json.dumps(data, ensure_ascii=False, sort_keys=True) with proposals empty:

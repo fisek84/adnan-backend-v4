@@ -1045,6 +1045,156 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
 
     @router.post("/chat", response_model=AgentOutput, response_model_by_alias=False)
     async def chat(payload: AgentInput, request: Request):
+        # ------------------------------------------------------------
+        # MINIMAL ROUTING FIX (explicit Dept Ops only)
+        # If caller explicitly requests Dept Ops (preferred_agent_id or prefix),
+        # route directly to dept_ops_agent strict backend and return JSON-only.
+        # HARD RULES:
+        # - no fallback to CEO Advisor if this path fails
+        # - do not add KB/memory to dept_ops_agent ctx
+        # - keep /api/chat response shape stable
+        # ------------------------------------------------------------
+        try:
+            msg0 = getattr(payload, "message", None)
+            msg = msg0 if isinstance(msg0, str) else ""
+
+            pref = getattr(payload, "preferred_agent_id", None)
+            ctx_hint = getattr(payload, "context_hint", None)
+            pref2 = None
+            if isinstance(ctx_hint, dict):
+                pref2 = ctx_hint.get("preferred_agent_id")
+            else:
+                pref2 = getattr(ctx_hint, "preferred_agent_id", None)
+
+            effective_pref = pref if isinstance(pref, str) and pref.strip() else pref2
+            effective_pref_norm = (
+                effective_pref.strip().lower()
+                if isinstance(effective_pref, str) and effective_pref.strip()
+                else ""
+            )
+
+            explicit_prefix = (msg or "").strip().lower().startswith("dept ops:")
+            is_explicit_dept_ops = effective_pref_norm == "dept_ops" or explicit_prefix
+        except Exception:
+            is_explicit_dept_ops = False
+            msg = (
+                getattr(payload, "message", None) if hasattr(payload, "message") else ""
+            )
+            msg = msg if isinstance(msg, str) else ""
+
+        if is_explicit_dept_ops:
+            from services.department_agents import dept_ops_agent  # noqa: PLC0415
+
+            # Deterministic session_id handling (same as canonical path).
+            session_id = _extract_session_id(payload)
+            if not (isinstance(session_id, str) and session_id.strip()):
+                hdr = (request.headers.get("X-Session-Id") or "").strip()
+                if hdr:
+                    session_id = hdr
+            if not (isinstance(session_id, str) and session_id.strip()):
+                session_id = str(uuid.uuid4())
+                try:
+                    payload.session_id = session_id  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+
+            conversation_id = _extract_conversation_id(payload) or session_id
+            if isinstance(conversation_id, str) and conversation_id.strip():
+                try:
+                    payload.conversation_id = conversation_id.strip()
+                except Exception:
+                    pass
+
+            # Minimal AgentInput for dept_ops_agent (force preferred_agent_id so strict branch activates).
+            identity_pack = (
+                payload.identity_pack
+                if isinstance(getattr(payload, "identity_pack", None), dict)
+                else {}
+            )
+            snapshot = (
+                payload.snapshot
+                if isinstance(getattr(payload, "snapshot", None), dict)
+                else {}
+            )
+            md0 = (
+                payload.metadata
+                if isinstance(getattr(payload, "metadata", None), dict)
+                else {}
+            )
+
+            dept_payload = AgentInput(
+                message=msg,
+                identity_pack=identity_pack,
+                snapshot=snapshot,
+                conversation_id=conversation_id,
+                history=getattr(payload, "history", None),
+                preferred_agent_id="dept_ops",
+                metadata=md0,
+            )
+
+            try:
+                out = await dept_ops_agent(
+                    dept_payload, ctx={"conversation_id": conversation_id}
+                )
+            except Exception as exc:
+                # No fallback: strict dept_ops failure is a hard 500.
+                return JSONResponse(
+                    status_code=500,
+                    content=_attach_session_id(
+                        {
+                            "text": str(exc)
+                            if str(exc)
+                            else "dept_ops_strict_backend_failed",
+                            "proposed_commands": [],
+                            "agent_id": "dept_ops",
+                            "read_only": True,
+                            "trace": {
+                                "intent": "error",
+                                "exit_reason": "error.dept_ops_strict_backend_failed",
+                                "error_type": exc.__class__.__name__,
+                                "error": str(exc),
+                            },
+                            "session_id": session_id,
+                        },
+                        session_id,
+                    ),
+                )
+
+            # Keep /api/chat response shape stable.
+            kb = _knowledge_bundle()
+            ks0 = kb.get("knowledge_snapshot") if isinstance(kb, dict) else {}
+            ks0 = ks0 if isinstance(ks0, dict) else {}
+            snapshot_meta = kb.get("snapshot_meta") if isinstance(kb, dict) else {}
+            snapshot_meta = snapshot_meta if isinstance(snapshot_meta, dict) else {}
+
+            st0 = (
+                await _get_state(session_id)
+                if session_id
+                else {"armed": False, "armed_at": None}
+            )
+
+            tr0 = out.trace if hasattr(out, "trace") else {}
+            tr0 = tr0 if isinstance(tr0, dict) else {}
+
+            content: Dict[str, Any] = {
+                "text": (getattr(out, "text", "") or "").strip(),
+                "proposed_commands": [],
+                "agent_id": getattr(out, "agent_id", "dept_ops") or "dept_ops",
+                "read_only": True,
+                "trace": tr0,
+                "session_id": session_id,
+                "notion_ops": {
+                    "armed": bool(st0.get("armed") is True),
+                    "armed_at": st0.get("armed_at"),
+                    "session_id": session_id,
+                    "armed_state": st0,
+                },
+                "knowledge_snapshot": ks0,
+                "snapshot_meta": snapshot_meta,
+            }
+
+            return JSONResponse(content=_attach_session_id(content, session_id))
+
         memory_provider = "readonly_memory_service"
         memory_error: Optional[str] = None
         mem_snapshot: Dict[str, Any] = {}
@@ -1719,58 +1869,10 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                     )
                 payload.metadata = md0  # type: ignore[assignment]
 
-            # ------------------------------------------------------------
-            # MINIMAL ROUTING: Explicit Dept Ops -> dept_ops_agent strict backend
-            # Trigger when:
-            #  - preferred_agent_id == "dept_ops" (payload, else payload.context_hint)
-            #  - OR message starts with "dept ops:"
-            # Everything else must stay identical and continue through CEO Advisor.
-            # ------------------------------------------------------------
-            preferred_raw = getattr(payload, "preferred_agent_id", None)
-            if not (isinstance(preferred_raw, str) and preferred_raw.strip()):
-                ctx_hint = getattr(payload, "context_hint", None)
-                if isinstance(ctx_hint, dict):
-                    preferred_raw = ctx_hint.get("preferred_agent_id")
-                else:
-                    preferred_raw = getattr(ctx_hint, "preferred_agent_id", None)
-
-            preferred_norm = (
-                preferred_raw.strip().lower()
-                if isinstance(preferred_raw, str) and preferred_raw.strip()
-                else ""
+            out = await create_ceo_advisor_agent(
+                payload,
+                ctx_for_agent,
             )
-
-            msg0 = getattr(payload, "message", None)
-            msg_norm = (msg0 if isinstance(msg0, str) else "").strip().lower()
-            explicit_prefix = msg_norm.startswith("dept ops:")
-
-            if preferred_norm == "dept_ops" or explicit_prefix:
-                from services.department_agents import dept_ops_agent  # noqa: PLC0415
-
-                # Force preferred_agent_id="dept_ops" so the strict backend branch is
-                # deterministically active even when caller used prefix-only routing.
-                dept_payload = payload
-                try:
-                    dept_payload.preferred_agent_id = "dept_ops"  # type: ignore[assignment]
-                except Exception:
-                    try:
-                        d = (
-                            payload.model_dump()
-                            if hasattr(payload, "model_dump")
-                            else payload.dict()
-                        )
-                        if isinstance(d, dict):
-                            d["preferred_agent_id"] = "dept_ops"
-                            dept_payload = AgentInput(**d)
-                    except Exception:
-                        dept_payload = payload
-
-                out = await dept_ops_agent(dept_payload, ctx_for_agent)
-            else:
-                out = await create_ceo_advisor_agent(
-                    payload,
-                    ctx_for_agent,
-                )
 
             # Ensure /api/chat always returns trace.snapshot + used_sources, even when
             # include_debug is off (minimal trace mode).
