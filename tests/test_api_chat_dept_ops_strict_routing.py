@@ -25,7 +25,9 @@ def test_api_chat_explicit_dept_ops_routes_to_dept_ops_agent(monkeypatch):
 
     import routers.chat_router as chat_router
 
-    monkeypatch.setattr(chat_router, "create_ceo_advisor_agent", _llm_called, raising=True)
+    monkeypatch.setattr(
+        chat_router, "create_ceo_advisor_agent", _llm_called, raising=True
+    )
 
     app = _load_app()
     client = TestClient(app)
@@ -58,7 +60,9 @@ def test_api_chat_explicit_dept_ops_via_context_hint(monkeypatch):
 
     import routers.chat_router as chat_router
 
-    monkeypatch.setattr(chat_router, "create_ceo_advisor_agent", _llm_called, raising=True)
+    monkeypatch.setattr(
+        chat_router, "create_ceo_advisor_agent", _llm_called, raising=True
+    )
 
     app = _load_app()
     client = TestClient(app)
