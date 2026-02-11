@@ -1,10 +1,59 @@
 from __future__ import annotations
 
+import json
 from typing import Any, Dict, List
 
 from models.agent_contract import AgentInput, AgentOutput, ProposedCommand
 from models.canon import PROPOSAL_WRAPPER_INTENT
 from services.ceo_advisor_agent import create_ceo_advisor_agent
+
+
+def _is_dept_ops_strict(agent_input: Any, agent_id: str) -> tuple[bool, str]:
+    """Explicit-only strict backend trigger for Dept Ops.
+
+    Returns:
+      (True, "preferred_agent_id") when preferred_agent_id == "dept_ops"
+      (True, "prefix") when message starts with "dept ops:"
+      (False, "") otherwise
+
+    Note: Accepts both AgentInput-like objects and dict payloads.
+    """
+
+    if (agent_id or "").strip() != "dept_ops":
+        return (False, "")
+
+    preferred = getattr(agent_input, "preferred_agent_id", None)
+    if preferred is None:
+        getter = getattr(agent_input, "get", None)
+        if callable(getter):
+            preferred = getter("preferred_agent_id")
+
+    if isinstance(preferred, str) and preferred.strip() == "dept_ops":
+        return (True, "preferred_agent_id")
+
+    msg = getattr(agent_input, "message", None)
+    if msg is None:
+        getter = getattr(agent_input, "get", None)
+        if callable(getter):
+            msg = getter("message")
+
+    msg_norm = (msg if isinstance(msg, str) else "").strip().lower()
+    if msg_norm.startswith("dept ops:"):
+        return (True, "prefix")
+
+    return (False, "")
+
+
+def _dept_ops_select_query(message: str) -> str:
+    """Deterministically map message -> ops query (no LLM)."""
+
+    m = (message or "").lower()
+    # Order must match spec: snapshot_health, then kpi, else default.
+    if "snapshot_health" in m:
+        return "ops.snapshot_health"
+    if "kpi" in m:
+        return "ops.kpi_weekly_summary_preview"
+    return "ops.daily_brief"
 
 
 def _clone_agent_input_with_prefix(
@@ -279,6 +328,46 @@ async def _dept_entrypoint(
     agent_id: str,
     dept_label: str,
 ) -> AgentOutput:
+    # Dept Ops strict backend: ONLY for explicit invocations.
+    # Must be tool-only (read_only.query) and must not touch ctx/KB/memory/LLM.
+    strict, selected_by = _is_dept_ops_strict(agent_input, agent_id)
+    if strict:
+        from services.tool_runtime_executor import execute as tool_execute
+
+        message = getattr(agent_input, "message", None) or ""
+        query = _dept_ops_select_query(message)
+        conv_id = getattr(agent_input, "conversation_id", None)
+        execution_id = f"{conv_id or 'dept_ops'}:{query}"
+
+        res = await tool_execute(
+            "read_only.query",
+            {"query": query},
+            agent_id="dept_ops",
+            execution_id=execution_id,
+        )
+
+        data = res.get("data") if isinstance(res, dict) else None
+        if not isinstance(data, dict):
+            data = {"kind": query, "data": data}
+
+        text = json.dumps(data, ensure_ascii=False, sort_keys=True)
+
+        return AgentOutput(
+            text=text,
+            proposed_commands=[],
+            agent_id="dept_ops",
+            read_only=True,
+            trace={
+                "dept_ops_strict_backend": True,
+                "selected_query": query,
+                "selected_by": selected_by,
+                "department_agent": True,
+                "department_agent_id": "dept_ops",
+                "selected_agent_id": "dept_ops",
+                "selected_entrypoint": "services.department_agents:dept_ops_agent",
+            },
+        )
+
     # Reuse CEO Advisor executor/parsing exactly (no new LLM plumbing) by delegating,
     # while adding a deterministic prefix to steer the advisory output.
     pref = (
