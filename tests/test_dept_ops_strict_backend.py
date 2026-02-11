@@ -9,12 +9,16 @@ from services.department_agents import dept_ops_agent
 
 
 @pytest.mark.anyio
-async def test_dept_ops_strict_backend_bypasses_llm(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_dept_ops_strict_backend_bypasses_llm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     async def _llm_called(*_args, **_kwargs):
         raise RuntimeError("LLM called")
 
     # If strict backend is active, this must never be called.
-    monkeypatch.setattr("services.department_agents.create_ceo_advisor_agent", _llm_called)
+    monkeypatch.setattr(
+        "services.department_agents.create_ceo_advisor_agent", _llm_called
+    )
 
     out = await dept_ops_agent(
         AgentInput(
@@ -47,7 +51,9 @@ async def test_dept_ops_strict_backend_bypasses_llm(monkeypatch: pytest.MonkeyPa
 
 
 @pytest.mark.anyio
-async def test_dept_ops_non_explicit_keeps_old_behavior(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_dept_ops_non_explicit_keeps_old_behavior(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     calls = {"n": 0}
 
     async def _dummy_ceo_advisor_agent(*_args, **_kwargs):
@@ -65,7 +71,9 @@ async def test_dept_ops_non_explicit_keeps_old_behavior(monkeypatch: pytest.Monk
     )
 
     out = await dept_ops_agent(
-        AgentInput(message="hello", preferred_agent_id=None, metadata={"read_only": True}),
+        AgentInput(
+            message="hello", preferred_agent_id=None, metadata={"read_only": True}
+        ),
         ctx={},
     )
 
@@ -81,7 +89,9 @@ async def test_dept_ops_strict_backend_query_selection_is_deterministic(
     async def _llm_called(*_args, **_kwargs):
         raise RuntimeError("LLM called")
 
-    monkeypatch.setattr("services.department_agents.create_ceo_advisor_agent", _llm_called)
+    monkeypatch.setattr(
+        "services.department_agents.create_ceo_advisor_agent", _llm_called
+    )
 
     # 1) KPI
     out = await dept_ops_agent(
