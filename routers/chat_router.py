@@ -1719,10 +1719,58 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                     )
                 payload.metadata = md0  # type: ignore[assignment]
 
-            out = await create_ceo_advisor_agent(
-                payload,
-                ctx_for_agent,
+            # ------------------------------------------------------------
+            # MINIMAL ROUTING: Explicit Dept Ops -> dept_ops_agent strict backend
+            # Trigger when:
+            #  - preferred_agent_id == "dept_ops" (payload, else payload.context_hint)
+            #  - OR message starts with "dept ops:"
+            # Everything else must stay identical and continue through CEO Advisor.
+            # ------------------------------------------------------------
+            preferred_raw = getattr(payload, "preferred_agent_id", None)
+            if not (isinstance(preferred_raw, str) and preferred_raw.strip()):
+                ctx_hint = getattr(payload, "context_hint", None)
+                if isinstance(ctx_hint, dict):
+                    preferred_raw = ctx_hint.get("preferred_agent_id")
+                else:
+                    preferred_raw = getattr(ctx_hint, "preferred_agent_id", None)
+
+            preferred_norm = (
+                preferred_raw.strip().lower()
+                if isinstance(preferred_raw, str) and preferred_raw.strip()
+                else ""
             )
+
+            msg0 = getattr(payload, "message", None)
+            msg_norm = (msg0 if isinstance(msg0, str) else "").strip().lower()
+            explicit_prefix = msg_norm.startswith("dept ops:")
+
+            if preferred_norm == "dept_ops" or explicit_prefix:
+                from services.department_agents import dept_ops_agent  # noqa: PLC0415
+
+                # Force preferred_agent_id="dept_ops" so the strict backend branch is
+                # deterministically active even when caller used prefix-only routing.
+                dept_payload = payload
+                try:
+                    dept_payload.preferred_agent_id = "dept_ops"  # type: ignore[assignment]
+                except Exception:
+                    try:
+                        d = (
+                            payload.model_dump()
+                            if hasattr(payload, "model_dump")
+                            else payload.dict()
+                        )
+                        if isinstance(d, dict):
+                            d["preferred_agent_id"] = "dept_ops"
+                            dept_payload = AgentInput(**d)
+                    except Exception:
+                        dept_payload = payload
+
+                out = await dept_ops_agent(dept_payload, ctx_for_agent)
+            else:
+                out = await create_ceo_advisor_agent(
+                    payload,
+                    ctx_for_agent,
+                )
 
             # Ensure /api/chat always returns trace.snapshot + used_sources, even when
             # include_debug is off (minimal trace mode).

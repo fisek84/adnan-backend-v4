@@ -17,6 +17,10 @@
 - Early branch inside _dept_entrypoint (tool-only read_only.query, ctx ignored):
   - [services/department_agents.py](services/department_agents.py#L324-L373)
 
+### 3b) /api/chat minimal explicit routing
+- Pre-check in /api/chat: if preferred_agent_id==dept_ops (payload or context_hint) or prefix "dept ops:", call dept_ops_agent directly and skip CEO Advisor:
+  - [routers/chat_router.py](routers/chat_router.py#L1722-L1780)
+
 ### 4) JSON-only output contract (no narrative)
 - Output.text is json.dumps(data, ensure_ascii=False, sort_keys=True) with proposals empty:
   - [services/department_agents.py](services/department_agents.py#L333-L366)
@@ -28,6 +32,10 @@
   - [tests/test_dept_ops_strict_backend.py](tests/test_dept_ops_strict_backend.py#L50-L75)
 - Deterministic selection (trace.selected_query) for snapshot_health/kpi/default:
   - [tests/test_dept_ops_strict_backend.py](tests/test_dept_ops_strict_backend.py#L78-L132)
+
+### 6) /api/chat routing tests
+- Explicit dept_ops via preferred_agent_id or context_hint returns JSON-only + trace markers; non-explicit stays on CEO Advisor:
+  - [tests/test_api_chat_dept_ops_strict_routing.py](tests/test_api_chat_dept_ops_strict_routing.py#L1-L130)
 
 ## Notes
 - No changes to snapshot builder.
