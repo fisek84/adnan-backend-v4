@@ -1073,14 +1073,132 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 else ""
             )
 
+            explicit_fin_prefix = (
+                (msg or "").strip().lower().startswith("dept finance:")
+            )
+            is_explicit_dept_finance = (
+                effective_pref_norm == "dept_finance" or explicit_fin_prefix
+            )
+
             explicit_prefix = (msg or "").strip().lower().startswith("dept ops:")
             is_explicit_dept_ops = effective_pref_norm == "dept_ops" or explicit_prefix
         except Exception:
+            is_explicit_dept_finance = False
             is_explicit_dept_ops = False
             msg = (
                 getattr(payload, "message", None) if hasattr(payload, "message") else ""
             )
             msg = msg if isinstance(msg, str) else ""
+
+        # ------------------------------------------------------------
+        # MINIMAL ROUTING FIX (explicit Dept Finance only)
+        # If caller explicitly requests Dept Finance (preferred_agent_id or prefix),
+        # route directly to dept_finance_agent strict backend and return JSON-only.
+        # HARD RULES:
+        # - no fallback to CEO Advisor if this path fails
+        # - do not add KB/memory to dept_finance_agent ctx
+        # - keep /api/chat response shape stable
+        # ------------------------------------------------------------
+        if is_explicit_dept_finance:
+            from services.department_agents import dept_finance_agent  # noqa: PLC0415
+
+            session_id = _extract_session_id(payload)
+            if not (isinstance(session_id, str) and session_id.strip()):
+                hdr = (request.headers.get("X-Session-Id") or "").strip()
+                if hdr:
+                    session_id = hdr
+            if not (isinstance(session_id, str) and session_id.strip()):
+                session_id = str(uuid.uuid4())
+                try:
+                    payload.session_id = session_id  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+
+            conversation_id = _extract_conversation_id(payload) or session_id
+            if isinstance(conversation_id, str) and conversation_id.strip():
+                try:
+                    payload.conversation_id = conversation_id.strip()
+                except Exception:
+                    pass
+
+            identity_pack = (
+                payload.identity_pack
+                if isinstance(getattr(payload, "identity_pack", None), dict)
+                else {}
+            )
+            snapshot = (
+                payload.snapshot
+                if isinstance(getattr(payload, "snapshot", None), dict)
+                else {}
+            )
+            md0 = (
+                payload.metadata
+                if isinstance(getattr(payload, "metadata", None), dict)
+                else {}
+            )
+
+            dept_payload = AgentInput(
+                message=msg,
+                identity_pack=identity_pack,
+                snapshot=snapshot,
+                conversation_id=conversation_id,
+                history=getattr(payload, "history", None),
+                preferred_agent_id="dept_finance",
+                metadata=md0,
+            )
+
+            try:
+                out = await dept_finance_agent(
+                    dept_payload, ctx={"conversation_id": conversation_id}
+                )
+            except Exception as exc:
+                return JSONResponse(
+                    status_code=500,
+                    content=_attach_session_id(
+                        {
+                            "text": str(exc)
+                            if str(exc)
+                            else "dept_finance_strict_backend_failed",
+                            "proposed_commands": [],
+                            "agent_id": "dept_finance",
+                            "read_only": True,
+                            "trace": {
+                                "intent": "error",
+                                "exit_reason": "error.dept_finance_strict_backend_failed",
+                                "error_type": exc.__class__.__name__,
+                                "error": str(exc),
+                            },
+                            "session_id": session_id,
+                        },
+                        session_id,
+                    ),
+                )
+
+            st0 = (
+                await _get_state(session_id)
+                if session_id
+                else {"armed": False, "armed_at": None}
+            )
+
+            tr0 = out.trace if hasattr(out, "trace") else {}
+            tr0 = tr0 if isinstance(tr0, dict) else {}
+
+            content: Dict[str, Any] = {
+                "text": (getattr(out, "text", "") or "").strip(),
+                "proposed_commands": [],
+                "agent_id": getattr(out, "agent_id", "dept_finance") or "dept_finance",
+                "read_only": True,
+                "trace": tr0,
+                "session_id": session_id,
+                "notion_ops": {
+                    "armed": False,
+                    "armed_at": None,
+                    "session_id": session_id,
+                    "armed_state": st0,
+                },
+            }
+
+            return JSONResponse(content=content)
 
         if is_explicit_dept_ops:
             from services.department_agents import dept_ops_agent  # noqa: PLC0415

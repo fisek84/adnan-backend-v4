@@ -56,6 +56,216 @@ def _dept_ops_select_query(message: str) -> str:
     return "ops.daily_brief"
 
 
+def _is_dept_finance_strict(agent_input: Any, agent_id: str) -> tuple[bool, str]:
+    """Explicit-only strict backend trigger for Dept Finance.
+
+    Returns:
+      (True, "preferred_agent_id") when preferred_agent_id == "dept_finance"
+      (True, "prefix") when message starts with "dept finance:"
+      (False, "") otherwise
+
+    Note: Accepts both AgentInput-like objects and dict payloads.
+    """
+
+    if (agent_id or "").strip() != "dept_finance":
+        return (False, "")
+
+    preferred = getattr(agent_input, "preferred_agent_id", None)
+    if preferred is None:
+        getter = getattr(agent_input, "get", None)
+        if callable(getter):
+            preferred = getter("preferred_agent_id")
+
+    if isinstance(preferred, str) and preferred.strip() == "dept_finance":
+        return (True, "preferred_agent_id")
+
+    msg = getattr(agent_input, "message", None)
+    if msg is None:
+        getter = getattr(agent_input, "get", None)
+        if callable(getter):
+            msg = getter("message")
+
+    msg_norm = (msg if isinstance(msg, str) else "").strip().lower()
+    if msg_norm.startswith("dept finance:"):
+        return (True, "prefix")
+
+    return (False, "")
+
+
+def _dept_finance_select_query(message: str) -> str:
+    """Deterministically map message -> finance query (no LLM)."""
+
+    m = (message or "").lower()
+    # Order must match spec.
+    if "burn" in m or "runway" in m:
+        return "finance.burn_runway"
+    if "kpi" in m:
+        return "finance.kpi_summary"
+    return "finance.snapshot_health"
+
+
+def _as_number(v: Any) -> float | int | None:
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        return v
+    if isinstance(v, str):
+        s = v.strip()
+        if not s:
+            return None
+        try:
+            if any(ch in s for ch in (".", "e", "E")):
+                return float(s)
+            return int(s)
+        except Exception:
+            return None
+    return None
+
+
+def _snapshot_payload_dict(snapshot: Any) -> Dict[str, Any]:
+    snap = snapshot if isinstance(snapshot, dict) else {}
+    payload = snap.get("payload")
+    return payload if isinstance(payload, dict) else snap
+
+
+def _db_items(payload: Dict[str, Any], db_key: str) -> List[Dict[str, Any]]:
+    dbs = payload.get("databases")
+    dbs = dbs if isinstance(dbs, dict) else {}
+    db = dbs.get(db_key)
+    db = db if isinstance(db, dict) else {}
+    items = db.get("items")
+    items_list = items if isinstance(items, list) else []
+    return [x for x in items_list if isinstance(x, dict)]
+
+
+def _db_count(payload: Dict[str, Any], db_key: str) -> int:
+    dbs = payload.get("databases")
+    dbs = dbs if isinstance(dbs, dict) else {}
+    db = dbs.get(db_key)
+    db = db if isinstance(db, dict) else {}
+    rc = db.get("row_count")
+    if isinstance(rc, int):
+        return rc
+    return len(_db_items(payload, db_key))
+
+
+def _finance_kpi_totals_from_snapshot(snapshot: Any) -> Dict[str, Any]:
+    payload = _snapshot_payload_dict(snapshot)
+
+    items = _db_items(payload, "kpi")
+    if not items:
+        items = _db_items(payload, "kpis")
+
+    revenue_total: float | int | None = None
+    expenses_total: float | int | None = None
+
+    for it in items:
+        fields = it.get("fields")
+        fields = fields if isinstance(fields, dict) else {}
+        for k, v in fields.items():
+            kn = str(k).strip().lower()
+            num = _as_number(v)
+            if num is None:
+                continue
+            if kn == "revenue":
+                revenue_total = (revenue_total or 0) + num
+            elif kn in {"expenses", "expense", "cost", "costs"}:
+                expenses_total = (expenses_total or 0) + num
+
+    net_profit: float | int | None = None
+    margin_percent: float | None = None
+    if revenue_total is not None and expenses_total is not None:
+        net_profit = revenue_total - expenses_total
+        try:
+            if revenue_total != 0:
+                margin_percent = round(
+                    (float(net_profit) / float(revenue_total)) * 100, 2
+                )
+        except Exception:
+            margin_percent = None
+
+    return {
+        "revenue": revenue_total,
+        "expenses": expenses_total,
+        "net_profit": net_profit,
+        "margin_percent": margin_percent,
+    }
+
+
+def _finance_burn_runway_from_snapshot(snapshot: Any) -> Dict[str, Any]:
+    payload = _snapshot_payload_dict(snapshot)
+
+    items = _db_items(payload, "kpi")
+    if not items:
+        items = _db_items(payload, "kpis")
+
+    # Deterministically pick the most recent item by lexicographic period.
+    def _period_key(it: Dict[str, Any]) -> str:
+        fields = it.get("fields")
+        fields = fields if isinstance(fields, dict) else {}
+        p = fields.get("period")
+        return str(p).strip() if isinstance(p, str) else ""
+
+    items_sorted = sorted(items, key=_period_key)
+    item = items_sorted[-1] if items_sorted else {}
+    fields = item.get("fields")
+    fields = fields if isinstance(fields, dict) else {}
+
+    cash: float | int | None = None
+    for k in ("cash", "cash_balance", "cashonhand", "cash_on_hand"):
+        if k in fields:
+            cash = _as_number(fields.get(k))
+            if cash is not None:
+                break
+
+    if cash is None:
+        return {"cash": None, "monthly_burn": None, "runway_months": None}
+
+    burn = _as_number(fields.get("monthly_burn"))
+    if burn is None:
+        burn = _as_number(fields.get("burn"))
+
+    if burn is None:
+        totals = _finance_kpi_totals_from_snapshot(snapshot)
+        rev = totals.get("revenue")
+        exp = totals.get("expenses")
+        if isinstance(rev, (int, float)) and isinstance(exp, (int, float)):
+            burn = exp - rev
+        elif isinstance(exp, (int, float)):
+            burn = exp
+
+    runway_months: float | None = None
+    try:
+        if isinstance(burn, (int, float)) and burn > 0:
+            runway_months = round(float(cash) / float(burn), 2)
+    except Exception:
+        runway_months = None
+
+    return {"cash": cash, "monthly_burn": burn, "runway_months": runway_months}
+
+
+def _finance_snapshot_health_from_snapshot(snapshot: Any) -> Dict[str, Any]:
+    payload = _snapshot_payload_dict(snapshot)
+
+    goals_count = _db_count(payload, "goals")
+    tasks_count = _db_count(payload, "tasks")
+    projects_count = _db_count(payload, "projects")
+    kpi_count = _db_count(payload, "kpi")
+    if kpi_count == 0:
+        kpi_count = _db_count(payload, "kpis")
+
+    financial_data_present = bool(kpi_count)
+    return {
+        "counts": {
+            "goals": goals_count,
+            "tasks": tasks_count,
+            "projects": projects_count,
+            "kpi_entries": kpi_count,
+        },
+        "financial_data_present": financial_data_present,
+    }
+
+
 def _clone_agent_input_with_prefix(
     agent_input: AgentInput,
     *,
@@ -543,6 +753,44 @@ async def dept_product_agent(
 async def dept_finance_agent(
     agent_input: AgentInput, ctx: Dict[str, Any]
 ) -> AgentOutput:
+    strict, selected_by = _is_dept_finance_strict(agent_input, "dept_finance")
+    if strict:
+        message = getattr(agent_input, "message", None) or ""
+        query = _dept_finance_select_query(message)
+        snap = (
+            agent_input.snapshot
+            if isinstance(getattr(agent_input, "snapshot", None), dict)
+            else {}
+        )
+
+        if query == "finance.kpi_summary":
+            computed = _finance_kpi_totals_from_snapshot(snap)
+        elif query == "finance.burn_runway":
+            computed = _finance_burn_runway_from_snapshot(snap)
+        else:
+            computed = _finance_snapshot_health_from_snapshot(snap)
+
+        data = {"kind": query}
+        if isinstance(computed, dict):
+            data.update(computed)
+
+        text = json.dumps(data, ensure_ascii=False, sort_keys=True)
+        return AgentOutput(
+            text=text,
+            proposed_commands=[],
+            agent_id="dept_finance",
+            read_only=True,
+            trace={
+                "dept_finance_strict_backend": True,
+                "selected_query": query,
+                "selected_by": selected_by,
+                "department_agent": True,
+                "department_agent_id": "dept_finance",
+                "selected_agent_id": "dept_finance",
+                "selected_entrypoint": "services.department_agents:dept_finance_agent",
+            },
+        )
+
     return await _dept_entrypoint(
         agent_input,
         ctx,
