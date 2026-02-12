@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 
 import pytest
 
@@ -105,7 +104,11 @@ async def test_revenue_growth_operator_assistants_mode_requires_env_binding_when
             "registry_entry": type(
                 "E",
                 (),
-                {"metadata": {"assistant_id": "ENV:REVENUE_GROWTH_OPERATOR_ASSISTANT_ID"}},
+                {
+                    "metadata": {
+                        "assistant_id": "ENV:REVENUE_GROWTH_OPERATOR_ASSISTANT_ID"
+                    }
+                },
             )(),
         },
     )

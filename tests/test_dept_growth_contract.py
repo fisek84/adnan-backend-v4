@@ -59,7 +59,9 @@ async def test_dept_growth_always_returns_canonical_four_sections_and_normalizes
 
 
 @pytest.mark.anyio
-async def test_dept_growth_orchestrator_allows_only_draft_outreach_execution(monkeypatch):
+async def test_dept_growth_orchestrator_allows_only_draft_outreach_execution(
+    monkeypatch,
+):
     import services.execution_orchestrator as eo
 
     # Avoid real NotionService construction during orchestrator init.
