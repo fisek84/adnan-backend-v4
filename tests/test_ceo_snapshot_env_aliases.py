@@ -49,7 +49,11 @@ def test_ceo_snapshot_env_db_id_only_not_unconfigured(monkeypatch: pytest.Monkey
                 "payload": {"goals": [], "tasks": [], "projects": []},
                 "ready": True,
                 "expired": False,
-                "trace": {"ttl_seconds": None, "age_seconds": None, "is_expired": False},
+                "trace": {
+                    "ttl_seconds": None,
+                    "age_seconds": None,
+                    "is_expired": False,
+                },
             }
         ),
         raising=True,
@@ -74,7 +78,9 @@ def test_ceo_snapshot_env_db_id_only_not_unconfigured(monkeypatch: pytest.Monkey
 
         return _DummyResponse(status_code=200, payload={})
 
-    monkeypatch.setattr(requests.sessions.Session, "request", _stub_request, raising=True)
+    monkeypatch.setattr(
+        requests.sessions.Session, "request", _stub_request, raising=True
+    )
 
     # --- Execute ---
     from services.ceo_console_snapshot_service import CeoConsoleSnapshotService
@@ -83,7 +89,10 @@ def test_ceo_snapshot_env_db_id_only_not_unconfigured(monkeypatch: pytest.Monkey
 
     assert isinstance(snap, dict)
     assert snap.get("available") is True
-    assert snap.get("error") not in ("snapshot service not configured", "Snapshot service not ready")
+    assert snap.get("error") not in (
+        "snapshot service not configured",
+        "Snapshot service not ready",
+    )
 
     dash = snap.get("dashboard")
     assert isinstance(dash, dict)
