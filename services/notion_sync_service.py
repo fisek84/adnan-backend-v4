@@ -60,7 +60,6 @@ class NotionSyncService:
           {"env_name": str, "db_key": str, "db_id": str, "logical_name": str}
         where logical_name is the NOTION_<LOGICAL>_... part (upper-case).
         """
-
         # First pass: collect preferred IDs per logical key.
         best: Dict[str, Dict[str, str]] = {}
         for name, value in os.environ.items():

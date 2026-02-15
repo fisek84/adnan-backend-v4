@@ -10,6 +10,7 @@ import requests
 from pydantic import BaseModel, Field
 
 from services.knowledge_snapshot_service import KnowledgeSnapshotService
+from services.notion_service import discover_notion_db_registry_from_env
 
 NOTION_API_URL = "https://api.notion.com/v1"
 DEFAULT_NOTION_VERSION = "2022-06-28"
@@ -325,9 +326,19 @@ class CeoConsoleSnapshotService:
         self,
         notion_client: Optional[_NotionClient] = None,
         config: Optional[_NotionConfig] = None,
+        env_db_registry_meta: Optional[Dict[str, Dict[str, Any]]] = None,
+        env_db_registry_warnings: Optional[List[str]] = None,
     ) -> None:
         self._notion: Optional[_NotionClient] = notion_client
         self._cfg: Optional[_NotionConfig] = config
+        self._env_db_registry_meta: Dict[str, Dict[str, Any]] = (
+            env_db_registry_meta if isinstance(env_db_registry_meta, dict) else {}
+        )
+        self._env_db_registry_warnings: List[str] = (
+            env_db_registry_warnings
+            if isinstance(env_db_registry_warnings, list)
+            else []
+        )
         self._ready: bool = False
         self._init_error: Optional[str] = None
 
@@ -364,21 +375,27 @@ class CeoConsoleSnapshotService:
 
     @classmethod
     def from_env(cls) -> "CeoConsoleSnapshotService":
-        token = cls._env_first("NOTION_TOKEN", "NOTION_API_KEY", "NOTION_KEY")
+        token = cls._env_first("NOTION_API_KEY", "NOTION_TOKEN", "NOTION_KEY")
         if not token:
             raise ConfigurationError("NOTION_TOKEN or NOTION_API_KEY must be set.")
 
-        goals_db_id = cls._env_first("NOTION_GOALS_DATABASE_ID", "NOTION_GOALS_DB_ID")
-        tasks_db_id = cls._env_first("NOTION_TASKS_DATABASE_ID", "NOTION_TASKS_DB_ID")
+        db_ids, meta, warnings = discover_notion_db_registry_from_env()
+
+        goals_db_id = (db_ids.get("goals") or "").strip()
+        tasks_db_id = (db_ids.get("tasks") or "").strip()
         if not goals_db_id or not tasks_db_id:
+            missing: List[str] = []
+            if not goals_db_id:
+                missing.append("goals")
+            if not tasks_db_id:
+                missing.append("tasks")
             raise ConfigurationError(
-                "NOTION_GOALS_DATABASE_ID/NOTION_GOALS_DB_ID and "
-                "NOTION_TASKS_DATABASE_ID/NOTION_TASKS_DB_ID must be set."
+                "Missing required Notion DB configuration for: "
+                + ", ".join(missing)
+                + ". Provide NOTION_<KEY>_DB_ID (canonical). Legacy NOTION_<KEY>_DATABASE_ID is accepted only as fallback."
             )
 
-        approvals_db_id = cls._env_first(
-            "NOTION_APPROVALS_DATABASE_ID", "NOTION_APPROVALS_DB_ID"
-        )
+        approvals_db_id = (db_ids.get("approvals") or "").strip() or None
         version = cls._env_first("NOTION_VERSION") or DEFAULT_NOTION_VERSION
 
         include_properties = _env_true("CEO_SNAPSHOT_INCLUDE_PROPERTIES", "false")
@@ -393,10 +410,8 @@ class CeoConsoleSnapshotService:
             goals_db_id=goals_db_id,
             tasks_db_id=tasks_db_id,
             approvals_db_id=approvals_db_id,
-            sop_db_id=cls._env_first("NOTION_SOP_DATABASE_ID", "NOTION_SOP_DB_ID"),
-            plans_db_id=cls._env_first(
-                "NOTION_PLANS_DATABASE_ID", "NOTION_PLANS_DB_ID"
-            ),
+            sop_db_id=(db_ids.get("sop") or "").strip() or None,
+            plans_db_id=(db_ids.get("plans") or "").strip() or None,
             time_management_page_id=cls._env_first("NOTION_TIME_MANAGEMENT_PAGE_ID"),
             goal_name_prop=cls._env_first("NOTION_GOAL_NAME_PROP") or "Name",
             goal_status_prop=cls._env_first("NOTION_GOAL_STATUS_PROP") or "Status",
@@ -439,7 +454,12 @@ class CeoConsoleSnapshotService:
                 v.strip() for v in high_values_env.split(",") if v.strip()
             ]
 
-        return cls(notion_client=_NotionClient(cfg), config=cfg)
+        return cls(
+            notion_client=_NotionClient(cfg),
+            config=cfg,
+            env_db_registry_meta=meta,
+            env_db_registry_warnings=warnings,
+        )
 
     def build_snapshot(self) -> CeoDashboardSnapshot:
         self._require_ready()
@@ -532,18 +552,67 @@ class CeoConsoleSnapshotService:
         assert self._cfg is not None
 
         # Deterministic insertion order
-        dbs: Dict[str, Any] = {
-            "goals": {"database_id": self._cfg.goals_db_id},
-            "tasks": {"database_id": self._cfg.tasks_db_id},
-        }
-        if self._cfg.approvals_db_id:
-            dbs["approvals"] = {"database_id": self._cfg.approvals_db_id}
-        if self._cfg.sop_db_id:
-            dbs["sop"] = {"database_id": self._cfg.sop_db_id}
-        if self._cfg.plans_db_id:
-            dbs["plans"] = {"database_id": self._cfg.plans_db_id}
+        dbs: Dict[str, Any] = {}
+
+        # Always include the core keys with explicit configured state.
+        core_keys = ["goals", "tasks", "approvals", "sop", "plans"]
+        for k in core_keys:
+            db_id = None
+            if k == "goals":
+                db_id = self._cfg.goals_db_id
+            elif k == "tasks":
+                db_id = self._cfg.tasks_db_id
+            elif k == "approvals":
+                db_id = self._cfg.approvals_db_id
+            elif k == "sop":
+                db_id = self._cfg.sop_db_id
+            elif k == "plans":
+                db_id = self._cfg.plans_db_id
+
+            ent = (
+                self._env_db_registry_meta.get(k)
+                if isinstance(self._env_db_registry_meta, dict)
+                else None
+            )
+            env_name = ent.get("env_name") if isinstance(ent, dict) else None
+            legacy_alias = (
+                bool(ent.get("legacy_alias")) if isinstance(ent, dict) else False
+            )
+            dbs[k] = {
+                "database_id": db_id,
+                "configured": bool(db_id),
+            }
+            if env_name:
+                dbs[k]["env_name"] = env_name
+            if legacy_alias:
+                dbs[k]["legacy_alias"] = True
+
+        # Add any other env-configured DBs (kpi, lead, projects, etc) without changing schema.
+        try:
+            env_keys = list(self._env_db_registry_meta.keys())
+        except Exception:
+            env_keys = []
+        extra_keys = sorted([k for k in env_keys if k not in set(core_keys)])
+        for k in extra_keys:
+            ent = self._env_db_registry_meta.get(k)
+            if not isinstance(ent, dict):
+                continue
+            db_id = ent.get("db_id")
+            if not isinstance(db_id, str) or not db_id.strip():
+                continue
+            dbs[k] = {
+                "database_id": db_id.strip(),
+                "configured": True,
+                "env_name": ent.get("env_name"),
+            }
+            if ent.get("legacy_alias") is True:
+                dbs[k]["legacy_alias"] = True
+
         if self._cfg.time_management_page_id:
-            dbs["time_management"] = {"page_id": self._cfg.time_management_page_id}
+            dbs["time_management"] = {
+                "page_id": self._cfg.time_management_page_id,
+                "configured": True,
+            }
 
         return {
             "source": "ceo_console_snapshot_service",
@@ -556,6 +625,7 @@ class CeoConsoleSnapshotService:
                 "max_list_items": self._cfg.max_list_items,
             },
             "databases": dbs,
+            "env_warnings": list(self._env_db_registry_warnings or []),
         }
 
     @staticmethod

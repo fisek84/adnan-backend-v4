@@ -127,6 +127,112 @@ _ENV_TASKS_DB_ID = "NOTION_TASKS_DB_ID"
 _ENV_PROJECTS_DB_ID = "NOTION_PROJECTS_DB_ID"
 
 
+def discover_notion_db_registry_from_env() -> (
+    tuple[Dict[str, str], Dict[str, Dict[str, Any]], List[str]]
+):
+    """SSOT: discover all configured Notion DB ids from environment.
+
+    Canon:
+      - Prefer `NOTION_<KEY>_DB_ID`.
+      - Support legacy alias `NOTION_<KEY>_DATABASE_ID` only as fallback.
+      - Allow JSON extension via `NOTION_EXTRA_DATABASES_JSON='{"my_db":"<id>"}'`.
+
+    Returns:
+      - db_ids: {db_key: db_id}
+      - meta: {db_key: {"db_id": str, "env_name": str, "legacy_alias": bool}}
+      - warnings: list[str] (deprecation / conflicts)
+
+    Never raises.
+    """
+
+    db_ids: Dict[str, str] = {}
+    meta: Dict[str, Dict[str, Any]] = {}
+    warnings: List[str] = []
+
+    # Collect both variants first.
+    db_id_vars: Dict[str, str] = {}
+    database_id_vars: Dict[str, str] = {}
+
+    for name, value in os.environ.items():
+        if not isinstance(name, str) or not name.startswith("NOTION_"):
+            continue
+        if not isinstance(value, str):
+            continue
+        v = value.strip()
+        if not v:
+            continue
+
+        if name.endswith("_DB_ID"):
+            logical = name[len("NOTION_") : -len("_DB_ID")].strip()
+            if logical:
+                db_id_vars[logical.upper()] = v
+            continue
+
+        if name.endswith("_DATABASE_ID"):
+            logical = name[len("NOTION_") : -len("_DATABASE_ID")].strip()
+            if logical:
+                database_id_vars[logical.upper()] = v
+            continue
+
+    all_keys = sorted(set(db_id_vars.keys()) | set(database_id_vars.keys()))
+    for logical in all_keys:
+        key = logical.lower()
+        db_id = db_id_vars.get(logical)
+        database_id = database_id_vars.get(logical)
+
+        if db_id:
+            db_ids[key] = db_id
+            meta[key] = {
+                "db_id": db_id,
+                "env_name": f"NOTION_{logical}_DB_ID",
+                "legacy_alias": False,
+            }
+            if database_id and database_id != db_id:
+                warnings.append(
+                    f"Both NOTION_{logical}_DB_ID and NOTION_{logical}_DATABASE_ID are set; using _DB_ID and ignoring legacy alias."
+                )
+            elif database_id and database_id == db_id:
+                warnings.append(
+                    f"Legacy alias NOTION_{logical}_DATABASE_ID is set but deprecated; prefer NOTION_{logical}_DB_ID."
+                )
+            continue
+
+        if database_id:
+            db_ids[key] = database_id
+            meta[key] = {
+                "db_id": database_id,
+                "env_name": f"NOTION_{logical}_DATABASE_ID",
+                "legacy_alias": True,
+            }
+            warnings.append(
+                f"Deprecated env var NOTION_{logical}_DATABASE_ID detected; please migrate to NOTION_{logical}_DB_ID."
+            )
+
+    extra_json = (os.getenv("NOTION_EXTRA_DATABASES_JSON", "") or "").strip()
+    if extra_json:
+        try:
+            import json  # noqa: PLC0415
+
+            extra = json.loads(extra_json)
+            if isinstance(extra, dict):
+                for k, v in extra.items():
+                    if isinstance(k, str) and isinstance(v, str) and v.strip():
+                        kk = k.strip().lower()
+                        vv = v.strip()
+                        db_ids[kk] = vv
+                        meta[kk] = {
+                            "db_id": vv,
+                            "env_name": "NOTION_EXTRA_DATABASES_JSON",
+                            "legacy_alias": False,
+                        }
+        except Exception:
+            warnings.append(
+                "NOTION_EXTRA_DATABASES_JSON present but invalid JSON; ignoring"
+            )
+
+    return db_ids, meta, warnings
+
+
 def set_notion_service(service: "NotionService") -> None:
     global _NOTION_SERVICE
     _NOTION_SERVICE = service
@@ -365,34 +471,7 @@ class NotionService:
           - NOTION_<KEY>_DB_ID
           - NOTION_EXTRA_DATABASES_JSON='{"my_db":"<id>"}'
         """
-        out: Dict[str, str] = {}
-
-        for name, value in os.environ.items():
-            if not isinstance(name, str) or not name.startswith("NOTION_"):
-                continue
-            if not isinstance(value, str) or not value.strip():
-                continue
-
-            if name.endswith("_DATABASE_ID"):
-                key = name[len("NOTION_") : -len("_DATABASE_ID")].lower()
-                out[key] = value.strip()
-            elif name.endswith("_DB_ID"):
-                key = name[len("NOTION_") : -len("_DB_ID")].lower()
-                out.setdefault(key, value.strip())
-
-        extra_json = (os.getenv("NOTION_EXTRA_DATABASES_JSON", "") or "").strip()
-        if extra_json:
-            try:
-                import json  # noqa: PLC0415
-
-                extra = json.loads(extra_json)
-                if isinstance(extra, dict):
-                    for k, v in extra.items():
-                        if isinstance(k, str) and isinstance(v, str) and v.strip():
-                            out[k.strip().lower()] = v.strip()
-            except Exception:
-                pass
-
+        out, _, _warnings = discover_notion_db_registry_from_env()
         return out
 
     async def _filter_properties_payload_by_schema(
