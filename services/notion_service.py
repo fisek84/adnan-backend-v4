@@ -2579,7 +2579,8 @@ class NotionService:
             """Best-effort extraction of structured error fields.
 
             Additive contract:
-              {field?: str|None, code: str, message: str, allowed_values?: list[str]|None}
+                            {field?: str|None, code: str, message: str, allowed_values?: list[str]|None,
+                             status_code?: int|None, raw_body?: str|None}
             """
 
             msg = ""
@@ -2592,15 +2593,33 @@ class NotionService:
                 "field": None,
                 "code": "unknown_error",
                 "message": msg or "Execution failed",
+                "status_code": None,
+                "raw_body": None,
             }
 
             # Parse canonical Notion HTTP wrapper: "Notion HTTP <status>: <text>"
             if isinstance(msg, str) and msg.startswith("Notion HTTP ") and ":" in msg:
+                status_code: Optional[int] = None
+                tail = ""
                 try:
-                    _, tail = msg.split(":", 1)
-                    tail = (tail or "").strip()
+                    m = re.match(
+                        r"^Notion HTTP\s+(?P<status>\d{3})\s*:\s*(?P<body>.*)$", msg
+                    )
+                    if m:
+                        status_s = _ensure_str(m.group("status")).strip()
+                        if status_s.isdigit():
+                            status_code = int(status_s)
+                        tail = _ensure_str(m.group("body")).strip()
+                    else:
+                        _, tail = msg.split(":", 1)
+                        tail = (tail or "").strip()
                 except Exception:
                     tail = ""
+
+                if status_code is not None:
+                    out["status_code"] = status_code
+                if isinstance(tail, str) and tail.strip():
+                    out["raw_body"] = tail
 
                 # Try JSON first.
                 if tail.startswith("{") and tail.endswith("}"):
@@ -2626,8 +2645,6 @@ class NotionService:
 
                 # Try to extract field name from quotes.
                 try:
-                    import re
-
                     # Notion messages often mention a property name in quotes.
                     m = re.search(r"Property\s+\"(?P<field>[^\"]+)\"", mtxt)
                     if not m:
@@ -2751,6 +2768,29 @@ class NotionService:
                     }
                 )
             except Exception as exc:  # noqa: BLE001
+                err = _parse_structured_error(exc)
+
+                reason = str(exc)
+                try:
+                    sc = err.get("status_code") if isinstance(err, dict) else None
+                    raw = err.get("raw_body") if isinstance(err, dict) else None
+                    code0 = err.get("code") if isinstance(err, dict) else None
+                    msg0 = err.get("message") if isinstance(err, dict) else None
+                    if isinstance(sc, int) and raw is not None:
+                        ctag = (
+                            f" ({code0})"
+                            if isinstance(code0, str) and code0.strip()
+                            else ""
+                        )
+                        mtag = (
+                            f": {msg0}"
+                            if isinstance(msg0, str) and msg0.strip()
+                            else ""
+                        )
+                        reason = f"Notion HTTP {sc}{ctag}{mtag} | body={raw}"
+                except Exception:
+                    reason = str(exc)
+
                 results.append(
                     {
                         "index": idx,
@@ -2758,9 +2798,12 @@ class NotionService:
                         "client_ref": op_id or None,
                         "intent": op_intent,
                         "ok": False,
-                        "reason": str(exc),
+                        "reason": reason,
                         "error_type": exc.__class__.__name__,
-                        "error": _parse_structured_error(exc),
+                        "status_code": err.get("status_code")
+                        if isinstance(err, dict)
+                        else None,
+                        "error": err,
                     }
                 )
 

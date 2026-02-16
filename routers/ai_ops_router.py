@@ -681,9 +681,12 @@ async def approve(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[st
             content={
                 "ok": False,
                 "code": "approve_failed",
+                "error_type": type(exc).__name__,
                 "message": msg,
                 "approval_id": approval_id,
                 "execution_id": execution_id,
+                "failed_op_id": None,
+                "op_results": [],
                 "operation_errors": [],
                 "read_only": False,
             },
@@ -693,24 +696,92 @@ async def approve(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[st
         execution_result.setdefault("approval", approval)
         execution_result.setdefault("read_only", False)
 
+        def _extract_batch_operations(er: Dict[str, Any]) -> Optional[list]:
+            # Newer shape: top-level failure.result.operations
+            failure = er.get("failure")
+            if isinstance(failure, dict):
+                fres = failure.get("result")
+                if isinstance(fres, dict):
+                    ops0 = fres.get("operations")
+                    if isinstance(ops0, list):
+                        return ops0
+                    inner = fres.get("result")
+                    if isinstance(inner, dict) and isinstance(
+                        inner.get("operations"), list
+                    ):
+                        return inner.get("operations")
+
+            # Legacy shape: result.result.operations
+            wrapper0 = er.get("result")
+            if isinstance(wrapper0, dict):
+                payload0 = (
+                    wrapper0.get("result")
+                    if isinstance(wrapper0.get("result"), dict)
+                    else None
+                )
+                if isinstance(payload0, dict) and isinstance(
+                    payload0.get("operations"), list
+                ):
+                    return payload0.get("operations")
+            return None
+
         # If batch execution failed, surface structured per-op errors (additive) and
         # return a non-500 status so UI can render blockers.
         try:
             exec_state = _norm_status(execution_result.get("execution_state"))
-            wrapper = execution_result.get("result")
-            payload = wrapper.get("result") if isinstance(wrapper, dict) else None
-            ops = payload.get("operations") if isinstance(payload, dict) else None
+            ops = _extract_batch_operations(execution_result)
             if exec_state == "failed" and isinstance(ops, list):
                 operation_errors = []
+                op_results = []
+                first_failed = None
                 for op in ops:
                     if not isinstance(op, dict):
                         continue
-                    if op.get("ok") is True:
-                        continue
+
                     oid = op.get("op_id") if isinstance(op.get("op_id"), str) else None
+                    ok = bool(op.get("ok") is True)
+
                     err_obj = (
                         op.get("error") if isinstance(op.get("error"), dict) else {}
                     )
+                    status_code = (
+                        err_obj.get("status_code")
+                        if isinstance(err_obj.get("status_code"), int)
+                        else op.get("status_code")
+                        if isinstance(op.get("status_code"), int)
+                        else None
+                    )
+
+                    reason0 = (
+                        op.get("reason") if isinstance(op.get("reason"), str) else None
+                    )
+                    error_type0 = (
+                        op.get("error_type")
+                        if isinstance(op.get("error_type"), str)
+                        else None
+                    )
+
+                    op_results.append(
+                        {
+                            "op_id": oid,
+                            "ok": ok,
+                            "error_type": error_type0,
+                            "reason": reason0,
+                            "status_code": status_code,
+                        }
+                    )
+
+                    if op.get("ok") is True:
+                        continue
+
+                    if first_failed is None:
+                        first_failed = {
+                            "op_id": oid,
+                            "error_type": error_type0,
+                            "reason": reason0,
+                            "status_code": status_code,
+                        }
+
                     field = (
                         err_obj.get("field")
                         if isinstance(err_obj.get("field"), str)
@@ -761,8 +832,62 @@ async def approve(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[st
                 body = dict(execution_result)
                 body.setdefault("ok", False)
                 body["code"] = "execution_failed"
-                body["message"] = body.get("text") or "Execution failed"
+                failed_op_id = (
+                    first_failed.get("op_id")
+                    if isinstance(first_failed, dict)
+                    and isinstance(first_failed.get("op_id"), str)
+                    else None
+                )
+                body["failed_op_id"] = failed_op_id
+                body["error_type"] = (
+                    first_failed.get("error_type")
+                    if isinstance(first_failed, dict)
+                    and isinstance(first_failed.get("error_type"), str)
+                    else "batch_failed"
+                )
+                body["op_results"] = op_results
+
+                msg0 = None
+                if isinstance(first_failed, dict):
+                    r0 = first_failed.get("reason")
+                    if isinstance(r0, str) and r0.strip():
+                        msg0 = (
+                            f"{failed_op_id}: {r0.strip()}"
+                            if failed_op_id
+                            else r0.strip()
+                        )
+
+                body["message"] = msg0 or body.get("text") or "Execution failed"
                 body["operation_errors"] = operation_errors
+
+                # One structured log line (per op_id) when batch fails.
+                try:
+                    logger.warning(
+                        "ai_ops_router: execution_failed batch op_results=%s",
+                        json.dumps(
+                            {
+                                "approval_id": approval_id,
+                                "execution_id": execution_id,
+                                "failed_op_id": failed_op_id,
+                                "op_results": op_results,
+                            },
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        ),
+                    )
+                except Exception:
+                    pass
+                return JSONResponse(status_code=422, content=body)
+            if exec_state == "failed":
+                # Non-batch failure (or unknown shape): still return structured failure.
+                body = dict(execution_result)
+                body.setdefault("ok", False)
+                body["code"] = "execution_failed"
+                body.setdefault("failed_op_id", None)
+                body.setdefault("error_type", "execution_failed")
+                body["message"] = body.get("text") or "Execution failed"
+                body.setdefault("op_results", [])
+                body.setdefault("operation_errors", [])
                 return JSONResponse(status_code=422, content=body)
         except Exception:
             pass
