@@ -41,7 +41,12 @@ class TestNotionEnvLoggingAndPreflight(unittest.IsolatedAsyncioTestCase):
             os.environ.update(env_backup)
 
     async def test_preflight_401_raises_clear_error(self) -> None:
-        svc = NotionService(api_key="tok_ABCDEFGH1234", goals_db_id="g", tasks_db_id="t", projects_db_id="p")
+        svc = NotionService(
+            api_key="tok_ABCDEFGH1234",
+            goals_db_id="g",
+            tasks_db_id="t",
+            projects_db_id="p",
+        )
         setattr(svc, "_token_source", "NOTION_API_KEY")
 
         fake_client = AsyncMock()
