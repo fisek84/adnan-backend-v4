@@ -42,22 +42,56 @@ def strip_outer_quotes(value: str) -> str:
     return t
 
 
+def normalize_value(raw: str) -> str:
+    """Normalize raw string values from Key: Value blocks.
+
+    Rules:
+      - strip
+      - remove trailing ',' / ';' repeatedly
+      - strip outer quotes
+      - again remove trailing ',' / ';' repeatedly (handles '"X",')
+    """
+
+    s = (raw or "").strip()
+    if not s:
+        return s
+
+    while s.endswith(",") or s.endswith(";"):
+        s = s[:-1].rstrip()
+
+    # If this is a quoted list like '"A"; "B"' or '"A", "B"',
+    # stripping only the first/last quote would corrupt tokens.
+    if s.startswith('"') and s.endswith('"') and s.count('"') >= 4:
+        pass
+    elif s.startswith("'") and s.endswith("'") and s.count("'") >= 4:
+        pass
+    else:
+        s = strip_outer_quotes(s)
+
+    while s.endswith(",") or s.endswith(";"):
+        s = s[:-1].rstrip()
+
+    return s
+
+
 def _clean_title(name: str) -> str:
-    t = strip_outer_quotes(name)
+    t = normalize_value(name)
     t = re.sub(r"^\s*,\s*", "", t)
     return t.strip()
 
 
-def _split_assignees(raw: str) -> List[str]:
-    s = (raw or "").strip()
+def _split_assigned_to(raw: str) -> List[str]:
+    s = normalize_value(raw)
     if not s:
         return []
-    parts = re.split(r"\s+i\s+|\s+and\s+|[,/&]", s, flags=re.IGNORECASE)
+    parts = re.split(r"[;,]", s)
     out: List[str] = []
     for p in parts:
-        p2 = re.sub(r"[\s\.,;:]+$", "", (p or "").strip())
-        if p2:
-            out.append(p2)
+        if not isinstance(p, str):
+            continue
+        t = normalize_value(p)
+        if t:
+            out.append(t)
     return out
 
 
@@ -195,31 +229,29 @@ def build_create_goal_batch_operations_from_goal_blocks(
         fields = blk.fields or {}
 
         name = _clean_title(
-            strip_outer_quotes(
-                _field(fields, "name", "title", "naziv", "ime", "naslov")
-            )
+            normalize_value(_field(fields, "name", "title", "naziv", "ime", "naslov"))
         )
         if not name:
             name = blk.heading_title
         if not name:
             name = f"Goal {i}"
 
-        desc = strip_outer_quotes(_field(fields, "description", "opis", "desc"))
-        status = strip_outer_quotes(_field(fields, "status"))
-        priority = strip_outer_quotes(_field(fields, "priority", "prioritet"))
-        deadline_raw = strip_outer_quotes(_field(fields, "deadline", "rok", "due date"))
+        desc = normalize_value(_field(fields, "description", "opis", "desc"))
+        status = normalize_value(_field(fields, "status"))
+        priority = normalize_value(_field(fields, "priority", "prioritet"))
+        deadline_raw = normalize_value(_field(fields, "deadline", "rok", "due date"))
 
         deadline = ""
         if deadline_raw:
             iso = COOTranslationService._try_parse_date_to_iso(deadline_raw)
             deadline = iso or deadline_raw
 
-        assigned_to_raw = strip_outer_quotes(
+        assigned_to_raw = normalize_value(
             _field(fields, "assigned to", "assignee", "owner", "odgovoran")
         )
-        assignees = _split_assignees(assigned_to_raw)
+        assignees = _split_assigned_to(assigned_to_raw)
 
-        parent_goal = strip_outer_quotes(_field(fields, "parent goal", "parent"))
+        parent_goal = normalize_value(_field(fields, "parent goal", "parent"))
 
         payload: Dict[str, Any] = {"title": name}
         if desc:
@@ -235,19 +267,19 @@ def build_create_goal_batch_operations_from_goal_blocks(
         ps: Dict[str, Any] = {}
 
         # Optional selects supported by goals schema.
-        type_val = strip_outer_quotes(_field(fields, "type", "tip"))
+        type_val = normalize_value(_field(fields, "type", "tip"))
         if type_val and _is_writeable_prop("Type"):
             ps["Type"] = {"type": "select", "name": type_val}
 
-        level_val = strip_outer_quotes(_field(fields, "level", "nivo"))
+        level_val = normalize_value(_field(fields, "level", "nivo"))
         if level_val and _is_writeable_prop("Level"):
             ps["Level"] = {"type": "select", "name": level_val}
 
-        outcome_val = strip_outer_quotes(_field(fields, "outcome", "ishod"))
+        outcome_val = normalize_value(_field(fields, "outcome", "ishod"))
         if outcome_val and _is_writeable_prop("Outcome"):
             ps["Outcome"] = {"type": "select", "name": outcome_val}
 
-        category_val = strip_outer_quotes(_field(fields, "category", "kategorija"))
+        category_val = normalize_value(_field(fields, "category", "kategorija"))
         if category_val and _is_writeable_prop("Category"):
             ps["Category"] = {"type": "select", "name": category_val}
 

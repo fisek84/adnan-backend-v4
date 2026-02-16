@@ -7,10 +7,12 @@ def test_multi_kreiraj_cilj_blocks_force_batch_request_and_clean_fields() -> Non
     from gateway.gateway_server import _unwrap_proposal_wrapper_or_raise
 
     prompt = """
-Kreiraj Cilj: Prvi cilj
-Status: "In Progress"
-Priority: "High"
-Deadline: "2026-02-20"
+Kreiraj Cilj: "Prvi cilj",
+Status: "In Progress",
+Priority: "High";
+Type: "Business",
+Assigned To: "Ad Fisek"; "Snezana",
+Deadline: "2026-02-20",
 Description: Ovo je opis prvog cilja.
 
 Kreiraj Cilj: Drugi cilj
@@ -47,7 +49,15 @@ Description: Treći opis.
     assert isinstance(d0, str)
     assert "Kreiraj Cilj:" not in d0
 
+    assert ops[0]["payload"]["title"] == "Prvi cilj"
+    assert not ops[0]["payload"]["title"].endswith(",")
+
     assert ops[0]["payload"]["priority"] == "High"
     assert ops[0]["payload"]["status"] == "In Progress"
+
+    ps0 = ops[0]["payload"].get("property_specs")
+    assert isinstance(ps0, dict)
+    assert ps0["Type"]["name"] == "Business"
+    assert ps0["Assigned To"]["names"] == ["Ad Fisek", "Snezana"]
 
     assert ops[2]["payload"].get("parent_goal_id") == "$goal_1"

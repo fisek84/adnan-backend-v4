@@ -10,6 +10,23 @@ def _ensure_str(v: Any) -> str:
     return v.strip() if isinstance(v, str) else ""
 
 
+def normalize_value(raw: str) -> str:
+    s = (raw or "").strip()
+    if not s:
+        return s
+    while s.endswith(",") or s.endswith(";"):
+        s = s[:-1].rstrip()
+    if s.startswith('"') and s.endswith('"') and s.count('"') >= 4:
+        pass
+    elif s.startswith("'") and s.endswith("'") and s.count("'") >= 4:
+        pass
+    else:
+        s = strip_outer_quotes(s)
+    while s.endswith(",") or s.endswith(";"):
+        s = s[:-1].rstrip()
+    return s
+
+
 def strip_outer_quotes(value: str) -> str:
     t = (value or "").strip()
     if not t:
@@ -30,12 +47,14 @@ def strip_outer_quotes(value: str) -> str:
 
 def _as_list_of_str(v: Any) -> List[str]:
     if isinstance(v, list):
-        return [strip_outer_quotes(_ensure_str(x)) for x in v if _ensure_str(x)]
+        return [normalize_value(_ensure_str(x)) for x in v if _ensure_str(x)]
     s = _ensure_str(v)
-    s = strip_outer_quotes(s)
+    s = normalize_value(s)
     if not s:
         return []
-    return [x.strip() for x in s.split(",") if x.strip()]
+    return [
+        normalize_value(x) for x in s.split(",") if isinstance(x, str) and x.strip()
+    ]
 
 
 @dataclass(frozen=True)
@@ -78,7 +97,7 @@ def _resolve_option(
     - Else ambiguous/invalid.
     """
 
-    val = strip_outer_quotes((provided or "").strip())
+    val = normalize_value(provided or "")
     if not val:
         return None, None
 
@@ -181,7 +200,7 @@ def _normalize_value_for_model(
         return {"type": "rich_text", "text": s}, None
 
     if wt in {"select", "status"}:
-        s = strip_outer_quotes(_ensure_str(raw_value))
+        s = normalize_value(_ensure_str(raw_value))
         if not s:
             return None, None
         canon, warn = _resolve_option(provided=s, options=model.options or [])
@@ -209,7 +228,7 @@ def _normalize_value_for_model(
         return {"type": "multi_select", "names": normed}, warn_out
 
     if wt == "date":
-        s = strip_outer_quotes(_ensure_str(raw_value))
+        s = normalize_value(_ensure_str(raw_value))
         if not s:
             return None, None
         # Accept ISO YYYY-MM-DD; leave natural language to other layers.
