@@ -4779,6 +4779,9 @@ async def execute_preview_command(
                 status = _ensure_str(
                     payload.get("status") or payload.get("Status")
                 ).strip()
+                level = _ensure_str(
+                    payload.get("level") or payload.get("Level")
+                ).strip()
 
                 ps: Dict[str, Any] = {}
                 if title:
@@ -4791,6 +4794,8 @@ async def execute_preview_command(
                     ps["Priority"] = {"type": "select", "name": priority}
                 if status:
                     ps["Status"] = {"type": "status", "name": status}
+                if level:
+                    ps["Level"] = {"type": "select", "name": level}
 
                 extra_specs = payload.get("property_specs")
                 if isinstance(extra_specs, dict) and extra_specs:
@@ -5351,6 +5356,110 @@ async def execute_preview_command(
                         except Exception:
                             return base
 
+                    def _merge_build_warnings(
+                        *,
+                        base: Optional[Dict[str, Any]],
+                        db_key: Optional[str],
+                        op_id: Optional[str],
+                        build_warnings: Any,
+                        mode: str,
+                    ) -> Optional[Dict[str, Any]]:
+                        """Convert builder warnings into validation issues.
+
+                        The property_specs builder can drop invalid options deterministically.
+                        For preview correctness, we surface those drops as validation issues so
+                        UI can show blockers and allow patching.
+                        """
+
+                        if not isinstance(build_warnings, list) or not build_warnings:
+                            return base
+
+                        issues: List[Dict[str, Any]] = []
+                        for w in build_warnings:
+                            if not isinstance(w, dict):
+                                continue
+                            code0 = _ensure_str(w.get("code") or "").strip()
+                            if not code0:
+                                continue
+
+                            field0 = (
+                                _ensure_str(
+                                    w.get("resolved_field") or w.get("field") or ""
+                                ).strip()
+                                or None
+                            )
+                            msg0 = _ensure_str(w.get("message") or "").strip()
+                            allowed0 = w.get("allowed")
+                            allowed_list = (
+                                [
+                                    _ensure_str(x).strip()
+                                    for x in allowed0
+                                    if _ensure_str(x).strip()
+                                ]
+                                if isinstance(allowed0, list)
+                                else None
+                            )
+
+                            severity0 = "warning"
+                            if (mode or "").strip().lower() == "strict" and code0 in {
+                                "invalid_option",
+                                "ambiguous_option",
+                                "unknown_field",
+                                "read_only",
+                                "invalid_property_spec",
+                            }:
+                                severity0 = "error"
+
+                            it: Dict[str, Any] = {
+                                "severity": severity0,
+                                "code": code0,
+                                "field": field0,
+                                "message": msg0,
+                                "source": _ensure_str(w.get("source") or "builder")
+                                or "builder",
+                            }
+                            if op_id:
+                                it["op_id"] = op_id
+                            if allowed_list is not None:
+                                it["allowed"] = allowed_list
+                            prov0 = w.get("provided")
+                            if prov0 is not None:
+                                it["provided"] = prov0
+                            issues.append(it)
+
+                        if not issues:
+                            return base
+
+                        try:
+                            from services.notion_patch_validation import (  # noqa: PLC0415
+                                merge_validation_reports,
+                            )
+
+                            errs = sum(
+                                1
+                                for it in issues
+                                if isinstance(it, dict)
+                                and it.get("severity") == "error"
+                            )
+                            warns = sum(
+                                1
+                                for it in issues
+                                if isinstance(it, dict)
+                                and it.get("severity") == "warning"
+                            )
+                            extra_report = {
+                                "mode": (mode or "warn"),
+                                "db_key": (db_key or "").strip() or None,
+                                "issues": issues,
+                                "can_approve": errs == 0,
+                                "summary": {"errors": errs, "warnings": warns},
+                            }
+                            if isinstance(base, dict):
+                                return merge_validation_reports(base, extra_report)
+                            return merge_validation_reports(extra_report)
+                        except Exception:
+                            return base
+
                     def _format_ref(v: Any) -> Optional[str]:
                         if v is None:
                             return None
@@ -5367,6 +5476,140 @@ async def execute_preview_command(
                             return str(v)
                         except Exception:
                             return None
+
+                    def _row_title_from_property_specs(
+                        ps_in: Optional[Dict[str, Any]],
+                    ) -> Optional[str]:
+                        ps0 = ps_in if isinstance(ps_in, dict) else {}
+                        for k0, v0 in ps0.items():
+                            if not isinstance(k0, str) or not k0.strip():
+                                continue
+                            if not isinstance(v0, dict):
+                                continue
+                            if _ensure_str(v0.get("type")).strip().lower() == "title":
+                                t0 = _ensure_str(
+                                    v0.get("text") or v0.get("value") or ""
+                                ).strip()
+                                if t0:
+                                    return t0
+                        # Fallback: common key
+                        v1 = ps0.get("Name")
+                        if isinstance(v1, dict):
+                            t1 = _ensure_str(
+                                v1.get("text") or v1.get("value") or ""
+                            ).strip()
+                            if t1:
+                                return t1
+                        return None
+
+                    def normalize_issue(
+                        issue: Any,
+                        *,
+                        row: Optional[Dict[str, Any]] = None,
+                    ) -> Optional[Dict[str, Any]]:
+                        if not isinstance(issue, dict):
+                            return None
+
+                        out: Dict[str, Any] = dict(issue)
+
+                        op_id0 = out.get("op_id")
+                        if not (
+                            isinstance(op_id0, str) and op_id0.strip()
+                        ) and isinstance(row, dict):
+                            op_id0 = row.get("op_id")
+                        op_id0 = op_id0.strip() if isinstance(op_id0, str) else None
+
+                        db_key0 = out.get("db_key")
+                        if not (
+                            isinstance(db_key0, str) and db_key0.strip()
+                        ) and isinstance(row, dict):
+                            db_key0 = row.get("db_key")
+                        db_key0 = db_key0.strip() if isinstance(db_key0, str) else None
+
+                        title0 = out.get("title")
+                        if not (
+                            isinstance(title0, str) and title0.strip()
+                        ) and isinstance(row, dict):
+                            ps0 = row.get("property_specs")
+                            title0 = _row_title_from_property_specs(
+                                ps0 if isinstance(ps0, dict) else {}
+                            )
+                        title0 = title0.strip() if isinstance(title0, str) else None
+
+                        severity0 = (
+                            _ensure_str(out.get("severity") or "").strip().lower()
+                            or "warning"
+                        )
+                        code0 = _ensure_str(out.get("code") or "").strip() or "unknown"
+                        field0 = out.get("field")
+                        field0 = (
+                            field0.strip()
+                            if isinstance(field0, str) and field0.strip()
+                            else None
+                        )
+                        msg0 = _ensure_str(out.get("message") or "").strip()
+
+                        # Map existing validator key to the new additive name.
+                        allowed0 = out.get("allowed")
+                        allowed_values0 = None
+                        if isinstance(allowed0, list):
+                            allowed_values0 = [
+                                _ensure_str(x).strip()
+                                for x in allowed0
+                                if _ensure_str(x).strip()
+                            ]
+
+                        expected_type0 = None
+                        try:
+                            if db_key0 and field0 and isinstance(review_block, dict):
+                                by_db0 = review_block.get("fields_schema_by_db_key")
+                                if isinstance(by_db0, dict):
+                                    sch0 = by_db0.get(db_key0)
+                                    if isinstance(sch0, dict):
+                                        spec0 = sch0.get(field0)
+                                        if isinstance(spec0, dict):
+                                            et0 = _ensure_str(
+                                                spec0.get("type") or ""
+                                            ).strip()
+                                            if et0:
+                                                expected_type0 = et0
+
+                                            # If validator didn't provide allowed values, use schema options.
+                                            if allowed_values0 is None:
+                                                opts0 = spec0.get("options")
+                                                if isinstance(opts0, list):
+                                                    allowed_values0 = [
+                                                        _ensure_str(x).strip()
+                                                        for x in opts0
+                                                        if _ensure_str(x).strip()
+                                                    ]
+                        except Exception:
+                            pass
+
+                        suggestion0 = None
+                        if (not suggestion0) and code0 in {
+                            "invalid_option",
+                            "invalid_relation_ref",
+                            "invalid_relation_id",
+                        }:
+                            if allowed_values0:
+                                suggestion0 = "Choose one of the allowed values."
+
+                        out.setdefault("op_id", op_id0)
+                        out.setdefault("db_key", db_key0)
+                        out.setdefault("title", title0)
+                        out.setdefault("field", field0)
+                        out.setdefault("code", code0)
+                        out.setdefault("message", msg0)
+                        out.setdefault("severity", severity0)
+                        if allowed_values0 is not None:
+                            out.setdefault("allowed_values", allowed_values0)
+                        if expected_type0 is not None:
+                            out.setdefault("expected_type", expected_type0)
+                        if suggestion0 is not None:
+                            out.setdefault("suggestion", suggestion0)
+
+                        return out
 
                     for idx, op in enumerate(ops):
                         if not isinstance(op, dict):
@@ -5460,13 +5703,42 @@ async def execute_preview_command(
                                     )
                                     else {},
                                 }
-                            row["validation"] = _merge_patch_issues(
-                                base=await _validation_for_preview(
-                                    db_key=db_key, property_specs=ps
+                            base_validation = await _validation_for_preview(
+                                db_key=db_key, property_specs=ps
+                            )
+                            base_validation = _merge_build_warnings(
+                                base=base_validation,
+                                db_key=db_key,
+                                op_id=op_id if isinstance(op_id, str) else None,
+                                build_warnings=(
+                                    built_row.get("warnings")
+                                    if isinstance(built_row, dict)
+                                    else None
                                 ),
+                                mode=validation_mode,
+                            )
+                            row["validation"] = _merge_patch_issues(
+                                base=base_validation,
                                 db_key=db_key,
                                 op_id=op_id if isinstance(op_id, str) else None,
                             )
+
+                        # Enterprise additive UX: normalize issues per row (do not remove existing keys)
+                        try:
+                            v1 = row.get("validation")
+                            if isinstance(v1, dict):
+                                its1 = v1.get("issues")
+                                if isinstance(its1, list) and its1:
+                                    normalized_issues: List[Dict[str, Any]] = []
+                                    for it in its1:
+                                        nit = normalize_issue(it, row=row)
+                                        if isinstance(nit, dict):
+                                            normalized_issues.append(nit)
+                                    # Keep the canonical key name unchanged; only enrich issue dicts.
+                                    v1["issues"] = normalized_issues
+                                    row["validation"] = v1
+                        except Exception:
+                            pass
                         rows.append(row)
 
                     # Summary for table UI.
@@ -5498,6 +5770,97 @@ async def execute_preview_command(
                             else:
                                 global_errs += 1
 
+                    # Aggregate blockers from normalized per-row issues + global issues.
+                    has_blockers = False
+                    blocked_reasons: List[str] = []
+                    blocker_codes = {
+                        "invalid_option",
+                        "read_only_field",
+                        "invalid_date",
+                        "missing_required_field",
+                        "invalid_relation",
+                        "invalid_relation_ref",
+                        "invalid_relation_id",
+                        "wrong_type",
+                        "unsupported_type",
+                    }
+                    try:
+                        # Normalize global issues too (additive).
+                        norm_global: List[Dict[str, Any]] = []
+                        if enterprise_enabled and patch_global_issues:
+                            for it in patch_global_issues:
+                                nit = normalize_issue(it, row=None)
+                                if isinstance(nit, dict):
+                                    norm_global.append(nit)
+                        if norm_global:
+                            patch_global_issues = norm_global
+
+                        # Build short per-op reasons.
+                        per_op_msgs: Dict[str, List[str]] = {}
+
+                        def _is_blocker(it: Dict[str, Any]) -> bool:
+                            sev = _ensure_str(it.get("severity") or "").strip().lower()
+                            code = _ensure_str(it.get("code") or "").strip()
+                            return (sev == "error") or (code in blocker_codes)
+
+                        # Global
+                        for it in patch_global_issues or []:
+                            if not isinstance(it, dict):
+                                continue
+                            if not _is_blocker(it):
+                                continue
+                            has_blockers = True
+                            oid = (
+                                _ensure_str(it.get("op_id") or "").strip()
+                                or "__global__"
+                            )
+                            msg = _ensure_str(
+                                it.get("message") or it.get("code") or ""
+                            ).strip()
+                            if msg:
+                                per_op_msgs.setdefault(oid, []).append(msg)
+
+                        # Per-row
+                        for r0 in rows:
+                            if not isinstance(r0, dict):
+                                continue
+                            oid = (
+                                _ensure_str(r0.get("op_id") or "").strip()
+                                or "(missing op_id)"
+                            )
+                            v0 = r0.get("validation")
+                            its0 = v0.get("issues") if isinstance(v0, dict) else None
+                            if not isinstance(its0, list):
+                                continue
+                            for it in its0:
+                                if not isinstance(it, dict):
+                                    continue
+                                if not _is_blocker(it):
+                                    continue
+                                has_blockers = True
+                                msg = _ensure_str(
+                                    it.get("message") or it.get("code") or ""
+                                ).strip()
+                                if msg:
+                                    per_op_msgs.setdefault(oid, []).append(msg)
+
+                        # Emit top-N compact messages.
+                        TOP_N_PER_OP = 3
+                        TOP_OPS = 10
+                        for oid, msgs in list(per_op_msgs.items())[:TOP_OPS]:
+                            uniq: List[str] = []
+                            for m in msgs:
+                                if m in uniq:
+                                    continue
+                                uniq.append(m)
+                                if len(uniq) >= TOP_N_PER_OP:
+                                    break
+                            for m in uniq:
+                                blocked_reasons.append(f"{oid}: {m}")
+                    except Exception:
+                        has_blockers = (errors + global_errs) > 0
+                        blocked_reasons = []
+
                     notion_block = {
                         "type": "batch_preview",
                         "operations": (
@@ -5512,7 +5875,10 @@ async def execute_preview_command(
                                 "errors": errors + global_errs,
                                 "warnings": warnings + global_warns,
                             },
-                            "can_approve": (errors + global_errs) == 0,
+                            "has_blockers": bool(has_blockers),
+                            "blocked_reasons": blocked_reasons,
+                            "can_approve": (errors + global_errs) == 0
+                            and (not has_blockers),
                         },
                         "note": "Preview does not hit Notion. Final execution may still normalize select/status types based on DB schema.",
                     }

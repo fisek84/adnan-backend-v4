@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Body, HTTPException, Request
+from fastapi.responses import JSONResponse
 
 from models.canon import PROPOSAL_WRAPPER_INTENT
 from services.agent_health_service import AgentHealthService
@@ -673,13 +674,98 @@ async def approve(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[st
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(
-            500, detail=f"approve_failed: {type(exc).__name__}: {exc}"
-        ) from exc
+        # Fail-soft: return structured error payload for UI.
+        msg = f"{type(exc).__name__}: {exc}"
+        return JSONResponse(
+            status_code=422,
+            content={
+                "ok": False,
+                "code": "approve_failed",
+                "message": msg,
+                "approval_id": approval_id,
+                "execution_id": execution_id,
+                "operation_errors": [],
+                "read_only": False,
+            },
+        )
 
     if isinstance(execution_result, dict):
         execution_result.setdefault("approval", approval)
         execution_result.setdefault("read_only", False)
+
+        # If batch execution failed, surface structured per-op errors (additive) and
+        # return a non-500 status so UI can render blockers.
+        try:
+            exec_state = _norm_status(execution_result.get("execution_state"))
+            wrapper = execution_result.get("result")
+            payload = wrapper.get("result") if isinstance(wrapper, dict) else None
+            ops = payload.get("operations") if isinstance(payload, dict) else None
+            if exec_state == "failed" and isinstance(ops, list):
+                operation_errors = []
+                for op in ops:
+                    if not isinstance(op, dict):
+                        continue
+                    if op.get("ok") is True:
+                        continue
+                    oid = op.get("op_id") if isinstance(op.get("op_id"), str) else None
+                    err_obj = (
+                        op.get("error") if isinstance(op.get("error"), dict) else {}
+                    )
+                    field = (
+                        err_obj.get("field")
+                        if isinstance(err_obj.get("field"), str)
+                        else None
+                    )
+                    code = (
+                        err_obj.get("code")
+                        if isinstance(err_obj.get("code"), str)
+                        else None
+                    )
+                    msg = (
+                        err_obj.get("message")
+                        if isinstance(err_obj.get("message"), str)
+                        else None
+                    )
+                    allowed = err_obj.get("allowed_values")
+                    allowed_values = (
+                        [x for x in allowed if isinstance(x, str) and x.strip()]
+                        if isinstance(allowed, list)
+                        else None
+                    )
+
+                    # Fallback to legacy fields.
+                    if not code:
+                        code = (
+                            op.get("error_type")
+                            if isinstance(op.get("error_type"), str)
+                            else "unknown_error"
+                        )
+                    if not msg:
+                        msg = (
+                            op.get("reason")
+                            if isinstance(op.get("reason"), str)
+                            else "Operation failed"
+                        )
+
+                    rec = {
+                        "op_id": oid,
+                        "field": field,
+                        "code": code,
+                        "message": msg,
+                    }
+                    if allowed_values is not None:
+                        rec["allowed_values"] = allowed_values
+                    operation_errors.append(rec)
+
+                # Keep the original payload fields but change status to 422.
+                body = dict(execution_result)
+                body.setdefault("ok", False)
+                body["code"] = "execution_failed"
+                body["message"] = body.get("text") or "Execution failed"
+                body["operation_errors"] = operation_errors
+                return JSONResponse(status_code=422, content=body)
+        except Exception:
+            pass
 
         # Best-effort: surface Notion URLs (single + batch) for UI.
         try:

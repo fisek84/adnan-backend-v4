@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import contextvars
+import json
 import logging
 import os
 import re
@@ -2574,6 +2575,81 @@ class NotionService:
         ref_map: Dict[str, str] = {}
         results: List[Dict[str, Any]] = []
 
+        def _parse_structured_error(exc: Exception) -> Dict[str, Any]:
+            """Best-effort extraction of structured error fields.
+
+            Additive contract:
+              {field?: str|None, code: str, message: str, allowed_values?: list[str]|None}
+            """
+
+            msg = ""
+            try:
+                msg = str(exc)
+            except Exception:
+                msg = ""
+
+            out: Dict[str, Any] = {
+                "field": None,
+                "code": "unknown_error",
+                "message": msg or "Execution failed",
+            }
+
+            # Parse canonical Notion HTTP wrapper: "Notion HTTP <status>: <text>"
+            if isinstance(msg, str) and msg.startswith("Notion HTTP ") and ":" in msg:
+                try:
+                    _, tail = msg.split(":", 1)
+                    tail = (tail or "").strip()
+                except Exception:
+                    tail = ""
+
+                # Try JSON first.
+                if tail.startswith("{") and tail.endswith("}"):
+                    try:
+                        data = json.loads(tail)
+                        if isinstance(data, dict):
+                            code0 = _ensure_str(data.get("code") or "").strip()
+                            msg0 = _ensure_str(data.get("message") or "").strip()
+                            if code0:
+                                out["code"] = code0
+                            if msg0:
+                                out["message"] = msg0
+                    except Exception:
+                        pass
+
+                # Heuristics on the (possibly JSON) message.
+                mtxt = _ensure_str(out.get("message") or msg).strip()
+                mlow = mtxt.lower()
+
+                # Invalid select/status option patterns.
+                if "select" in mlow and "option" in mlow and "invalid" in mlow:
+                    out["code"] = "invalid_option"
+
+                # Try to extract field name from quotes.
+                try:
+                    import re
+
+                    # Notion messages often mention a property name in quotes.
+                    m = re.search(r"Property\s+\"(?P<field>[^\"]+)\"", mtxt)
+                    if not m:
+                        m = re.search(r"property\s+\"(?P<field>[^\"]+)\"", mtxt)
+                    if not m:
+                        m = re.search(r"\"(?P<field>[^\"]+)\"\s+property", mtxt)
+                    if m:
+                        f0 = _ensure_str(m.group("field")).strip()
+                        if f0:
+                            out["field"] = f0
+                except Exception:
+                    pass
+
+                return out
+
+            # Non-Notion exceptions: keep type as code when helpful.
+            try:
+                out["code"] = exc.__class__.__name__ or out["code"]
+            except Exception:
+                pass
+            return out
+
         def _resolve_refs(v: Any) -> Any:
             if isinstance(v, str) and v.startswith("$") and len(v) > 1:
                 # Support "$op_id" as well as strings that start with "$op_id...".
@@ -2684,6 +2760,7 @@ class NotionService:
                         "ok": False,
                         "reason": str(exc),
                         "error_type": exc.__class__.__name__,
+                        "error": _parse_structured_error(exc),
                     }
                 )
 

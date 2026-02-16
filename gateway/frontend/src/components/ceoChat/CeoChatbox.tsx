@@ -1149,10 +1149,43 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       abortRef.current = controller;
 
       try {
-        const approveJson = await postJson(appUrl, { approval_id: approvalId }, controller.signal);
-        const msg =
-          _pickText(approveJson) ||
-          (approveJson?.execution_state ? `Execution: ${approveJson.execution_state}` : "Approved.");
+        // Approve can return 422 with a structured JSON body; do not rely on postJson (it throws on non-2xx).
+        const res = await fetch(appUrl, {
+          method: "POST",
+          headers: mergedHeaders,
+          body: JSON.stringify({ approval_id: approvalId }),
+          signal: controller.signal,
+        });
+        const txt = await res.text();
+        let approveJson: any = {};
+        try {
+          approveJson = txt ? JSON.parse(txt) : {};
+        } catch {
+          approveJson = { ok: res.ok, message: txt || "" };
+        }
+
+        const opErrors: any[] = Array.isArray(approveJson?.operation_errors)
+          ? (approveJson.operation_errors as any[])
+          : [];
+
+        const msg = opErrors.length
+          ? (() => {
+              const lines: string[] = [];
+              lines.push("Blocked because:");
+              for (const it of opErrors.slice(0, 20)) {
+                if (!it || typeof it !== "object") continue;
+                const oid = typeof (it as any).op_id === "string" ? (it as any).op_id : "";
+                const field = typeof (it as any).field === "string" ? (it as any).field : "";
+                const code = typeof (it as any).code === "string" ? (it as any).code : "error";
+                const m = typeof (it as any).message === "string" ? (it as any).message : "Operation failed";
+                const head = oid ? oid : "(op)";
+                const mid = field ? ` · ${field}` : "";
+                lines.push(`- ${head}${mid} · ${code}: ${m}`);
+              }
+              return lines.join("\n");
+            })()
+          : _pickText(approveJson) ||
+            (approveJson?.execution_state ? `Execution: ${approveJson.execution_state}` : res.ok ? "Approved." : "Approval failed.");
 
         updateItem(placeholder.id, { content: msg, status: "final" });
 
@@ -1186,7 +1219,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         setLastError(isAbortError(e) ? null : msg);
       }
     },
-    [appendItem, effectiveApproveUrl, busy, postJson, resolveEndpoint, updateItem]
+    [appendItem, effectiveApproveUrl, busy, mergedHeaders, resolveEndpoint, updateItem]
   );
 
   /**

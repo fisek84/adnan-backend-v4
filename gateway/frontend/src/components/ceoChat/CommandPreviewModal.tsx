@@ -71,6 +71,7 @@ export const CommandPreviewModal: React.FC<Props> = ({
   };
 
   const [selectedOpIds, setSelectedOpIds] = useState<Record<string, boolean>>({});
+  const [activeOpId, setActiveOpId] = useState<string | null>(null);
   const [editingCell, setEditingCell] = useState<
     { op_id: string; field: string } | null
   >(null);
@@ -110,6 +111,7 @@ export const CommandPreviewModal: React.FC<Props> = ({
     setNewItemDueDate("");
 
     setSelectedOpIds({});
+    setActiveOpId(null);
     setEditingCell(null);
     setEditingValue("");
   }, [open]);
@@ -400,6 +402,20 @@ export const CommandPreviewModal: React.FC<Props> = ({
       .filter((k) => k.trim());
   }, [selectedOpIds]);
 
+  // Keep activeOpId stable and sensible.
+  useEffect(() => {
+    if (!enterpriseEnabled || !isBatchPreview) return;
+
+    if (selectedOpIdList.length === 1) {
+      const only = selectedOpIdList[0];
+      if (only && only !== activeOpId) setActiveOpId(only);
+      return;
+    }
+
+    if (activeOpId && selectedOpIdList.includes(activeOpId)) return;
+    if (selectedOpIdList.length > 0) setActiveOpId(selectedOpIdList[0]);
+  }, [enterpriseEnabled, isBatchPreview, selectedOpIdList, activeOpId]);
+
   const selectionDbKey = useMemo(() => {
     if (!enterpriseEnabled || !isBatchPreview || !notionRows) return null;
     const set = new Set<string>();
@@ -415,10 +431,10 @@ export const CommandPreviewModal: React.FC<Props> = ({
 
   const activeSelectedRow = useMemo(() => {
     if (!enterpriseEnabled || !isBatchPreview || !notionRows) return null;
-    if (selectedOpIdList.length !== 1) return null;
-    const oid = selectedOpIdList[0];
+    const oid = activeOpId;
+    if (!oid) return null;
     return notionRows.find((x) => String(x?.op_id || "") === oid) || null;
-  }, [enterpriseEnabled, isBatchPreview, notionRows, selectedOpIdList]);
+  }, [enterpriseEnabled, isBatchPreview, notionRows, activeOpId]);
 
   const enterpriseSelectionSchema = useMemo(() => {
     if (!enterpriseEnabled || !isBatchPreview) return null;
@@ -1448,16 +1464,34 @@ export const CommandPreviewModal: React.FC<Props> = ({
                               isBatchPreview &&
                               rowOpId &&
                               Boolean(selectedOpIds[rowOpId]);
+                            const rowActive =
+                              enterpriseEnabled &&
+                              isBatchPreview &&
+                              rowOpId &&
+                              activeOpId === rowOpId;
                             return (
                               <tr
                                 key={r?.op_id || ridx}
-                                style={
-                                  rowSelected
-                                    ? {
-                                        background: "rgba(59,130,246,0.08)",
-                                      }
-                                    : undefined
-                                }
+                                style={(() => {
+                                  if (rowActive) {
+                                    return {
+                                      background: "rgba(59,130,246,0.14)",
+                                      outline: "1px solid rgba(59,130,246,0.25)",
+                                    } as any;
+                                  }
+                                  if (rowSelected) {
+                                    return { background: "rgba(59,130,246,0.08)" } as any;
+                                  }
+                                  return undefined;
+                                })()}
+                                onClick={() => {
+                                  if (!enterpriseEnabled || !isBatchPreview) return;
+                                  const oid = String((r as any)?.op_id || "").trim();
+                                  if (!oid) return;
+                                  setActiveOpId(oid);
+                                  // Do not implicitly select all; selection is controlled by checkboxes.
+                                  setSelectedOpIds((prev) => ({ ...prev, [oid]: true }));
+                                }}
                               >
                               {enterpriseEnabled && isBatchPreview ? (
                                 <td
@@ -1479,6 +1513,7 @@ export const CommandPreviewModal: React.FC<Props> = ({
                                     onChange={(e) => {
                                       const oid = String(r?.op_id || "");
                                       if (!oid) return;
+                                      setActiveOpId(oid);
                                       setSelectedOpIds((prev) => ({
                                         ...prev,
                                         [oid]: e.target.checked,
@@ -1563,6 +1598,7 @@ export const CommandPreviewModal: React.FC<Props> = ({
                                     onClick={() => {
                                       if (!canEdit) return;
                                       if (!opId) return;
+                                      setActiveOpId(opId);
                                       setEditingCell({ op_id: opId, field: c });
                                       const init =
                                         patchedCell !== null
@@ -1729,13 +1765,29 @@ export const CommandPreviewModal: React.FC<Props> = ({
                         {enterpriseIssueList.length > 0 ? (
                           <div style={{ marginTop: 8 }}>
                             {enterpriseIssueList
-                              .filter((it: any) => (it?.severity || "error") === "error")
+                              .filter((it: any) => {
+                                if ((it?.severity || "error") !== "error") return false;
+                                const oid = typeof it?.op_id === "string" ? it.op_id : "";
+                                // global issues always show; per-op issues only for active op
+                                if (!oid) return true;
+                                if (!activeOpId) return false;
+                                return oid === activeOpId;
+                              })
                               .slice(0, 50)
                               .map((it: any, idx: number) => {
                                 const oid = typeof it?.op_id === "string" ? it.op_id : "";
                                 const field = typeof it?.field === "string" ? it.field : "";
                                 const msg = typeof it?.message === "string" ? it.message : "Validation error";
                                 const code = typeof it?.code === "string" ? it.code : "error";
+                                const allowed = Array.isArray(it?.allowed_values)
+                                  ? (it.allowed_values as any[]).filter((x: any) => typeof x === "string")
+                                  : Array.isArray(it?.allowed)
+                                    ? (it.allowed as any[]).filter((x: any) => typeof x === "string")
+                                    : [];
+                                const schemaAllowed = field && activeSelectedRow
+                                  ? fieldOptionsFromSchema(enterpriseSelectionSchema as any, field)
+                                  : [];
+                                const allowedList = allowed.length ? allowed : schemaAllowed;
                                 return (
                                   <div
                                     key={`${oid}_${field}_${code}_${idx}`}
@@ -1754,6 +1806,38 @@ export const CommandPreviewModal: React.FC<Props> = ({
                                     {field ? <span style={{ opacity: 0.8 }}> · {field}</span> : null}
                                     <span style={{ opacity: 0.7 }}> · {code}</span>
                                     <div style={{ marginTop: 2, opacity: 0.9 }}>{msg}</div>
+                                    {allowedList && allowedList.length > 0 ? (
+                                      <div style={{ marginTop: 6, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                                        <div style={{ fontSize: 11, opacity: 0.75 }}>
+                                          Allowed:
+                                        </div>
+                                        <select
+                                          value={""}
+                                          onChange={(e) => {
+                                            const v = String(e.target.value || "");
+                                            if (!v) return;
+                                            if (!activeOpId || !field) return;
+                                            upsertEnterprisePatch(activeOpId, field, v);
+                                          }}
+                                          style={{
+                                            border: "1px solid rgba(255,255,255,0.12)",
+                                            background: "rgba(255,255,255,0.02)",
+                                            color: "rgba(255,255,255,0.92)",
+                                            borderRadius: 10,
+                                            padding: "6px 8px",
+                                            fontSize: 12,
+                                            outline: "none",
+                                          }}
+                                        >
+                                          <option value="">(choose)</option>
+                                          {allowedList.slice(0, 50).map((o: string) => (
+                                            <option key={o} value={o} style={{ color: "#000" }}>
+                                              {o}
+                                            </option>
+                                          ))}
+                                        </select>
+                                      </div>
+                                    ) : null}
                                   </div>
                                 );
                               })}
@@ -2856,6 +2940,34 @@ export const CommandPreviewModal: React.FC<Props> = ({
                                   onClick={() => {
                                     const keys = Object.keys(enterpriseDraft || {});
                                     if (!keys.length) return;
+                                    if (!activeOpId) return;
+                                    for (const k of keys) {
+                                      upsertEnterprisePatch(activeOpId, k, enterpriseDraft[k]);
+                                    }
+                                    setEnterpriseDraft({});
+                                  }}
+                                  style={{
+                                    padding: "8px 10px",
+                                    borderRadius: 10,
+                                    border: "1px solid rgba(255,255,255,0.12)",
+                                    background: "rgba(255,255,255,0.08)",
+                                    color: "rgba(255,255,255,0.92)",
+                                    cursor: "pointer",
+                                  }}
+                                  disabled={
+                                    loading ||
+                                    !Boolean(activeOpId) ||
+                                    !Boolean(onEnterprisePatchesChange) ||
+                                    !Object.keys(enterpriseDraft || {}).length
+                                  }
+                                  title={activeOpId ? `Apply current edits to active op (${activeOpId})` : "Select a row to set active op"}
+                                >
+                                  Apply to active
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    const keys = Object.keys(enterpriseDraft || {});
+                                    if (!keys.length) return;
                                     if (!selectedOpIdList.length) return;
                                     for (const oid of selectedOpIdList) {
                                       for (const k of keys) {
@@ -2884,6 +2996,39 @@ export const CommandPreviewModal: React.FC<Props> = ({
                                   }
                                 >
                                   Apply to selected {selectedCount}
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    const keys = Object.keys(enterpriseDraft || {});
+                                    if (!keys.length) return;
+                                    if (!notionRows || !notionRows.length) return;
+                                    const allOpIds = notionRows
+                                      .map((x: any) => String(x?.op_id || "").trim())
+                                      .filter((x: string) => Boolean(x));
+                                    for (const oid of allOpIds) {
+                                      for (const k of keys) {
+                                        upsertEnterprisePatch(oid, k, enterpriseDraft[k]);
+                                      }
+                                    }
+                                    setEnterpriseDraft({});
+                                  }}
+                                  style={{
+                                    padding: "8px 10px",
+                                    borderRadius: 10,
+                                    border: "1px solid rgba(255,255,255,0.12)",
+                                    background: "rgba(255,255,255,0.03)",
+                                    color: "rgba(255,255,255,0.92)",
+                                    cursor: "pointer",
+                                  }}
+                                  disabled={
+                                    loading ||
+                                    !Boolean(onEnterprisePatchesChange) ||
+                                    !Object.keys(enterpriseDraft || {}).length ||
+                                    !Boolean(notionRows && notionRows.length)
+                                  }
+                                  title="Apply current edits to all rows"
+                                >
+                                  Apply to all
                                 </button>
                                 <button
                                   onClick={() => setEnterpriseDraft({})}
