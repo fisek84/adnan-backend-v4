@@ -2032,12 +2032,10 @@ class NotionService:
             "errors": [],
         }
 
-        max_calls = env_int("CEO_NOTION_MAX_CALLS", 3)
-
-        # CEO snapshot latency budget:
+        # CEO snapshot latency/calls budget:
         # - per-DB overrides take precedence
         # - then global CEO_NOTION_MAX_LATENCY_MS
-        # - then CEO snapshot default (4000ms)
+        # - defaults are auto-sized to avoid deterministic failures when many DBs are configured
         # NOTE: this does not change error formats or meta schema.
         def _env_int_optional(name: str) -> Optional[int]:
             raw = (os.getenv(name) or "").strip()
@@ -2047,6 +2045,41 @@ class NotionService:
                 return int(raw)
             except Exception:
                 return None
+
+        # Default: tasks-first priority (minimum viable context under strict budgets).
+        core_order = ["tasks", "projects", "goals"]
+
+        def _normalize_keys_for_budget(raw: Any) -> List[str]:
+            if not isinstance(raw, list):
+                return []
+            out0: List[str] = []
+            seen = set()
+            for x in raw:
+                s = _ensure_str(x).lower()
+                if not s:
+                    continue
+                if s in seen:
+                    continue
+                seen.add(s)
+                out0.append(s)
+            return out0
+
+        planned_keys = _normalize_keys_for_budget(db_keys)
+        if planned_keys:
+            # Keep only keys we can resolve.
+            planned_keys = [
+                k
+                for k in planned_keys
+                if isinstance(self.db_ids.get(k), str) and self.db_ids.get(k).strip()
+            ]
+        else:
+            planned_keys = list(core_order)
+
+        max_calls_env = _env_int_optional("CEO_NOTION_MAX_CALLS")
+        if max_calls_env is None:
+            max_calls = max(3, len(planned_keys))
+        else:
+            max_calls = int(max_calls_env)
 
         max_latency_ms_global = _env_int_optional("CEO_NOTION_MAX_LATENCY_MS")
         if max_latency_ms_global is None:
@@ -2075,9 +2108,6 @@ class NotionService:
         meta["notion_calls"] = 0
 
         db_stats: Dict[str, Any] = {}
-
-        # Default: tasks-first priority (minimum viable context under strict budgets).
-        core_order = ["tasks", "projects", "goals"]
 
         def _normalize_keys(raw: Any) -> List[str]:
             if not isinstance(raw, list):
