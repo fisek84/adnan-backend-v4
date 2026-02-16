@@ -18,12 +18,31 @@ def test_health_is_liveness_and_always_200():
     r = client.get("/health")
     assert r.status_code == 200
 
+    # Forensic: deterministic runtime fingerprint header + body keys are additive.
+    assert isinstance(r.headers.get("X-Runtime-Fingerprint"), str)
+    assert r.headers.get("X-Runtime-Fingerprint")
+
     body = r.json()
     assert body["status"] == "ok"
     assert "version" in body
     assert "boot_ready" in body
     assert "boot_error" in body
     assert "ops_safe_mode" in body
+
+
+def test_api_health_alias_is_available_and_matches_contract():
+    app = _get_app()
+    client = TestClient(app)
+
+    r = client.get("/api/health")
+    assert r.status_code == 200
+
+    assert isinstance(r.headers.get("X-Runtime-Fingerprint"), str)
+    assert r.headers.get("X-Runtime-Fingerprint")
+
+    body = r.json()
+    assert body["status"] == "ok"
+    assert "version" in body
 
 
 def test_ready_is_readiness_and_can_be_503_when_not_ready():

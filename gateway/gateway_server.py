@@ -5,11 +5,13 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import inspect
 import logging
 import os
 import re
+import socket
 import threading
 import traceback
 import uuid
@@ -998,6 +1000,34 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 logger = logging.getLogger("gateway")
+
+
+# ================================================================
+# RUNTIME FINGERPRINT (FORENSIC)
+# ================================================================
+def _sha256_of_file(path: str) -> str:
+    try:
+        data = Path(path).read_bytes()
+        return hashlib.sha256(data).hexdigest()
+    except Exception:
+        return ""
+
+
+_GATEWAY_FILE_SHA256 = _sha256_of_file(__file__)
+_RUNTIME_FINGERPRINT = (
+    f"{VERSION}:{_GATEWAY_FILE_SHA256[:12]}" if _GATEWAY_FILE_SHA256 else f"{VERSION}:nohash"
+)
+
+try:
+    logger.info(
+        "RUNTIME_FINGERPRINT=%s pid=%s host=%s file=%s",
+        _RUNTIME_FINGERPRINT,
+        os.getpid(),
+        socket.gethostname(),
+        __file__,
+    )
+except Exception:
+    pass
 
 
 # ================================================================
@@ -7253,14 +7283,25 @@ async def ceo_weekly_priority_memory():
 # HEALTH / READY
 # ================================================================
 @app.get("/health")
-async def health_check():
+async def health_check(response: Response):
+    try:
+        response.headers["X-Runtime-Fingerprint"] = _RUNTIME_FINGERPRINT
+    except Exception:
+        pass
     return {
         "status": "ok",
         "version": VERSION,
+        "runtime_fingerprint": _RUNTIME_FINGERPRINT,
+        "gateway_sha256": _GATEWAY_FILE_SHA256 or None,
         "boot_ready": _BOOT_READY,
         "boot_error": _BOOT_ERROR,
         "ops_safe_mode": _ops_safe_mode(),
     }
+
+
+@app.get("/api/health")
+async def api_health_check(response: Response):
+    return await health_check(response)
 
 
 @app.get("/health/services")

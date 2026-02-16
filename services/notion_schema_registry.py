@@ -627,7 +627,7 @@ class NotionSchemaRegistry:
           (notion_type/options/relation_database_id)
         """
 
-        k = (db_key or "").strip()
+        k = (db_key or "").strip().lower()
         if not k:
             return {}
 
@@ -725,7 +725,7 @@ class NotionSchemaRegistry:
     @classmethod
     def offline_validation_schema(cls, db_key: str) -> Dict[str, Any]:
         """Schema format compatible with services/notion_patch_validation.py."""
-        models = cls.get_property_models(db_key)
+        models = cls.get_property_models((db_key or "").strip().lower())
         return {k: v.to_validation_schema() for k, v in models.items()}
 
     # ============================================================
@@ -734,9 +734,10 @@ class NotionSchemaRegistry:
 
     @classmethod
     def get_db(cls, key: str) -> Dict[str, Any]:
-        if key not in cls.DATABASES:
+        key0 = (key or "").strip().lower()
+        if key0 not in cls.DATABASES:
             raise ValueError(f"Unknown Notion DB key: {key}")
-        return cls.DATABASES[key]
+        return cls.DATABASES[key0]
 
     @classmethod
     def validate_payload(cls, db_key: str, payload: Dict[str, Any]) -> bool:
