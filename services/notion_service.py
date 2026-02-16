@@ -293,12 +293,27 @@ def init_notion_service_from_env_or_raise() -> "NotionService":
 
     Raises on missing/invalid env. No logging here; caller decides.
     """
-    api_key = (
-        os.getenv(_ENV_NOTION_API_KEY) or os.getenv(_ENV_NOTION_TOKEN_FALLBACK) or ""
-    ).strip()
+    raw_api_key = (os.getenv(_ENV_NOTION_API_KEY) or "").strip()
+    raw_fallback = (os.getenv(_ENV_NOTION_TOKEN_FALLBACK) or "").strip()
+    api_key = (raw_api_key or raw_fallback or "").strip()
     goals_db_id = (os.getenv(_ENV_GOALS_DB_ID) or "").strip()
     tasks_db_id = (os.getenv(_ENV_TASKS_DB_ID) or "").strip()
     projects_db_id = (os.getenv(_ENV_PROJECTS_DB_ID) or "").strip()
+
+    token_source = _ENV_NOTION_API_KEY if raw_api_key else _ENV_NOTION_TOKEN_FALLBACK
+
+    def _tail4(secret: str) -> str:
+        s = (secret or "").strip()
+        if not s:
+            return ""
+        return s[-4:] if len(s) >= 4 else s
+
+    # Minimal, safe diagnostics: do not log full token.
+    logger.info(
+        "notion_token_source=%s tail=%s",
+        token_source,
+        _tail4(api_key),
+    )
 
     if not api_key:
         raise RuntimeError(f"Missing ENV var: {_ENV_NOTION_API_KEY}")
@@ -315,6 +330,13 @@ def init_notion_service_from_env_or_raise() -> "NotionService":
         tasks_db_id=tasks_db_id,
         projects_db_id=projects_db_id,
     )
+
+    # Non-invasive debug attribute used by preflight/logging.
+    try:
+        setattr(svc, "_token_source", token_source)
+    except Exception:
+        pass
+
     set_notion_service(svc)
     return svc
 
@@ -386,6 +408,37 @@ class NotionService:
 
     NOTION_BASE_URL = "https://api.notion.com/v1"
     NOTION_VERSION = "2022-06-28"
+
+    def _token_tail4(self) -> str:
+        s = (getattr(self, "_api_key", "") or "").strip()
+        if not s:
+            return ""
+        return s[-4:] if len(s) >= 4 else s
+
+    def _token_source_name(self) -> str:
+        src = getattr(self, "_token_source", "")
+        src = src.strip() if isinstance(src, str) else ""
+        return src or "(unknown)"
+
+    async def preflight_users_me_or_raise(self) -> None:
+        """Optional fail-fast auth preflight.
+
+        Controlled by caller (e.g. NOTION_PREFLIGHT_ON_BOOT). Never logs secrets.
+        Raises RuntimeError with a clear message on 401/403.
+        """
+
+        url = f"{self.NOTION_BASE_URL}/users/me"
+        try:
+            await self._safe_request("GET", url, payload=None)
+            return
+        except Exception as exc:  # noqa: BLE001
+            msg = str(exc)
+            if "Notion HTTP 401" in msg or "Notion HTTP 403" in msg:
+                raise RuntimeError(
+                    "notion_auth_failed: "
+                    f"token_source={self._token_source_name()} tail={self._token_tail4()} error={msg}"
+                ) from exc
+            raise
 
     def __init__(
         self,

@@ -18,12 +18,24 @@ from services.memory_service import MemoryService
 from services.memory_read_only import ReadOnlyMemoryService
 from services.agent_router.agent_router import AgentRouter
 
-# Učitamo .env konfiguraciju
-if os.getenv("RENDER") != "true":
-    load_dotenv(override=False)
-
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+
+
+def _tail4(secret: str) -> str:
+    s = (secret or "").strip()
+    if not s:
+        return ""
+    return s[-4:] if len(s) >= 4 else s
+
+
+# Učitamo .env konfiguraciju
+if os.getenv("RENDER") != "true":
+    load_dotenv(override=True)
+    logger.info(
+        "dotenv_loaded override=true notion_api_key_tail=%s",
+        _tail4(os.getenv("NOTION_API_KEY") or ""),
+    )
 
 # -------------------------------------------------------
 # GLOBAL SINGLETON INSTANCES

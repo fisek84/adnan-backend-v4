@@ -845,7 +845,19 @@ except Exception:  # noqa: BLE001
 
 if os.getenv("RENDER") != "true" and load_dotenv:
     _env_path = Path(__file__).resolve().parents[1] / ".env"  # repo root .env
-    load_dotenv(dotenv_path=_env_path, override=False)
+    load_dotenv(dotenv_path=_env_path, override=True)
+
+    def _tail4(secret: str) -> str:
+        s = (secret or "").strip()
+        if not s:
+            return ""
+        return s[-4:] if len(s) >= 4 else s
+
+    logging.getLogger("adnan_ai_bootstrap").info(
+        "dotenv_loaded path=%s override=true notion_api_key_tail=%s",
+        str(_env_path),
+        _tail4(os.getenv("NOTION_API_KEY") or ""),
+    )
 
 
 def _env_true(name: str, default: str = "false") -> bool:
@@ -2066,6 +2078,18 @@ async def _boot_once() -> None:
                 _append_boot_error(f"notion_init_failed:{exc}")
                 logger.critical("NotionService init failed: %s", exc)
                 raise
+
+            # Optional fail-fast auth preflight.
+            if (os.getenv("NOTION_PREFLIGHT_ON_BOOT") or "").strip().lower() == "true":
+                try:
+                    svc0 = try_get_notion_service()
+                    if svc0 is not None:
+                        await svc0.preflight_users_me_or_raise()
+                        logger.info("Notion preflight users/me ok")
+                except Exception as exc:  # noqa: BLE001
+                    _append_boot_error(f"notion_preflight_failed:{exc}")
+                    logger.critical("Notion preflight failed: %s", exc)
+                    raise
 
             # BOOTSTRAP app wiring (safe after Notion init)
             bootstrap_application()

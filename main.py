@@ -7,6 +7,14 @@ import sys
 from dotenv import load_dotenv
 from uvicorn import run
 
+
+def _tail4(secret: str) -> str:
+    s = (secret or "").strip()
+    if not s:
+        return ""
+    return s[-4:] if len(s) >= 4 else s
+
+
 # ============================================================
 # ENV + PATH
 # ============================================================
@@ -18,7 +26,7 @@ if BASE_DIR not in sys.path:
 # On Render (or any managed runtime), environment variables should come from the platform,
 # not from a baked-in .env file. Keep dotenv for local dev only.
 if os.getenv("RENDER") != "true":
-    load_dotenv(override=False)
+    load_dotenv(override=True)
 
 # ============================================================
 # LOGGING
@@ -29,6 +37,12 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
+
+if os.getenv("RENDER") != "true":
+    logger.info(
+        "dotenv_loaded override=true notion_api_key_tail=%s",
+        _tail4(os.getenv("NOTION_API_KEY") or ""),
+    )
 
 # ============================================================
 # RUNTIME GUARDS (CORE)

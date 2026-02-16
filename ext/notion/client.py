@@ -15,7 +15,8 @@ from services.notion_schema_registry import NotionSchemaRegistry
 # ENV INIT
 # ============================================================
 
-load_dotenv()
+if os.getenv("RENDER") != "true":
+    load_dotenv(override=True)
 
 
 def _get_notion_client() -> "Client":
