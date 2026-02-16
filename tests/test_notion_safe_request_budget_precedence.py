@@ -1,7 +1,11 @@
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from services.notion_service import NotionBudgetExceeded, NotionService, notion_budget_context
+from services.notion_service import (
+    NotionBudgetExceeded,
+    NotionService,
+    notion_budget_context,
+)
 
 
 class _FakeResponse:
@@ -28,7 +32,7 @@ class TestNotionSafeRequestBudgetPrecedence(unittest.IsolatedAsyncioTestCase):
 
         fake_client = AsyncMock()
         fake_client.request = AsyncMock(
-            return_value=_FakeResponse(401, "{\"message\":\"unauthorized\"}")
+            return_value=_FakeResponse(401, '{"message":"unauthorized"}')
         )
 
         # Control time so:
@@ -36,8 +40,13 @@ class TestNotionSafeRequestBudgetPrecedence(unittest.IsolatedAsyncioTestCase):
         # - pre-request budget check sees elapsed=0ms (passes)
         # - post-request budget check would see elapsed>0ms (would exceed)
         with (
-            patch("services.notion_service.time.monotonic", side_effect=[100.0, 100.0, 100.003]),
-            patch.object(self.service, "_get_client", new=AsyncMock(return_value=fake_client)),
+            patch(
+                "services.notion_service.time.monotonic",
+                side_effect=[100.0, 100.0, 100.003],
+            ),
+            patch.object(
+                self.service, "_get_client", new=AsyncMock(return_value=fake_client)
+            ),
         ):
             async with notion_budget_context(max_calls=10, max_latency_ms=0):
                 with self.assertRaises(RuntimeError) as ctx:
@@ -61,8 +70,13 @@ class TestNotionSafeRequestBudgetPrecedence(unittest.IsolatedAsyncioTestCase):
         fake_client.request = AsyncMock(return_value=_FakeResponse(200, "{}"))
 
         with (
-            patch("services.notion_service.time.monotonic", side_effect=[200.0, 200.0, 200.003]),
-            patch.object(self.service, "_get_client", new=AsyncMock(return_value=fake_client)),
+            patch(
+                "services.notion_service.time.monotonic",
+                side_effect=[200.0, 200.0, 200.003],
+            ),
+            patch.object(
+                self.service, "_get_client", new=AsyncMock(return_value=fake_client)
+            ),
         ):
             async with notion_budget_context(max_calls=10, max_latency_ms=0):
                 with self.assertRaises(NotionBudgetExceeded) as ctx:
