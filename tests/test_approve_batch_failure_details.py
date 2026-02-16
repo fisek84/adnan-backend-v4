@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List
 from unittest.mock import AsyncMock
 
 from fastapi.testclient import TestClient
@@ -39,7 +38,7 @@ def test_approve_batch_failure_returns_op_id_and_reason(monkeypatch):
             if created["count"] == 0:
                 created["count"] += 1
                 raise RuntimeError(
-                    'Notion HTTP 400: {"code":"validation_error","message":"Property \\\"Level\\\" is invalid"}'
+                    'Notion HTTP 400: {"code":"validation_error","message":"Property \\"Level\\" is invalid"}'
                 )
             created["count"] += 1
             n = created["count"]
