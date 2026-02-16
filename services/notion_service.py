@@ -722,12 +722,19 @@ class NotionService:
                 f"Notion request failed: {type(exc).__name__}: {exc}"
             ) from exc
 
-        if budget_state is not None:
-            budget_state._check_deadline_only()
-
+        # IMPORTANT: do not let budget deadline checks mask definitive HTTP errors
+        # (e.g., 401/403). Budget checks still apply for successful responses.
         text = resp.text or ""
         if resp.status_code >= 400:
+            if budget_state is not None:
+                try:
+                    budget_state._check_deadline_only()
+                except NotionBudgetExceeded:
+                    pass
             raise RuntimeError(f"Notion HTTP {resp.status_code}: {text}")
+
+        if budget_state is not None:
+            budget_state._check_deadline_only()
 
         if not text.strip():
             return {}
