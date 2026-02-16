@@ -1562,6 +1562,44 @@ def _unwrap_proposal_wrapper_or_raise(
     except Exception:
         pass
 
+    # ============================================================
+    # MULTI-GOAL BLOCK BATCH (deterministic; must run before single-goal fast-path)
+    # ============================================================
+    try:
+        from services.goal_blocks_batch_parser import (  # noqa: PLC0415
+            build_create_goal_batch_operations_from_goal_blocks,
+            is_multi_goal_block_request,
+        )
+
+        if is_multi_goal_block_request(prompt):
+            ops = build_create_goal_batch_operations_from_goal_blocks(prompt)
+            if ops:
+                ai_command = AICommand(
+                    command="notion_write",
+                    intent="batch_request",
+                    read_only=False,
+                    params={
+                        "operations": ops,
+                        "source_prompt": prompt.strip(),
+                        # Do NOT propagate wrapper_patch globally; per-goal fields come from blocks.
+                        "wrapper_patch": None,
+                    },
+                    initiator=initiator,
+                    validated=True,
+                    metadata={
+                        **(metadata if isinstance(metadata, dict) else {}),
+                        "canon": "execute_raw_unwrap_multi_goal_blocks_batch",
+                        "endpoint": "/api/execute/raw",
+                        "wrapper": {
+                            "prompt": prompt.strip(),
+                            "wrapper_patch": wrapper_patch,
+                        },
+                    },
+                )
+                return ai_command
+    except Exception:
+        pass
+
     # Merge prompt-derived patches with explicit UI patch (UI wins).
     try:
         _title0, merged = normalize_wrapper_prompt_and_patch(

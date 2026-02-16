@@ -2944,6 +2944,39 @@ class NotionService:
         page_id = _ensure_str(res.get("id"))
         page_url = _ensure_str(res.get("url"))
 
+        # Best-effort parent goal linking (relation) when provided.
+        parent_goal_id = _ensure_str(params.get("parent_goal_id"))
+        if parent_goal_id.startswith("$"):
+            parent_goal_id = ""
+
+        if not parent_goal_id:
+            parent_goal_title = _ensure_str(params.get("parent_goal_title") or "")
+            if parent_goal_title:
+                rr = await self._resolve_page_id_by_title_best_effort(
+                    db_key="goals", title=parent_goal_title
+                )
+                if rr.get("ok") is True and _ensure_str(rr.get("page_id")):
+                    parent_goal_id = _ensure_str(rr.get("page_id"))
+                else:
+                    warnings.append(
+                        f"parent_goal_link_not_resolved:{_ensure_str(rr.get('reason') or '')}"
+                    )
+
+        if parent_goal_id and page_id:
+            try:
+                from services.notion_keyword_mapper import (  # noqa: PLC0415
+                    get_notion_field_name,
+                )
+
+                parent_field = get_notion_field_name("parent_goal")
+                patch_url = f"{self.NOTION_BASE_URL}/pages/{page_id}"
+                patch_payload = {
+                    "properties": {parent_field: {"relation": [{"id": parent_goal_id}]}}
+                }
+                await self._safe_request("PATCH", patch_url, payload=patch_payload)
+            except Exception as exc:  # noqa: BLE001
+                warnings.append(f"parent_goal_link_failed:{exc.__class__.__name__}")
+
         return {
             "ok": True,
             "execution_state": "COMPLETED",

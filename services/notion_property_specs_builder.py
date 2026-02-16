@@ -10,10 +10,29 @@ def _ensure_str(v: Any) -> str:
     return v.strip() if isinstance(v, str) else ""
 
 
+def strip_outer_quotes(value: str) -> str:
+    t = (value or "").strip()
+    if not t:
+        return t
+
+    pairs = [
+        ('"', '"'),
+        ("'", "'"),
+        ("\u201c", "\u201d"),  # “ ”
+        ("\u201e", "\u201d"),  # „ ”
+        ("\u00ab", "\u00bb"),  # « »
+    ]
+    for lq, rq in pairs:
+        if t.startswith(lq) and t.endswith(rq) and len(t) >= 2:
+            return t[1:-1].strip()
+    return t
+
+
 def _as_list_of_str(v: Any) -> List[str]:
     if isinstance(v, list):
-        return [_ensure_str(x) for x in v if _ensure_str(x)]
+        return [strip_outer_quotes(_ensure_str(x)) for x in v if _ensure_str(x)]
     s = _ensure_str(v)
+    s = strip_outer_quotes(s)
     if not s:
         return []
     return [x.strip() for x in s.split(",") if x.strip()]
@@ -59,7 +78,7 @@ def _resolve_option(
     - Else ambiguous/invalid.
     """
 
-    val = (provided or "").strip()
+    val = strip_outer_quotes((provided or "").strip())
     if not val:
         return None, None
 
@@ -162,7 +181,7 @@ def _normalize_value_for_model(
         return {"type": "rich_text", "text": s}, None
 
     if wt in {"select", "status"}:
-        s = _ensure_str(raw_value)
+        s = strip_outer_quotes(_ensure_str(raw_value))
         if not s:
             return None, None
         canon, warn = _resolve_option(provided=s, options=model.options or [])
@@ -190,7 +209,7 @@ def _normalize_value_for_model(
         return {"type": "multi_select", "names": normed}, warn_out
 
     if wt == "date":
-        s = _ensure_str(raw_value)
+        s = strip_outer_quotes(_ensure_str(raw_value))
         if not s:
             return None, None
         # Accept ISO YYYY-MM-DD; leave natural language to other layers.
