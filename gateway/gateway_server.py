@@ -1015,7 +1015,9 @@ def _sha256_of_file(path: str) -> str:
 
 _GATEWAY_FILE_SHA256 = _sha256_of_file(__file__)
 _RUNTIME_FINGERPRINT = (
-    f"{VERSION}:{_GATEWAY_FILE_SHA256[:12]}" if _GATEWAY_FILE_SHA256 else f"{VERSION}:nohash"
+    f"{VERSION}:{_GATEWAY_FILE_SHA256[:12]}"
+    if _GATEWAY_FILE_SHA256
+    else f"{VERSION}:nohash"
 )
 
 try:
