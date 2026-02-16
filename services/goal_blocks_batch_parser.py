@@ -164,7 +164,9 @@ def _field(fields: Dict[str, str], *keys: str) -> str:
     return ""
 
 
-def build_create_goal_batch_operations_from_goal_blocks(text: str) -> List[Dict[str, Any]]:
+def build_create_goal_batch_operations_from_goal_blocks(
+    text: str,
+) -> List[Dict[str, Any]]:
     """Build notion_write batch operations for multi Goal blocks."""
 
     blocks = _segment_goal_blocks(text)
