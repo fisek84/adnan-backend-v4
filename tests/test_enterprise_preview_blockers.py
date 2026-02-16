@@ -1,5 +1,3 @@
-import os
-
 import pytest
 from fastapi.testclient import TestClient
 
@@ -58,7 +56,9 @@ def test_preview_has_blockers_and_can_approve_false_for_invalid_level():
         "patches": [],
     }
 
-    r = client.post("/api/execute/preview", json=payload, headers={"X-Initiator": "ceo_chat"})
+    r = client.post(
+        "/api/execute/preview", json=payload, headers={"X-Initiator": "ceo_chat"}
+    )
     assert r.status_code == 200
     data = r.json()
 
@@ -74,7 +74,9 @@ def test_preview_has_blockers_and_can_approve_false_for_invalid_level():
     rows = notion.get("rows")
     assert isinstance(rows, list) and rows
 
-    row1 = next((x for x in rows if isinstance(x, dict) and x.get("op_id") == "g1"), None)
+    row1 = next(
+        (x for x in rows if isinstance(x, dict) and x.get("op_id") == "g1"), None
+    )
     assert isinstance(row1, dict)
     rv = row1.get("validation")
     assert isinstance(rv, dict)
