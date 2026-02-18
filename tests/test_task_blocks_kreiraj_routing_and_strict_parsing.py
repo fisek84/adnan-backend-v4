@@ -41,8 +41,12 @@ def test_kreiraj_task_blocks_force_batch_request_only_create_task_ops_and_strict
     ops = cmd.params.get("operations")
     assert isinstance(ops, list)
 
-    create_task_ops = [o for o in ops if isinstance(o, dict) and o.get("intent") == "create_task"]
-    create_goal_ops = [o for o in ops if isinstance(o, dict) and o.get("intent") == "create_goal"]
+    create_task_ops = [
+        o for o in ops if isinstance(o, dict) and o.get("intent") == "create_task"
+    ]
+    create_goal_ops = [
+        o for o in ops if isinstance(o, dict) and o.get("intent") == "create_goal"
+    ]
 
     assert len(create_task_ops) == 8
     assert len(create_goal_ops) == 0

@@ -35,7 +35,7 @@ def _clean_env_secret(raw: str) -> str:
         return ""
 
     # Strip a single pair of matching surrounding quotes.
-    if len(s) >= 2 and s[0] == s[-1] and s[0] in {"\"", "'"}:
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in {'"', "'"}:
         s = s[1:-1].strip()
 
     # If user pasted an Authorization header value, normalize to the token.
@@ -46,7 +46,9 @@ def _clean_env_secret(raw: str) -> str:
     return s
 
 
-def _secret_debug_snapshot(*, raw: str, cleaned: str, token_source: str) -> Dict[str, Any]:
+def _secret_debug_snapshot(
+    *, raw: str, cleaned: str, token_source: str
+) -> Dict[str, Any]:
     """Build a safe, non-secret debug snapshot for auth troubleshooting."""
 
     raw0 = raw or ""
@@ -57,7 +59,7 @@ def _secret_debug_snapshot(*, raw: str, cleaned: str, token_source: str) -> Dict
     raw_had_surrounding_quotes = (
         len(raw_stripped) >= 2
         and raw_stripped[0] == raw_stripped[-1]
-        and raw_stripped[0] in {"\"", "'"}
+        and raw_stripped[0] in {'"', "'"}
     )
     raw_had_bearer_prefix = raw_stripped.lower().startswith("bearer ")
     raw_had_outer_whitespace = raw0 != raw_stripped
@@ -395,7 +397,9 @@ def init_notion_service_from_env_or_raise() -> "NotionService":
     projects_db_id = (os.getenv(_ENV_PROJECTS_DB_ID) or "").strip()
 
     token_source = _ENV_NOTION_API_KEY if raw_api_key else _ENV_NOTION_TOKEN_FALLBACK
-    chosen_raw = env_api_key_raw if token_source == _ENV_NOTION_API_KEY else env_fallback_raw
+    chosen_raw = (
+        env_api_key_raw if token_source == _ENV_NOTION_API_KEY else env_fallback_raw
+    )
 
     def _tail4(secret: str) -> str:
         s = (secret or "").strip()
@@ -898,7 +902,9 @@ class NotionService:
                             )
                         else:
                             # Fall back to best-effort: prefer NOTION_API_KEY raw.
-                            raw_guess = env_api_raw if env_api_raw.strip() else env_tok_raw
+                            raw_guess = (
+                                env_api_raw if env_api_raw.strip() else env_tok_raw
+                            )
                             src_guess = (
                                 _ENV_NOTION_API_KEY
                                 if env_api_raw.strip()
@@ -3039,8 +3045,16 @@ class NotionService:
                     if isinstance(sc, int) and raw is not None:
                         token_meta = ""
                         try:
-                            ts = err.get("token_source") if isinstance(err, dict) else None
-                            tt = err.get("token_tail4") if isinstance(err, dict) else None
+                            ts = (
+                                err.get("token_source")
+                                if isinstance(err, dict)
+                                else None
+                            )
+                            tt = (
+                                err.get("token_tail4")
+                                if isinstance(err, dict)
+                                else None
+                            )
                             if (
                                 isinstance(sc, int)
                                 and sc in {401, 403}
@@ -3049,7 +3063,9 @@ class NotionService:
                                 and isinstance(tt, str)
                                 and tt.strip()
                             ):
-                                token_meta = f" token_source={ts.strip()} tail={tt.strip()}"
+                                token_meta = (
+                                    f" token_source={ts.strip()} tail={tt.strip()}"
+                                )
                         except Exception:
                             token_meta = ""
 
@@ -3063,7 +3079,9 @@ class NotionService:
                             if isinstance(msg0, str) and msg0.strip()
                             else ""
                         )
-                        reason = f"Notion HTTP {sc}{ctag}{mtag}{token_meta} | body={raw}"
+                        reason = (
+                            f"Notion HTTP {sc}{ctag}{mtag}{token_meta} | body={raw}"
+                        )
                 except Exception:
                     reason = str(exc)
 

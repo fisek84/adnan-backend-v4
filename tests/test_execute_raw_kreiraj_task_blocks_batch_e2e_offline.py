@@ -67,7 +67,9 @@ def _notion_relation_id(props: Dict[str, Any], key: str) -> str:
     return ""
 
 
-def test_execute_raw_kreiraj_task_blocks_resolves_goal_once_and_creates_tasks(monkeypatch):
+def test_execute_raw_kreiraj_task_blocks_resolves_goal_once_and_creates_tasks(
+    monkeypatch,
+):
     app = _load_app()
 
     monkeypatch.setenv("NOTION_API_KEY", "test-notion-key")
@@ -93,9 +95,7 @@ def test_execute_raw_kreiraj_task_blocks_resolves_goal_once_and_creates_tasks(mo
                 "results": [
                     {
                         "id": goal_page_id,
-                        "properties": {
-                            "Name": {"title": [{"plain_text": goal_title}]}
-                        },
+                        "properties": {"Name": {"title": [{"plain_text": goal_title}]}},
                     }
                 ]
             }
@@ -114,7 +114,7 @@ def test_execute_raw_kreiraj_task_blocks_resolves_goal_once_and_creates_tasks(mo
     prompt = (
         "BATCH: create_task x2 u Tasks DB.\n"
         "Prije kreiranja taskova uradi lookup u Goals DB:\n"
-        f"- pronađi page gdje Name == \"{goal_title}\"\n\n"
+        f'- pronađi page gdje Name == "{goal_title}"\n\n'
         "Kreiraj Task:\n"
         "Name: Trebević hiking – Zona 3\n"
         f"Goal: {goal_title}\n"
@@ -187,8 +187,8 @@ def test_execute_raw_kreiraj_task_blocks_resolves_goal_once_and_creates_tasks(mo
     # Ensure both tasks were created and field parsing was block-local
     assert len(captured_page_create_payloads) == 2
 
-    p0 = (captured_page_create_payloads[0].get("properties") or {})
-    p1 = (captured_page_create_payloads[1].get("properties") or {})
+    p0 = captured_page_create_payloads[0].get("properties") or {}
+    p1 = captured_page_create_payloads[1].get("properties") or {}
     assert isinstance(p0, dict)
     assert isinstance(p1, dict)
 

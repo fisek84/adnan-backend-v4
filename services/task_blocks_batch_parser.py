@@ -294,7 +294,9 @@ def build_create_task_batch_operations_from_task_blocks(
         desc = _strip_outer_quotes(_field(fields, "description"))
         status = _strip_outer_quotes(_field(fields, "status"))
         priority = _strip_outer_quotes(
-            _truncate_inline_kv_leaks(_field(fields, "priority"), current_key="priority")
+            _truncate_inline_kv_leaks(
+                _field(fields, "priority"), current_key="priority"
+            )
         )
         goal_title = _strip_outer_quotes(
             _truncate_inline_kv_leaks(_field(fields, "goal"), current_key="goal")
@@ -302,7 +304,9 @@ def build_create_task_batch_operations_from_task_blocks(
         project_title = _strip_outer_quotes(_field(fields, "project"))
 
         due_date_raw = _strip_outer_quotes(
-            _truncate_inline_kv_leaks(_field(fields, "due date"), current_key="due date")
+            _truncate_inline_kv_leaks(
+                _field(fields, "due date"), current_key="due date"
+            )
         )
         deadline_raw = _strip_outer_quotes(_field(fields, "deadline"))
 
