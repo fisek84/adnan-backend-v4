@@ -7,6 +7,47 @@ from typing import Any, Dict, List, Optional
 
 _TASK_HEADING_RE = re.compile(r"(?mi)^\s*Task\s+(?P<num>\d+)\s*$")
 
+# Strict "Kreiraj Task:" blocks (Bosnian UX)
+# NOTE: heading must be a standalone line (no inline title), e.g.:
+#   Kreiraj Task:
+_KREIRAJ_TASK_HEADING_RE = re.compile(r"(?im)^\s*Kreiraj\s+(?:Task|Zadatak)\s*:\s*$")
+
+# Strict keys allowed inside a Kreiraj Task block.
+_KREIRAJ_ALLOWED_KEYS = {
+    "name",
+    "goal",
+    "due date",
+    "priority",
+    "description",
+}
+
+
+def _looks_like_strict_kreiraj_task_block_request(text: str) -> bool:
+    """Detect strict multi-line Kreiraj Task blocks.
+
+    We intentionally do NOT treat single-line prompts like:
+      "Kreiraj task: Samo jedan task"
+    as block batch requests, to preserve single-create_task UX.
+
+    A strict block request requires:
+      - at least 1 Kreiraj Task heading line, AND
+      - at least 1 strict key line (Name/Goal/Due Date/Priority/Description)
+    """
+
+    if not isinstance(text, str) or not text.strip():
+        return False
+
+    if not _KREIRAJ_TASK_HEADING_RE.search(text):
+        return False
+
+    # Require at least one strict key line somewhere in the prompt.
+    return bool(
+        re.search(
+            r"(?im)^\s*(Name|Goal|Due\s*Date|Priority|Description)\s*:\s+",
+            text,
+        )
+    )
+
 
 def is_multi_task_block_request(text: str) -> bool:
     """Deterministic detection for pasted multi-task blocks.
@@ -17,7 +58,17 @@ def is_multi_task_block_request(text: str) -> bool:
 
     if not isinstance(text, str) or not text.strip():
         return False
-    return len(_TASK_HEADING_RE.findall(text)) >= 2
+
+    # Support both legacy "Task <n>" pasted blocks and strict "Kreiraj Task:" blocks.
+    if len(_TASK_HEADING_RE.findall(text)) >= 2:
+        return True
+
+    # Strict blocks should route deterministically as batch_request even with 1 block,
+    # but only when it's truly a multi-line block form (keys present).
+    if _looks_like_strict_kreiraj_task_block_request(text):
+        return True
+
+    return False
 
 
 def _strip_outer_quotes(s: str) -> str:
@@ -118,34 +169,92 @@ def _parse_kv_blocks(lines: List[str]) -> Dict[str, str]:
     return out
 
 
+def _truncate_inline_kv_leaks(value: str, *, current_key: str) -> str:
+    """Prevent inline KV segments from leaking into a field value.
+
+    Example bad line:
+      Name: X Goal: Y Due Date: 2026-01-01
+
+    We must keep Name strictly as "X" and ignore the rest.
+    """
+
+    v = (value or "").strip()
+    if not v:
+        return v
+
+    # Look for other key tokens that should never be part of this value.
+    other_keys = ["Name", "Goal", "Due Date", "Priority", "Description"]
+    # Current key should not truncate on itself.
+    ck = (current_key or "").strip().casefold()
+    other_keys = [k for k in other_keys if k.casefold() != ck]
+
+    # Find earliest occurrence of "<Key>:" inside the value.
+    earliest: Optional[int] = None
+    for k in other_keys:
+        m = re.search(rf"(?i)\b{re.escape(k)}\s*:\s*", v)
+        if not m:
+            continue
+        pos = int(m.start())
+        if pos <= 0:
+            continue
+        if earliest is None or pos < earliest:
+            earliest = pos
+    if earliest is not None:
+        v = v[:earliest].strip()
+    return v
+
+
 @dataclass(frozen=True)
 class TaskBlockParsed:
     heading_num: Optional[int]
+    heading_title: Optional[str]
     fields: Dict[str, str]
 
 
 def _segment_task_blocks(text: str) -> List[TaskBlockParsed]:
     s = (text or "").replace("\r\n", "\n").replace("\r", "\n")
 
+    # Mode 1: legacy pasted blocks "Task <n>".
     matches = list(_TASK_HEADING_RE.finditer(s))
-    if len(matches) < 2:
+    if len(matches) >= 2:
+        blocks: List[TaskBlockParsed] = []
+        for idx, m in enumerate(matches):
+            start = m.end()
+            end = matches[idx + 1].start() if idx + 1 < len(matches) else len(s)
+            num = int(m.group("num")) if m.group("num") else None
+
+            raw_block = s[start:end]
+            raw_lines = raw_block.split("\n")
+            # Keep blank lines (Description multi-line), but trim right side
+            lines = [ln.rstrip() for ln in raw_lines]
+
+            fields = _parse_kv_blocks(lines)
+            blocks.append(
+                TaskBlockParsed(heading_num=num, heading_title=None, fields=fields)
+            )
+        return blocks
+
+    # Mode 2: strict Bosnian blocks "Kreiraj Task:" / "Kreiraj Zadatak:".
+    kmatches = list(_KREIRAJ_TASK_HEADING_RE.finditer(s))
+    if len(kmatches) < 1:
         return []
 
-    blocks: List[TaskBlockParsed] = []
-    for idx, m in enumerate(matches):
+    blocks2: List[TaskBlockParsed] = []
+    for idx, m in enumerate(kmatches):
         start = m.end()
-        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(s)
-        num = int(m.group("num")) if m.group("num") else None
-
+        end = kmatches[idx + 1].start() if idx + 1 < len(kmatches) else len(s)
         raw_block = s[start:end]
         raw_lines = raw_block.split("\n")
-        # Keep blank lines (Description multi-line), but trim right side
         lines = [ln.rstrip() for ln in raw_lines]
 
         fields = _parse_kv_blocks(lines)
-        blocks.append(TaskBlockParsed(heading_num=num, fields=fields))
+        # Strictly keep only allowed keys.
+        fields = {k: v for k, v in fields.items() if k in _KREIRAJ_ALLOWED_KEYS}
+        blocks2.append(
+            TaskBlockParsed(heading_num=None, heading_title=None, fields=fields)
+        )
 
-    return blocks
+    return blocks2
 
 
 def _field(fields: Dict[str, str], key: str) -> str:
@@ -169,22 +278,40 @@ def build_create_task_batch_operations_from_task_blocks(
     ops: List[Dict[str, Any]] = []
     used_ids: set[str] = set()
 
+    from services.coo_translation_service import COOTranslationService  # noqa: PLC0415
+
     for i, blk in enumerate(blocks, start=1):
         fields = blk.fields or {}
 
-        name = _clean_title(_field(fields, "name"))
+        name_raw = _field(fields, "name")
+        name_raw = _truncate_inline_kv_leaks(name_raw, current_key="name")
+        name = _clean_title(name_raw)
         if not name:
-            # Deterministic fallback: never use the heading as title
-            name = f"Task {i}"
+            # Deterministic fallback: prefer heading title (for Kreiraj Task: X), else numbered.
+            ht = _clean_title(str(getattr(blk, "heading_title", None) or ""))
+            name = ht or f"Task {i}"
 
         desc = _strip_outer_quotes(_field(fields, "description"))
         status = _strip_outer_quotes(_field(fields, "status"))
-        priority = _strip_outer_quotes(_field(fields, "priority"))
-        goal_title = _strip_outer_quotes(_field(fields, "goal"))
+        priority = _strip_outer_quotes(
+            _truncate_inline_kv_leaks(_field(fields, "priority"), current_key="priority")
+        )
+        goal_title = _strip_outer_quotes(
+            _truncate_inline_kv_leaks(_field(fields, "goal"), current_key="goal")
+        )
         project_title = _strip_outer_quotes(_field(fields, "project"))
 
-        due_date = _strip_outer_quotes(_field(fields, "due date"))
-        deadline = _strip_outer_quotes(_field(fields, "deadline"))
+        due_date_raw = _strip_outer_quotes(
+            _truncate_inline_kv_leaks(_field(fields, "due date"), current_key="due date")
+        )
+        deadline_raw = _strip_outer_quotes(_field(fields, "deadline"))
+
+        due_date = (
+            COOTranslationService._try_parse_date_to_iso(due_date_raw) or due_date_raw
+        )
+        deadline = (
+            COOTranslationService._try_parse_date_to_iso(deadline_raw) or deadline_raw
+        )
 
         order_raw = _strip_outer_quotes(_field(fields, "order"))
         order_val: Optional[float] = None

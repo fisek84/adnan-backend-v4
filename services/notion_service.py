@@ -20,6 +20,82 @@ from models.ai_command import AICommand
 logger = logging.getLogger(__name__)
 
 
+def _clean_env_secret(raw: str) -> str:
+    """Normalize secrets read from env without leaking or transforming meaning.
+
+    Handles common deployment mistakes:
+    - surrounding quotes: '"ntn_..."' or "'ntn_...'"
+    - pasting full header value: 'Bearer <token>'
+
+    Always returns a stripped string.
+    """
+
+    s = (raw or "").strip()
+    if not s:
+        return ""
+
+    # Strip a single pair of matching surrounding quotes.
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in {"\"", "'"}:
+        s = s[1:-1].strip()
+
+    # If user pasted an Authorization header value, normalize to the token.
+    # Notion expects: Authorization: Bearer <token>
+    if s.lower().startswith("bearer "):
+        s = s[len("bearer ") :].strip()
+
+    return s
+
+
+def _secret_debug_snapshot(*, raw: str, cleaned: str, token_source: str) -> Dict[str, Any]:
+    """Build a safe, non-secret debug snapshot for auth troubleshooting."""
+
+    raw0 = raw or ""
+    raw_stripped = raw0.strip()
+    cleaned0 = (cleaned or "").strip()
+
+    raw_has_newline = ("\n" in raw0) or ("\r" in raw0)
+    raw_had_surrounding_quotes = (
+        len(raw_stripped) >= 2
+        and raw_stripped[0] == raw_stripped[-1]
+        and raw_stripped[0] in {"\"", "'"}
+    )
+    raw_had_bearer_prefix = raw_stripped.lower().startswith("bearer ")
+    raw_had_outer_whitespace = raw0 != raw_stripped
+
+    clean_has_any_whitespace = any(ch.isspace() for ch in cleaned0)
+    clean_starts_with_bearer = cleaned0.lower().startswith("bearer ")
+
+    def _tail4(secret: str) -> str:
+        s = (secret or "").strip()
+        if not s:
+            return ""
+        return s[-4:] if len(s) >= 4 else s
+
+    def _preview(secret: str) -> str:
+        s = (secret or "").strip()
+        if not s:
+            return ""
+        if len(s) <= 10:
+            return f"{s[0:1]}…{_tail4(s)}"
+        return f"{s[:6]}…{_tail4(s)}"
+
+    return {
+        "token_source": (token_source or "").strip(),
+        "raw_len": len(raw0),
+        "raw_had_outer_whitespace": bool(raw_had_outer_whitespace),
+        "raw_had_surrounding_quotes": bool(raw_had_surrounding_quotes),
+        "raw_had_bearer_prefix": bool(raw_had_bearer_prefix),
+        "raw_has_newline": bool(raw_has_newline),
+        "clean_len": len(cleaned0),
+        "clean_has_any_whitespace": bool(clean_has_any_whitespace),
+        "clean_starts_with_bearer": bool(clean_starts_with_bearer),
+        "clean_tail4": _tail4(cleaned0),
+        "clean_preview": _preview(cleaned0),
+        # Provide a masked repr to prove quoting/escaping without leaking the token.
+        "clean_preview_repr": repr(_preview(cleaned0)),
+    }
+
+
 # ============================================================
 # NOTION BUDGET CONTEXT (READ PATH ONLY)
 # ============================================================
@@ -259,7 +335,8 @@ def get_or_init_notion_service() -> Optional["NotionService"]:
     if _NOTION_SERVICE is not None:
         return _NOTION_SERVICE
 
-    api_key = (os.getenv("NOTION_API_KEY") or "").strip()
+    api_key_env = os.getenv("NOTION_API_KEY") or ""
+    api_key = _clean_env_secret(api_key_env)
     goals = (os.getenv("NOTION_GOALS_DB_ID") or "").strip()
     tasks = (os.getenv("NOTION_TASKS_DB_ID") or "").strip()
     projects = (os.getenv("NOTION_PROJECTS_DB_ID") or "").strip()
@@ -273,6 +350,19 @@ def get_or_init_notion_service() -> Optional["NotionService"]:
         tasks_db_id=tasks,
         projects_db_id=projects,
     )
+    # Optional safe auth debug snapshot.
+    try:
+        setattr(
+            svc,
+            "_auth_debug",
+            _secret_debug_snapshot(
+                raw=api_key_env,
+                cleaned=api_key,
+                token_source=_ENV_NOTION_API_KEY,
+            ),
+        )
+    except Exception:
+        pass
     _NOTION_SERVICE = svc
     return svc
 
@@ -294,14 +384,18 @@ def init_notion_service_from_env_or_raise() -> "NotionService":
 
     Raises on missing/invalid env. No logging here; caller decides.
     """
-    raw_api_key = (os.getenv(_ENV_NOTION_API_KEY) or "").strip()
-    raw_fallback = (os.getenv(_ENV_NOTION_TOKEN_FALLBACK) or "").strip()
+    env_api_key_raw = os.getenv(_ENV_NOTION_API_KEY) or ""
+    env_fallback_raw = os.getenv(_ENV_NOTION_TOKEN_FALLBACK) or ""
+
+    raw_api_key = _clean_env_secret(env_api_key_raw)
+    raw_fallback = _clean_env_secret(env_fallback_raw)
     api_key = (raw_api_key or raw_fallback or "").strip()
     goals_db_id = (os.getenv(_ENV_GOALS_DB_ID) or "").strip()
     tasks_db_id = (os.getenv(_ENV_TASKS_DB_ID) or "").strip()
     projects_db_id = (os.getenv(_ENV_PROJECTS_DB_ID) or "").strip()
 
     token_source = _ENV_NOTION_API_KEY if raw_api_key else _ENV_NOTION_TOKEN_FALLBACK
+    chosen_raw = env_api_key_raw if token_source == _ENV_NOTION_API_KEY else env_fallback_raw
 
     def _tail4(secret: str) -> str:
         s = (secret or "").strip()
@@ -331,6 +425,20 @@ def init_notion_service_from_env_or_raise() -> "NotionService":
         tasks_db_id=tasks_db_id,
         projects_db_id=projects_db_id,
     )
+
+    # Optional safe auth debug snapshot (never logs the full token).
+    try:
+        setattr(
+            svc,
+            "_auth_debug",
+            _secret_debug_snapshot(
+                raw=chosen_raw,
+                cleaned=api_key,
+                token_source=token_source,
+            ),
+        )
+    except Exception:
+        pass
 
     # Non-invasive debug attribute used by preflight/logging.
     try:
@@ -449,7 +557,7 @@ class NotionService:
         tasks_db_id: str,
         projects_db_id: str,
     ) -> None:
-        api_key = (api_key or "").strip()
+        api_key = _clean_env_secret(api_key or "")
         if not api_key:
             raise RuntimeError("NotionService requires api_key")
 
@@ -758,6 +866,82 @@ class NotionService:
         payload: Optional[Dict[str, Any]] = None,
         params: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
+        # Optional safe wire-debug: proves the token source/shape (masked) before requests.
+        # Enable temporarily by setting NOTION_DEBUG_AUTH=true.
+        if (os.getenv("NOTION_DEBUG_AUTH") or "").strip().lower() == "true":
+            already = getattr(self, "_auth_debug_logged", False)
+            if not already:
+                snap = getattr(self, "_auth_debug", None)
+
+                # If NotionService was constructed directly (e.g. dependencies.py),
+                # _auth_debug may not be set. Infer it from env + current token.
+                if not isinstance(snap, dict):
+                    try:
+                        env_api_raw = os.getenv(_ENV_NOTION_API_KEY) or ""
+                        env_tok_raw = os.getenv(_ENV_NOTION_TOKEN_FALLBACK) or ""
+
+                        env_api_clean = _clean_env_secret(env_api_raw)
+                        env_tok_clean = _clean_env_secret(env_tok_raw)
+                        cur = (getattr(self, "_api_key", "") or "").strip()
+
+                        if env_api_clean and cur and env_api_clean == cur:
+                            snap = _secret_debug_snapshot(
+                                raw=env_api_raw,
+                                cleaned=cur,
+                                token_source=_ENV_NOTION_API_KEY,
+                            )
+                        elif env_tok_clean and cur and env_tok_clean == cur:
+                            snap = _secret_debug_snapshot(
+                                raw=env_tok_raw,
+                                cleaned=cur,
+                                token_source=_ENV_NOTION_TOKEN_FALLBACK,
+                            )
+                        else:
+                            # Fall back to best-effort: prefer NOTION_API_KEY raw.
+                            raw_guess = env_api_raw if env_api_raw.strip() else env_tok_raw
+                            src_guess = (
+                                _ENV_NOTION_API_KEY
+                                if env_api_raw.strip()
+                                else _ENV_NOTION_TOKEN_FALLBACK
+                            )
+                            snap = _secret_debug_snapshot(
+                                raw=raw_guess,
+                                cleaned=cur,
+                                token_source=src_guess,
+                            )
+
+                        try:
+                            setattr(self, "_auth_debug", snap)
+                        except Exception:
+                            pass
+                    except Exception:
+                        snap = None
+
+                if isinstance(snap, dict):
+                    logger.info(
+                        "notion_auth_wire_preflight token_source=%s tail=%s clean_len=%s "
+                        "clean_preview=%s clean_preview_repr=%s raw_len=%s raw_had_quotes=%s "
+                        "raw_had_bearer=%s raw_has_newline=%s raw_had_outer_ws=%s clean_has_ws=%s "
+                        "clean_startswith_bearer=%s",
+                        snap.get("token_source"),
+                        snap.get("clean_tail4"),
+                        snap.get("clean_len"),
+                        snap.get("clean_preview"),
+                        snap.get("clean_preview_repr"),
+                        snap.get("raw_len"),
+                        snap.get("raw_had_surrounding_quotes"),
+                        snap.get("raw_had_bearer_prefix"),
+                        snap.get("raw_has_newline"),
+                        snap.get("raw_had_outer_whitespace"),
+                        snap.get("clean_has_any_whitespace"),
+                        snap.get("clean_starts_with_bearer"),
+                    )
+
+                try:
+                    setattr(self, "_auth_debug_logged", True)
+                except Exception:
+                    pass
+
         client = await self._get_client()
 
         budget_state = _NOTION_BUDGET_STATE.get()
@@ -785,7 +969,14 @@ class NotionService:
                     budget_state._check_deadline_only()
                 except NotionBudgetExceeded:
                     pass
-            raise RuntimeError(f"Notion HTTP {resp.status_code}: {text}")
+            exc = RuntimeError(f"Notion HTTP {resp.status_code}: {text}")
+            # Attach safe debug metadata (never the full token).
+            try:
+                setattr(exc, "notion_token_source", self._token_source_name())
+                setattr(exc, "notion_token_tail4", self._token_tail4())
+            except Exception:
+                pass
+            raise exc
 
         if budget_state is not None:
             budget_state._check_deadline_only()
@@ -2569,6 +2760,61 @@ class NotionService:
         if not isinstance(operations, list) or not operations:
             raise RuntimeError("batch_request requires operations[]")
 
+        # Pre-resolve common relations for create_task operations.
+        # This prevents sending title strings as relation IDs and reduces duplicate lookups.
+        try:
+            goal_titles: set[str] = set()
+            for op in operations:
+                if not isinstance(op, dict):
+                    continue
+                if _ensure_str(op.get("intent")) != "create_task":
+                    continue
+                op_params0 = op.get("payload")
+                if not isinstance(op_params0, dict):
+                    op_params0 = op.get("params")
+                op_params0 = op_params0 if isinstance(op_params0, dict) else {}
+
+                if _ensure_str(op_params0.get("goal_id")):
+                    continue
+
+                gt = _ensure_str(op_params0.get("goal_title") or "").strip()
+                if gt:
+                    goal_titles.add(gt)
+
+            goal_title_to_id: Dict[str, str] = {}
+            for gt in sorted(goal_titles):
+                rr = await self._resolve_page_id_by_title_best_effort(
+                    db_key="goals", title=gt
+                )
+                if rr.get("ok") is True and _ensure_str(rr.get("page_id")):
+                    goal_title_to_id[gt] = _ensure_str(rr.get("page_id"))
+                else:
+                    raise RuntimeError(
+                        f"goal_lookup_failed:title={gt} reason={_ensure_str(rr.get('reason') or '')}"
+                    )
+
+            if goal_title_to_id:
+                for op in operations:
+                    if not isinstance(op, dict):
+                        continue
+                    if _ensure_str(op.get("intent")) != "create_task":
+                        continue
+                    op_params1 = op.get("payload")
+                    if not isinstance(op_params1, dict):
+                        op_params1 = op.get("params")
+                    if not isinstance(op_params1, dict):
+                        continue
+
+                    if _ensure_str(op_params1.get("goal_id")):
+                        continue
+                    gt = _ensure_str(op_params1.get("goal_title") or "").strip()
+                    if gt and goal_title_to_id.get(gt):
+                        op_params1["goal_id"] = goal_title_to_id[gt]
+        except Exception:
+            # Keep batch execution resilient; per-op create_task can still attempt best-effort.
+            # We only raise in strict cases above when lookup explicitly fails.
+            raise
+
         wrapper_patch = params.get("wrapper_patch")
         wrapper_patch = wrapper_patch if isinstance(wrapper_patch, dict) else None
 
@@ -2595,7 +2841,21 @@ class NotionService:
                 "message": msg or "Execution failed",
                 "status_code": None,
                 "raw_body": None,
+                # Optional safe Notion auth metadata (filled when available).
+                "token_source": None,
+                "token_tail4": None,
             }
+
+            # If exception carries safe Notion auth metadata, include it.
+            try:
+                ts = getattr(exc, "notion_token_source", None)
+                tt = getattr(exc, "notion_token_tail4", None)
+                if isinstance(ts, str) and ts.strip():
+                    out["token_source"] = ts.strip()
+                if isinstance(tt, str) and tt.strip():
+                    out["token_tail4"] = tt.strip()
+            except Exception:
+                pass
 
             # Parse canonical Notion HTTP wrapper: "Notion HTTP <status>: <text>"
             if isinstance(msg, str) and msg.startswith("Notion HTTP ") and ":" in msg:
@@ -2777,6 +3037,22 @@ class NotionService:
                     code0 = err.get("code") if isinstance(err, dict) else None
                     msg0 = err.get("message") if isinstance(err, dict) else None
                     if isinstance(sc, int) and raw is not None:
+                        token_meta = ""
+                        try:
+                            ts = err.get("token_source") if isinstance(err, dict) else None
+                            tt = err.get("token_tail4") if isinstance(err, dict) else None
+                            if (
+                                isinstance(sc, int)
+                                and sc in {401, 403}
+                                and isinstance(ts, str)
+                                and ts.strip()
+                                and isinstance(tt, str)
+                                and tt.strip()
+                            ):
+                                token_meta = f" token_source={ts.strip()} tail={tt.strip()}"
+                        except Exception:
+                            token_meta = ""
+
                         ctag = (
                             f" ({code0})"
                             if isinstance(code0, str) and code0.strip()
@@ -2787,7 +3063,7 @@ class NotionService:
                             if isinstance(msg0, str) and msg0.strip()
                             else ""
                         )
-                        reason = f"Notion HTTP {sc}{ctag}{mtag} | body={raw}"
+                        reason = f"Notion HTTP {sc}{ctag}{mtag}{token_meta} | body={raw}"
                 except Exception:
                     reason = str(exc)
 
@@ -3158,6 +3434,28 @@ class NotionService:
         if isinstance(extra_specs, dict) and extra_specs:
             property_specs.update(extra_specs)
 
+        # Resolve Goal relation BEFORE creating the page so the create payload uses a UUID.
+        goal_id = _ensure_str(params.get("goal_id"))
+        if goal_id.startswith("$"):
+            goal_id = ""
+        if not goal_id:
+            goal_title = _ensure_str(params.get("goal_title") or "").strip()
+            if goal_title:
+                rr = await self._resolve_page_id_by_title_best_effort(
+                    db_key="goals", title=goal_title
+                )
+                if rr.get("ok") is True and _ensure_str(rr.get("page_id")):
+                    goal_id = _ensure_str(rr.get("page_id"))
+                else:
+                    raise RuntimeError(
+                        f"goal_lookup_failed:title={goal_title} reason={_ensure_str(rr.get('reason') or '')}"
+                    )
+
+        if goal_id:
+            # Use relation spec; builder will emit properties.Goal.relation[].id = <uuid>
+            if not isinstance(property_specs.get("Goal"), dict):
+                property_specs["Goal"] = {"type": "relation", "ids": [goal_id]}
+
         wrapper_patch = params.get("wrapper_patch")
         build_warnings: List[Dict[str, Any]] = []
         if isinstance(wrapper_patch, dict) and wrapper_patch:
@@ -3188,8 +3486,7 @@ class NotionService:
             db_id=db_id, property_specs=property_specs, warnings=warnings
         )
 
-        # Handle relations after page creation
-        goal_id = _ensure_str(params.get("goal_id"))
+        # Handle relations after page creation (kept for compatibility)
         project_id = _ensure_str(params.get("project_id"))
 
         payload = {"parent": {"database_id": db_id}, "properties": notion_properties}
