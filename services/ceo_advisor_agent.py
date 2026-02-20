@@ -2220,13 +2220,14 @@ def _render_snapshot_summary(goals: Any, tasks: Any) -> str:
             or fields.get("title")
             or fields.get("name")
         )
+        # Requirement: prefer fields.* for goals (snapshot shape)
         status = _pick_str(
-            it.get("status")
-            or it.get("Status")
-            or fields.get("status")
+            fields.get("status")
             or fields.get("Status")
+            or it.get("status")
+            or it.get("Status")
         )
-        due = _pick_due(it.get("due") or fields.get("due") or fields.get("Due"))
+        due = _pick_due(fields.get("due") or fields.get("Due") or it.get("due"))
         return {
             "title": title,
             "status": status,
@@ -5574,7 +5575,7 @@ async def create_ceo_advisor_agent(
             if tgt == "goals":
                 text_out = _render_snapshot_summary(goals, [])
             elif tgt == "tasks":
-                text_out = _render_snapshot_summary([], tasks)
+                text_out = _render_snapshot_summary(goals, tasks)
             else:
                 text_out = _render_snapshot_summary(goals, tasks)
 

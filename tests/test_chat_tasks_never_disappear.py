@@ -230,3 +230,63 @@ def test_bosnian_navedi_taskove_lists_titles_and_never_claims_empty(monkeypatch)
     assert "uplat" in t
     assert "kontaktiraj dobavljača" in t
     assert "nema navedenih taskova" not in t
+
+
+def test_snapshot_goal_fields_are_rendered_in_goals_block_no_placeholders(monkeypatch):
+    monkeypatch.setenv("CEO_GROUNDING_PACK_ENABLED", "true")
+    monkeypatch.setenv("CEO_NOTION_TARGETED_READS_ENABLED", "false")
+    monkeypatch.setenv("CEO_ADVISOR_FORCE_OFFLINE", "1")
+    monkeypatch.delenv("DEBUG_API_RESPONSES", raising=False)
+
+    app = _load_app()
+    client = TestClient(app)
+
+    snapshot = {
+        "ready": True,
+        "payload": {
+            "dashboard": {"tasks": [], "goals": []},
+            "goals": [
+                {
+                    "id": "g1",
+                    "title": "Povećaj MRR",
+                    "fields": {"status": "in progress", "due": {"start": "2026-03-01"}},
+                },
+                {
+                    "id": "g2",
+                    "title": "Smanji churn",
+                    "fields": {"status": "to do", "due": {"start": "2026-03-15"}},
+                },
+            ],
+            "tasks": [
+                {
+                    "id": "t1",
+                    "title": "Nazovi klijenta",
+                    "fields": {"status": "to do", "due": {"start": "2026-02-21"}},
+                }
+            ],
+        },
+    }
+
+    r = client.post(
+        "/api/chat",
+        json={
+            "message": "koji su taskovi navedi",
+            "identity_pack": {"user_id": "test"},
+            "snapshot": snapshot,
+        },
+    )
+    assert r.status_code == 200, r.text
+
+    txt = str(r.json().get("text") or "")
+    assert "GOALS (top 3)" in txt
+
+    goals_block = txt.split("TASKS (top 5)")[0]
+    g = goals_block.lower()
+    assert "povećaj mrr" in g
+    assert "smanji churn" in g
+
+    # Only existing goals should be printed (2 goals -> no "3)" line)
+    assert "\n3)" not in goals_block
+
+    # No placeholders inside the goals block when goals exist.
+    assert "- | - | -" not in goals_block
