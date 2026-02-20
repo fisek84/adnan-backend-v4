@@ -2,12 +2,16 @@ import asyncio
 import logging
 import os
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from services.knowledge_snapshot_service import KnowledgeSnapshotService
+from services.notion_service import discover_notion_db_registry_from_env
 
 
 class NotionSyncService:
+    # Warn-once guard for env var conflicts (avoid noisy logs during repeated refreshes)
+    _ENV_DB_REGISTRY_CONFLICT_WARNED: Set[str] = set()
+
     def __init__(
         self,
         notion_service,
@@ -51,62 +55,77 @@ class NotionSyncService:
     def _discover_env_db_registry() -> List[Dict[str, str]]:
         """Discover all configured Notion databases from environment.
 
-        Contract:
-        - include every env var that endswith _DB_ID or _DATABASE_ID
-        - prefer *_DATABASE_ID over *_DB_ID when both exist for the same logical key
-        - only include NOTION_* entries (NotionService db_key convention)
+        SSOT:
+        - Prefer `NOTION_<KEY>_DB_ID` (canonical)
+        - Support legacy alias `NOTION_<KEY>_DATABASE_ID` only as fallback
+
+        If both are set and differ, emit a WARNING once per key
+        with both values and the chosen (canonical) value.
 
         Returns list entries:
-          {"env_name": str, "db_key": str, "db_id": str, "logical_name": str}
-        where logical_name is the NOTION_<LOGICAL>_... part (upper-case).
+          {
+            "env_name": str,
+            "db_key": str,
+            "db_id": str,
+            "logical_name": str,
+            "legacy_alias": "true"|"false",
+            "source": "DB_ID"|"DATABASE_ID"|"OTHER",
+          }
         """
-        # First pass: collect preferred IDs per logical key.
-        best: Dict[str, Dict[str, str]] = {}
-        for name, value in os.environ.items():
-            if not isinstance(name, str) or not isinstance(value, str):
-                continue
-            if not name.startswith("NOTION_"):
-                continue
-            v = value.strip()
-            if not v:
-                continue
 
-            if name.endswith("_DATABASE_ID"):
-                logical = name[len("NOTION_") : -len("_DATABASE_ID")].strip()
-                if not logical:
-                    continue
-                best[logical.upper()] = {
-                    "env_name": name,
-                    "db_key": logical.lower(),
-                    "db_id": v,
-                    "logical_name": logical.upper(),
-                }
-                continue
+        logger = logging.getLogger(__name__)
+        db_ids, meta, _warnings = discover_notion_db_registry_from_env()
 
-            if name.endswith("_DB_ID"):
-                logical = name[len("NOTION_") : -len("_DB_ID")].strip()
-                if not logical:
-                    continue
-                # Do not override an existing *_DATABASE_ID mapping.
-                best.setdefault(
-                    logical.upper(),
-                    {
-                        "env_name": name,
-                        "db_key": logical.lower(),
-                        "db_id": v,
-                        "logical_name": logical.upper(),
-                    },
-                )
+        # Stable ordering: prioritize core keys first, then alpha by key.
+        core_keys = ["tasks", "projects", "goals"]
+        all_keys = sorted(k for k in db_ids.keys() if isinstance(k, str) and k.strip())
+        ordered_keys = core_keys + [k for k in all_keys if k not in set(core_keys)]
 
-        # Stable ordering: prioritize core keys first, then alpha by logical name.
-        core = ["TASKS", "PROJECTS", "GOALS"]
-        rest = sorted([k for k in best.keys() if k not in set(core)])
-        ordered = core + rest
         out: List[Dict[str, str]] = []
-        for logical in ordered:
-            ent = best.get(logical)
-            if isinstance(ent, dict) and ent.get("db_id"):
-                out.append(ent)
+        for db_key in ordered_keys:
+            db_id = (db_ids.get(db_key) or "").strip()
+            if not db_id:
+                continue
+            ent = meta.get(db_key) if isinstance(meta, dict) else None
+            env_name = ent.get("env_name") if isinstance(ent, dict) else None
+            legacy_alias = (
+                bool(ent.get("legacy_alias")) if isinstance(ent, dict) else False
+            )
+
+            # Conflict guardrails: warn once per logical key when both vars exist and differ.
+            logical = db_key.upper()
+            canonical_raw = (os.getenv(f"NOTION_{logical}_DB_ID") or "").strip()
+            legacy_raw = (os.getenv(f"NOTION_{logical}_DATABASE_ID") or "").strip()
+            if canonical_raw and legacy_raw and canonical_raw != legacy_raw:
+                if logical not in NotionSyncService._ENV_DB_REGISTRY_CONFLICT_WARNED:
+                    NotionSyncService._ENV_DB_REGISTRY_CONFLICT_WARNED.add(logical)
+                    logger.warning(
+                        "notion_env_db_registry_conflict key=%s db_id=%s database_id=%s chosen=%s chosen_env=%s",
+                        logical,
+                        canonical_raw,
+                        legacy_raw,
+                        canonical_raw,
+                        f"NOTION_{logical}_DB_ID",
+                    )
+
+            source = "OTHER"
+            if isinstance(env_name, str):
+                if env_name.endswith("_DB_ID"):
+                    source = "DB_ID"
+                elif env_name.endswith("_DATABASE_ID"):
+                    source = "DATABASE_ID"
+
+            out.append(
+                {
+                    "env_name": env_name or "",
+                    "db_key": db_key,
+                    "db_id": db_id,
+                    "logical_name": logical,
+                    "legacy_alias": "true" if legacy_alias else "false",
+                    "source": source,
+                }
+            )
+
         return out
 
     # ------------------------------------------------------
@@ -388,8 +407,10 @@ class NotionSyncService:
                 if ok_db:
                     succeeded += 1
                     self.logger.info(
-                        "snapshot_refresh_db_ok env=%s db_id=%s count=%s duration_ms=%s",
+                        "snapshot_refresh_db_ok key=%s env=%s source=%s db_id=%s count=%s duration_ms=%s",
+                        r.get("db_key"),
                         r.get("env_name"),
+                        r.get("source"),
                         r.get("db_id"),
                         st.get("count"),
                         st.get("duration_ms"),
@@ -397,8 +418,10 @@ class NotionSyncService:
                 else:
                     failed += 1
                     self.logger.warning(
-                        "snapshot_refresh_db_fail env=%s db_id=%s error=%s duration_ms=%s",
+                        "snapshot_refresh_db_fail key=%s env=%s source=%s db_id=%s error=%s duration_ms=%s",
+                        r.get("db_key"),
                         r.get("env_name"),
+                        r.get("source"),
                         r.get("db_id"),
                         st.get("error"),
                         st.get("duration_ms"),
