@@ -2032,30 +2032,110 @@ def _show_target(user_text: str) -> str:
 
 
 def _extract_goals_tasks(snapshot_payload: Dict[str, Any]) -> Tuple[Any, Any]:
+    goals, tasks, _meta = _extract_goals_tasks_with_meta(snapshot_payload)
+    return goals, tasks
+
+
+class ExtractionInvariantError(RuntimeError):
+    """Raised when snapshot claims tasks exist but extraction yields zero."""
+
+
+def _extract_goals_tasks_with_meta(
+    snapshot_payload: Dict[str, Any],
+) -> Tuple[Any, Any, Dict[str, Any]]:
     dashboard = (
         snapshot_payload.get("dashboard") if isinstance(snapshot_payload, dict) else {}
     )
     goals = None
     tasks = None
 
+    payload_goals = (
+        snapshot_payload.get("goals") if isinstance(snapshot_payload, dict) else None
+    )
+    payload_tasks = (
+        snapshot_payload.get("tasks") if isinstance(snapshot_payload, dict) else None
+    )
+
+    dash_goals = None
+    dash_tasks = None
     if isinstance(dashboard, dict):
-        goals = dashboard.get("goals")
-        tasks = dashboard.get("tasks")
+        dash_goals = dashboard.get("goals")
+        dash_tasks = dashboard.get("tasks")
+        goals = dash_goals
+        tasks = dash_tasks
 
-    if goals is None:
-        goals = (
-            snapshot_payload.get("goals")
-            if isinstance(snapshot_payload, dict)
-            else None
-        )
-    if tasks is None:
-        tasks = (
-            snapshot_payload.get("tasks")
-            if isinstance(snapshot_payload, dict)
-            else None
-        )
+    goals_source = "dashboard" if isinstance(dash_goals, list) else "other"
+    tasks_source = "dashboard" if isinstance(dash_tasks, list) else "other"
 
-    return goals, tasks
+    # Prefer dashboard when it actually contains data, but never let an empty
+    # dashboard list override a non-empty SSOT payload list.
+    if goals is None or (
+        isinstance(goals, list)
+        and len(goals) == 0
+        and isinstance(payload_goals, list)
+        and len(payload_goals) > 0
+    ):
+        goals = payload_goals
+        goals_source = "payload"
+
+    if tasks is None or (
+        isinstance(tasks, list)
+        and len(tasks) == 0
+        and isinstance(payload_tasks, list)
+        and len(payload_tasks) > 0
+    ):
+        tasks = payload_tasks
+        tasks_source = "payload"
+
+    snapshot_tasks_count = 0
+    try:
+        if isinstance(payload_tasks, list):
+            snapshot_tasks_count = int(len(payload_tasks))
+        elif isinstance(dash_tasks, list):
+            snapshot_tasks_count = int(len(dash_tasks))
+        else:
+            v = (
+                snapshot_payload.get("tasks_count")
+                if isinstance(snapshot_payload, dict)
+                else None
+            )
+            if isinstance(v, int) and v >= 0:
+                snapshot_tasks_count = int(v)
+    except Exception:
+        snapshot_tasks_count = 0
+
+    extracted_tasks_count = int(len(tasks)) if isinstance(tasks, list) else 0
+    invariant_triggered = False
+    invariant_reason = None
+
+    # Hard invariant: if snapshot indicates tasks exist but extraction yields 0,
+    # treat it as a logic error and force a safe fallback.
+    if snapshot_tasks_count > 0 and extracted_tasks_count == 0:
+        invariant_triggered = True
+        invariant_reason = "snapshot_tasks_present_but_extracted_empty"
+        if isinstance(payload_tasks, list) and len(payload_tasks) > 0:
+            tasks = payload_tasks
+            tasks_source = "payload"
+        elif isinstance(dash_tasks, list) and len(dash_tasks) > 0:
+            tasks = dash_tasks
+            tasks_source = "dashboard"
+        else:
+            raise ExtractionInvariantError(
+                "snapshot_tasks_count>0 but no task list available to recover"
+            )
+
+    final_tasks_count_used_by_llm = int(len(tasks)) if isinstance(tasks, list) else 0
+
+    meta: Dict[str, Any] = {
+        "snapshot_tasks_count": int(snapshot_tasks_count),
+        "extracted_tasks_count": int(extracted_tasks_count),
+        "final_tasks_count_used_by_llm": int(final_tasks_count_used_by_llm),
+        "invariant_triggered": bool(invariant_triggered),
+        "invariant_reason": invariant_reason,
+        "extraction_source_priority": str(tasks_source or "other"),
+        "goals_extraction_source_priority": str(goals_source or "other"),
+    }
+    return goals, tasks, meta
 
 
 def _render_snapshot_summary(goals: Any, tasks: Any) -> str:
@@ -2586,6 +2666,7 @@ def _snapshot_trace(
     goals: List[Dict[str, Any]],
     tasks: List[Dict[str, Any]],
     meta: Dict[str, Any],
+    extraction_meta: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Small, stable diagnostic block for UI/ops.
 
@@ -2644,6 +2725,19 @@ def _snapshot_trace(
         "goals_count": int(len(goals or [])),
         "tasks_count": int(len(tasks or [])),
     }
+
+    if isinstance(extraction_meta, dict) and extraction_meta:
+        for k in (
+            "snapshot_tasks_count",
+            "extracted_tasks_count",
+            "final_tasks_count_used_by_llm",
+            "invariant_triggered",
+            "invariant_reason",
+            "extraction_source_priority",
+            "goals_extraction_source_priority",
+        ):
+            if k in extraction_meta:
+                out[k] = extraction_meta.get(k)
 
     # Optional freshness fields (only if producer provides them)
     for k in ("ttl_seconds", "age_seconds", "is_expired"):
@@ -3943,8 +4037,44 @@ async def create_ceo_advisor_agent(
             pass
         return out
 
-    # Inicijalizacija goals i tasks
-    goals, tasks = _extract_goals_tasks(snapshot_payload)
+    # Inicijalizacija goals i tasks (with hard invariant)
+    extraction_meta: Dict[str, Any] = {}
+    try:
+        goals, tasks, extraction_meta = _extract_goals_tasks_with_meta(snapshot_payload)
+    except ExtractionInvariantError as exc:
+        # Fail-safe: do not silently claim empty tasks when snapshot indicates otherwise.
+        extraction_meta = {
+            "snapshot_tasks_count": int(snapshot_payload.get("tasks_count") or 0)
+            if isinstance(snapshot_payload.get("tasks_count"), int)
+            else 0,
+            "extracted_tasks_count": 0,
+            "final_tasks_count_used_by_llm": 0,
+            "invariant_triggered": True,
+            "invariant_reason": "extraction_invariant_error",
+            "extraction_source_priority": "other",
+            "invariant_error": str(exc),
+        }
+        # Best-effort extraction without re-triggering the invariant.
+        dash = (
+            snapshot_payload.get("dashboard")
+            if isinstance(snapshot_payload, dict)
+            else None
+        )
+        dash = dash if isinstance(dash, dict) else {}
+        goals = (
+            snapshot_payload.get("goals")
+            if isinstance(snapshot_payload, dict)
+            else None
+        )
+        tasks = (
+            snapshot_payload.get("tasks")
+            if isinstance(snapshot_payload, dict)
+            else None
+        )
+        if not isinstance(goals, list):
+            goals = dash.get("goals") if isinstance(dash.get("goals"), list) else []
+        if not isinstance(tasks, list):
+            tasks = dash.get("tasks") if isinstance(dash.get("tasks"), list) else []
 
     # LLM gate variables and logging
     propose_only = _is_propose_only_request(base_text)
@@ -3970,6 +4100,7 @@ async def create_ceo_advisor_agent(
         goals=goals,
         tasks=tasks,
         meta=meta,
+        extraction_meta=extraction_meta,
     )
 
     snapshot_ready = bool(

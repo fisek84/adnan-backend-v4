@@ -3,12 +3,16 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 import re
 import time
 import uuid
 
-from typing import Any, Dict, List, Optional
+from datetime import datetime, timezone
+
+from typing import Any, Callable, Dict, List, Optional
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
@@ -38,6 +42,9 @@ _ACTIVATE_KEYWORDS = (
     "notion ops uključi",
     "notion ops ukljuci",
 )
+
+
+logger = logging.getLogger(__name__)
 
 # Deactivation keywords (exact per spec + Bosnian variants mentioned)
 _DEACTIVATE_KEYWORDS = (
@@ -613,6 +620,29 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         env_debug = env in {"1", "true", "yes", "on"}
         return bool(include_debug or env_debug)
 
+    def _debug_enabled_request(request: Request) -> bool:
+        def _truthy(v: Any) -> bool:
+            if v is True:
+                return True
+            if not isinstance(v, str):
+                return False
+            return v.strip().lower() in {"1", "true", "yes", "on"}
+
+        try:
+            if _truthy(request.headers.get("X-Debug")):
+                return True
+        except Exception:
+            pass
+
+        try:
+            qp = request.query_params.get("include_debug")
+            if _truthy(qp):
+                return True
+        except Exception:
+            pass
+
+        return False
+
     def _minimal_trace_intent(trace_obj: Any) -> Dict[str, Any]:
         if not isinstance(trace_obj, dict):
             return {}
@@ -998,6 +1028,7 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         kb: Dict[str, Any],
         grounding: Dict[str, Any],
         debug_on: bool,
+        audit_fn: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
     ) -> JSONResponse:
         msg = "Notion Ops nije aktivan. Želiš aktivirati? (napiši: 'notion ops aktiviraj' / 'notion ops uključi')"
         if isinstance(why, str) and why.strip():
@@ -1041,10 +1072,234 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             if mt:
                 content["trace"] = mt
 
+        if audit_fn is not None:
+            try:
+                content = audit_fn(content)
+            except Exception:
+                pass
         return JSONResponse(content=content)
 
     @router.post("/chat", response_model=AgentOutput, response_model_by_alias=False)
     async def chat(payload: AgentInput, request: Request):
+        audit_request_id = uuid.uuid4().hex
+        audit_started_at = (
+            datetime.now(timezone.utc)
+            .replace(microsecond=0)
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
+        debug_req_on = _debug_enabled_request(request)
+
+        def _truthy(v: Any) -> bool:
+            if v is True:
+                return True
+            if not isinstance(v, str):
+                return False
+            return v.strip().lower() in {"1", "true", "yes", "on"}
+
+        def _snapshot_counts(snap: Any) -> Dict[str, Any]:
+            s = snap if isinstance(snap, dict) else {}
+            payload0 = s.get("payload") if isinstance(s.get("payload"), dict) else None
+            payload = (
+                payload0
+                if isinstance(payload0, dict)
+                else (s if isinstance(s, dict) else {})
+            )
+            if not isinstance(payload, dict):
+                payload = {}
+
+            def _count_list(x: Any) -> int:
+                return int(len(x)) if isinstance(x, list) else 0
+
+            dash = (
+                payload.get("dashboard")
+                if isinstance(payload.get("dashboard"), dict)
+                else {}
+            )
+            out = {
+                "ready": bool(s.get("ready") is True),
+                "status": s.get("status"),
+                "schema_version": s.get("schema_version"),
+                "last_sync": s.get("last_sync")
+                or (
+                    payload.get("last_sync")
+                    if isinstance(payload.get("last_sync"), str)
+                    else None
+                ),
+                "goals": _count_list(payload.get("goals")),
+                "tasks": _count_list(payload.get("tasks")),
+                "projects": _count_list(payload.get("projects")),
+                "dashboard_goals": _count_list(dash.get("goals")),
+                "dashboard_tasks": _count_list(dash.get("tasks")),
+                "dashboard_projects": _count_list(dash.get("projects")),
+                "has_dashboard": bool(isinstance(payload.get("dashboard"), dict)),
+            }
+            return out
+
+        def _grounding_trace_v2(grounding: Any) -> Dict[str, Any]:
+            if not isinstance(grounding, dict):
+                return {}
+            tr2 = (
+                grounding.get("trace_v2")
+                if isinstance(grounding.get("trace_v2"), dict)
+                else None
+            )
+            if isinstance(tr2, dict):
+                return tr2
+            gp = (
+                grounding.get("grounding_pack")
+                if isinstance(grounding.get("grounding_pack"), dict)
+                else {}
+            )
+            tr = gp.get("trace") if isinstance(gp.get("trace"), dict) else {}
+            return tr if isinstance(tr, dict) else {}
+
+        def _attach_and_log_audit(
+            content: Dict[str, Any],
+            *,
+            session_id: Optional[str],
+            conversation_id: Optional[str],
+            agent_id: Optional[str],
+            snapshot: Any,
+            trace: Any,
+            grounding: Any,
+            debug_on: bool,
+            exit_path: str,
+            targeted_reads: Optional[Dict[str, Any]] = None,
+        ) -> Dict[str, Any]:
+            # Build audit (no raw Notion data; counts + reasons only).
+            snap_counts = _snapshot_counts(snapshot)
+            trace0 = trace if isinstance(trace, dict) else {}
+            snap_trace = (
+                trace0.get("snapshot")
+                if isinstance(trace0.get("snapshot"), dict)
+                else {}
+            )
+            gp_trace = _grounding_trace_v2(grounding)
+
+            snapshot_tasks_count = int(snap_counts.get("tasks") or 0)
+            extracted_tasks_count = (
+                int(snap_trace.get("extracted_tasks_count") or 0)
+                if isinstance(snap_trace, dict)
+                else 0
+            )
+            if extracted_tasks_count == 0:
+                extracted_tasks_count = (
+                    int(snap_trace.get("tasks_count") or 0)
+                    if isinstance(snap_trace, dict)
+                    else 0
+                )
+            final_tasks_count_used_by_llm = (
+                int(snap_trace.get("final_tasks_count_used_by_llm") or 0)
+                if isinstance(snap_trace, dict)
+                else extracted_tasks_count
+            )
+            if final_tasks_count_used_by_llm == 0:
+                final_tasks_count_used_by_llm = extracted_tasks_count
+            invariant_triggered = bool(
+                isinstance(snap_trace, dict)
+                and snap_trace.get("invariant_triggered") is True
+            )
+            extraction_source_priority = (
+                snap_trace.get("extraction_source_priority")
+                if isinstance(snap_trace, dict)
+                else None
+            )
+            if (
+                not isinstance(extraction_source_priority, str)
+                or not extraction_source_priority.strip()
+            ):
+                extraction_source_priority = None
+
+            mismatch = None
+            try:
+                if (
+                    int(snap_counts.get("tasks") or 0) > 0
+                    and int(snap_trace.get("tasks_count") or 0) == 0
+                ):
+                    mismatch = {
+                        "kind": "tasks_missing_in_agent_trace",
+                        "snapshot_tasks": int(snap_counts.get("tasks") or 0),
+                        "agent_tasks": int(snap_trace.get("tasks_count") or 0),
+                    }
+                    if gp_trace.get("budget_exceeded") is True:
+                        mismatch["reason"] = "grounding_budget_exceeded"
+                    elif (
+                        isinstance(targeted_reads, dict)
+                        and targeted_reads.get("cache_hit") is True
+                    ):
+                        mismatch["reason"] = "targeted_reads_cache_hit"
+                    else:
+                        mismatch["reason"] = "unknown"
+            except Exception:
+                mismatch = None
+
+            audit_level = "ERROR" if invariant_triggered else "INFO"
+
+            audit: Dict[str, Any] = {
+                "level": audit_level,
+                "ts": audit_started_at,
+                "request_id": audit_request_id,
+                "exit_path": exit_path,
+                "agent_id": agent_id,
+                "session_id": session_id,
+                "conversation_id": conversation_id,
+                "debug_requested": bool(debug_req_on),
+                "snapshot_tasks_count": snapshot_tasks_count,
+                "extracted_tasks_count": extracted_tasks_count,
+                "final_tasks_count_used_by_llm": final_tasks_count_used_by_llm,
+                "invariant_triggered": bool(invariant_triggered),
+                "extraction_source_priority": extraction_source_priority,
+                "snapshot": snap_counts,
+                "agent_trace_snapshot": {
+                    "ready": snap_trace.get("ready"),
+                    "available": snap_trace.get("available"),
+                    "tasks_count": snap_trace.get("tasks_count"),
+                    "goals_count": snap_trace.get("goals_count"),
+                    "source": snap_trace.get("source"),
+                }
+                if isinstance(snap_trace, dict)
+                else {},
+                "grounding": {
+                    "enabled": bool(
+                        isinstance(grounding, dict)
+                        and isinstance(grounding.get("grounding_pack"), dict)
+                        and grounding.get("grounding_pack", {}).get("enabled")
+                        is not False
+                    ),
+                    "budget_exceeded": bool(gp_trace.get("budget_exceeded") is True),
+                    "payload_bytes": gp_trace.get("payload_bytes"),
+                    "used_sources": gp_trace.get("used_sources"),
+                    "not_used": gp_trace.get("not_used"),
+                },
+                "targeted_reads": targeted_reads or {},
+            }
+            if mismatch:
+                audit["mismatch"] = mismatch
+
+            try:
+                line = json.dumps(audit, ensure_ascii=False, separators=(",", ":"))
+                if audit_level == "ERROR":
+                    logger.error("CEO_AUDIT %s", line)
+                else:
+                    logger.info("CEO_AUDIT %s", line)
+            except Exception:
+                pass
+
+            if debug_on:
+                try:
+                    dbg = (
+                        content.get("debug")
+                        if isinstance(content.get("debug"), dict)
+                        else {}
+                    )
+                    dbg = dict(dbg)
+                    dbg["audit"] = audit
+                    content["debug"] = dbg
+                except Exception:
+                    pass
+            return content
+
         # ------------------------------------------------------------
         # MINIMAL ROUTING FIX (explicit Dept Ops only)
         # If caller explicitly requests Dept Ops (preferred_agent_id or prefix),
@@ -1121,6 +1376,8 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 except Exception:
                     pass
 
+            debug_on = bool(debug_req_on or _debug_enabled(payload))
+
             identity_pack = (
                 payload.identity_pack
                 if isinstance(getattr(payload, "identity_pack", None), dict)
@@ -1155,21 +1412,34 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 return JSONResponse(
                     status_code=500,
                     content=_attach_session_id(
-                        {
-                            "text": str(exc)
-                            if str(exc)
-                            else "dept_finance_strict_backend_failed",
-                            "proposed_commands": [],
-                            "agent_id": "dept_finance",
-                            "read_only": True,
-                            "trace": {
+                        _attach_and_log_audit(
+                            {
+                                "text": str(exc)
+                                if str(exc)
+                                else "dept_finance_strict_backend_failed",
+                                "proposed_commands": [],
+                                "agent_id": "dept_finance",
+                                "read_only": True,
+                                "trace": {
+                                    "intent": "error",
+                                    "exit_reason": "error.dept_finance_strict_backend_failed",
+                                    "error_type": exc.__class__.__name__,
+                                    "error": str(exc),
+                                },
+                                "session_id": session_id,
+                            },
+                            session_id=session_id,
+                            conversation_id=conversation_id,
+                            agent_id="dept_finance",
+                            snapshot=snapshot,
+                            trace={
                                 "intent": "error",
                                 "exit_reason": "error.dept_finance_strict_backend_failed",
-                                "error_type": exc.__class__.__name__,
-                                "error": str(exc),
                             },
-                            "session_id": session_id,
-                        },
+                            grounding={},
+                            debug_on=bool(debug_on),
+                            exit_path="dept_finance.strict.error",
+                        ),
                         session_id,
                     ),
                 )
@@ -1198,7 +1468,18 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 },
             }
 
-            return JSONResponse(content=content)
+            content = _attach_and_log_audit(
+                content,
+                session_id=session_id,
+                conversation_id=conversation_id,
+                agent_id=content.get("agent_id"),
+                snapshot=snapshot,
+                trace=tr0,
+                grounding={},
+                debug_on=bool(debug_on),
+                exit_path="dept_finance.strict.ok",
+            )
+            return JSONResponse(content=_attach_session_id(content, session_id))
 
         if is_explicit_dept_ops:
             from services.department_agents import dept_ops_agent  # noqa: PLC0415
@@ -1222,6 +1503,8 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                     payload.conversation_id = conversation_id.strip()
                 except Exception:
                     pass
+
+            debug_on = bool(debug_req_on or _debug_enabled(payload))
 
             # Minimal AgentInput for dept_ops_agent (force preferred_agent_id so strict branch activates).
             identity_pack = (
@@ -1259,21 +1542,34 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 return JSONResponse(
                     status_code=500,
                     content=_attach_session_id(
-                        {
-                            "text": str(exc)
-                            if str(exc)
-                            else "dept_ops_strict_backend_failed",
-                            "proposed_commands": [],
-                            "agent_id": "dept_ops",
-                            "read_only": True,
-                            "trace": {
+                        _attach_and_log_audit(
+                            {
+                                "text": str(exc)
+                                if str(exc)
+                                else "dept_ops_strict_backend_failed",
+                                "proposed_commands": [],
+                                "agent_id": "dept_ops",
+                                "read_only": True,
+                                "trace": {
+                                    "intent": "error",
+                                    "exit_reason": "error.dept_ops_strict_backend_failed",
+                                    "error_type": exc.__class__.__name__,
+                                    "error": str(exc),
+                                },
+                                "session_id": session_id,
+                            },
+                            session_id=session_id,
+                            conversation_id=conversation_id,
+                            agent_id="dept_ops",
+                            snapshot=snapshot,
+                            trace={
                                 "intent": "error",
                                 "exit_reason": "error.dept_ops_strict_backend_failed",
-                                "error_type": exc.__class__.__name__,
-                                "error": str(exc),
                             },
-                            "session_id": session_id,
-                        },
+                            grounding={},
+                            debug_on=bool(debug_on),
+                            exit_path="dept_ops.strict.error",
+                        ),
                         session_id,
                     ),
                 )
@@ -1311,6 +1607,17 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 "snapshot_meta": snapshot_meta,
             }
 
+            content = _attach_and_log_audit(
+                content,
+                session_id=session_id,
+                conversation_id=conversation_id,
+                agent_id=content.get("agent_id"),
+                snapshot=snapshot,
+                trace=tr0,
+                grounding={},
+                debug_on=bool(debug_on),
+                exit_path="dept_ops.strict.ok",
+            )
             return JSONResponse(content=_attach_session_id(content, session_id))
 
         memory_provider = "readonly_memory_service"
@@ -1352,6 +1659,8 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         # proposal persistence/replay uses session_id as the key.
         conversation_id = _extract_conversation_id(payload) or session_id
         proposal_key = session_id
+
+        debug_on = bool(debug_req_on or _debug_enabled(payload))
         # Responses+CEO multi-turn can require a stable id when explicitly enabled.
         if (
             _responses_mode_enabled()
@@ -1361,16 +1670,29 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             return JSONResponse(
                 status_code=400,
                 content=_attach_session_id(
-                    {
-                        "text": "Missing conversation id. Provide 'session_id' (recommended) or 'conversation_id' for CEO Responses mode.",
-                        "proposed_commands": [],
-                        "agent_id": "ceo_advisor",
-                        "read_only": True,
-                        "error": {
-                            "code": "error.missing_conversation_id",
-                            "message": "Provide session_id or conversation_id.",
+                    _attach_and_log_audit(
+                        {
+                            "text": "Missing conversation id. Provide 'session_id' (recommended) or 'conversation_id' for CEO Responses mode.",
+                            "proposed_commands": [],
+                            "agent_id": "ceo_advisor",
+                            "read_only": True,
+                            "error": {
+                                "code": "error.missing_conversation_id",
+                                "message": "Provide session_id or conversation_id.",
+                            },
                         },
-                    },
+                        session_id=session_id,
+                        conversation_id=conversation_id,
+                        agent_id="ceo_advisor",
+                        snapshot=getattr(payload, "snapshot", None),
+                        trace={
+                            "intent": "error",
+                            "exit_reason": "error.missing_conversation_id",
+                        },
+                        grounding={},
+                        debug_on=bool(debug_on),
+                        exit_path="ceo_chat.error.missing_conversation_id",
+                    ),
                     session_id,
                 ),
             )
@@ -1413,10 +1735,21 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                     },
                 }
 
-                if _debug_enabled(payload):
+                if debug_on:
                     kb0 = _knowledge_bundle()
                     content.update(kb0)
 
+                content = _attach_and_log_audit(
+                    content,
+                    session_id=session_id,
+                    conversation_id=conversation_id,
+                    agent_id=content.get("agent_id"),
+                    snapshot=getattr(payload, "snapshot", None),
+                    trace=content.get("trace"),
+                    grounding={},
+                    debug_on=bool(debug_on),
+                    exit_path="ceo_chat.pending_proposal.replay",
+                )
                 return JSONResponse(content=_attach_session_id(content, session_id))
 
             if cls in {"NO", "NEW_REQUEST"}:
@@ -1451,9 +1784,20 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                             "canon": "api_chat_pending_proposal_confirm_needed",
                         },
                     }
-                    if _debug_enabled(payload):
+                    if debug_on:
                         kb0 = _knowledge_bundle()
                         content.update(kb0)
+                    content = _attach_and_log_audit(
+                        content,
+                        session_id=session_id,
+                        conversation_id=conversation_id,
+                        agent_id=content.get("agent_id"),
+                        snapshot=getattr(payload, "snapshot", None),
+                        trace=content.get("trace"),
+                        grounding={},
+                        debug_on=bool(debug_on),
+                        exit_path="ceo_chat.pending_proposal.confirm_needed",
+                    )
                     return JSONResponse(content=_attach_session_id(content, session_id))
 
                 # Second unknown: auto-cancel and continue normal routing.
@@ -1467,7 +1811,7 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             )
             conv_summary = s.summary_text
         notion_calls_for_trace: Optional[int] = None
-        debug_on = _debug_enabled(payload)
+        debug_on = bool(debug_on)
 
         def _is_test_mode() -> bool:
             return (os.getenv("TESTING") or "").strip() == "1" or (
@@ -1498,6 +1842,15 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         # Preserve server SSOT knowledge snapshot for the response contract.
         ks_ssot = ks_for_gp
 
+        targeted_reads_info: Dict[str, Any] = {
+            "attempted": False,
+            "cache_hit": False,
+            "source": None,
+            "db_keys_csv": None,
+            "ttl_seconds": None,
+            "min_last_sync": None,
+        }
+
         # ------------------------------------------------------------
         # READ SNAPSHOT INJECTION (CANON)
         # The UI may send an empty snapshot; for dashboard/show *and* planning/advisory
@@ -1521,6 +1874,54 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 pol = classify_prompt(prompt)
                 snap_in0 = getattr(payload, "snapshot", None)
                 has_snap0 = isinstance(snap_in0, dict) and bool(snap_in0)
+
+                def _extract_last_sync(snap: Any) -> Optional[str]:
+                    if not isinstance(snap, dict):
+                        return None
+
+                    # Avoid treating synthetic SSOT last_sync (often == generated_at) as a
+                    # freshness marker; it changes per-request and would defeat caching.
+                    try:
+                        gen = snap.get("generated_at")
+                        ls = snap.get("last_sync")
+                        trace0 = (
+                            snap.get("trace")
+                            if isinstance(snap.get("trace"), dict)
+                            else {}
+                        )
+                        if (
+                            isinstance(gen, str)
+                            and isinstance(ls, str)
+                            and gen.strip()
+                            and ls.strip()
+                            and gen.strip() == ls.strip()
+                            and trace0.get("service") == "KnowledgeSnapshotService"
+                        ):
+                            ls = None
+                        v = ls
+                    except Exception:
+                        v = snap.get("last_sync")
+
+                    if isinstance(v, str) and v.strip():
+                        return v.strip()
+                    p0 = (
+                        snap.get("payload")
+                        if isinstance(snap.get("payload"), dict)
+                        else None
+                    )
+                    if isinstance(p0, dict):
+                        v2 = p0.get("last_sync")
+                        if isinstance(v2, str) and v2.strip():
+                            return v2.strip()
+
+                    m0 = (
+                        snap.get("meta") if isinstance(snap.get("meta"), dict) else None
+                    )
+                    if isinstance(m0, dict):
+                        v3 = m0.get("synced_at")
+                        if isinstance(v3, str) and v3.strip():
+                            return v3.strip()
+                    return None
 
                 def _needs_notion_refresh(snap: Any) -> bool:
                     if not isinstance(snap, dict):
@@ -1552,7 +1953,9 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                     .lower()
                     == "true"
                 ):
+                    targeted_reads_info["attempted"] = True
                     db_keys_csv = ",".join(pol.notion_db_keys)
+                    targeted_reads_info["db_keys_csv"] = db_keys_csv
                     ttl_s_raw = (
                         os.getenv("CEO_CHAT_SNAPSHOT_TTL_SECONDS") or "60"
                     ).strip()
@@ -1560,13 +1963,24 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                         ttl_s = int(ttl_s_raw)
                     except Exception:
                         ttl_s = 60
+                    targeted_reads_info["ttl_seconds"] = int(ttl_s)
+
+                    # Freshness gating should be driven by the caller-provided snapshot
+                    # (if any). SSOT snapshot timestamps can legitimately change during
+                    # a long-running test run and must not defeat per-session caching.
+                    min_last_sync = _extract_last_sync(snap_in0)
+                    targeted_reads_info["min_last_sync"] = min_last_sync
 
                     cached = None
                     if isinstance(session_id, str) and session_id.strip():
                         cached = SESSION_SNAPSHOT_CACHE.get(
-                            session_id=session_id.strip(), db_keys_csv=db_keys_csv
+                            session_id=session_id.strip(),
+                            db_keys_csv=db_keys_csv,
+                            min_last_sync=min_last_sync,
                         )
                     if isinstance(cached, dict) and cached:
+                        targeted_reads_info["cache_hit"] = True
+                        targeted_reads_info["source"] = "cache"
                         payload.snapshot = cached
                         kb = {
                             "knowledge_snapshot": cached,
@@ -1574,8 +1988,43 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                         }
                         ks_for_gp = cached
                     else:
-                        notion = get_or_init_notion_service()
+                        # If SSOT snapshot already satisfies required collections, prefer it
+                        # over burning Notion budget on a live targeted read.
+                        used_ssot_instead_of_live = False
+                        try:
+                            ssot_payload = (
+                                ks_ssot.get("payload")
+                                if isinstance(ks_ssot.get("payload"), dict)
+                                else ks_ssot
+                            )
+                            ssot_ok = True
+                            if not isinstance(ssot_payload, dict):
+                                ssot_ok = False
+                            else:
+                                for k in pol.notion_db_keys:
+                                    v = ssot_payload.get(k)
+                                    if not (isinstance(v, list) and len(v) > 0):
+                                        ssot_ok = False
+                                        break
+                            if ssot_ok and isinstance(ks_ssot, dict) and ks_ssot:
+                                targeted_reads_info["source"] = "ssot"
+                                payload.snapshot = ks_ssot
+                                kb = {
+                                    "knowledge_snapshot": ks_ssot,
+                                    "snapshot_meta": _snapshot_meta_from_ks(ks_ssot),
+                                }
+                                ks_for_gp = ks_ssot
+                                used_ssot_instead_of_live = True
+                        except Exception:
+                            pass
+
+                        notion = (
+                            None
+                            if used_ssot_instead_of_live
+                            else get_or_init_notion_service()
+                        )
                         if notion is not None:
+                            targeted_reads_info["source"] = "live"
                             max_items = {"tasks": 50, "projects": 30, "goals": 30}
                             snap = await notion.build_knowledge_snapshot(
                                 db_keys=list(pol.notion_db_keys),
@@ -1751,6 +2200,18 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 content["trace"] = tr
                 content.update(kb)
                 content.update(grounding)
+            content = _attach_and_log_audit(
+                content,
+                session_id=session_id,
+                conversation_id=conversation_id,
+                agent_id=content.get("agent_id"),
+                snapshot=ks_for_gp,
+                trace=tr,
+                grounding=grounding,
+                debug_on=bool(debug_on),
+                exit_path="ceo_chat.notion_ops.armed",
+                targeted_reads=targeted_reads_info,
+            )
             return JSONResponse(content=_attach_session_id(content, session_id))
 
         if session_id and _is_deactivate(prompt):
@@ -1784,6 +2245,18 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 content["trace"] = tr
                 content.update(kb)
                 content.update(grounding)
+            content = _attach_and_log_audit(
+                content,
+                session_id=session_id,
+                conversation_id=conversation_id,
+                agent_id=content.get("agent_id"),
+                snapshot=ks_for_gp,
+                trace=tr,
+                grounding=grounding,
+                debug_on=bool(debug_on),
+                exit_path="ceo_chat.notion_ops.disarmed",
+                targeted_reads=targeted_reads_info,
+            )
             return JSONResponse(content=_attach_session_id(content, session_id))
 
         # Determine armed state (default false if no session_id)
@@ -1896,25 +2369,38 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                     },
                 }
 
+                grounding_nops = _grounding_bundle(
+                    prompt=prompt,
+                    knowledge_snapshot=ks_for_gp,
+                    memory_snapshot=mem_snapshot,
+                    legacy_trace=tr0,
+                    agent_id=getattr(out, "agent_id", None),
+                )
+
                 if debug_on:
                     tr0["memory_provider"] = memory_provider
                     tr0["memory_items_count"] = memory_items_count
                     tr0["memory_error"] = memory_error
                     content["trace"] = tr0
                     content.update(kb)
-                    content.update(
-                        _grounding_bundle(
-                            prompt=prompt,
-                            knowledge_snapshot=ks_for_gp,
-                            memory_snapshot=mem_snapshot,
-                            legacy_trace=tr0,
-                            agent_id=getattr(out, "agent_id", None),
-                        )
-                    )
+                    content.update(grounding_nops)
                 else:
                     minimal_trace = _minimal_trace_intent(tr0)
                     if minimal_trace:
                         content["trace"] = minimal_trace
+
+                content = _attach_and_log_audit(
+                    content,
+                    session_id=session_id,
+                    conversation_id=conversation_id,
+                    agent_id=content.get("agent_id"),
+                    snapshot=getattr(payload, "snapshot", None),
+                    trace=tr0,
+                    grounding=grounding_nops,
+                    debug_on=bool(debug_on),
+                    exit_path="ceo_chat.write_intent.notion_ops",
+                    targeted_reads=targeted_reads_info,
+                )
 
                 return JSONResponse(content=_attach_session_id(content, session_id))
             except Exception:
@@ -2013,20 +2499,34 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             return JSONResponse(
                 status_code=500,
                 content=_attach_session_id(
-                    {
-                        "text": str(e),
-                        "proposed_commands": [],
-                        "agent_id": "ceo_advisor",
-                        "read_only": True,
-                        "trace": {
+                    _attach_and_log_audit(
+                        {
+                            "text": str(e),
+                            "proposed_commands": [],
+                            "agent_id": "ceo_advisor",
+                            "read_only": True,
+                            "trace": {
+                                "intent": "error",
+                                "exit_reason": "error.llm_not_configured",
+                            },
+                            "error": {
+                                "code": "error.llm_not_configured",
+                                "message": str(e),
+                            },
+                        },
+                        session_id=session_id,
+                        conversation_id=conversation_id,
+                        agent_id="ceo_advisor",
+                        snapshot=getattr(payload, "snapshot", None),
+                        trace={
                             "intent": "error",
                             "exit_reason": "error.llm_not_configured",
                         },
-                        "error": {
-                            "code": "error.llm_not_configured",
-                            "message": str(e),
-                        },
-                    },
+                        grounding={},
+                        debug_on=bool(debug_on),
+                        exit_path="ceo_chat.error.llm_not_configured",
+                        targeted_reads=targeted_reads_info,
+                    ),
                     session_id,
                 ),
             )
@@ -2080,6 +2580,18 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                     kb=kb,
                     grounding=grounding,
                     debug_on=debug_on,
+                    audit_fn=lambda c: _attach_and_log_audit(
+                        c,
+                        session_id=session_id,
+                        conversation_id=conversation_id,
+                        agent_id=getattr(out, "agent_id", None),
+                        snapshot=getattr(payload, "snapshot", None),
+                        trace=getattr(out, "trace", None),
+                        grounding=grounding,
+                        debug_on=bool(debug_on),
+                        exit_path="ceo_chat.blocked.not_armed",
+                        targeted_reads=targeted_reads_info,
+                    ),
                 )
 
             # Non-Notion actionable proposals (e.g. delegation) are allowed even
@@ -2140,6 +2652,18 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                     minimal_trace = _minimal_trace_intent(out.trace)
                     if minimal_trace:
                         content["trace"] = minimal_trace
+                content = _attach_and_log_audit(
+                    content,
+                    session_id=session_id,
+                    conversation_id=conversation_id,
+                    agent_id=content.get("agent_id"),
+                    snapshot=getattr(payload, "snapshot", None),
+                    trace=out.trace,
+                    grounding=grounding,
+                    debug_on=bool(debug_on),
+                    exit_path="ceo_chat.disarmed.non_notion_actionable",
+                    targeted_reads=targeted_reads_info,
+                )
                 return JSONResponse(content=_attach_session_id(content, session_id))
 
             # If the advisor returned non-actionable proposal wrappers (e.g. approval-gated
@@ -2184,6 +2708,18 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                     minimal_trace = _minimal_trace_intent(out.trace)
                     if minimal_trace:
                         content["trace"] = minimal_trace
+                content = _attach_and_log_audit(
+                    content,
+                    session_id=session_id,
+                    conversation_id=conversation_id,
+                    agent_id=content.get("agent_id"),
+                    snapshot=getattr(payload, "snapshot", None),
+                    trace=out.trace,
+                    grounding=grounding,
+                    debug_on=bool(debug_on),
+                    exit_path="ceo_chat.disarmed.wrapper_proposals",
+                    targeted_reads=targeted_reads_info,
+                )
                 return JSONResponse(content=_attach_session_id(content, session_id))
 
             content: Dict[str, Any] = {
@@ -2213,6 +2749,18 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 minimal_trace = _minimal_trace_intent(out.trace)
                 if minimal_trace:
                     content["trace"] = minimal_trace
+            content = _attach_and_log_audit(
+                content,
+                session_id=session_id,
+                conversation_id=conversation_id,
+                agent_id=content.get("agent_id"),
+                snapshot=getattr(payload, "snapshot", None),
+                trace=out.trace,
+                grounding=grounding,
+                debug_on=bool(debug_on),
+                exit_path="ceo_chat.disarmed.no_actionable",
+                targeted_reads=targeted_reads_info,
+            )
             return JSONResponse(content=_attach_session_id(content, session_id))
 
         # ARMED: allow actionable, otherwise allow approval-wrapper fallback
@@ -2268,6 +2816,18 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 minimal_trace = _minimal_trace_intent(tr)
                 if minimal_trace:
                     content["trace"] = minimal_trace
+            content = _attach_and_log_audit(
+                content,
+                session_id=session_id,
+                conversation_id=conversation_id,
+                agent_id=content.get("agent_id"),
+                snapshot=getattr(payload, "snapshot", None),
+                trace=tr,
+                grounding=grounding,
+                debug_on=bool(debug_on),
+                exit_path="ceo_chat.armed.actionable",
+                targeted_reads=targeted_reads_info,
+            )
             return JSONResponse(content=_attach_session_id(content, session_id))
 
         # No actionable → fallback:
@@ -2324,6 +2884,18 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             minimal_trace = _minimal_trace_intent(tr)
             if minimal_trace:
                 content["trace"] = minimal_trace
+        content = _attach_and_log_audit(
+            content,
+            session_id=session_id,
+            conversation_id=conversation_id,
+            agent_id=content.get("agent_id"),
+            snapshot=getattr(payload, "snapshot", None),
+            trace=tr,
+            grounding=grounding,
+            debug_on=bool(debug_on),
+            exit_path="ceo_chat.armed.fallback",
+            targeted_reads=targeted_reads_info,
+        )
         return JSONResponse(content=_attach_session_id(content, session_id))
 
     return router

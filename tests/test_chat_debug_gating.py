@@ -119,3 +119,33 @@ def test_chat_includes_debug_payload_when_env_enabled(monkeypatch):
     assert isinstance(body.get("grounding_pack"), dict)
     assert isinstance(body.get("diagnostics"), dict)
     assert isinstance(body.get("trace_v2"), dict)
+
+
+def test_chat_includes_debug_payload_when_x_debug_header_set(monkeypatch):
+    monkeypatch.setenv("CEO_GROUNDING_PACK_ENABLED", "true")
+    monkeypatch.setenv("CEO_NOTION_TARGETED_READS_ENABLED", "false")
+    monkeypatch.delenv("DEBUG_API_RESPONSES", raising=False)
+
+    app = _load_app()
+    client = TestClient(app)
+
+    r = client.post(
+        "/api/chat",
+        headers={"X-Debug": "1"},
+        json={
+            "message": "Koja je naša operativna filozofija?",
+            "identity_pack": {"user_id": "test"},
+            "snapshot": {},
+        },
+    )
+    assert r.status_code == 200, r.text
+
+    body = r.json()
+    assert isinstance(body.get("knowledge_snapshot"), dict)
+    assert isinstance(body.get("snapshot_meta"), dict)
+    assert isinstance(body.get("grounding_pack"), dict)
+    assert isinstance(body.get("trace_v2"), dict)
+
+    dbg = body.get("debug")
+    assert isinstance(dbg, dict)
+    assert isinstance(dbg.get("audit"), dict)
