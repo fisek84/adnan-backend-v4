@@ -118,3 +118,115 @@ def test_chat_task_question_forces_notion_snapshot_in_grounding_used_sources(
     assert "t2" in t
     assert "t3" in t
     assert "tasks snapshot je prazan" not in t
+
+
+def test_snapshot_task_fields_are_normalized_in_tasks_block(monkeypatch):
+    monkeypatch.setenv("CEO_GROUNDING_PACK_ENABLED", "true")
+    monkeypatch.setenv("CEO_NOTION_TARGETED_READS_ENABLED", "false")
+    monkeypatch.setenv("CEO_ADVISOR_FORCE_OFFLINE", "1")
+    monkeypatch.delenv("DEBUG_API_RESPONSES", raising=False)
+
+    app = _load_app()
+    client = TestClient(app)
+
+    snapshot = {
+        "ready": True,
+        "payload": {
+            "dashboard": {"tasks": []},
+            "tasks": [
+                {
+                    "id": "t1",
+                    "title": "Nazovi klijenta",
+                    "fields": {
+                        "status": "to do",
+                        "due": {"start": "2026-02-21"},
+                        "priority": "high",
+                    },
+                },
+                {
+                    "id": "t2",
+                    "title": "Pošalji ponudu",
+                    "fields": {"status": "in progress", "due": {"start": "2026-02-22"}},
+                },
+                {
+                    "id": "t3",
+                    "title": "Zatvori sprint",
+                    "fields": {"status": "done"},
+                },
+            ],
+            "goals": [],
+        },
+    }
+
+    r = client.post(
+        "/api/chat",
+        json={
+            "message": "Pokaži zadatke",
+            "identity_pack": {"user_id": "test"},
+            "snapshot": snapshot,
+        },
+    )
+    assert r.status_code == 200, r.text
+
+    txt = str(r.json().get("text") or "")
+    t = txt.lower()
+    assert "tasks (top 5)" in t
+    assert "nazovi klijenta" in t
+    assert "pošalji ponudu" in t
+    assert "zatvori sprint" in t
+
+    # Regression: should not render placeholders when tasks exist.
+    assert "TASKS (top 5)\n1) - | - | -" not in txt
+
+
+def test_bosnian_navedi_taskove_lists_titles_and_never_claims_empty(monkeypatch):
+    monkeypatch.setenv("CEO_GROUNDING_PACK_ENABLED", "true")
+    monkeypatch.setenv("CEO_NOTION_TARGETED_READS_ENABLED", "false")
+    monkeypatch.setenv("CEO_ADVISOR_FORCE_OFFLINE", "1")
+    monkeypatch.delenv("DEBUG_API_RESPONSES", raising=False)
+
+    app = _load_app()
+    client = TestClient(app)
+
+    snapshot = {
+        "ready": True,
+        "payload": {
+            "dashboard": {"tasks": []},
+            "tasks": [
+                {
+                    "id": "t1",
+                    "title": "Pripremi izvještaj",
+                    "fields": {"status": "to do", "due": {"start": "2026-02-23"}},
+                },
+                {
+                    "id": "t2",
+                    "title": "Uplati porez",
+                    "fields": {"status": "to do"},
+                },
+                {
+                    "id": "t3",
+                    "title": "Kontaktiraj dobavljača",
+                    "fields": {"status": "blocked"},
+                },
+            ],
+            "goals": [],
+        },
+    }
+
+    r = client.post(
+        "/api/chat",
+        json={
+            "message": "navedi taskove",
+            "identity_pack": {"user_id": "test"},
+            "snapshot": snapshot,
+        },
+    )
+    assert r.status_code == 200, r.text
+
+    txt = str(r.json().get("text") or "")
+    t = txt.lower()
+    assert "tasks (top 5)" in t
+    assert "pripremi izvještaj" in t
+    assert "uplat" in t
+    assert "kontaktiraj dobavljača" in t
+    assert "nema navedenih taskova" not in t

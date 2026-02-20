@@ -2007,9 +2007,22 @@ def _is_show_request(user_text: str) -> bool:
     t = (user_text or "").strip().lower()
     if not t:
         return False
+
+    # Explicit Bosnian list-tasks phrases (deterministic; bypass LLM).
+    if any(
+        s in t
+        for s in (
+            "koji su taskovi",
+            "navedi taskove",
+            "koje taskove imamo",
+            "lista taskova",
+        )
+    ):
+        return True
+
     show = bool(
         re.search(
-            r"(?i)\b(pokazi|poka\u017ei|prika\u017ei|prikazi|izlistaj|show|list|pogledaj)\b",
+            r"(?i)\b(pokazi|poka\u017ei|prika\u017ei|prikazi|izlistaj|navedi|lista|show|list|pogledaj)\b",
             t,
         )
     )
@@ -2018,7 +2031,7 @@ def _is_show_request(user_text: str) -> bool:
     # Also treat common interrogative forms as "show" when they ask what tasks/goals exist.
     # Example: "Koje taskove imamo u sistemu?"
     q_show = bool(re.search(r"(?i)^\s*(koje|kakve|koji|kakav)\b", t)) and (
-        "?" in t or "imamo" in t
+        "?" in t or "imamo" in t or "navedi" in t or "lista" in t
     )
     show = bool(show or q_show)
     return show and target
@@ -2147,6 +2160,79 @@ def _extract_goals_tasks_with_meta(
 
 
 def _render_snapshot_summary(goals: Any, tasks: Any) -> str:
+    def _pick_str(v: Any, default: str = "-") -> str:
+        if v is None:
+            return default
+        if isinstance(v, str):
+            s = v.strip()
+            return s if s else default
+        if isinstance(v, (int, float, bool)):
+            return str(v)
+        if isinstance(v, dict):
+            for k in ("title", "name", "value", "status"):
+                if k in v:
+                    return _pick_str(v.get(k), default=default)
+        return default
+
+    def _pick_due(v: Any) -> str:
+        # Requirement: due should be a simple string date if available (fields.due.start)
+        if isinstance(v, str):
+            return _pick_str(v)
+        if isinstance(v, dict):
+            return _pick_str(v.get("start") or v.get("date") or v.get("value"))
+        return "-"
+
+    def _normalize_task(it: Dict[str, Any]) -> Dict[str, Any]:
+        fields = it.get("fields") if isinstance(it.get("fields"), dict) else {}
+        title = _pick_str(
+            it.get("title")
+            or it.get("name")
+            or it.get("Name")
+            or fields.get("title")
+            or fields.get("name")
+        )
+        status = _pick_str(
+            it.get("status")
+            or it.get("Status")
+            or fields.get("status")
+            or fields.get("Status")
+        )
+        due = _pick_due(it.get("due") or fields.get("due") or fields.get("Due"))
+        priority = _pick_str(
+            it.get("priority")
+            or it.get("Priority")
+            or fields.get("priority")
+            or fields.get("Priority")
+        )
+        return {
+            "title": title,
+            "status": status,
+            "due": due,
+            "priority": priority,
+        }
+
+    def _normalize_goal(it: Dict[str, Any]) -> Dict[str, Any]:
+        fields = it.get("fields") if isinstance(it.get("fields"), dict) else {}
+        title = _pick_str(
+            it.get("title")
+            or it.get("name")
+            or it.get("Name")
+            or fields.get("title")
+            or fields.get("name")
+        )
+        status = _pick_str(
+            it.get("status")
+            or it.get("Status")
+            or fields.get("status")
+            or fields.get("Status")
+        )
+        due = _pick_due(it.get("due") or fields.get("due") or fields.get("Due"))
+        return {
+            "title": title,
+            "status": status,
+            "due": due,
+        }
+
     def _safe_list(x: Any) -> List[Dict[str, Any]]:
         if isinstance(x, list):
             return [i for i in x if isinstance(i, dict)]
@@ -2163,12 +2249,8 @@ def _render_snapshot_summary(goals: Any, tasks: Any) -> str:
         lines.append("3) - | - | -")
     else:
         for i, it in enumerate(g[:3], start=1):
-            name = str(
-                it.get("name") or it.get("Name") or it.get("title") or "-"
-            ).strip()
-            status = str(it.get("status") or it.get("Status") or "-").strip()
-            priority = str(it.get("priority") or it.get("Priority") or "-").strip()
-            lines.append(f"{i}) {name} | {status} | {priority}")
+            ng = _normalize_goal(it)
+            lines.append(f"{i}) {ng['title']} | {ng['status']} | {ng['due']}")
 
     lines.append("TASKS (top 5)")
     if not t:
@@ -2179,12 +2261,8 @@ def _render_snapshot_summary(goals: Any, tasks: Any) -> str:
         lines.append("5) - | - | -")
     else:
         for i, it in enumerate(t[:5], start=1):
-            title = str(
-                it.get("title") or it.get("Name") or it.get("name") or "-"
-            ).strip()
-            status = str(it.get("status") or it.get("Status") or "-").strip()
-            priority = str(it.get("priority") or it.get("Priority") or "-").strip()
-            lines.append(f"{i}) {title} | {status} | {priority}")
+            nt = _normalize_task(it)
+            lines.append(f"{i}) {nt['title']} | {nt['status']} | {nt['due']}")
 
     return "\n".join(lines)
 
