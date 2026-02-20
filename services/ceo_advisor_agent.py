@@ -2014,6 +2014,13 @@ def _is_show_request(user_text: str) -> bool:
         )
     )
     target = bool(re.search(r"(?i)\b(cilj\w*|goal\w*|task\w*|zadat\w*|zadac\w*)\b", t))
+
+    # Also treat common interrogative forms as "show" when they ask what tasks/goals exist.
+    # Example: "Koje taskove imamo u sistemu?"
+    q_show = bool(re.search(r"(?i)^\s*(koje|kakve|koji|kakav)\b", t)) and (
+        "?" in t or "imamo" in t
+    )
+    show = bool(show or q_show)
     return show and target
 
 
@@ -2104,13 +2111,13 @@ def _extract_goals_tasks_with_meta(
     except Exception:
         snapshot_tasks_count = 0
 
-    extracted_tasks_count = int(len(tasks)) if isinstance(tasks, list) else 0
+    raw_extracted_tasks_count = int(len(tasks)) if isinstance(tasks, list) else 0
     invariant_triggered = False
     invariant_reason = None
 
     # Hard invariant: if snapshot indicates tasks exist but extraction yields 0,
     # treat it as a logic error and force a safe fallback.
-    if snapshot_tasks_count > 0 and extracted_tasks_count == 0:
+    if snapshot_tasks_count > 0 and raw_extracted_tasks_count == 0:
         invariant_triggered = True
         invariant_reason = "snapshot_tasks_present_but_extracted_empty"
         if isinstance(payload_tasks, list) and len(payload_tasks) > 0:
@@ -2124,7 +2131,8 @@ def _extract_goals_tasks_with_meta(
                 "snapshot_tasks_count>0 but no task list available to recover"
             )
 
-    final_tasks_count_used_by_llm = int(len(tasks)) if isinstance(tasks, list) else 0
+    extracted_tasks_count = int(len(tasks)) if isinstance(tasks, list) else 0
+    final_tasks_count_used_by_llm = int(extracted_tasks_count)
 
     meta: Dict[str, Any] = {
         "snapshot_tasks_count": int(snapshot_tasks_count),

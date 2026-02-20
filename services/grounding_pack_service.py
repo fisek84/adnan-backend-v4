@@ -737,6 +737,34 @@ class GroundingPackService:
 
         policy = classify_prompt(prompt)
 
+        # Deterministic override: ensure Notion snapshot is included for
+        # goals/tasks/projects questions (unless budget exceeded).
+        #
+        # Important: do not force this for all CEO Advisor prompts; KB-only
+        # questions should remain KB-only.
+        force_notion = False
+        try:
+            t = (prompt or "").lower()
+            if any(
+                s in t
+                for s in (
+                    "task",
+                    "tasks",
+                    "zadat",
+                    "goal",
+                    "goals",
+                    "cilj",
+                    "project",
+                    "projects",
+                    "projekt",
+                )
+            ):
+                force_notion = True
+        except Exception:
+            force_notion = False
+
+        needs_notion = bool(getattr(policy, "needs_notion", False) or force_notion)
+
         # Notion budget exceeded can be reported by snapshot meta (max_calls/max_latency).
         notion_meta = (
             notion_snapshot.get("meta") if isinstance(notion_snapshot, dict) else None
@@ -813,10 +841,10 @@ class GroundingPackService:
             or counts.get("goals", 0) > 0
         )
 
-        if policy.needs_notion and notion_has_data and not budget_exceeded:
+        if needs_notion and not budget_exceeded:
             used_sources.append("notion_snapshot")
         else:
-            if policy.needs_notion:
+            if needs_notion:
                 if budget_exceeded:
                     not_used.append(
                         {
