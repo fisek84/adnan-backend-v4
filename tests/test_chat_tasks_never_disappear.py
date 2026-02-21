@@ -299,7 +299,7 @@ def test_post_answer_validator_overrides_contradictory_no_tasks_when_snapshot_ha
 ):
     async def _fake_ceo_advisor_agent(agent_input, ctx):  # noqa: ANN001
         return AgentOutput(
-            text="Nemamo taskove trenutno.",
+            text="U bazi podataka zadataka trenutno nema evidentiranih taskova.",
             proposed_commands=[],
             agent_id="ceo_advisor",
             read_only=True,
@@ -356,4 +356,4 @@ def test_post_answer_validator_overrides_contradictory_no_tasks_when_snapshot_ha
     t = txt.lower()
     assert "imamo 3 taskova" in t
     assert "prvi task" in t
-    assert "nemamo taskove" not in t
+    assert "nema evidentiranih taskova" not in t

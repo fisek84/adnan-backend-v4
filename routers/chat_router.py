@@ -1363,7 +1363,7 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             lines: List[str] = [
                 f"Imamo {int(snapshot_tasks_count)} taskova u Tasks DB.",
                 "",
-                "Top 5 taskova:",
+                "TASKS (top 5)",
             ]
 
             linked = 0
@@ -1415,14 +1415,12 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 return text
 
             t = _norm_bhs_ascii(text or "")
-            triggers = (
-                "nemamo taskove",
-                "nema taskova",
-                "nema definiranih taskova",
-                "nema zadataka",
-                "nemamo zadatke",
-            )
-            if any(x in t for x in triggers):
+            # Robust contradiction guard (BHS tolerant): negation + task/zadatak
+            # Examples: "nema evidentiranih taskova", "trenutno nema zadataka", "bez taskova"
+            if re.search(
+                r"(?i)\b(nema|nemamo|ne\s+postoji|bez)\b.*\b(task|zadac|zadat)\w*",
+                t,
+            ):
                 return _render_snapshot_tasks_override(snapshot, snapshot_tasks_count)
             return text
 
