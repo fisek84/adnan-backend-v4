@@ -1300,6 +1300,132 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                     pass
             return content
 
+        def _norm_bhs_ascii(text: str) -> str:
+            t = (text or "").lower()
+            return (
+                t.replace("č", "c")
+                .replace("ć", "c")
+                .replace("š", "s")
+                .replace("đ", "dj")
+                .replace("ž", "z")
+            )
+
+        def _snapshot_tasks_list(snapshot: Any) -> List[Dict[str, Any]]:
+            if not isinstance(snapshot, dict):
+                return []
+            payload = snapshot.get("payload")
+            payload = payload if isinstance(payload, dict) else snapshot
+
+            dashboard = payload.get("dashboard") if isinstance(payload, dict) else None
+            dashboard = dashboard if isinstance(dashboard, dict) else {}
+
+            payload_tasks = payload.get("tasks") if isinstance(payload, dict) else None
+            dash_tasks = dashboard.get("tasks") if isinstance(dashboard, dict) else None
+
+            # Prefer dashboard only when it has data; never let empty dashboard override payload.
+            if isinstance(dash_tasks, list) and len(dash_tasks) > 0:
+                return [t for t in dash_tasks if isinstance(t, dict)]
+            if isinstance(payload_tasks, list) and len(payload_tasks) > 0:
+                return [t for t in payload_tasks if isinstance(t, dict)]
+            if isinstance(dash_tasks, list):
+                return [t for t in dash_tasks if isinstance(t, dict)]
+            if isinstance(payload_tasks, list):
+                return [t for t in payload_tasks if isinstance(t, dict)]
+            return []
+
+        def _pick_str(v: Any, default: str = "-") -> str:
+            if v is None:
+                return default
+            if isinstance(v, str):
+                s = v.strip()
+                return s if s else default
+            if isinstance(v, (int, float, bool)):
+                return str(v)
+            if isinstance(v, dict):
+                for k in ("title", "name", "value", "status"):
+                    if k in v:
+                        return _pick_str(v.get(k), default=default)
+            return default
+
+        def _pick_due(v: Any) -> str:
+            if isinstance(v, str):
+                return _pick_str(v)
+            if isinstance(v, dict):
+                for k in ("start", "date", "value"):
+                    if k in v:
+                        return _pick_due(v.get(k))
+            return "-"
+
+        def _render_snapshot_tasks_override(
+            snapshot: Any, snapshot_tasks_count: int
+        ) -> str:
+            tasks = _snapshot_tasks_list(snapshot)
+            lines: List[str] = [
+                f"Imamo {int(snapshot_tasks_count)} taskova u Tasks DB.",
+                "",
+                "Top 5 taskova:",
+            ]
+
+            linked = 0
+            unlinked = 0
+
+            for i, it in enumerate(tasks[:5], start=1):
+                fields = it.get("fields") if isinstance(it.get("fields"), dict) else {}
+
+                title = _pick_str(
+                    it.get("title")
+                    or it.get("name")
+                    or fields.get("title")
+                    or fields.get("name")
+                )
+                status = _pick_str(
+                    fields.get("status")
+                    or fields.get("Status")
+                    or it.get("status")
+                    or it.get("Status")
+                )
+                due = _pick_due(fields.get("due") or fields.get("Due") or it.get("due"))
+
+                goal_id = _pick_str(
+                    it.get("goal_id") or fields.get("goal_id"), default=""
+                )
+                if goal_id:
+                    linked += 1
+                else:
+                    unlinked += 1
+
+                lines.append(f"{i}) {title} | {status} | {due}")
+
+            if linked or unlinked:
+                lines.append("")
+                lines.append(
+                    f"Povezano sa ciljevima: {linked} | Nepovezano: {unlinked}"
+                )
+
+            return "\n".join(lines).strip()
+
+        def _apply_post_answer_snapshot_consistency_guard(
+            text: str,
+            *,
+            snapshot: Any,
+        ) -> str:
+            snap_counts = _snapshot_counts(snapshot)
+            snapshot_tasks_count = int(snap_counts.get("tasks") or 0)
+            if snapshot_tasks_count <= 0:
+                return text
+
+            t = _norm_bhs_ascii(text or "")
+            triggers = (
+                "nemamo taskove",
+                "nema taskova",
+                "nema definiranih taskova",
+                "nema zadataka",
+                "nemamo zadatke",
+            )
+            if any(x in t for x in triggers):
+                return _render_snapshot_tasks_override(snapshot, snapshot_tasks_count)
+            return text
+
         # ------------------------------------------------------------
         # MINIMAL ROUTING FIX (explicit Dept Ops only)
         # If caller explicitly requests Dept Ops (preferred_agent_id or prefix),
@@ -2621,7 +2747,10 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 _persist_pending_proposal(proposal_key, pcs_out)
 
                 content = {
-                    "text": out.text,
+                    "text": _apply_post_answer_snapshot_consistency_guard(
+                        out.text,
+                        snapshot=getattr(payload, "snapshot", None),
+                    ),
                     "proposed_commands": pcs_out,
                     "agent_id": out.agent_id,
                     "read_only": True,
@@ -2683,7 +2812,10 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 _persist_pending_proposal(proposal_key, pcs_out)
 
                 content: Dict[str, Any] = {
-                    "text": out.text,
+                    "text": _apply_post_answer_snapshot_consistency_guard(
+                        out.text,
+                        snapshot=getattr(payload, "snapshot", None),
+                    ),
                     "proposed_commands": pcs_out,
                     "agent_id": out.agent_id,
                     "read_only": True,
@@ -2723,7 +2855,10 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 return JSONResponse(content=_attach_session_id(content, session_id))
 
             content: Dict[str, Any] = {
-                "text": out.text,
+                "text": _apply_post_answer_snapshot_consistency_guard(
+                    out.text,
+                    snapshot=getattr(payload, "snapshot", None),
+                ),
                 "proposed_commands": [],
                 "agent_id": out.agent_id,
                 "read_only": True,
@@ -2793,6 +2928,11 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             if _looks_like_write_intent(prompt):
                 text_out = _armed_write_ack(prompt, has_actionable=True)
 
+            text_out = _apply_post_answer_snapshot_consistency_guard(
+                text_out,
+                snapshot=getattr(payload, "snapshot", None),
+            )
+
             content: Dict[str, Any] = {
                 "text": text_out,
                 "proposed_commands": pcs_out,
@@ -2854,6 +2994,11 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         text_out = out.text
         if _looks_like_write_intent(prompt):
             text_out = _armed_write_ack(prompt, has_actionable=False)
+
+        text_out = _apply_post_answer_snapshot_consistency_guard(
+            text_out,
+            snapshot=getattr(payload, "snapshot", None),
+        )
 
         content: Dict[str, Any] = {
             "text": text_out,

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
+from models.agent_contract import AgentOutput
+
 
 def _load_app():
     try:
@@ -290,3 +292,68 @@ def test_snapshot_goal_fields_are_rendered_in_goals_block_no_placeholders(monkey
 
     # No placeholders inside the goals block when goals exist.
     assert "- | - | -" not in goals_block
+
+
+def test_post_answer_validator_overrides_contradictory_no_tasks_when_snapshot_has_tasks(
+    monkeypatch,
+):
+    async def _fake_ceo_advisor_agent(agent_input, ctx):  # noqa: ANN001
+        return AgentOutput(
+            text="Nemamo taskove trenutno.",
+            proposed_commands=[],
+            agent_id="ceo_advisor",
+            read_only=True,
+            trace={"snapshot": {"extracted_tasks_count": 0, "tasks_count": 0}},
+        )
+
+    monkeypatch.setattr(
+        "routers.chat_router.create_ceo_advisor_agent", _fake_ceo_advisor_agent
+    )
+
+    monkeypatch.setenv("CEO_GROUNDING_PACK_ENABLED", "true")
+    monkeypatch.setenv("CEO_NOTION_TARGETED_READS_ENABLED", "false")
+    monkeypatch.delenv("DEBUG_API_RESPONSES", raising=False)
+
+    app = _load_app()
+    client = TestClient(app)
+
+    snapshot = {
+        "ready": True,
+        "payload": {
+            "dashboard": {"tasks": []},
+            "tasks": [
+                {
+                    "id": "t1",
+                    "title": "Prvi task",
+                    "fields": {"status": "to do", "due": {"start": "2026-02-21"}},
+                },
+                {
+                    "id": "t2",
+                    "title": "Drugi task",
+                    "fields": {"status": "in progress", "due": {"start": "2026-02-22"}},
+                },
+                {
+                    "id": "t3",
+                    "title": "Treći task",
+                    "fields": {"status": "blocked"},
+                },
+            ],
+            "goals": [],
+        },
+    }
+
+    r = client.post(
+        "/api/chat",
+        json={
+            "message": "Reci mi stanje taskova.",
+            "identity_pack": {"user_id": "test"},
+            "snapshot": snapshot,
+        },
+    )
+    assert r.status_code == 200, r.text
+
+    txt = str(r.json().get("text") or "")
+    t = txt.lower()
+    assert "imamo 3 taskova" in t
+    assert "prvi task" in t
+    assert "nemamo taskove" not in t

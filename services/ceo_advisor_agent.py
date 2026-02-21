@@ -4163,6 +4163,34 @@ async def create_ceo_advisor_agent(
         if not isinstance(tasks, list):
             tasks = dash.get("tasks") if isinstance(dash.get("tasks"), list) else []
 
+    # Narrative safety: if extraction ended up empty but snapshot payload clearly has tasks,
+    # fall back to snapshot.tasks so the LLM path can't contradict SSOT.
+    try:
+        snap_tasks = (
+            snapshot_payload.get("tasks")
+            if isinstance(snapshot_payload, dict)
+            else None
+        )
+        if (
+            isinstance(snap_tasks, list)
+            and len(snap_tasks) > 0
+            and (not isinstance(tasks, list) or len(tasks) == 0)
+        ):
+            tasks = snap_tasks
+            if not isinstance(extraction_meta, dict):
+                extraction_meta = {}
+            extraction_meta["extracted_tasks_count"] = int(len(tasks))
+            extraction_meta["final_tasks_count_used_by_llm"] = int(len(tasks))
+            extraction_meta.setdefault("snapshot_tasks_count", int(len(tasks)))
+            extraction_meta["invariant_triggered"] = True
+            extraction_meta["invariant_reason"] = (
+                extraction_meta.get("invariant_reason")
+                or "narrative_fallback_snapshot_tasks"
+            )
+            extraction_meta["extraction_source_priority"] = "payload"
+    except Exception:
+        pass
+
     # LLM gate variables and logging
     propose_only = _is_propose_only_request(base_text)
     use_llm = not propose_only
