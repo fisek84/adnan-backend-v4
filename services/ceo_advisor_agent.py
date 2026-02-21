@@ -5568,6 +5568,42 @@ async def create_ceo_advisor_agent(
         )
 
     # Deterministic: for show/list requests, never rely on LLM.
+    # Deterministic: SSOT task query engine (all/today/overdue/by status/by priority).
+    try:
+        from services.ssot_task_query_engine import (  # noqa: PLC0415
+            classify_task_query,
+            render_task_query_answer,
+            run_task_query,
+        )
+
+        qtype = classify_task_query(base_text)
+        if qtype in {"all", "today", "overdue", "by_status", "by_priority"}:
+            # Only answer deterministically if SSOT snapshot is available.
+            if isinstance(snapshot_payload, dict) and snapshot_payload:
+                res = run_task_query(
+                    snapshot=raw_snapshot,
+                    user_message=base_text,
+                )
+                text_out = render_task_query_answer(res)
+                return _final(
+                    AgentOutput(
+                        text=text_out,
+                        proposed_commands=[],
+                        agent_id="ceo_advisor",
+                        read_only=True,
+                        trace={
+                            "deterministic": True,
+                            "intent": "ssot_task_query",
+                            "query_type": qtype,
+                            "snapshot": snap_trace,
+                            "stats": res.stats,
+                        },
+                    )
+                )
+    except Exception:
+        pass
+
+    # Deterministic: for show/list requests, never rely on LLM.
     if structured_mode and _is_show_request(base_text):
         tgt = _show_target(base_text)
         # If snapshot service is present but unavailable, surface that explicitly.

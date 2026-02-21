@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import date, timedelta
+
 from fastapi.testclient import TestClient
 
 from models.agent_contract import AgentOutput
@@ -357,3 +359,199 @@ def test_post_answer_validator_overrides_contradictory_no_tasks_when_snapshot_ha
     assert "imamo 3 taskova" in t
     assert "prvi task" in t
     assert "nema evidentiranih taskova" not in t
+
+
+def test_task_query_engine_all_tasks_returns_more_than_top5(monkeypatch):
+    monkeypatch.setenv("CEO_GROUNDING_PACK_ENABLED", "true")
+    monkeypatch.setenv("CEO_NOTION_TARGETED_READS_ENABLED", "false")
+    monkeypatch.setenv("CEO_ADVISOR_FORCE_OFFLINE", "1")
+    monkeypatch.delenv("DEBUG_API_RESPONSES", raising=False)
+
+    app = _load_app()
+    client = TestClient(app)
+
+    snapshot = {
+        "ready": True,
+        "payload": {
+            "dashboard": {"tasks": []},
+            "tasks": [
+                {"id": "t1", "title": "T1", "fields": {"status": "to do"}},
+                {"id": "t2", "title": "T2", "fields": {"status": "to do"}},
+                {"id": "t3", "title": "T3", "fields": {"status": "to do"}},
+                {"id": "t4", "title": "T4", "fields": {"status": "to do"}},
+                {"id": "t5", "title": "T5", "fields": {"status": "to do"}},
+                {"id": "t6", "title": "T6", "fields": {"status": "to do"}},
+                {"id": "t7", "title": "T7", "fields": {"status": "to do"}},
+            ],
+            "goals": [],
+        },
+    }
+
+    r = client.post(
+        "/api/chat",
+        json={
+            "message": "svi taskovi",
+            "identity_pack": {"user_id": "test"},
+            "snapshot": snapshot,
+        },
+    )
+    assert r.status_code == 200, r.text
+
+    txt = str(r.json().get("text") or "")
+    t = txt.lower()
+    assert "ssot: snapshot_tasks_count=7" in t
+    assert "tasks (all)" in t
+    for x in ("t1", "t2", "t3", "t4", "t5", "t6", "t7"):
+        assert x in t
+
+
+def test_task_query_engine_today_filters_only_due_today(monkeypatch):
+    monkeypatch.setenv("CEO_GROUNDING_PACK_ENABLED", "true")
+    monkeypatch.setenv("CEO_NOTION_TARGETED_READS_ENABLED", "false")
+    monkeypatch.setenv("CEO_ADVISOR_FORCE_OFFLINE", "1")
+    monkeypatch.delenv("DEBUG_API_RESPONSES", raising=False)
+
+    app = _load_app()
+    client = TestClient(app)
+
+    today = date.today().isoformat()
+    tomorrow = (date.today() + timedelta(days=1)).isoformat()
+
+    snapshot = {
+        "ready": True,
+        "payload": {
+            "dashboard": {"tasks": []},
+            "tasks": [
+                {
+                    "id": "t1",
+                    "title": "Danas 1",
+                    "fields": {"status": "to do", "due": {"start": today}},
+                },
+                {
+                    "id": "t2",
+                    "title": "Danas 2",
+                    "fields": {"status": "in progress", "due": {"start": today}},
+                },
+                {
+                    "id": "t3",
+                    "title": "Sutra",
+                    "fields": {"status": "to do", "due": {"start": tomorrow}},
+                },
+            ],
+            "goals": [],
+        },
+    }
+
+    r = client.post(
+        "/api/chat",
+        json={
+            "message": "taskovi za danas",
+            "identity_pack": {"user_id": "test"},
+            "snapshot": snapshot,
+        },
+    )
+    assert r.status_code == 200, r.text
+
+    txt = str(r.json().get("text") or "")
+    t = txt.lower()
+    assert "tasks (today)" in t
+    assert "danas 1" in t
+    assert "danas 2" in t
+    assert "sutra" not in t
+
+
+def test_task_query_engine_overdue_filters_due_before_today_and_not_done(monkeypatch):
+    monkeypatch.setenv("CEO_GROUNDING_PACK_ENABLED", "true")
+    monkeypatch.setenv("CEO_NOTION_TARGETED_READS_ENABLED", "false")
+    monkeypatch.setenv("CEO_ADVISOR_FORCE_OFFLINE", "1")
+    monkeypatch.delenv("DEBUG_API_RESPONSES", raising=False)
+
+    app = _load_app()
+    client = TestClient(app)
+
+    yesterday = (date.today() - timedelta(days=1)).isoformat()
+    tomorrow = (date.today() + timedelta(days=1)).isoformat()
+
+    snapshot = {
+        "ready": True,
+        "payload": {
+            "dashboard": {"tasks": []},
+            "tasks": [
+                {
+                    "id": "t1",
+                    "title": "Kasni",
+                    "fields": {"status": "to do", "due": {"start": yesterday}},
+                },
+                {
+                    "id": "t2",
+                    "title": "Kasni ali gotov",
+                    "fields": {"status": "done", "due": {"start": yesterday}},
+                },
+                {
+                    "id": "t3",
+                    "title": "Nije kasni",
+                    "fields": {"status": "to do", "due": {"start": tomorrow}},
+                },
+            ],
+            "goals": [],
+        },
+    }
+
+    r = client.post(
+        "/api/chat",
+        json={
+            "message": "overdue taskovi",
+            "identity_pack": {"user_id": "test"},
+            "snapshot": snapshot,
+        },
+    )
+    assert r.status_code == 200, r.text
+
+    txt = str(r.json().get("text") or "")
+    t = txt.lower()
+    assert "tasks (overdue)" in t
+    assert "kasni" in t
+    assert "kasni ali gotov" not in t
+    assert "nije kasni" not in t
+
+
+def test_task_query_engine_by_status_not_started_maps_to_todo(monkeypatch):
+    monkeypatch.setenv("CEO_GROUNDING_PACK_ENABLED", "true")
+    monkeypatch.setenv("CEO_NOTION_TARGETED_READS_ENABLED", "false")
+    monkeypatch.setenv("CEO_ADVISOR_FORCE_OFFLINE", "1")
+    monkeypatch.delenv("DEBUG_API_RESPONSES", raising=False)
+
+    app = _load_app()
+    client = TestClient(app)
+
+    snapshot = {
+        "ready": True,
+        "payload": {
+            "dashboard": {"tasks": []},
+            "tasks": [
+                {"id": "t1", "title": "Start", "fields": {"status": "to do"}},
+                {
+                    "id": "t2",
+                    "title": "Radi se",
+                    "fields": {"status": "in progress"},
+                },
+            ],
+            "goals": [],
+        },
+    }
+
+    r = client.post(
+        "/api/chat",
+        json={
+            "message": "po statusu: Not Started",
+            "identity_pack": {"user_id": "test"},
+            "snapshot": snapshot,
+        },
+    )
+    assert r.status_code == 200, r.text
+
+    txt = str(r.json().get("text") or "")
+    t = txt.lower()
+    assert "tasks (by status)" in t
+    assert "start" in t
+    assert "radi se" not in t

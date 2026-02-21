@@ -1404,6 +1404,57 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
 
             return "\n".join(lines).strip()
 
+        def _snapshot_goals_list(snapshot: Any) -> List[Dict[str, Any]]:
+            if not isinstance(snapshot, dict):
+                return []
+            payload = snapshot.get("payload")
+            payload = payload if isinstance(payload, dict) else snapshot
+
+            dashboard = payload.get("dashboard") if isinstance(payload, dict) else None
+            dashboard = dashboard if isinstance(dashboard, dict) else {}
+
+            payload_goals = payload.get("goals") if isinstance(payload, dict) else None
+            dash_goals = dashboard.get("goals") if isinstance(dashboard, dict) else None
+
+            if isinstance(dash_goals, list) and len(dash_goals) > 0:
+                return [g for g in dash_goals if isinstance(g, dict)]
+            if isinstance(payload_goals, list) and len(payload_goals) > 0:
+                return [g for g in payload_goals if isinstance(g, dict)]
+            if isinstance(dash_goals, list):
+                return [g for g in dash_goals if isinstance(g, dict)]
+            if isinstance(payload_goals, list):
+                return [g for g in payload_goals if isinstance(g, dict)]
+            return []
+
+        def _render_snapshot_goals_override(
+            snapshot: Any, snapshot_goals_count: int
+        ) -> str:
+            goals = _snapshot_goals_list(snapshot)
+            lines: List[str] = [
+                f"Imamo {int(snapshot_goals_count)} ciljeva u Goals DB.",
+                "",
+                "GOALS (top 3)",
+            ]
+
+            for i, it in enumerate(goals[:3], start=1):
+                fields = it.get("fields") if isinstance(it.get("fields"), dict) else {}
+                title = _pick_str(
+                    it.get("title")
+                    or it.get("name")
+                    or fields.get("title")
+                    or fields.get("name")
+                )
+                status = _pick_str(
+                    fields.get("status")
+                    or fields.get("Status")
+                    or it.get("status")
+                    or it.get("Status")
+                )
+                due = _pick_due(fields.get("due") or fields.get("Due") or it.get("due"))
+                lines.append(f"{i}) {title} | {status} | {due}")
+
+            return "\n".join(lines).strip()
+
         def _apply_post_answer_snapshot_consistency_guard(
             text: str,
             *,
@@ -1411,17 +1462,25 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         ) -> str:
             snap_counts = _snapshot_counts(snapshot)
             snapshot_tasks_count = int(snap_counts.get("tasks") or 0)
-            if snapshot_tasks_count <= 0:
+            snapshot_goals_count = int(snap_counts.get("goals") or 0)
+            if snapshot_tasks_count <= 0 and snapshot_goals_count <= 0:
                 return text
 
             t = _norm_bhs_ascii(text or "")
             # Robust contradiction guard (BHS tolerant): negation + task/zadatak
             # Examples: "nema evidentiranih taskova", "trenutno nema zadataka", "bez taskova"
-            if re.search(
+            if snapshot_tasks_count > 0 and re.search(
                 r"(?i)\b(nema|nemamo|ne\s+postoji|bez)\b.*\b(task|zadac|zadat)\w*",
                 t,
             ):
                 return _render_snapshot_tasks_override(snapshot, snapshot_tasks_count)
+
+            # Same for goals/ciljevi.
+            if snapshot_goals_count > 0 and re.search(
+                r"(?i)\b(nema|nemamo|ne\s+postoji|bez)\b.*\b(cilj|goal)\w*",
+                t,
+            ):
+                return _render_snapshot_goals_override(snapshot, snapshot_goals_count)
             return text
 
         # ------------------------------------------------------------
