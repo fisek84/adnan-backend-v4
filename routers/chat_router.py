@@ -2763,6 +2763,10 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                                 "armed_state": {},
                             },
                         }
+                        if debug_on:
+                            _det_content["trace"] = _det_tr
+                            _det_content.update(kb)
+                            _det_content.update(_det_grounding)
                         _det_content = _attach_and_log_audit(
                             _det_content,
                             session_id=session_id,
