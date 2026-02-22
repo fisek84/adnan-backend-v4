@@ -18,7 +18,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from models.agent_contract import AgentInput, AgentOutput, ProposedCommand
-from services.ceo_advisor_agent import create_ceo_advisor_agent, LLMNotConfiguredError
+from services.ceo_advisor_agent import create_ceo_advisor_agent, LLMNotConfiguredError, _render_snapshot_summary
 from dependencies import get_memory_read_only_service
 from services.ceo_conversation_state_store import ConversationStateStore
 
@@ -55,6 +55,101 @@ _DEACTIVATE_KEYWORDS = (
     "notion ops iskljuci",
     "notion ops deactivate",
 )
+
+
+_SHOW_GOALS_TASKS_RE = re.compile(
+    r"(?i)"
+    r"(?:"
+    r"\b(?:pokazi|poka\u017ei|prikazi|prika\u017ei|izlistaj|navedi|lista)\b"
+    r".*\b(?:cilj\w*|goal\w*|task\w*|zadac\w*|zadat\w*)"
+    r"|"
+    r"\b(?:cilj\w*|goal\w*|task\w*|zadac\w*|zadat\w*)\b"
+    r".*\b(?:pokazi|poka\u017ei|prikazi|prika\u017ei|izlistaj|navedi|lista)\b"
+    r")"
+)
+
+
+def _is_show_goals_tasks_intent(text: str) -> bool:
+    """Return True when the prompt is a Bosnian/English show/list goals+tasks intent."""
+    t = (text or "").strip()
+    if not t:
+        return False
+    return bool(_SHOW_GOALS_TASKS_RE.search(t))
+
+
+def _compute_ceo_view(snapshot: Any) -> Dict[str, Any]:
+    """Build a compact (<= 4 KB) CEO_VIEW derived from an SSOT snapshot wrapper.
+
+    Source: snapshot.payload.goals / snapshot.payload.tasks (normalized by
+    _normalize_snapshot_wrapper, so lists are always present).
+    Defensive: prefers item.fields.* for status/due/priority if available.
+    Stable ordering: as-is order from the payload (no expensive sort).
+    """
+
+    def _s(v: Any, default: str = "-") -> str:
+        if isinstance(v, str):
+            s = v.strip()
+            return s if s else default
+        if isinstance(v, (int, float, bool)):
+            return str(v)
+        if isinstance(v, dict):
+            for k in ("title", "name", "value", "status"):
+                if k in v:
+                    vv = v[k]
+                    if isinstance(vv, str) and vv.strip():
+                        return vv.strip()
+        return default
+
+    def _due(v: Any) -> str:
+        if isinstance(v, str):
+            return v.strip() or "-"
+        if isinstance(v, dict):
+            for k in ("start", "date", "value"):
+                vv = v.get(k)
+                if isinstance(vv, str) and vv.strip():
+                    return vv.strip()
+        return "-"
+
+    snap = snapshot if isinstance(snapshot, dict) else {}
+    payload0 = snap.get("payload") if isinstance(snap.get("payload"), dict) else None
+    payload = payload0 if isinstance(payload0, dict) else snap
+    if not isinstance(payload, dict):
+        payload = {}
+
+    goals_raw = payload.get("goals") if isinstance(payload.get("goals"), list) else []
+    tasks_raw = payload.get("tasks") if isinstance(payload.get("tasks"), list) else []
+
+    goals_top3 = []
+    for it in goals_raw[:3]:
+        if not isinstance(it, dict):
+            continue
+        f = it.get("fields") if isinstance(it.get("fields"), dict) else {}
+        goals_top3.append({
+            "title": _s(it.get("title") or it.get("name") or f.get("title") or f.get("name")),
+            "status": _s(f.get("status") or f.get("Status") or it.get("status") or it.get("Status")),
+            "due": _due(f.get("due") or f.get("Due") or it.get("due")),
+        })
+
+    tasks_top10 = []
+    for it in tasks_raw[:10]:
+        if not isinstance(it, dict):
+            continue
+        f = it.get("fields") if isinstance(it.get("fields"), dict) else {}
+        goal_ids = it.get("goal_ids") or it.get("goalIds") or f.get("goal_ids") or []
+        tasks_top10.append({
+            "title": _s(it.get("title") or it.get("name") or f.get("title") or f.get("name")),
+            "status": _s(f.get("status") or f.get("Status") or it.get("status") or it.get("Status")),
+            "due": _due(f.get("due") or f.get("Due") or it.get("due")),
+            "priority": _s(f.get("priority") or f.get("Priority") or it.get("priority") or it.get("Priority")),
+            "goal_ids": goal_ids if isinstance(goal_ids, list) else [],
+        })
+
+    return {
+        "goals_count": len(goals_raw),
+        "tasks_count": len(tasks_raw),
+        "goals_top3": goals_top3,
+        "tasks_top10": tasks_top10,
+    }
 
 
 def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
@@ -2590,6 +2685,60 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 # Fail-soft: fall back to existing advisor routing.
                 pass
 
+        # Phase 1: Deterministic show/list goals+tasks path (no LLM).
+        # If snapshot is ready and has goals or tasks, return summary directly.
+        if _is_show_goals_tasks_intent(prompt):
+            try:
+                _snap_det = ks_for_gp if isinstance(ks_for_gp, dict) else {}
+                if bool(_snap_det.get("ready") is True):
+                    _pl_det = (
+                        _snap_det.get("payload")
+                        if isinstance(_snap_det.get("payload"), dict)
+                        else _snap_det
+                    )
+                    _pl_det = _pl_det if isinstance(_pl_det, dict) else {}
+                    _goals_det = _pl_det.get("goals") if isinstance(_pl_det.get("goals"), list) else []
+                    _tasks_det = _pl_det.get("tasks") if isinstance(_pl_det.get("tasks"), list) else []
+                    if isinstance(_goals_det, list) and isinstance(_tasks_det, list) and (
+                        _goals_det or _tasks_det
+                    ):
+                        _det_text = _render_snapshot_summary(_goals_det, _tasks_det)
+                        _det_tr = {"intent": "show_goals_tasks", "exit_path": "deterministic_ssot"}
+                        _det_grounding = _grounding_bundle(
+                            prompt=prompt,
+                            knowledge_snapshot=ks_for_gp,
+                            memory_snapshot=mem_snapshot,
+                            legacy_trace=_det_tr,
+                            agent_id="ceo_advisor",
+                        )
+                        _det_content: Dict[str, Any] = {
+                            "text": _det_text,
+                            "proposed_commands": [],
+                            "agent_id": "ceo_advisor",
+                            "read_only": True,
+                            "notion_ops": {
+                                "armed": False,
+                                "armed_at": None,
+                                "session_id": session_id,
+                                "armed_state": {},
+                            },
+                        }
+                        _det_content = _attach_and_log_audit(
+                            _det_content,
+                            session_id=session_id,
+                            conversation_id=conversation_id,
+                            agent_id="ceo_advisor",
+                            snapshot=ks_for_gp,
+                            trace=_det_tr,
+                            grounding=_det_grounding,
+                            debug_on=bool(debug_on),
+                            exit_path="ceo_chat.deterministic_ssot.show_goals_tasks",
+                            targeted_reads=targeted_reads_info,
+                        )
+                        return JSONResponse(content=_attach_session_id(_det_content, session_id))
+            except Exception:
+                pass
+
         # Build a first grounding pack early so the agent can cite KB ids deterministically.
         pre_grounding = _grounding_bundle(
             prompt=prompt,
@@ -2610,6 +2759,15 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             snap_for_agent = getattr(payload, "snapshot", None)
             if isinstance(snap_for_agent, dict):
                 gp_for_agent["notion_snapshot"] = snap_for_agent
+        except Exception:
+            pass
+
+        # Phase 2: Inject CEO_VIEW into grounding pack so build_ceo_instructions
+        # can render it even when notion_snapshot is budget_exceeded/redacted.
+        try:
+            _snap_cv = ks_for_gp if isinstance(ks_for_gp, dict) else {}
+            if bool(_snap_cv.get("ready") is True):
+                gp_for_agent["ceo_view"] = _compute_ceo_view(_snap_cv)
         except Exception:
             pass
 
