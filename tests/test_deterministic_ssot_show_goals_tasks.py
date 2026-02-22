@@ -144,9 +144,9 @@ def test_show_goals_tasks_bosnian_variants_deterministic(monkeypatch):
         )
         assert r.status_code == 200, f"phrase={phrase!r}: {r.text}"
         txt = r.json().get("text") or ""
-        assert "Nemam SSOT snapshot" not in txt, (
-            f"phrase={phrase!r} leaked 'Nemam SSOT snapshot'"
-        )
+        assert (
+            "Nemam SSOT snapshot" not in txt
+        ), f"phrase={phrase!r} leaked 'Nemam SSOT snapshot'"
 
 
 # ---------------------------------------------------------------------------
