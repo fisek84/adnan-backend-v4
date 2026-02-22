@@ -164,6 +164,12 @@ def build_ceo_instructions(
             conversation_state.strip(), max_chars=section_max_chars
         )
 
+    # CEO_VIEW: compact derived view injected by router when snapshot is ready.
+    ceo_view_txt = None
+    ceo_view_raw = gp.get("ceo_view")
+    if isinstance(ceo_view_raw, dict):
+        ceo_view_txt = _dump(ceo_view_raw, max_chars=4096)
+
     parts = [
         _CEO_INSTRUCTIONS_PREFIX,
         governance.strip(),
@@ -171,6 +177,10 @@ def build_ceo_instructions(
         "IDENTITY:\n" + identity_txt,
         "KB_CONTEXT:\n" + kb_txt,
         "CONVERSATION_STATE:\n" + (conv_state_txt or "(none)"),
+    ]
+    if ceo_view_txt is not None:
+        parts.append("CEO_VIEW:\n" + ceo_view_txt)
+    parts += [
         "NOTION_SNAPSHOT:\n" + notion_txt,
         "MEMORY_CONTEXT:\n" + memory_txt,
     ]
