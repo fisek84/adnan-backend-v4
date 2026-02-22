@@ -13,6 +13,7 @@ Phase 2: test_ceo_view_present_in_instructions
   - build_ceo_instructions with grounding_pack containing ceo_view must
     include CEO_VIEW section even when notion_snapshot is missing/redacted.
 """
+
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
@@ -22,6 +23,7 @@ from fastapi.testclient import TestClient
 # Shared helpers
 # ---------------------------------------------------------------------------
 
+
 def _ready_snapshot():
     return {
         "ready": True,
@@ -29,12 +31,32 @@ def _ready_snapshot():
         "schema_version": "v1",
         "payload": {
             "goals": [
-                {"id": "g1", "title": "Rast prihoda Q1", "status": "In Progress", "due": "2026-03-31"},
-                {"id": "g2", "title": "Lansiranje novog proizvoda", "status": "Not Started", "due": "2026-06-30"},
+                {
+                    "id": "g1",
+                    "title": "Rast prihoda Q1",
+                    "status": "In Progress",
+                    "due": "2026-03-31",
+                },
+                {
+                    "id": "g2",
+                    "title": "Lansiranje novog proizvoda",
+                    "status": "Not Started",
+                    "due": "2026-06-30",
+                },
             ],
             "tasks": [
-                {"id": "t1", "title": "Istraživanje tržišta", "status": "In Progress", "due": "2026-02-28"},
-                {"id": "t2", "title": "Priprema prezentacije", "status": "Not Started", "due": "2026-03-05"},
+                {
+                    "id": "t1",
+                    "title": "Istraživanje tržišta",
+                    "status": "In Progress",
+                    "due": "2026-02-28",
+                },
+                {
+                    "id": "t2",
+                    "title": "Priprema prezentacije",
+                    "status": "Not Started",
+                    "due": "2026-03-05",
+                },
             ],
             "projects": [],
         },
@@ -43,12 +65,14 @@ def _ready_snapshot():
 
 def _get_app():
     from gateway.gateway_server import app  # noqa: PLC0415
+
     return app
 
 
 # ---------------------------------------------------------------------------
 # Phase 1
 # ---------------------------------------------------------------------------
+
 
 def test_show_goals_tasks_deterministic_when_snapshot_ready(monkeypatch):
     """Router must return deterministic summary for show/list intent when snapshot is ready."""
@@ -120,12 +144,15 @@ def test_show_goals_tasks_bosnian_variants_deterministic(monkeypatch):
         )
         assert r.status_code == 200, f"phrase={phrase!r}: {r.text}"
         txt = r.json().get("text") or ""
-        assert "Nemam SSOT snapshot" not in txt, f"phrase={phrase!r} leaked 'Nemam SSOT snapshot'"
+        assert "Nemam SSOT snapshot" not in txt, (
+            f"phrase={phrase!r} leaked 'Nemam SSOT snapshot'"
+        )
 
 
 # ---------------------------------------------------------------------------
 # Phase 2: test_ceo_view_present_in_instructions
 # ---------------------------------------------------------------------------
+
 
 def test_ceo_view_present_in_instructions():
     """build_ceo_instructions must emit CEO_VIEW section when ceo_view is in grounding_pack."""
@@ -138,7 +165,13 @@ def test_ceo_view_present_in_instructions():
             {"title": "Rast prihoda Q1", "status": "In Progress", "due": "2026-03-31"},
         ],
         "tasks_top10": [
-            {"title": "Istraživanje tržišta", "status": "In Progress", "due": "2026-02-28", "priority": "High", "goal_ids": []},
+            {
+                "title": "Istraživanje tržišta",
+                "status": "In Progress",
+                "due": "2026-02-28",
+                "priority": "High",
+                "goal_ids": [],
+            },
         ],
     }
 
@@ -166,9 +199,17 @@ def test_ceo_view_present_when_notion_snapshot_redacted():
     ceo_view = {
         "goals_count": 1,
         "tasks_count": 2,
-        "goals_top3": [{"title": "My Goal Title", "status": "Active", "due": "2026-04-01"}],
+        "goals_top3": [
+            {"title": "My Goal Title", "status": "Active", "due": "2026-04-01"}
+        ],
         "tasks_top10": [
-            {"title": "My Task Title", "status": "Todo", "due": "-", "priority": "Medium", "goal_ids": []},
+            {
+                "title": "My Task Title",
+                "status": "Todo",
+                "due": "-",
+                "priority": "Medium",
+                "goal_ids": [],
+            },
         ],
     }
 
@@ -211,11 +252,9 @@ def test_ceo_view_absent_when_not_in_grounding_pack():
 # Phase 2: test_budget_exceeded_still_lists_from_ceo_view
 # ---------------------------------------------------------------------------
 
+
 def test_budget_exceeded_still_lists_from_ceo_view(monkeypatch):
     """When notion_snapshot is budget_exceeded, real titles must appear via CEO_VIEW."""
-    import asyncio
-    from dataclasses import dataclass
-    from typing import Any, Dict
 
     from services.ceo_advisor_agent import build_ceo_instructions
 
@@ -225,7 +264,13 @@ def test_budget_exceeded_still_lists_from_ceo_view(monkeypatch):
         "tasks_count": 1,
         "goals_top3": [{"title": "Prihod Q2", "status": "Active", "due": "2026-06-30"}],
         "tasks_top10": [
-            {"title": "Kampanja lansiranja", "status": "In Progress", "due": "2026-03-01", "priority": "High", "goal_ids": ["g1"]},
+            {
+                "title": "Kampanja lansiranja",
+                "status": "In Progress",
+                "due": "2026-03-01",
+                "priority": "High",
+                "goal_ids": ["g1"],
+            },
         ],
     }
 
@@ -250,6 +295,7 @@ def test_budget_exceeded_still_lists_from_ceo_view(monkeypatch):
 # ---------------------------------------------------------------------------
 # Unit tests for helper functions
 # ---------------------------------------------------------------------------
+
 
 def test_is_show_goals_tasks_intent_matches():
     from routers.chat_router import _is_show_goals_tasks_intent

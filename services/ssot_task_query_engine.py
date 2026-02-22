@@ -184,7 +184,9 @@ def normalize_tasks(
         priority = _pick_str(fields.get("priority") or it.get("priority"), default="-")
         due_iso = _pick_due_iso(fields.get("due") or it.get("due"))
         goal_id = _pick_str(it.get("goal_id") or fields.get("goal_id"), default="")
-        goal_title = _pick_str(goals_by_id.get(goal_id), default="-") if goal_id else "-"
+        goal_title = (
+            _pick_str(goals_by_id.get(goal_id), default="-") if goal_id else "-"
+        )
 
         out.append(
             {
@@ -229,9 +231,7 @@ def classify_task_query(user_message: str) -> str:
     has_task = bool(re.search(r"(?i)\b(task|zadat|zadac)\w*\b", t))
     has_goal = bool(re.search(r"(?i)\b(goal|cilj)\w*\b", t))
     has_status_filter = bool(re.search(r"(?i)\b(po\s+statusu|status\s*:)\b", t))
-    has_priority_filter = bool(
-        re.search(r"(?i)\b(po\s+prioritetu|priority\s*:)\b", t)
-    )
+    has_priority_filter = bool(re.search(r"(?i)\b(po\s+prioritetu|priority\s*:)\b", t))
 
     # If the user explicitly talks about goals (and not tasks), don't route to task engine.
     if has_goal and not has_task:
@@ -288,9 +288,7 @@ def _extract_priority_filter(user_message: str) -> str:
     if not t:
         return ""
 
-    m = re.search(
-        r"(?i)(?:po\s+prioritetu\s*:?|priority\s*:)\s*([^\n\r]{1,40})", t
-    )
+    m = re.search(r"(?i)(?:po\s+prioritetu\s*:?|priority\s*:)\s*([^\n\r]{1,40})", t)
     if not m:
         return ""
     raw = (m.group(1) or "").strip()
@@ -309,7 +307,8 @@ def run_task_query(
     goals_raw = snapshot_goals(snapshot)
     goals_norm = normalize_goals(goals_raw)
     goals_by_id: Dict[str, str] = {
-        _pick_str(g.get("id"), default=""): _pick_str(g.get("title")) for g in goals_norm
+        _pick_str(g.get("id"), default=""): _pick_str(g.get("title"))
+        for g in goals_norm
     }
     goals_by_id = {k: v for k, v in goals_by_id.items() if k}
 
