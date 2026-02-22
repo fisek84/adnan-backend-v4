@@ -18,7 +18,11 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from models.agent_contract import AgentInput, AgentOutput, ProposedCommand
-from services.ceo_advisor_agent import create_ceo_advisor_agent, LLMNotConfiguredError, _render_snapshot_summary
+from services.ceo_advisor_agent import (
+    create_ceo_advisor_agent,
+    LLMNotConfiguredError,
+    _render_snapshot_summary,
+)
 from dependencies import get_memory_read_only_service
 from services.ceo_conversation_state_store import ConversationStateStore
 
@@ -124,11 +128,20 @@ def _compute_ceo_view(snapshot: Any) -> Dict[str, Any]:
         if not isinstance(it, dict):
             continue
         f = it.get("fields") if isinstance(it.get("fields"), dict) else {}
-        goals_top3.append({
-            "title": _s(it.get("title") or it.get("name") or f.get("title") or f.get("name")),
-            "status": _s(f.get("status") or f.get("Status") or it.get("status") or it.get("Status")),
-            "due": _due(f.get("due") or f.get("Due") or it.get("due")),
-        })
+        goals_top3.append(
+            {
+                "title": _s(
+                    it.get("title") or it.get("name") or f.get("title") or f.get("name")
+                ),
+                "status": _s(
+                    f.get("status")
+                    or f.get("Status")
+                    or it.get("status")
+                    or it.get("Status")
+                ),
+                "due": _due(f.get("due") or f.get("Due") or it.get("due")),
+            }
+        )
 
     tasks_top10 = []
     for it in tasks_raw[:10]:
@@ -136,13 +149,27 @@ def _compute_ceo_view(snapshot: Any) -> Dict[str, Any]:
             continue
         f = it.get("fields") if isinstance(it.get("fields"), dict) else {}
         goal_ids = it.get("goal_ids") or it.get("goalIds") or f.get("goal_ids") or []
-        tasks_top10.append({
-            "title": _s(it.get("title") or it.get("name") or f.get("title") or f.get("name")),
-            "status": _s(f.get("status") or f.get("Status") or it.get("status") or it.get("Status")),
-            "due": _due(f.get("due") or f.get("Due") or it.get("due")),
-            "priority": _s(f.get("priority") or f.get("Priority") or it.get("priority") or it.get("Priority")),
-            "goal_ids": goal_ids if isinstance(goal_ids, list) else [],
-        })
+        tasks_top10.append(
+            {
+                "title": _s(
+                    it.get("title") or it.get("name") or f.get("title") or f.get("name")
+                ),
+                "status": _s(
+                    f.get("status")
+                    or f.get("Status")
+                    or it.get("status")
+                    or it.get("Status")
+                ),
+                "due": _due(f.get("due") or f.get("Due") or it.get("due")),
+                "priority": _s(
+                    f.get("priority")
+                    or f.get("Priority")
+                    or it.get("priority")
+                    or it.get("Priority")
+                ),
+                "goal_ids": goal_ids if isinstance(goal_ids, list) else [],
+            }
+        )
 
     return {
         "goals_count": len(goals_raw),
@@ -2697,13 +2724,26 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                         else _snap_det
                     )
                     _pl_det = _pl_det if isinstance(_pl_det, dict) else {}
-                    _goals_det = _pl_det.get("goals") if isinstance(_pl_det.get("goals"), list) else []
-                    _tasks_det = _pl_det.get("tasks") if isinstance(_pl_det.get("tasks"), list) else []
-                    if isinstance(_goals_det, list) and isinstance(_tasks_det, list) and (
-                        _goals_det or _tasks_det
+                    _goals_det = (
+                        _pl_det.get("goals")
+                        if isinstance(_pl_det.get("goals"), list)
+                        else []
+                    )
+                    _tasks_det = (
+                        _pl_det.get("tasks")
+                        if isinstance(_pl_det.get("tasks"), list)
+                        else []
+                    )
+                    if (
+                        isinstance(_goals_det, list)
+                        and isinstance(_tasks_det, list)
+                        and (_goals_det or _tasks_det)
                     ):
                         _det_text = _render_snapshot_summary(_goals_det, _tasks_det)
-                        _det_tr = {"intent": "show_goals_tasks", "exit_path": "deterministic_ssot"}
+                        _det_tr = {
+                            "intent": "show_goals_tasks",
+                            "exit_path": "deterministic_ssot",
+                        }
                         _det_grounding = _grounding_bundle(
                             prompt=prompt,
                             knowledge_snapshot=ks_for_gp,
@@ -2735,7 +2775,9 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                             exit_path="ceo_chat.deterministic_ssot.show_goals_tasks",
                             targeted_reads=targeted_reads_info,
                         )
-                        return JSONResponse(content=_attach_session_id(_det_content, session_id))
+                        return JSONResponse(
+                            content=_attach_session_id(_det_content, session_id)
+                        )
             except Exception:
                 pass
 
