@@ -368,8 +368,24 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             }
         return out
 
-    def _knowledge_bundle() -> Dict[str, Any]:
-        """Enterprise contract: /api/chat always returns SSOT snapshot fields."""
+    async def _knowledge_bundle(*, request: Optional[Request] = None) -> Dict[str, Any]:
+        """Enterprise contract: /api/chat always returns SSOT snapshot fields.
+
+        CANON: knowledge_snapshot is server-owned.
+        - Read path MUST remain pure: KnowledgeSnapshotService.get_snapshot() has no IO.
+        - Request boundary: if snapshot is not ready or expired, refresh best-effort.
+        - Fail-soft: never block /api/chat on refresh failures.
+        """
+
+        # Request-scope memoization (avoid duplicate refresh work within a single request).
+        try:
+            if request is not None:
+                cached = getattr(request.state, "knowledge_bundle", None)
+                if isinstance(cached, dict):
+                    return cached
+        except Exception:
+            pass
+
         try:
             from services.knowledge_snapshot_service import (  # noqa: PLC0415
                 KnowledgeSnapshotService,
@@ -381,6 +397,43 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
 
         if not isinstance(ks, dict):
             ks = {}
+
+        def _needs_refresh(snap: Dict[str, Any]) -> bool:
+            try:
+                if bool(snap.get("expired") is True):
+                    return True
+                if bool(snap.get("ready") is not True):
+                    return True
+                st = snap.get("status")
+                if isinstance(st, str) and st.strip() in {"missing_data"}:
+                    return True
+            except Exception:
+                return True
+            return False
+
+        if _needs_refresh(ks):
+            # Tests/CI must remain offline and deterministic (no network calls).
+            is_test_mode = (os.getenv("TESTING") or "").strip() == "1" or (
+                "PYTEST_CURRENT_TEST" in os.environ
+            )
+            try:
+                from dependencies import (  # noqa: PLC0415
+                    services_status,
+                    get_sync_service,
+                )
+
+                if (not is_test_mode) and bool(services_status().get("sync")):
+                    sync = get_sync_service()
+                    ok = await sync.sync_knowledge_snapshot()
+                    if ok:
+                        try:
+                            ks2 = KnowledgeSnapshotService.get_snapshot()
+                            if isinstance(ks2, dict):
+                                ks = ks2
+                        except Exception:
+                            pass
+            except Exception as exc:
+                logger.warning("knowledge_snapshot_refresh_failed: %s", exc)
 
         snapshot_meta = {
             "knowledge_status": ks.get("status"),
@@ -397,7 +450,13 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             "schema_version": ks.get("schema_version"),
         }
 
-        return {"knowledge_snapshot": ks, "snapshot_meta": snapshot_meta}
+        out = {"knowledge_snapshot": ks, "snapshot_meta": snapshot_meta}
+        try:
+            if request is not None:
+                request.state.knowledge_bundle = out
+        except Exception:
+            pass
+        return out
 
     def _extract_prompt(payload: AgentInput) -> str:
         for k in ("message", "text", "input_text", "prompt"):
@@ -1880,7 +1939,7 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 )
 
             # Keep /api/chat response shape stable.
-            kb = _knowledge_bundle()
+            kb = await _knowledge_bundle(request=request)
             ks0 = kb.get("knowledge_snapshot") if isinstance(kb, dict) else {}
             ks0 = ks0 if isinstance(ks0, dict) else {}
             snapshot_meta = kb.get("snapshot_meta") if isinstance(kb, dict) else {}
@@ -2041,7 +2100,7 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 }
 
                 if debug_on:
-                    kb0 = _knowledge_bundle()
+                    kb0 = await _knowledge_bundle(request=request)
                     content.update(kb0)
 
                 content = _attach_and_log_audit(
@@ -2090,7 +2149,7 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                         },
                     }
                     if debug_on:
-                        kb0 = _knowledge_bundle()
+                        kb0 = await _knowledge_bundle(request=request)
                         content.update(kb0)
                     content = _attach_and_log_audit(
                         content,
@@ -2139,7 +2198,7 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 "schema_version": ks.get("schema_version"),
             }
 
-        kb = _knowledge_bundle()
+        kb = await _knowledge_bundle(request=request)
         ks_for_gp = kb.get("knowledge_snapshot") if isinstance(kb, dict) else {}
         if not isinstance(ks_for_gp, dict):
             ks_for_gp = {}

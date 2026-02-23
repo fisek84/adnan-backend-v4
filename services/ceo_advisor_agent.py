@@ -101,10 +101,10 @@ def build_ceo_instructions(
         governance = (
             "GOVERNANCE (non-negotiable):\n"
             "- READ-ONLY: no tool calls, no side effects, no external writes.\n"
-            "- KB-FIRST: Prefer KB_CONTEXT for curated knowledge/policies, BUT you MAY use NOTION_SNAPSHOT for factual state questions about Notion (e.g. do we have goals/tasks/projects, counts, presence).\n"
+            "- KB-FIRST: Prefer KB_CONTEXT for curated knowledge/policies, BUT you MAY use NOTION_CONTEXT for factual state questions about Notion (e.g. do we have goals/tasks/projects, counts, presence).\n"
             "- DO NOT use general world knowledge.\n"
-            "- For Notion state questions: if NOTION_SNAPSHOT is present, answer from it and do NOT respond with 'Nemam u KB/Memory/Snapshot'.\n"
-            "- NOTION READ SNAPSHOT: If NOTION_SNAPSHOT is present/ready, you DO have access to it regardless of NOTION_OPS_STATE.armed; use it for situational awareness.\n"
+            "- For Notion state questions: if NOTION_CONTEXT is present, answer from it and do NOT respond with missing-context phrasing.\n"
+            "- NOTION READ CONTEXT: If NOTION_CONTEXT is present/ready, you DO have access to it regardless of NOTION_OPS_STATE.armed; use it for situational awareness.\n"
             "- If you propose actions, put them into proposed_commands but do not execute anything.\n"
             "- NOTION WRITES: Only propose Notion write commands when NOTION_OPS_STATE.armed == true. If armed==false, ask the user to arm Notion Ops ('notion ops aktiviraj') instead of proposing writes.\n"
         )
@@ -112,9 +112,9 @@ def build_ceo_instructions(
         governance = (
             "GOVERNANCE (non-negotiable):\n"
             "- READ-ONLY: no tool calls, no side effects, no external writes.\n"
-            "- Answer ONLY from the provided context sections below (IDENTITY, KB_CONTEXT, NOTION_SNAPSHOT, MEMORY_CONTEXT).\n"
-            "- DO NOT use general world knowledge. If the answer is not in the provided context, say: 'Nemam u KB/Memory/Snapshot'.\n"
-            "- NOTION READ SNAPSHOT: If NOTION_SNAPSHOT is present/ready, you DO have access to it regardless of NOTION_OPS_STATE.armed; use it for situational awareness and do NOT ask to enable snapshot.\n"
+            "- Answer ONLY from the provided context sections below (IDENTITY, KB_CONTEXT, NOTION_CONTEXT, MEMORY_CONTEXT).\n"
+            "- DO NOT use general world knowledge. If the answer is not in the provided context, say: 'Nije dostupno u dostupnom kontekstu'.\n"
+            "- NOTION READ CONTEXT: If NOTION_CONTEXT is present/ready, you DO have access to it regardless of NOTION_OPS_STATE.armed; use it for situational awareness and do NOT ask the user to provide any internal export.\n"
             "- If you propose actions, put them into proposed_commands but do not execute anything.\n"
             "- NOTION WRITES: Only propose Notion write commands when NOTION_OPS_STATE.armed == true. If armed==false, ask the user to arm Notion Ops ('notion ops aktiviraj') instead of proposing writes.\n"
         )
@@ -181,7 +181,7 @@ def build_ceo_instructions(
     if ceo_view_txt is not None:
         parts.append("CEO_VIEW:\n" + ceo_view_txt)
     parts += [
-        "NOTION_SNAPSHOT:\n" + notion_txt,
+        "NOTION_CONTEXT:\n" + notion_txt,
         "MEMORY_CONTEXT:\n" + memory_txt,
     ]
 
@@ -636,7 +636,7 @@ def _is_empty_state_kickoff_prompt(user_text: str) -> bool:
 
 def _default_kickoff_text() -> str:
     return (
-        "Nemam učitan Notion snapshot (ciljevi/taskovi) u ovom READ kontekstu. "
+        "Nema ucitanog Notion konteksta (ciljevi/zadaci) u ovom READ kontekstu. "
         "To nije blokada — možemo krenuti odmah.\n\n"
         "Odgovori kratko na ova 3 pitanja (da bih složio top 3 cilja i top 5 taskova):\n"
         "1) Koji je glavni cilj za narednih 30 dana?\n"
@@ -1045,7 +1045,7 @@ def _assistant_identity_text(*, english_output: bool) -> str:
             "How I work:\n"
             "- READ-only by default: I can analyze, summarize, and propose next steps.\n"
             "- Action is approval-gated: when you want me to change things (e.g., Notion/tasks/DB), I return a proposal you approve.\n"
-            "- If knowledge sources (KB/snapshot) are unavailable, I'll say so and stay deterministic/offline-safe.\n\n"
+            "- If knowledge sources (KB/Notion context) are unavailable, I'll say so and stay deterministic/offline-safe.\n\n"
             "How to ask:\n"
             "- For a plan: tell me goal + deadline + constraints.\n"
             "- For execution: say explicitly what to create/update, and I will draft an approval-gated proposal."
@@ -1055,7 +1055,7 @@ def _assistant_identity_text(*, english_output: bool) -> str:
         "Kako radim:\n"
         "- READ-only po defaultu: mogu analizirati, sažeti i predložiti naredne korake.\n"
         "- Akcije su approval-gated: kad želiš da nešto mijenjam (npr. Notion/taskovi/DB), vratim prijedlog koji ti odobriš.\n"
-        "- Ako izvori znanja (KB/snapshot) nisu dostupni, to ću reći i ostajem determinističan/offline-safe.\n\n"
+        "- Ako izvori znanja (KB/Notion kontekst) nisu dostupni, to ću reći i ostajem determinističan/offline-safe.\n\n"
         "Kako da pitaš:\n"
         "- Za plan: reci cilj + rok + ograničenja.\n"
         "- Za izvršenje: eksplicitno napiši šta da kreiram/izmijenim i pripremiću approval-gated prijedlog."
@@ -1249,13 +1249,13 @@ def _classify_memory_meta_question(
 def _assistant_epistemic_text(*, english_output: bool) -> str:
     if english_output:
         return (
-            "I only know from: (1) this conversation, (2) the available curated KB, (3) the Notion snapshot/state-read when present.\n"
+            "I only know from: (1) this conversation, (2) the available curated KB, (3) the Notion state-read context when present.\n"
             "- When general knowledge is disabled, I do not use outside/world knowledge.\n"
             "- If a source is missing, I will say I can't confirm.\n"
             "- I never perform WRITE actions without your explicit approval (propose → approve → execute)."
         )
     return (
-        "Znam samo iz: (1) ovog razgovora, (2) dostupnog kuriranog KB-a, (3) Notion snapshot/state-read kad je prisutan.\n"
+        "Znam samo iz: (1) ovog razgovora, (2) dostupnog kuriranog KB-a, (3) Notion state-read konteksta kad je prisutan.\n"
         "- Kad je general knowledge isključen, ne koristim opšte/vanjsko znanje.\n"
         "- Ako izvor nije dostupan, reći ću da ne mogu potvrditi.\n"
         "- Ne radim WRITE akcije bez tvog eksplicitnog odobrenja (propose → approve → execute)."
@@ -1943,8 +1943,8 @@ def _format_enforcer(user_text: str, english_output: bool) -> str:
         "4) <title> | <status> | <priority>\n"
         "5) <title> | <status> | <priority>\n\n"
         "PRAVILA:\n"
-        "- Snapshot je kontekst (input za inteligenciju). Ako nema podataka, nastavi savjetovanje.\n"
-        "- Ako snapshot nema ciljeve/taskove: savjetuj kako da se krene, postavi pametna pitanja i predloži okvir.\n"
+        "- Notion kontekst je input (za situacionu svijest). Ako nema podataka, nastavi savjetovanje.\n"
+        "- Ako kontekst nema ciljeve/taskove: savjetuj kako da se krene, postavi pametna pitanja i predloži okvir.\n"
     )
     if english_output:
         return (
@@ -2902,13 +2902,13 @@ def _empty_tasks_fallback_output(
 
     if not items and not active_decision_title:
         txt = (
-            "Nemam dovoljno signala u goals/projects/memory/snapshot da bih dao sedmične prioritete. "
-            "TASKS snapshot je prazan, a nemam ni ciljeve/projekte ili aktivnu odluku. "
-            "Predlog: uradi 'refresh snapshot' ili mi reci 12 konkretna fokusa za sedmicu."
+            "Nema dovoljno signala u goals/projects/memory kontekstu da bih dao sedmicne prioritete. "
+            "TASKS kontekst je prazan, a nema ni ciljeva/projekata ili aktivne odluke. "
+            "Predlog: osvjezi operativni kontekst ili mi reci 12 konkretnih fokusa za sedmicu."
             if not english_output
-            else "I don't have enough signals in goals/projects/memory/snapshot to produce weekly priorities. "
-            "TASKS snapshot is empty and there are no goals/projects or active decision context. "
-            "Suggestion: refresh snapshot or tell me 12 concrete weekly focuses."
+            else "I don't have enough signals in the current goals/projects/memory context to produce weekly priorities. "
+            "The TASKS context is empty and there are no goals/projects or active decision context. "
+            "Suggestion: refresh the context or tell me 12 concrete weekly focuses."
         )
         return AgentOutput(
             text=txt,
@@ -2949,11 +2949,11 @@ def _empty_tasks_fallback_output(
         priorities.append("(needs input)")
 
     if english_output:
-        header = "TASKS snapshot is empty. Based on goals/projects (and memory when available), here are 3 weekly priorities:\n"
+        header = "TASKS context is empty. Based on goals/projects (and memory when available), here are 3 weekly priorities:\n"
         next_step_label = "Next step"
         goal_title = f"Weekly focus: {priorities[0] if priorities[0] != '(needs input)' else 'Planning'}"
     else:
-        header = "TASKS snapshot je prazan. Na osnovu goals/projects (i memory gdje postoji signal), evo 3 sedmična prioriteta:\n"
+        header = "TASKS kontekst je prazan. Na osnovu goals/projects (i memory gdje postoji signal), evo 3 sedmicna prioriteta:\n"
         next_step_label = "Sljedeći korak"
         goal_title = f"Sedmični fokus: {priorities[0] if priorities[0] != '(needs input)' else 'Planiranje'}"
 
@@ -2975,9 +2975,9 @@ def _empty_tasks_fallback_output(
 
     ops: List[Dict[str, Any]] = []
     goal_desc = (
-        "Auto-draft jer je TASKS snapshot prazan. Izvor: goals/projects snapshot (+ memory signal ako postoji)."
+        "Auto-draft jer je TASKS kontekst prazan. Izvor: goals/projects kontekst (+ memory signal ako postoji)."
         if not english_output
-        else "Auto-draft because TASKS snapshot is empty. Source: goals/projects snapshot (+ memory signal if present)."
+        else "Auto-draft because the TASKS context is empty. Source: goals/projects context (+ memory signal if present)."
     )
     ops.append(
         {
@@ -3803,6 +3803,19 @@ async def create_ceo_advisor_agent(
         except Exception:
             pass
 
+        # CANON: user-facing text must never mention internal storage terms.
+        # Hard guard against accidental model echoing (or legacy strings).
+        try:
+            if isinstance(out.text, str) and out.text.strip():
+                txt0 = out.text
+                # Replace any 'snapshot*' tokens (e.g., snapshot, snapshot_meta).
+                txt0 = re.sub(r"(?i)snapshot[a-z0-9_]*", "kontekst", txt0)
+                # Replace any 'nemam*' words (e.g., nemam, nemamo) to avoid leakage.
+                txt0 = re.sub(r"(?i)nemam[a-zčćšđž]*", "ne mogu", txt0)
+                out.text = txt0
+        except Exception:
+            pass
+
         out.trace = tr
 
         # Persist an explicit deliverable offer marker ONLY when the assistant
@@ -4118,10 +4131,10 @@ async def create_ceo_advisor_agent(
             if txt0 and (not snapshot_ready):
                 if re.search(r"(?im)^\s*(GOALS|TASKS|CILJEVI|ZADACI)\b", txt0):
                     out.text = (
-                        "Nemam SSOT snapshot u ovom trenutku, pa ne mogu pouzdano izlistati ciljeve i zadatke. "
-                        "Reci cilj + rok + ograničenja, pa ću napraviti plan."
+                        "Nije dostupno dovoljno pouzdanog konteksta da izlistam ciljeve i zadatke. "
+                        "Reci cilj + rok + ogranicenja, pa cu napraviti plan."
                         if not english_output
-                        else "I don't have the SSOT snapshot right now, so I can't reliably list goals and tasks. "
+                        else "I don't have enough reliable context to list goals and tasks. "
                         "Tell me the objective + deadline + constraints and I'll draft the plan."
                     )
                     tr.setdefault("ssot_guard", {})
@@ -5558,14 +5571,14 @@ async def create_ceo_advisor_agent(
         return _final(
             AgentOutput(
                 text=(
-                    "Ne mogu potvrditi poslovno stanje iz ovog upita jer u READ kontekstu nemam učitan SSOT snapshot. "
-                    "Predlog: pokreni 'refresh snapshot' ili otvori CEO Console snapshot pa ponovi pitanje."
+                    "Ne mogu pouzdano odgovoriti na ovo pitanje bez osvjezenog operativnog konteksta. "
+                    "Predlog: pokreni osvjezavanje konteksta i ponovi pitanje."
                 ),
                 proposed_commands=[
                     ProposedCommand(
                         command="refresh_snapshot",
                         args={"source": "ceo_advisory"},
-                        reason="SSOT snapshot nije prisutan za fact-sensitive pitanje.",
+                        reason="Read context is not ready for a fact-sensitive answer.",
                         requires_approval=True,
                         risk="LOW",
                         dry_run=True,
@@ -5625,15 +5638,15 @@ async def create_ceo_advisor_agent(
             return _final(
                 AgentOutput(
                     text=(
-                        "Ne mogu učitati Notion read snapshot (read-only). "
+                        "Ne mogu ucitati Notion read kontekst (read-only). "
                         f"Detalj: {err}\n\n"
-                        "Pokušaj: 'refresh snapshot' ili provjeri Notion konfiguraciju (DB IDs/token)."
+                        "Pokusaj: osvjezi kontekst ili provjeri Notion konfiguraciju (DB IDs/token)."
                     ),
                     proposed_commands=[
                         ProposedCommand(
                             command="refresh_snapshot",
                             args={"source": "ceo_dashboard"},
-                            reason="Snapshot nije dostupan ili nije konfigurisan.",
+                            reason="Notion read context is unavailable or not configured.",
                             requires_approval=True,
                             risk="LOW",
                             dry_run=True,
@@ -5667,15 +5680,15 @@ async def create_ceo_advisor_agent(
         return _final(
             AgentOutput(
                 text=(
-                    "Trenutni snapshot nema učitane ciljeve/taskove. "
+                    "Trenutni operativni kontekst nema ucitane ciljeve/zadatke. "
                     "Ovo je READ problem (nije blokada Notion Ops).\n\n"
-                    "Predlog: pokreni refresh snapshot ili koristi 'Search Notion' panel da potvrdiš da DB sadrži stavke."
+                    "Predlog: pokreni osvjezavanje konteksta ili koristi 'Search Notion' panel da potvrdis da DB sadrzi stavke."
                 ),
                 proposed_commands=[
                     ProposedCommand(
                         command="refresh_snapshot",
                         args={"source": "ceo_dashboard"},
-                        reason="Snapshot je prazan ili nedostaje.",
+                        reason="Notion read context is empty or missing data.",
                         requires_approval=True,
                         risk="LOW",
                         dry_run=True,
@@ -6094,7 +6107,7 @@ async def create_ceo_advisor_agent(
         try:
             identity_i = instructions.find("\n\nIDENTITY:\n")
             kb_i = instructions.find("\n\nKB_CONTEXT:\n")
-            notion_i = instructions.find("\n\nNOTION_SNAPSHOT:\n")
+            notion_i = instructions.find("\n\nNOTION_CONTEXT:\n")
             mem_i = instructions.find("\n\nMEMORY_CONTEXT:\n")
             # Best-effort extraction
             sec_identity = (
@@ -6366,10 +6379,10 @@ async def create_ceo_advisor_agent(
 
         if (not ssot_ok) and re.search(r"(?im)^\s*(GOALS|TASKS)\b", text_out or ""):
             text_out = (
-                "Nemam SSOT snapshot u ovom trenutku, zato neću navoditi liste ciljeva i zadataka niti tvrditi poslovni status. "
-                "Mogu ipak pomoći s planom: napiši cilj, rok i ograničenja."
+                "Nije dostupno dovoljno pouzdanog konteksta, zato necu navoditi liste ciljeva i zadataka niti tvrditi poslovni status. "
+                "Mogu ipak pomoci s planom: napisi cilj, rok i ogranicenja."
                 if not english_output
-                else "I don't have an SSOT snapshot available right now, so I won't list goals or tasks or business status. "
+                else "I don't have enough reliable context, so I won't list goals or tasks or business status. "
                 "I can still help with a plan: share the objective, deadline, and constraints."
             )
         "- NE SMIJEŠ tvrditi status/rizik/blokade ili brojeve ciljeva/taskova ako to nije eksplicitno u snapshot-u; u tom slučaju reci da nije poznato iz snapshot-a i predloži refresh.\n"

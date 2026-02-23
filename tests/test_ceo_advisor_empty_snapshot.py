@@ -97,6 +97,10 @@ def test_ceo_advisor_fact_sensitive_empty_snapshot_is_grounded(monkeypatch):
 
     assert out.read_only is True
     assert "blokir" not in txt
-    assert "refresh" in txt
+    pcs = out.proposed_commands or []
+    assert any(
+        str(getattr(pc, "command", "") or "").strip() == "refresh_snapshot"
+        for pc in pcs
+    )
     assert isinstance(out.trace, dict)
     assert isinstance(out.trace.get("grounding_gate"), dict)

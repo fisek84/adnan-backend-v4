@@ -78,7 +78,7 @@ def test_responses_mode_calls_executor_with_non_empty_instructions(monkeypatch):
     assert isinstance(instr, str) and instr.strip()
     assert "IDENTITY:" in instr
     assert "KB_CONTEXT:" in instr
-    assert "NOTION_SNAPSHOT:" in instr
+    assert "NOTION_CONTEXT:" in instr
     assert "MEMORY_CONTEXT:" in instr
 
 

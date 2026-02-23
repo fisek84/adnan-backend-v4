@@ -41,12 +41,12 @@ def test_build_ceo_instructions_contains_all_sections_and_governance():
 
     assert "IDENTITY:" in instructions
     assert "KB_CONTEXT:" in instructions
-    assert "NOTION_SNAPSHOT:" in instructions
+    assert "NOTION_CONTEXT:" in instructions
     assert "MEMORY_CONTEXT:" in instructions
 
     # Governance: explicit no-general-knowledge rule
     assert "DO NOT use general world knowledge" in instructions
-    assert "Nemam u KB/Memory/Snapshot" in instructions
+    assert "KB-FIRST" in instructions
 
 
 def test_build_ceo_instructions_truncates_to_budgets():
@@ -70,5 +70,5 @@ def test_build_ceo_instructions_handles_empty_grounding_pack():
     # Builder is deterministic; even empty input yields a minimal scaffold.
     assert "IDENTITY:" in instructions
     assert "KB_CONTEXT:" in instructions
-    assert "NOTION_SNAPSHOT:" in instructions
+    assert "NOTION_CONTEXT:" in instructions
     assert "MEMORY_CONTEXT:" in instructions

@@ -80,7 +80,7 @@ def test_empty_tasks_fallback_generates_priorities_and_proposal_no_executor(
     )
     assert resp.status_code == 200
     data = resp.json()
-    assert "TASKS snapshot" in (data.get("text") or "")
+    assert "TASKS kontekst je prazan" in (data.get("text") or "")
 
     pcs = data.get("proposed_commands") or []
     assert isinstance(pcs, list) and pcs
@@ -138,6 +138,6 @@ def test_empty_tasks_fallback_refuses_without_signals_no_executor(
     )
     assert resp.status_code == 200
     data = resp.json()
-    assert "Nemam dovoljno signala" in (data.get("text") or "")
+    assert "Nema dovoljno signala" in (data.get("text") or "")
     pcs = data.get("proposed_commands") or []
     assert pcs == []

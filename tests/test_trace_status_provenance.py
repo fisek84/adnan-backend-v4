@@ -49,10 +49,13 @@ def test_provenance_query_does_not_trigger_memory_governance(monkeypatch):
 
     # Should reflect trace_v2 sources deterministically.
     assert "identity_pack" in txt
-    assert "kb_snapshot" in txt
-    assert "notion_snapshot" in txt
-    assert "memory_snapshot" in txt
+    assert "kb_kontekst" in txt
+    assert "notion_kontekst" in txt
+    assert "memory_kontekst" in txt
     assert "not_required_for_prompt" in txt
+
+    # Safety invariant: must not expose the forbidden keyword.
+    assert "snapshot" not in txt.lower()
 
     # Legacy trace intent must be trace_status (not memory_or_expand_knowledge)
     tr = body.get("trace")

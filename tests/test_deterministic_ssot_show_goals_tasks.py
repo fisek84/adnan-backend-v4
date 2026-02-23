@@ -226,9 +226,9 @@ def test_ceo_view_present_when_notion_snapshot_redacted():
 
     assert "CEO_VIEW:" in instructions
     assert "My Goal Title" in instructions
-    # CEO_VIEW must appear BEFORE NOTION_SNAPSHOT in the instructions.
+    # CEO_VIEW must appear BEFORE NOTION_CONTEXT in the instructions.
     ceo_view_pos = instructions.index("CEO_VIEW:")
-    notion_pos = instructions.index("NOTION_SNAPSHOT:")
+    notion_pos = instructions.index("NOTION_CONTEXT:")
     assert ceo_view_pos < notion_pos
 
 

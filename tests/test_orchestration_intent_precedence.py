@@ -185,7 +185,7 @@ def test_weekly_request_tasks_empty_uses_ceo_weekly_flow_no_growth_delegation(
     )
 
     assert out.agent_id == "ceo_advisor"
-    assert "TASKS snapshot" in (out.text or "")
+    assert "TASKS kontekst je prazan" in (out.text or "")
 
     tr = out.trace or {}
     assert isinstance(tr, dict)

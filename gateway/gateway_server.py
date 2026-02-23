@@ -390,8 +390,8 @@ def _build_ceo_read_context(
         if isinstance(knowledge_snapshot, dict)
         else None
     )
-    if ready is not True:
-        missing.append("snapshot")
+    # Snapshot is server-owned and always injected.
+    # Readiness is advisory, not a fatal blocker.
 
     if (
         not isinstance(kb_hits, list)
@@ -527,20 +527,8 @@ async def _generate_ceo_readonly_answer(
             },
         }
 
-    if "snapshot" in missing:
-        txt = (
-            "Snapshot nije dostavljen/učitan (READ). Pošalji Notion snapshot ili pokreni refresh snapshot, "
-            "pa ponovi pitanje."
-        )
-        return {
-            "text": txt,
-            "summary": txt,
-            "trace": {
-                "exit_reason": "fallback.missing_snapshot",
-                "used_sources": used_sources,
-                "missing_inputs": sorted(set(missing_inputs + ["notion_snapshot"])),
-            },
-        }
+    # Snapshot must never be treated as a client-provided fatal dependency.
+    # If it's unready/expired/missing_data, we still proceed with best-effort advisory output.
 
     gp = (
         context.get("grounding_pack")
@@ -2282,8 +2270,29 @@ async def _boot_once() -> None:
                     try:
                         from dependencies import get_sync_service  # type: ignore
 
+                        # CANON: do not burn Notion budget on boot if the current
+                        # server-owned snapshot is already ready and not expired.
+                        needs_boot_sync = True
+                        try:
+                            from services.knowledge_snapshot_service import (  # noqa: PLC0415
+                                KnowledgeSnapshotService,
+                            )
+
+                            ks0 = KnowledgeSnapshotService.get_snapshot()
+                            if isinstance(ks0, dict):
+                                ready0 = bool(ks0.get("ready") is True)
+                                expired0 = bool(ks0.get("expired") is True)
+                                needs_boot_sync = (not ready0) or expired0
+                        except Exception:
+                            needs_boot_sync = True
+
                         sync_service = get_sync_service()
-                        await sync_service.sync_knowledge_snapshot()
+                        if needs_boot_sync:
+                            await sync_service.sync_knowledge_snapshot()
+                        else:
+                            logger.info(
+                                "Knowledge snapshot already ready/fresh; skipping boot sync"
+                            )
                     except Exception as exc:
                         _append_boot_error(f"knowledge_snapshot_sync_failed:{exc}")
                         logger.warning(

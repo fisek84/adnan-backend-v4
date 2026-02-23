@@ -216,7 +216,7 @@ def test_weekly_explicit_does_not_call_rgo(monkeypatch, tmp_path):
     assert calls == []
 
     txt = data.get("text") or ""
-    assert "TASKS snapshot" in txt
+    assert "TASKS kontekst je prazan" in txt
 
 
 def test_pasted_deliverable_keywords_without_request_verbs_does_not_propose_delegation(
@@ -697,7 +697,10 @@ def test_ssot_missing_no_hallucinated_goals_tasks(monkeypatch, tmp_path):
     )
     assert resp.status_code == 200
     txt = resp.json().get("text") or ""
-    assert "Nemam SSOT snapshot" in txt or "don't have an SSOT snapshot" in txt
+    low = txt.lower()
+    assert "snapshot" not in low
+    assert "nemam" not in low
+    assert "kontekst" in low or "nije dostupno" in low
     assert "GOALS" not in txt
     assert "TASKS" not in txt
 

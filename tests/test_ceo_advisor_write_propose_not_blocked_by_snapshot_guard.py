@@ -44,6 +44,8 @@ def test_fact_status_query_without_snapshot_still_hits_fact_sensitive_fallback()
 
     out = asyncio.run(create_ceo_advisor_agent(agent_input, ctx={"memory": {"x": 1}}))
 
-    assert "Ne mogu potvrditi poslovno stanje" in (out.text or "")
+    txt = out.text or ""
+    assert "Ne mogu" in txt
+    assert "kontekst" in txt.lower()
     assert any(pc.command == "refresh_snapshot" for pc in (out.proposed_commands or []))
     assert all(pc.command != "notion_write" for pc in (out.proposed_commands or []))

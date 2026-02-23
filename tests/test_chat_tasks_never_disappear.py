@@ -399,7 +399,8 @@ def test_task_query_engine_all_tasks_returns_more_than_top5(monkeypatch):
 
     txt = str(r.json().get("text") or "")
     t = txt.lower()
-    assert "ssot: snapshot_tasks_count=7" in t
+    assert "ssot:" in t
+    assert "kontekst=7" in t
     assert "tasks (all)" in t
     for x in ("t1", "t2", "t3", "t4", "t5", "t6", "t7"):
         assert x in t
