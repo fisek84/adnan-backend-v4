@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import time
+from datetime import date
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -2192,6 +2193,17 @@ def _render_snapshot_summary(goals: Any, tasks: Any) -> str:
             return _pick_str(v.get("start") or v.get("date") or v.get("value"))
         return "-"
 
+    def _due_sort_key(due: str) -> tuple[int, str]:
+        s = (due or "").strip()
+        if not s or s == "-":
+            return (99999999, "")
+        try:
+            # Accept YYYY-MM-DD (date-only) and truncate any time.
+            d = date.fromisoformat(s[:10])
+            return (d.toordinal(), s)
+        except Exception:
+            return (99999999, s)
+
     def _normalize_task(it: Dict[str, Any]) -> Dict[str, Any]:
         fields = it.get("fields") if isinstance(it.get("fields"), dict) else {}
         title = _pick_str(
@@ -2252,26 +2264,70 @@ def _render_snapshot_summary(goals: Any, tasks: Any) -> str:
     g = _safe_list(goals)
     t = _safe_list(tasks)
 
+    # Prefer stable, due-date ordering so upcoming items are visible.
+    g_sorted = sorted(
+        g,
+        key=lambda it: (
+            _due_sort_key(
+                _pick_due(
+                    (it.get("fields") or {}).get("due")
+                    if isinstance(it.get("fields"), dict)
+                    else it.get("due")
+                )
+            )[0],
+            _pick_str(
+                it.get("title")
+                or it.get("name")
+                or (it.get("fields") or {}).get("title")
+                if isinstance(it.get("fields"), dict)
+                else ""
+            ),
+        ),
+    )
+    t_sorted = sorted(
+        t,
+        key=lambda it: (
+            _due_sort_key(
+                _pick_due(
+                    it.get("due")
+                    or (
+                        it.get("fields") if isinstance(it.get("fields"), dict) else {}
+                    ).get("due")
+                    or (
+                        it.get("fields") if isinstance(it.get("fields"), dict) else {}
+                    ).get("Due")
+                )
+            )[0],
+            _pick_str(
+                it.get("title")
+                or it.get("name")
+                or (it.get("fields") or {}).get("title")
+                if isinstance(it.get("fields"), dict)
+                else ""
+            ),
+        ),
+    )
+
     lines: List[str] = []
     lines.append("GOALS (top 3)")
-    if not g:
+    if not g_sorted:
         lines.append("1) - | - | -")
         lines.append("2) - | - | -")
         lines.append("3) - | - | -")
     else:
-        for i, it in enumerate(g[:3], start=1):
+        for i, it in enumerate(g_sorted[:3], start=1):
             ng = _normalize_goal(it)
             lines.append(f"{i}) {ng['title']} | {ng['status']} | {ng['due']}")
 
     lines.append("TASKS (top 5)")
-    if not t:
+    if not t_sorted:
         lines.append("1) - | - | -")
         lines.append("2) - | - | -")
         lines.append("3) - | - | -")
         lines.append("4) - | - | -")
         lines.append("5) - | - | -")
     else:
-        for i, it in enumerate(t[:5], start=1):
+        for i, it in enumerate(t_sorted[:5], start=1):
             nt = _normalize_task(it)
             lines.append(f"{i}) {nt['title']} | {nt['status']} | {nt['due']}")
 
@@ -5600,7 +5656,7 @@ async def create_ceo_advisor_agent(
         )
 
         qtype = classify_task_query(base_text)
-        if qtype in {"all", "today", "overdue", "by_status", "by_priority"}:
+        if qtype in {"all", "today", "tomorrow", "overdue", "by_status", "by_priority"}:
             # Only answer deterministically if SSOT snapshot is available.
             if isinstance(snapshot_payload, dict) and snapshot_payload:
                 res = run_task_query(

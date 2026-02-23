@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 
@@ -232,13 +232,14 @@ def classify_task_query(user_message: str) -> str:
     has_goal = bool(re.search(r"(?i)\b(goal|cilj)\w*\b", t))
     has_status_filter = bool(re.search(r"(?i)\b(po\s+statusu|status\s*:)\b", t))
     has_priority_filter = bool(re.search(r"(?i)\b(po\s+prioritetu|priority\s*:)\b", t))
+    has_tomorrow = bool(re.search(r"(?i)\b(sutra|tomorrow)\b", t))
 
     # If the user explicitly talks about goals (and not tasks), don't route to task engine.
     if has_goal and not has_task:
         return "none"
 
-    # Allow explicit filters even if the word "task" isn't present (e.g. "po statusu: Not Started").
-    if not (has_task or has_status_filter or has_priority_filter):
+    # Allow explicit filters even if the word "task" isn't present.
+    if not (has_task or has_status_filter or has_priority_filter or has_tomorrow):
         return "none"
 
     if re.search(r"(?i)\b(svi|sve)\b.*\b(task|zadat|zadac)\w*\b", t) or re.search(
@@ -248,6 +249,9 @@ def classify_task_query(user_message: str) -> str:
 
     if re.search(r"(?i)\b(danas|today)\b", t):
         return "today"
+
+    if has_tomorrow:
+        return "tomorrow"
 
     if re.search(r"(?i)\b(overdue|kasn|zakasn)\w*\b", t):
         return "overdue"
@@ -327,6 +331,13 @@ def run_task_query(
             for t in tasks_norm
             if _parse_iso_date(_pick_str(t.get("due"), default="")) == today
         ]
+    elif query_type == "tomorrow":
+        tomorrow = today + timedelta(days=1)
+        filtered = [
+            t
+            for t in tasks_norm
+            if _parse_iso_date(_pick_str(t.get("due"), default="")) == tomorrow
+        ]
     elif query_type == "overdue":
         out0: List[Dict[str, Any]] = []
         for t in tasks_norm:
@@ -366,7 +377,14 @@ def run_task_query(
         due_ord = due.toordinal() if due else 99999999
         return (due_ord, _pick_str(it.get("status")), _pick_str(it.get("title")))
 
-    if query_type in {"today", "overdue", "all", "by_status", "by_priority"}:
+    if query_type in {
+        "today",
+        "tomorrow",
+        "overdue",
+        "all",
+        "by_status",
+        "by_priority",
+    }:
         filtered = sorted(filtered, key=_sort_key)
 
     counts = _counts_by_status(tasks_norm)
@@ -396,7 +414,7 @@ def render_task_query_answer(res: SSOTQueryResult) -> str:
     last_sync = _pick_str(res.stats.get("last_sync"), default="-")
 
     lines: List[str] = [
-        f"SSOT: snapshot_tasks_count={snapshot_tasks_count}, last_sync={last_sync}",
+        f"SSOT: kontekst={snapshot_tasks_count}, last_sync={last_sync}",
         "",
     ]
 
@@ -446,6 +464,8 @@ def render_task_query_answer(res: SSOTQueryResult) -> str:
         lines.append("TASKS (overdue)")
     elif qt == "today":
         lines.append("TASKS (today)")
+    elif qt == "tomorrow":
+        lines.append("TASKS (tomorrow)")
     elif qt == "by_status":
         lines.append("TASKS (by status)")
     elif qt == "by_priority":

@@ -406,6 +406,129 @@ def test_task_query_engine_all_tasks_returns_more_than_top5(monkeypatch):
         assert x in t
 
 
+def test_show_tasks_top5_is_sorted_by_due_date(monkeypatch):
+    monkeypatch.setenv("CEO_GROUNDING_PACK_ENABLED", "true")
+    monkeypatch.setenv("CEO_NOTION_TARGETED_READS_ENABLED", "false")
+    monkeypatch.setenv("CEO_ADVISOR_FORCE_OFFLINE", "1")
+    monkeypatch.delenv("DEBUG_API_RESPONSES", raising=False)
+
+    app = _load_app()
+    client = TestClient(app)
+
+    # Place the 2026-02-24 task late in the list; it must still appear in top 5.
+    snapshot = {
+        "ready": True,
+        "payload": {
+            "dashboard": {"tasks": []},
+            "tasks": [
+                {
+                    "id": "t1",
+                    "title": "6 km lagano",
+                    "fields": {"status": "to do", "due": {"start": "2026-02-26"}},
+                },
+                {
+                    "id": "t2",
+                    "title": "5 km + 6x strides",
+                    "fields": {"status": "to do", "due": {"start": "2026-02-28"}},
+                },
+                {
+                    "id": "t3",
+                    "title": "Atletska staza",
+                    "fields": {"status": "completed", "due": {"start": "2026-02-19"}},
+                },
+                {
+                    "id": "t4",
+                    "title": "Snaga",
+                    "fields": {"status": "to do", "due": {"start": "2026-02-25"}},
+                },
+                {
+                    "id": "t5",
+                    "title": "3 km lagano",
+                    "fields": {"status": "completed", "due": {"start": "2026-02-21"}},
+                },
+                {
+                    "id": "t6",
+                    "title": "Biciklom",
+                    "fields": {"status": "completed", "due": {"start": "2026-02-22"}},
+                },
+                {
+                    "id": "t7",
+                    "title": "5 km lagano",
+                    "fields": {"status": "not started", "due": {"start": "2026-02-24"}},
+                },
+            ],
+            "goals": [],
+        },
+    }
+
+    r = client.post(
+        "/api/chat",
+        json={
+            "message": "Pokaži zadatke",
+            "identity_pack": {"user_id": "test"},
+            "snapshot": snapshot,
+        },
+    )
+    assert r.status_code == 200, r.text
+    txt = str(r.json().get("text") or "")
+    t = txt.lower()
+    assert "tasks (top 5)" in t
+    assert "2026-02-24" in txt
+    assert "snapshot" not in t
+
+
+def test_task_query_engine_tomorrow_filters_due_tomorrow(monkeypatch):
+    monkeypatch.setenv("CEO_GROUNDING_PACK_ENABLED", "true")
+    monkeypatch.setenv("CEO_NOTION_TARGETED_READS_ENABLED", "false")
+    monkeypatch.setenv("CEO_ADVISOR_FORCE_OFFLINE", "1")
+    monkeypatch.delenv("DEBUG_API_RESPONSES", raising=False)
+
+    app = _load_app()
+    client = TestClient(app)
+
+    tomorrow = (date.today() + timedelta(days=1)).isoformat()
+    snapshot = {
+        "ready": True,
+        "payload": {
+            "dashboard": {"tasks": []},
+            "tasks": [
+                {
+                    "id": "t1",
+                    "title": "Sutra task",
+                    "fields": {"status": "to do", "due": {"start": tomorrow}},
+                },
+                {
+                    "id": "t2",
+                    "title": "Kasnije",
+                    "fields": {
+                        "status": "to do",
+                        "due": {
+                            "start": (date.today() + timedelta(days=3)).isoformat()
+                        },
+                    },
+                },
+            ],
+            "goals": [],
+        },
+    }
+
+    r = client.post(
+        "/api/chat",
+        json={
+            "message": "Koji je za sutra?",
+            "identity_pack": {"user_id": "test"},
+            "snapshot": snapshot,
+        },
+    )
+    assert r.status_code == 200, r.text
+    txt = str(r.json().get("text") or "")
+    t = txt.lower()
+    assert "tasks (tomorrow)" in t
+    assert "sutra task" in t
+    assert tomorrow in txt
+    assert "snapshot" not in t
+
+
 def test_task_query_engine_today_filters_only_due_today(monkeypatch):
     monkeypatch.setenv("CEO_GROUNDING_PACK_ENABLED", "true")
     monkeypatch.setenv("CEO_NOTION_TARGETED_READS_ENABLED", "false")
