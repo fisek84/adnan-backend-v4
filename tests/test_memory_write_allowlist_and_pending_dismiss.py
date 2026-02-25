@@ -21,7 +21,10 @@ def _has_memory_write_proposal(pcs):
     for pc in pcs:
         if not isinstance(pc, dict):
             continue
-        if pc.get("command") == PROPOSAL_WRAPPER_INTENT and pc.get("intent") == "memory_write":
+        if (
+            pc.get("command") == PROPOSAL_WRAPPER_INTENT
+            and pc.get("intent") == "memory_write"
+        ):
             return True
     return False
 
@@ -48,7 +51,9 @@ def test_normal_questions_do_not_trigger_memory_write_proposal():
         assert r.status_code == 200, r.text
         body = r.json()
         pcs = body.get("proposed_commands") or []
-        assert not _has_memory_write_proposal(pcs), f"unexpected memory_write proposal for: {msg!r}"
+        assert not _has_memory_write_proposal(
+            pcs
+        ), f"unexpected memory_write proposal for: {msg!r}"
 
 
 def test_valid_memory_write_commands_trigger_proposal():
@@ -73,7 +78,9 @@ def test_valid_memory_write_commands_trigger_proposal():
         assert r.status_code == 200, r.text
         body = r.json()
         pcs = body.get("proposed_commands") or []
-        assert _has_memory_write_proposal(pcs), f"expected memory_write proposal for: {msg!r}"
+        assert _has_memory_write_proposal(
+            pcs
+        ), f"expected memory_write proposal for: {msg!r}"
 
 
 def _setup_pending_proposal_env(monkeypatch, tmp_path, *, state_filename: str):
@@ -85,7 +92,9 @@ def _setup_pending_proposal_env(monkeypatch, tmp_path, *, state_filename: str):
 
     from services.grounding_pack_service import GroundingPackService
 
-    monkeypatch.setattr(GroundingPackService, "build", lambda **kwargs: {"enabled": False})
+    monkeypatch.setattr(
+        GroundingPackService, "build", lambda **kwargs: {"enabled": False}
+    )
 
     def _boom(*args, **kwargs):  # noqa: ANN001
         raise AssertionError("executor must not be called")
@@ -94,7 +103,9 @@ def _setup_pending_proposal_env(monkeypatch, tmp_path, *, state_filename: str):
 
 
 def test_pending_proposal_dismiss_long_phrase_clears_pending(monkeypatch, tmp_path):
-    _setup_pending_proposal_env(monkeypatch, tmp_path, state_filename="ceo_conv_state_pending_dismiss_long.json")
+    _setup_pending_proposal_env(
+        monkeypatch, tmp_path, state_filename="ceo_conv_state_pending_dismiss_long.json"
+    )
 
     app = _load_app()
     client = TestClient(app)
@@ -125,7 +136,7 @@ def test_pending_proposal_dismiss_long_phrase_clears_pending(monkeypatch, tmp_pa
         },
     )
     assert resp2.status_code == 200
-    tr2 = (resp2.json().get("trace") or {})
+    tr2 = resp2.json().get("trace") or {}
     assert tr2.get("intent") != "approve_last_proposal_replay"
     assert tr2.get("intent") != "pending_proposal_confirm_needed"
 
@@ -139,14 +150,18 @@ def test_pending_proposal_dismiss_long_phrase_clears_pending(monkeypatch, tmp_pa
         },
     )
     assert resp3.status_code == 200
-    tr3 = (resp3.json().get("trace") or {})
+    tr3 = resp3.json().get("trace") or {}
     assert tr3.get("intent") != "approve_last_proposal_replay"
     pcs3 = resp3.json().get("proposed_commands") or []
     assert pcs3 != pcs1
 
 
 def test_pending_proposal_cancel_clears_pending(monkeypatch, tmp_path):
-    _setup_pending_proposal_env(monkeypatch, tmp_path, state_filename="ceo_conv_state_pending_dismiss_cancel.json")
+    _setup_pending_proposal_env(
+        monkeypatch,
+        tmp_path,
+        state_filename="ceo_conv_state_pending_dismiss_cancel.json",
+    )
 
     app = _load_app()
     client = TestClient(app)
@@ -175,7 +190,7 @@ def test_pending_proposal_cancel_clears_pending(monkeypatch, tmp_path):
         },
     )
     assert resp2.status_code == 200
-    tr2 = (resp2.json().get("trace") or {})
+    tr2 = resp2.json().get("trace") or {}
     assert tr2.get("intent") != "approve_last_proposal_replay"
 
     resp3 = client.post(
@@ -187,14 +202,16 @@ def test_pending_proposal_cancel_clears_pending(monkeypatch, tmp_path):
         },
     )
     assert resp3.status_code == 200
-    tr3 = (resp3.json().get("trace") or {})
+    tr3 = resp3.json().get("trace") or {}
     assert tr3.get("intent") != "approve_last_proposal_replay"
     pcs3 = resp3.json().get("proposed_commands") or []
     assert pcs3 != pcs1
 
 
 def test_pending_proposal_yes_still_replays(monkeypatch, tmp_path):
-    _setup_pending_proposal_env(monkeypatch, tmp_path, state_filename="ceo_conv_state_pending_yes_replay.json")
+    _setup_pending_proposal_env(
+        monkeypatch, tmp_path, state_filename="ceo_conv_state_pending_yes_replay.json"
+    )
 
     app = _load_app()
     client = TestClient(app)
