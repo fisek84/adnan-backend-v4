@@ -598,9 +598,15 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             "no",
             "n",
             "nemoj",
+            "nemam namjeru",
+            "samo pitanje",
+            "ne trazim",
             "odustani",
+            "otkazi",
+            "dismiss",
             "stop",
             "cancel",
+            "ignore",
             "not now",
             "no thanks",
             "ne hvala",
@@ -617,6 +623,50 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             t,
         ):
             return True
+
+        return False
+
+    def _is_pending_proposal_dismiss(text: str) -> bool:
+        """Return True if the user is explicitly dismissing a pending proposal.
+
+        This is intentionally a broader match than _is_short_decline because users
+        often reply with longer clarifications like "samo pitanje".
+        """
+
+        raw = (text or "").strip()
+        if not raw:
+            return False
+
+        t = _norm_bhs_ascii(raw)
+        t = re.sub(r"[^a-z0-9\s]", " ", t)
+        t = " ".join(t.split())
+        if not t:
+            return False
+
+        # Exact single-token dismisses.
+        if t in {
+            "ne",
+            "no",
+            "n",
+            "nemoj",
+            "necu",
+            "ne zelim",
+            "otkazi",
+            "cancel",
+            "dismiss",
+            "stop",
+            "ignore",
+        }:
+            return True
+
+        # Phrase-based dismisses (BHS+EN) that should clear pending state.
+        for phrase in (
+            "nemam namjeru",
+            "samo pitanje",
+            "ne trazim",
+        ):
+            if re.search(r"\b" + re.escape(phrase) + r"\b", t):
+                return True
 
         return False
 
@@ -669,6 +719,10 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         """
         if _is_short_confirmation(text):
             return "YES"
+
+        # Broad dismiss handling: clear pending proposals without looping.
+        if _is_pending_proposal_dismiss(text):
+            return "NO"
         if _is_short_decline(text):
             return "NO"
 
@@ -686,7 +740,12 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
 
         neg = bool(
             re.search(
-                r"(?i)\b(ne|nemoj|necu|ne\s+zelim|odustani|stop|cancel|preskoci|skip|umjesto|instead|bez)\b",
+                r"(?i)\b("
+                r"ne|nemoj|necu|ne\s+zelim|"
+                r"nemam\s+namjeru|samo\s+pitanje|ne\s+trazim|"
+                r"odustani|otkazi|dismiss|ignore|"
+                r"stop|cancel|preskoci|skip|umjesto|instead|bez"
+                r")\b",
                 t,
             )
         )
@@ -697,6 +756,8 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             )
         )
 
+        if neg and req:
+            return "NEW_REQUEST"
         if neg:
             return "NO"
         if req:
@@ -2071,6 +2132,7 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         # ------------------------------------------------------------
         # CANON RESTORE: pending proposal replay / cancel / intent switch
         # ------------------------------------------------------------
+        pending_declined = False
         pending = _load_pending_proposal(proposal_key)
         if pending:
             cls = _classify_pending_response(prompt)
@@ -2117,6 +2179,7 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 return JSONResponse(content=_attach_session_id(content, session_id))
 
             if cls in {"NO", "NEW_REQUEST"}:
+                pending_declined = cls == "NO"
                 _persist_pending_proposal(proposal_key, [])
                 _pending_prompt_reset(conversation_id=proposal_key)
             else:
@@ -2708,7 +2771,9 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                         )
                     ]
 
-                _persist_pending_proposal(proposal_key, pcs_out)
+                _persist_pending_proposal(
+                    proposal_key, [] if pending_declined else pcs_out
+                )
 
                 tr0 = getattr(out, "trace", None)
                 tr0 = tr0 if isinstance(tr0, dict) else {}
@@ -3064,7 +3129,9 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                     if isinstance(d, dict):
                         pcs_out.append(_ensure_payload_summary_contract(d))
 
-                _persist_pending_proposal(proposal_key, pcs_out)
+                _persist_pending_proposal(
+                    proposal_key, [] if pending_declined else pcs_out
+                )
 
                 content = {
                     "text": _apply_post_answer_snapshot_consistency_guard(
@@ -3129,7 +3196,9 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                     d = _pc_to_dict(pc, prompt=prompt)
                     pcs_out.append(_ensure_payload_summary_contract(d))
 
-                _persist_pending_proposal(proposal_key, pcs_out)
+                _persist_pending_proposal(
+                    proposal_key, [] if pending_declined else pcs_out
+                )
 
                 content: Dict[str, Any] = {
                     "text": _apply_post_answer_snapshot_consistency_guard(
@@ -3233,7 +3302,7 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 if isinstance(d, dict):
                     pcs_out.append(_ensure_payload_summary_contract(d))
 
-            _persist_pending_proposal(proposal_key, pcs_out)
+            _persist_pending_proposal(proposal_key, [] if pending_declined else pcs_out)
 
             tr = out.trace or {}
             if not isinstance(tr, dict):
@@ -3337,7 +3406,10 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             },
         }
 
-        _persist_pending_proposal(proposal_key, content.get("proposed_commands") or [])
+        _persist_pending_proposal(
+            proposal_key,
+            [] if pending_declined else (content.get("proposed_commands") or []),
+        )
         if debug_on:
             tr["memory_provider"] = memory_provider
             tr["memory_items_count"] = memory_items_count

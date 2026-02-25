@@ -675,91 +675,127 @@ def _is_memory_capability_question(user_text: str) -> bool:
     )
 
 
+_MEMORY_WRITE_ALLOWLIST_PREFIXES = [
+    # Order matters: longer prefixes first.
+    "zapamti ovo",
+    "zapamti",
+    "pro\u0161iri znanje",
+    "prosiri znanje",
+    "remember this",
+    "learn this",
+    # Explicit learning command must be used as a command at the start.
+    # NOTE: We intentionally do NOT allow space-payload form for this one.
+    "nau\u010di",
+    "nauci",
+]
+
+# Only localized commands are allowed to use the space-separated payload format.
+_MEMORY_WRITE_SPACE_PAYLOAD_ALLOWED_PREFIXES = {
+    "zapamti ovo",
+    "zapamti",
+    "pro\u0161iri znanje",
+    "prosiri znanje",
+}
+
+_MEMORY_WRITE_MIN_SPACE_PAYLOAD_LEN = 15
+
+
+def _parse_memory_write_allowlist_command(user_text: str) -> Optional[Dict[str, str]]:
+    """Parse an explicit memory-write command at the START of the message.
+
+    Invariant (allowlist): memory write intent can ONLY activate when the
+    message begins with one of the allowlisted command prefixes (case-insensitive,
+    trimmed) AND includes a valid payload.
+
+    Payload formats:
+    - "<command>: <payload>" (colon required)
+    - "<command> <payload>" only for localized allowlisted commands, and only
+      when payload length >= N and it does not look like a question.
+
+    Returns dict with keys: kind ("memory_write"|"expand_knowledge"), command, payload.
+    """
+
+    s = (user_text or "").strip()
+    if not s:
+        return None
+
+    s_cf = s.casefold()
+
+    matched_cmd: Optional[str] = None
+    for cmd in _MEMORY_WRITE_ALLOWLIST_PREFIXES:
+        cmd_cf = cmd.casefold()
+        if not s_cf.startswith(cmd_cf):
+            continue
+
+        # Boundary: exact end, whitespace, or ':' directly after the command.
+        if len(s_cf) == len(cmd_cf) or s_cf[len(cmd_cf)] in {
+            ":",
+            " ",
+            "\t",
+            "\n",
+            "\r",
+        }:
+            matched_cmd = cmd
+            break
+
+    if not matched_cmd:
+        return None
+
+    rest = s[len(matched_cmd) :]
+    rest_stripped_left = rest.lstrip()
+    if not rest_stripped_left:
+        return None
+
+    used_colon = False
+    payload = ""
+    if rest_stripped_left.startswith(":"):
+        used_colon = True
+        payload = rest_stripped_left[1:].strip()
+        if not payload:
+            return None
+    else:
+        # Space payload form is a compatibility escape hatch, not the default.
+        if matched_cmd.casefold() not in {
+            x.casefold() for x in _MEMORY_WRITE_SPACE_PAYLOAD_ALLOWED_PREFIXES
+        }:
+            return None
+
+        payload = rest_stripped_left.strip()
+        if not payload:
+            return None
+
+        # Guardrails: avoid question-like payloads.
+        payload_cf = payload.casefold().strip()
+        if payload_cf.endswith("?"):
+            return None
+        if payload_cf.startswith("da li ") or payload_cf.startswith("da l "):
+            return None
+        if len(payload) < int(_MEMORY_WRITE_MIN_SPACE_PAYLOAD_LEN):
+            return None
+
+    cmd_norm = matched_cmd.casefold()
+    kind = "memory_write"
+    if cmd_norm.startswith("pro\u0161iri") or cmd_norm.startswith("prosiri"):
+        kind = "expand_knowledge"
+
+    # NOTE: We intentionally keep the payload un-normalized (except trimming)
+    # so the stored text matches user content as typed.
+    return {
+        "kind": kind,
+        "command": matched_cmd,
+        "payload": payload.strip(),
+        "used_colon": "1" if used_colon else "0",
+    }
+
+
 def _is_memory_write_request(user_text: str) -> bool:
-    t0 = (user_text or "").strip().lower()
-    if not t0:
-        return False
-
-    # Normalize BHS diacritics so upiši -> upisi.
-    t = (
-        t0.replace("č", "c")
-        .replace("ć", "c")
-        .replace("š", "s")
-        .replace("đ", "dj")
-        .replace("ž", "z")
-    )
-
-    # Must contain an explicit write verb (no noun-only triggers).
-    m = re.search(
-        r"(?i)\b("
-        r"zapamti(\s+ovo)?|"
-        r"snimi(\s+ovo)?|"
-        r"upisi(\s+ovo)?|"
-        r"pohrani(\s+ovo)?|"
-        r"spasi(\s+ovo)?|"
-        r"nauci|"
-        r"remember\s+this|"
-        r"store\s+this|"
-        r"save\s+to\s+memory|"
-        r"write\s+to\s+memory"
-        r")\b",
-        t,
-    )
-    if not m:
-        return False
-
-    after = t[m.end() :].strip()
-    if not after:
-        return False
-
-    # Accept "verb ...: payload" shapes (allow a small buffer like "ovo:").
-    if ":" in after[:12]:
-        payload = after.split(":", 1)[1].strip()
-        return bool(payload)
-
-    # Quoted payload anywhere after verb.
-    if re.search(r"([\"'\u201c\u201d\u2018\u2019]).{3,}\1", t[m.end() :]):
-        return True
-
-    return len(after) >= 15
+    parsed = _parse_memory_write_allowlist_command(user_text)
+    return bool(parsed and parsed.get("kind") == "memory_write")
 
 
 def _is_expand_knowledge_request(user_text: str) -> bool:
-    t0 = (user_text or "").strip().lower()
-    if not t0:
-        return False
-
-    t = (
-        t0.replace("č", "c")
-        .replace("ć", "c")
-        .replace("š", "s")
-        .replace("đ", "dj")
-        .replace("ž", "z")
-    )
-
-    m = re.search(
-        r"(?i)\b("
-        r"prosiri\s+znanje|"
-        r"prosirenje\s+znanja|"
-        r"expand\s+knowledge"
-        r")\b",
-        t,
-    )
-    if not m:
-        return False
-
-    after = t[m.end() :].strip()
-    if not after:
-        return False
-
-    if ":" in after[:12]:
-        payload = after.split(":", 1)[1].strip()
-        return bool(payload)
-
-    if re.search(r"([\"'\u201c\u201d\u2018\u2019]).{3,}\1", t[m.end() :]):
-        return True
-
-    return len(after) >= 15
+    parsed = _parse_memory_write_allowlist_command(user_text)
+    return bool(parsed and parsed.get("kind") == "expand_knowledge")
 
 
 def _is_trace_status_query(user_text: str) -> bool:
@@ -875,7 +911,7 @@ def _trace_no_sources_text(*, english_output: bool) -> str:
     if english_output:
         return (
             "This answer is based on your input + my analysis (no KB/SSOT sources were used). "
-            "If you want this to become system knowledge, write: 'Expand knowledge: ...' (approval-gated)."
+            "If you want this to become system knowledge, write: 'Learn this: ...' (approval-gated)."
         )
     return (
         "Ovo je iz tvog inputa + moje analize (bez KB/SSOT izvora). "
@@ -981,7 +1017,7 @@ def _memory_capability_text(*, english_output: bool) -> str:
             "Yes, but only through explicit, approval-gated proposals. "
             "No silent writes. In read-only chat I can propose a memory update, "
             "and you approve it before anything is persisted.\n\n"
-            "If you want me to remember something, write: 'Remember this: ...' or 'Expand knowledge: ...'\n"
+            "If you want me to remember something, write: 'Remember this: ...' or 'Learn this: ...'\n"
             "(Both create a proposal that requires approval.)\n\n"
             "[KB:memory_model_001] [ID:identity_pack.kernel.system_safety]"
         )
@@ -5336,9 +5372,12 @@ async def create_ceo_advisor_agent(
     if (not fact_sensitive) and (
         _is_memory_write_request(t0) or _is_expand_knowledge_request(t0)
     ):
-        detail = _extract_after_colon(base_text)
-        if not detail:
-            detail = base_text
+        parsed = _parse_memory_write_allowlist_command(base_text)
+        detail = (
+            (parsed.get("payload") if isinstance(parsed, dict) else "")
+            or _extract_after_colon(base_text)
+            or base_text
+        )
 
         # Canonical, deterministic memory_write.v1 payload (no free-form prompt).
         item_text = _normalize_item_text(detail)
@@ -5929,9 +5968,12 @@ async def create_ceo_advisor_agent(
             )
 
         if _is_memory_write_request(t0) or _is_expand_knowledge_request(t0):
-            detail = _extract_after_colon(base_text)
-            if not detail:
-                detail = base_text
+            parsed = _parse_memory_write_allowlist_command(base_text)
+            detail = (
+                (parsed.get("payload") if isinstance(parsed, dict) else "")
+                or _extract_after_colon(base_text)
+                or base_text
+            )
 
             wrapper_prompt = (
                 "Prepare a write proposal (requires approval) to persist the following into canonical memory/knowledge. "
@@ -6362,9 +6404,12 @@ async def create_ceo_advisor_agent(
                     "proposed_commands": [],
                 }
             elif _is_memory_write_request(t0) or _is_expand_knowledge_request(t0):
-                detail = _extract_after_colon(base_text)
-                if not detail:
-                    detail = base_text
+                parsed = _parse_memory_write_allowlist_command(base_text)
+                detail = (
+                    (parsed.get("payload") if isinstance(parsed, dict) else "")
+                    or _extract_after_colon(base_text)
+                    or base_text
+                )
                 wrapper_prompt = (
                     "Prepare a write proposal (requires approval) to persist the following into canonical memory/knowledge. "
                     "Use intent=memory_write. Params should include a single field 'note' with the raw user text. "
