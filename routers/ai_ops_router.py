@@ -693,6 +693,34 @@ async def approve(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[st
         )
 
     if isinstance(execution_result, dict):
+        # ------------------------------------------------------------
+        # OPTIONAL NOTION WRITE PROPOSAL (response-only)
+        # ------------------------------------------------------------
+        # Contract: delegated agent may return `requires_notion_write=true` +
+        # `notion_proposal`. Backend MUST NOT create approvals or execute anything here.
+        # Frontend explicitly initiates the next step via POST /api/execute/preview.
+        try:
+            from services.agent_result_normalizer import validate_notion_proposal
+
+            res0 = execution_result.get("result")
+            if isinstance(res0, dict) and res0.get("requires_notion_write") is True:
+                proposal0 = res0.get("notion_proposal")
+                if validate_notion_proposal(proposal0) is None and isinstance(
+                    proposal0, dict
+                ):
+                    execution_result["pending_next_action"] = {
+                        "endpoint": "/api/execute/preview",
+                        "command": "notion_write",
+                        "intent": proposal0.get("intent"),
+                        "params": proposal0.get("params")
+                        if isinstance(proposal0.get("params"), dict)
+                        else {},
+                        "read_only": True,
+                    }
+        except Exception:
+            # Fail-soft: never break approval flow due to optional proposal enrichment.
+            pass
+
         execution_result.setdefault("approval", approval)
         execution_result.setdefault("read_only", False)
 
