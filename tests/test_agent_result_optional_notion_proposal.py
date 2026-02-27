@@ -170,7 +170,10 @@ def test_agent_result_with_notion_write_returns_pending_next_action(monkeypatch)
         json={
             "command": "delegate_agent_task",
             "intent": "delegate_agent_task",
-            "params": {"agent_id": "agent_x", "task_text": "Please propose Notion task"},
+            "params": {
+                "agent_id": "agent_x",
+                "task_text": "Please propose Notion task",
+            },
             "payload_summary": {},
             "initiator": "ceo_chat",
         },

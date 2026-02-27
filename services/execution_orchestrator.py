@@ -21,6 +21,126 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 
+async def _execute_delegate_agent_task_via_router(cmd: AICommand) -> Dict[str, Any]:
+    """Execute delegate_agent_task through the agent execution pipeline.
+
+    Returns an *inner* result object suitable for storing in ExecutionRegistry.
+    The orchestrator wraps this into the public resume()/approve response envelope.
+    """
+
+    params = cmd.params if isinstance(getattr(cmd, "params", None), dict) else {}
+    agent_id = params.get("agent_id")
+    task_text = params.get("task_text")
+
+    if not isinstance(agent_id, str) or not agent_id.strip():
+        return {
+            "ok": False,
+            "success": False,
+            "execution_state": "FAILED",
+            "reason": "missing_agent_id",
+            "error_type": "ValidationError",
+            "failure": {"reason": "missing_agent_id", "error_type": "ValidationError"},
+            "result": {},
+        }
+
+    if not isinstance(task_text, str) or not task_text.strip():
+        return {
+            "ok": False,
+            "success": False,
+            "execution_state": "FAILED",
+            "reason": "missing_task_text",
+            "error_type": "ValidationError",
+            "failure": {
+                "reason": "missing_task_text",
+                "error_type": "ValidationError",
+            },
+            "result": {"agent_id": agent_id.strip()},
+        }
+
+    agent_id_s = agent_id.strip()
+    task_text_s = task_text.strip()
+
+    try:
+        from models.agent_contract import AgentInput
+        from services.agent_router_service import AgentRouterService
+
+        reg = AgentRegistryService()
+        reg.load_from_agents_json("config/agents.json", clear=True)
+
+        explicit = reg.get_agent(agent_id_s)
+        if explicit is None:
+            return {
+                "ok": False,
+                "success": False,
+                "execution_state": "FAILED",
+                "reason": "unknown_agent_id",
+                "error_type": "ValidationError",
+                "failure": {
+                    "reason": f"unknown_agent_id:{agent_id_s}",
+                    "error_type": "ValidationError",
+                },
+                "result": {"agent_id": agent_id_s},
+            }
+
+        if not getattr(explicit, "enabled", True):
+            return {
+                "ok": False,
+                "success": False,
+                "execution_state": "FAILED",
+                "reason": "agent_disabled",
+                "error_type": "ValidationError",
+                "failure": {
+                    "reason": f"agent_disabled:{agent_id_s}",
+                    "error_type": "ValidationError",
+                },
+                "result": {"agent_id": agent_id_s},
+            }
+
+        router = AgentRouterService(reg)
+
+        # Delegated execution is treated as read-only; post-approval, we still
+        # keep require_approval=True so downstream agents remain proposal-only.
+        agent_input = AgentInput(
+            message=task_text_s,
+            identity_pack={},
+            snapshot={},
+            preferred_agent_id=agent_id_s,
+            metadata={"read_only": True, "require_approval": True},
+        )
+
+        out = await router.route(agent_input)
+
+        output_text = getattr(out, "text", "")
+        trace = getattr(out, "trace", {})
+        if not isinstance(trace, dict):
+            trace = {}
+
+        return {
+            "ok": True,
+            "success": True,
+            "intent": "delegate_agent_task",
+            "result": {
+                "agent_id": agent_id_s,
+                "output_text": output_text,
+                "trace": trace,
+            },
+        }
+
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "ok": False,
+            "success": False,
+            "execution_state": "FAILED",
+            "reason": str(exc) or "delegate_agent_task_failed",
+            "error_type": exc.__class__.__name__,
+            "failure": {
+                "reason": str(exc) or "delegate_agent_task_failed",
+                "error_type": exc.__class__.__name__,
+            },
+            "result": {"agent_id": agent_id_s},
+        }
+
+
 class ExecutionOrchestrator:
     """
     CANONICAL EXECUTION ORCHESTRATOR (PRODUCTION)
@@ -60,6 +180,12 @@ class ExecutionOrchestrator:
     @staticmethod
     def _is_tool_call(cmd: AICommand) -> bool:
         return cmd.command == "tool_call" or cmd.intent == "tool_call"
+
+    @staticmethod
+    def _is_delegate_agent_task(cmd: AICommand) -> bool:
+        return (
+            cmd.command == "delegate_agent_task" or cmd.intent == "delegate_agent_task"
+        )
 
     @staticmethod
     def _is_failure_result(result: Any) -> bool:
@@ -175,6 +301,88 @@ class ExecutionOrchestrator:
         self.registry.register(cmd)
 
         try:
+            # ---------- AGENT DELEGATION (post-approval) ----------
+            # Frontend creates an approval with intent=delegate_agent_task and params:
+            # { agent_id, task_text, endpoint="/agents/execute" }
+            # This must NOT route into NotionService/NotionOpsAgent.
+            if self._is_delegate_agent_task(cmd):
+                inner = await _execute_delegate_agent_task_via_router(cmd)
+
+                if isinstance(inner, dict) and inner.get("ok") is True:
+                    from services.agent_result_normalizer import normalize_agent_result
+
+                    raw_res = (
+                        inner.get("result")
+                        if isinstance(inner.get("result"), dict)
+                        else (inner.get("result") or {})
+                    )
+
+                    # Canon: delegate_agent_task MUST return a stable shape so that
+                    # enterprise flows can optionally request governed notion_write.
+                    merged_result = raw_res if isinstance(raw_res, dict) else {}
+                    merged_result.setdefault(
+                        "agent_id",
+                        (
+                            (cmd.params or {}).get("agent_id")
+                            if isinstance(getattr(cmd, "params", None), dict)
+                            else None
+                        ),
+                    )
+                    merged_result.setdefault("output_text", merged_result.get("text"))
+
+                    resp = {
+                        "ok": True,
+                        "execution_state": "COMPLETED",
+                        "execution_id": cmd.execution_id,
+                        "approval_id": cmd.approval_id,
+                        "result": merged_result,
+                    }
+
+                    resp_norm = normalize_agent_result(resp)
+
+                    cmd.execution_state = (
+                        resp_norm.get("execution_state") or "COMPLETED"
+                    )
+                    if cmd.execution_state == "COMPLETED":
+                        self.registry.complete(cmd.execution_id, inner)
+                    else:
+                        self.registry.fail(
+                            cmd.execution_id,
+                            resp_norm.get("failure")
+                            if isinstance(resp_norm.get("failure"), dict)
+                            else {"reason": "delegate_agent_task_normalization_failed"},
+                        )
+
+                    return resp_norm
+
+                failure = (
+                    inner.get("failure")
+                    if isinstance(inner, dict)
+                    and isinstance(inner.get("failure"), dict)
+                    else {
+                        "reason": (
+                            inner.get("reason") if isinstance(inner, dict) else None
+                        )
+                        or "delegate_agent_task_failed",
+                        "error_type": (
+                            inner.get("error_type") if isinstance(inner, dict) else None
+                        )
+                        or "DelegateAgentTaskError",
+                    }
+                )
+
+                cmd.execution_state = "FAILED"
+                self.registry.fail(cmd.execution_id, failure)
+                return {
+                    "ok": False,
+                    "execution_state": "FAILED",
+                    "execution_id": cmd.execution_id,
+                    "approval_id": cmd.approval_id,
+                    "result": inner if isinstance(inner, dict) else {},
+                    "failure": failure,
+                    "text": f"Execution FAILED: {failure.get('reason')}",
+                }
+
             # Safety net: meta next_step should never hit Notion executor.
             if (
                 cmd.intent == "ceo_console.next_step"
