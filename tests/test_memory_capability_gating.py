@@ -30,7 +30,10 @@ def _has_memory_write_proposal(pcs) -> bool:
     for pc in pcs:
         if not isinstance(pc, dict):
             continue
-        if pc.get("command") == PROPOSAL_WRAPPER_INTENT and pc.get("intent") == "memory_write":
+        if (
+            pc.get("command") == PROPOSAL_WRAPPER_INTENT
+            and pc.get("intent") == "memory_write"
+        ):
             return True
     return False
 
