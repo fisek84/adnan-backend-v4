@@ -658,21 +658,66 @@ def _default_kickoff_text() -> str:
 
 
 def _is_memory_capability_question(user_text: str) -> bool:
-    t = (user_text or "").strip().lower()
+    t = (user_text or "").strip()
     if not t:
         return False
-    # Questions about whether the system can remember/store info.
-    return bool(
+
+    # Hard priority: explicit allowlisted memory write/learn commands must never
+    # be treated as a capability question.
+    if _parse_memory_write_allowlist_command(t) is not None:
+        return False
+
+    t_cf = t.casefold()
+
+    # Invariant: memory capability Q&A should activate ONLY when the user is
+    # clearly asking about the assistant/system memory (2nd person or identity).
+    # This prevents false positives when talking about human memory.
+    has_identity_marker = bool(
         re.search(
-            r"(?i)\b(mo\u017ee\u0161\s+li\s+pamt\w*|mozes\s+li\s+pamt\w*|da\s+li\s+pamt\w*|pamti\u0161|pamtis|pamti\u0161\s+li|pamtis\s+li|memorij\w*|memory)\b",
-            t,
-        )
-    ) and not bool(
-        re.search(
-            r"(?i)\b(zapamti|remember\s+this|pro\u0161iri\s+znanje|prosiri\s+znanje|nau\u010di)\b",
-            t,
+            r"(?i)\b(adnan(\.ai)?|assistant|ceo\s*advisor|sistem|system|agent)\b",
+            t_cf,
         )
     )
+
+    has_second_person_marker = bool(
+        re.search(
+            r"(?i)\b("
+            r"tvoj\w*|"
+            r"mo\u017ee\u0161|mozes|"
+            r"koristi\u0161|koristis|"
+            r"pamti\u0161|pamtis|"
+            r"zapamti\u0161|zapamtis|"
+            r"your"
+            r")\b",
+            t_cf,
+        )
+    )
+
+    has_memory_keyword = bool(re.search(r"(?i)\b(memorij\w*|memory)\b", t_cf))
+
+    # Explicit second-person question forms about remembering (no need to also
+    # mention 'memory'/'memorija'). Still guarded against human-memory phrasing.
+    has_explicit_assistant_remember_question = bool(
+        re.search(
+            r"(?i)\b("
+            r"mo\u017ee\u0161\s+li\s+(za)?pamt\w*|"
+            r"mozes\s+li\s+(za)?pamt\w*|"
+            r"da\s+li\s+pamti\u0161\b|da\s+li\s+pamtis\b|"
+            r"pamti\u0161\s+li\b|pamtis\s+li\b|"
+            r"can\s+you\s+remember\b|do\s+you\s+remember\b|"
+            r"can\s+you\s+store\b|do\s+you\s+store\b"
+            r")",
+            t_cf,
+        )
+    )
+
+    if has_explicit_assistant_remember_question:
+        return True
+
+    if has_memory_keyword and (has_identity_marker or has_second_person_marker):
+        return True
+
+    return False
 
 
 _MEMORY_WRITE_ALLOWLIST_PREFIXES = [
@@ -5852,6 +5897,75 @@ async def create_ceo_advisor_agent(
         logger.warning(
             "[LLM-GATE] Blocked: use_llm is True but _llm_is_configured is False. Returning deterministic fallback."
         )
+
+        t0 = (base_text or "").strip().lower()
+
+        # Memory governance invariants must hold even in offline/CI mode:
+        # - memory_write allowlist must not be shadowed by KB snippet fallback
+        # - assistant/system memory capability questions should return canonical text
+        if _is_memory_capability_question(t0):
+            return AgentOutput(
+                text=_memory_capability_text(english_output=english_output),
+                proposed_commands=[],
+                agent_id="ceo_advisor",
+                read_only=True,
+                trace={
+                    "offline_mode": True,
+                    "deterministic": True,
+                    "intent": "memory_capability",
+                    "snapshot": snap_trace,
+                },
+            )
+
+        if _is_memory_write_request(t0) or _is_expand_knowledge_request(t0):
+            parsed = _parse_memory_write_allowlist_command(base_text)
+            detail = (
+                (parsed.get("payload") if isinstance(parsed, dict) else "")
+                or _extract_after_colon(base_text)
+                or base_text
+            )
+
+            wrapper_prompt = (
+                "Prepare a write proposal (requires approval) to persist the following into canonical memory/knowledge. "
+                "Use intent=memory_write. Params should include a single field 'note' with the raw user text. "
+                f"USER_NOTE: {detail}"
+            )
+
+            txt = (
+                (
+                    "Razumijem. Mogu pripremiti prijedlog da ovo upišemo u memoriju/znanje, ali to zahtijeva odobrenje.\n\n"
+                    "Ako želiš upis u Notion (DB/page), prvo aktiviraj Notion Ops: 'notion ops aktiviraj'."
+                )
+                if not english_output
+                else (
+                    "Got it. I can prepare a proposal to store this in memory/knowledge, but it requires approval.\n\n"
+                    "If you want a Notion write (DB/page), arm Notion Ops first: 'notion ops activate'."
+                )
+            )
+
+            return AgentOutput(
+                text=txt,
+                proposed_commands=[
+                    ProposedCommand(
+                        command=PROPOSAL_WRAPPER_INTENT,
+                        args={"prompt": wrapper_prompt},
+                        reason="Approval-gated memory/knowledge write proposal.",
+                        requires_approval=True,
+                        risk="LOW",
+                        dry_run=True,
+                        scope="api_execute_raw",
+                    )
+                ],
+                agent_id="ceo_advisor",
+                read_only=True,
+                trace={
+                    "offline_mode": True,
+                    "deterministic": True,
+                    "intent": "memory_or_expand_knowledge",
+                    "snapshot": snap_trace,
+                },
+            )
+
         # If KB retrieval returned hits/ids, do NOT claim "no curated knowledge".
         # Return a deterministic grounded response using the retrieved KB snippets.
         if kb_ids_used_count > 0 or kb_hits > 0:
@@ -5860,58 +5974,57 @@ async def create_ceo_advisor_agent(
                 kid = (it.get("id") if isinstance(it, dict) else None) or "(missing_id)"
                 title = (it.get("title") if isinstance(it, dict) else None) or ""
                 content = (it.get("content") if isinstance(it, dict) else None) or ""
+
+                # Avoid leaking assistant/system memory governance KB into human-memory questions.
+                # This KB entry is intended for assistant memory capability disclosures.
+                if str(kid).strip().lower() == "memory_model_001":
+                    continue
+
                 snippet = _truncate(str(content), max_chars=500)
                 if title:
                     kb_lines.append(f"- [KB:{kid}] {title}: {snippet}")
                 else:
                     kb_lines.append(f"- [KB:{kid}] {snippet}")
 
-            if english_output:
-                text_out = (
-                    "I found relevant curated KB entries for this request, but the LLM is not configured in this environment.\n"
-                    "Here are the retrieved KB snippets:\n\n"
-                    + (
-                        "\n".join(kb_lines)
-                        if kb_lines
-                        else "(KB hits present, but entries payload was empty)"
-                    )
-                )
+            # If all hits were filtered out (e.g., only memory governance KB matched
+            # a human-memory question), do not return an empty KB-snippet response.
+            if not kb_lines:
+                kb_lines = []
             else:
-                text_out = (
-                    "Imam relevantne unose iz kuriranog KB-a za ovaj upit, ali LLM nije konfigurisan u ovom okruženju.\n"
-                    "Evo izvučenih KB snippeta:\n\n"
-                    + (
-                        "\n".join(kb_lines)
-                        if kb_lines
-                        else "(KB hitovi postoje, ali payload entries je prazan)"
+                if english_output:
+                    text_out = (
+                        "I found relevant curated KB entries for this request, but the LLM is not configured in this environment.\n"
+                        "Here are the retrieved KB snippets:\n\n" + "\n".join(kb_lines)
+                    )
+                else:
+                    text_out = (
+                        "Imam relevantne unose iz kuriranog KB-a za ovaj upit, ali LLM nije konfigurisan u ovom okruženju.\n"
+                        "Evo izvučenih KB snippeta:\n\n" + "\n".join(kb_lines)
+                    )
+
+                fallback_reason = "offline.kb_grounded_no_llm"
+                return _final(
+                    AgentOutput(
+                        text=text_out,
+                        proposed_commands=[],
+                        agent_id="ceo_advisor",
+                        read_only=True,
+                        trace={
+                            "offline_mode": True,
+                            "deterministic": True,
+                            "intent": "offline_kb_grounded",
+                            "exit_reason": fallback_reason,
+                            "kb_used_entry_ids": kb_used_ids,
+                            "snapshot": snap_trace,
+                            "llm_gate_diag": {
+                                "kb_ids_used_count": int(kb_ids_used_count),
+                                "kb_hits": int(kb_hits),
+                                "kb_mode": kb_mode,
+                                "fallback_reason": fallback_reason,
+                            },
+                        },
                     )
                 )
-
-            fallback_reason = "offline.kb_grounded_no_llm"
-            return _final(
-                AgentOutput(
-                    text=text_out,
-                    proposed_commands=[],
-                    agent_id="ceo_advisor",
-                    read_only=True,
-                    trace={
-                        "offline_mode": True,
-                        "deterministic": True,
-                        "intent": "offline_kb_grounded",
-                        "exit_reason": fallback_reason,
-                        "kb_used_entry_ids": kb_used_ids,
-                        "snapshot": snap_trace,
-                        "llm_gate_diag": {
-                            "kb_ids_used_count": int(kb_ids_used_count),
-                            "kb_hits": int(kb_hits),
-                            "kb_mode": kb_mode,
-                            "fallback_reason": fallback_reason,
-                        },
-                    },
-                )
-            )
-
-        t0 = (base_text or "").strip().lower()
 
         # Advisory review of user-provided content must not fall into unknown-mode.
         if _is_advisory_review_of_provided_content(base_text):

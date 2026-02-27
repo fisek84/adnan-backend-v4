@@ -396,7 +396,7 @@ async def list_tasks(tasks_service: TasksService = Depends(get_tasks_service)):
 
 
 # ============================================================
-# FAZA 9 Ä‚ËĂ˘â€šÂ¬Ă˘â‚¬ĹĄ PLAN Ä‚ËĂ˘â‚¬Â Ă˘â‚¬â„˘ TASK Ä‚ËĂ˘â‚¬Â Ă˘â‚¬â„˘ EXECUTION VIEW (READ-ONLY)
+# FAZA 9 — PLAN TASK EXECUTION VIEW (READ-ONLY)
 # ============================================================
 @router.get("/overview")
 async def task_execution_overview(
@@ -417,8 +417,9 @@ async def task_execution_overview(
                 "deadline": d.get("deadline"),
                 "notion_url": d.get("notion_url"),
                 "execution": {
-                    "assigned": bool(d.get("assigned_agent")),
-                    "agent_id": d.get("assigned_agent"),
+                    "assigned": bool(d.get("agent_id") or d.get("assigned_agent")),
+                    "agent_id": (d.get("agent_id") or d.get("assigned_agent")),
+                    "assigned_agent": (d.get("agent_id") or d.get("assigned_agent")),
                     "last_error": d.get("last_error"),
                 },
             }
