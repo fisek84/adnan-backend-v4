@@ -96,6 +96,75 @@ def parse_date(
                 kind=DateParseKind.INVALID,
             )
 
+    # Slash: DD/MM/YYYY or MM/DD/YYYY (no guessing; allow equality as deterministic)
+    m = re.match(r"^(\d{1,2})/(\d{1,2})/(\d{4})$", v)
+    if m:
+        a, b, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if a == b and 1 <= a <= 12:
+            try:
+                return ParseResult(
+                    iso=date(y, a, b).isoformat(),
+                    issues=[],
+                    normalized_input=normalized_input,
+                    kind=DateParseKind.ABSOLUTE,
+                )
+            except ValueError:
+                return ParseResult(
+                    iso=None,
+                    issues=["invalid_calendar_date"],
+                    normalized_input=normalized_input,
+                    kind=DateParseKind.INVALID,
+                )
+
+        # Clearly EU: day>12 and month<=12
+        if a > 12 and b <= 12:
+            try:
+                return ParseResult(
+                    iso=date(y, b, a).isoformat(),
+                    issues=[],
+                    normalized_input=normalized_input,
+                    kind=DateParseKind.ABSOLUTE,
+                )
+            except ValueError:
+                return ParseResult(
+                    iso=None,
+                    issues=["invalid_calendar_date"],
+                    normalized_input=normalized_input,
+                    kind=DateParseKind.INVALID,
+                )
+
+        # Clearly US: month<=12 and day>12
+        if b > 12 and a <= 12:
+            try:
+                return ParseResult(
+                    iso=date(y, a, b).isoformat(),
+                    issues=[],
+                    normalized_input=normalized_input,
+                    kind=DateParseKind.ABSOLUTE,
+                )
+            except ValueError:
+                return ParseResult(
+                    iso=None,
+                    issues=["invalid_calendar_date"],
+                    normalized_input=normalized_input,
+                    kind=DateParseKind.INVALID,
+                )
+
+        if a > 12 and b > 12:
+            return ParseResult(
+                iso=None,
+                issues=["invalid_calendar_date"],
+                normalized_input=normalized_input,
+                kind=DateParseKind.INVALID,
+            )
+
+        return ParseResult(
+            iso=None,
+            issues=["ambiguous_slashed_date"],
+            normalized_input=normalized_input,
+            kind=DateParseKind.AMBIGUOUS,
+        )
+
     # Dotted: DD.MM.YYYY or MM.DD.YYYY, and EU short year DD.MM.YY
     m = re.match(r"^(\d{1,2})\.(\d{1,2})\.(\d{2}|\d{4})\.?$", v)
     if m:

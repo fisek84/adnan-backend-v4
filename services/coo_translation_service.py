@@ -8,7 +8,7 @@ import logging
 import re
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, TypedDict
 
 from models.ai_command import AICommand
 
@@ -654,11 +654,7 @@ class COOTranslationService:
             }
 
         if fields.due:
-            from services.date_parse import DEFAULT_DATE_POLICY, parse_date  # noqa: PLC0415
-
-            res = parse_date(fields.due, DEFAULT_DATE_POLICY, date.today)
-            if res.iso:
-                specs["Deadline"] = {"type": "date", "start": res.iso}
+            specs["Deadline"] = {"type": "date", "start": fields.due}
 
         if fields.description:
             specs["Description"] = {
@@ -714,11 +710,7 @@ class COOTranslationService:
             }
 
         if fields.due:
-            from services.date_parse import DEFAULT_DATE_POLICY, parse_date  # noqa: PLC0415
-
-            res = parse_date(fields.due, DEFAULT_DATE_POLICY, date.today)
-            if res.iso:
-                specs["Due Date"] = {"type": "date", "start": res.iso}
+            specs["Due Date"] = {"type": "date", "start": fields.due}
 
         if fields.description:
             specs["Description"] = {
@@ -742,6 +734,206 @@ class COOTranslationService:
     # ------------------------------------------------------------
     # PARSING HELPERS
     # ------------------------------------------------------------
+
+    class _ClauseTokens(TypedDict, total=False):
+        priority: str
+        status: str
+        due: str
+        description: str
+
+    @staticmethod
+    def _looks_like_priority_value(value: str) -> bool:
+        v = (value or "").strip().lower()
+        if not v:
+            return False
+        if v in {"high", "medium", "low", "urgent", "normal"}:
+            return True
+        if v in {"visok", "visoka", "srednji", "srednja", "nizak", "niska"}:
+            return True
+        return ("vis" in v) or ("urg" in v) or ("niz" in v)
+
+    @staticmethod
+    def _looks_like_status_value(value: str) -> bool:
+        v = (value or "").strip().lower()
+        if not v:
+            return False
+        if v in {
+            "not started",
+            "nije poceto",
+            "nije početo",
+            "nepoceto",
+            "u toku",
+            "in progress",
+            "active",
+            "aktivan",
+            "aktivna",
+            "aktivno",
+            "zavrseno",
+            "završeno",
+            "done",
+            "completed",
+            "blokirano",
+            "blocked",
+        }:
+            return True
+        return any(
+            x in v
+            for x in (
+                "toku",
+                "progress",
+                "zavr",
+                "done",
+                "complete",
+                "blok",
+                "block",
+                "activ",
+            )
+        )
+
+    @staticmethod
+    def _looks_like_date_value(value: str) -> bool:
+        v = (value or "").strip().lower()
+        if not v:
+            return False
+        if v in {"danas", "sutra", "prekosutra", "today", "tomorrow"}:
+            return True
+        return bool(
+            re.match(
+                r"^(\d{4}[-/]\d{2}[-/]\d{2}|\d{1,2}[\./]\d{1,2}[\./]\d{2,4}\.?|\d{1,2}/\d{1,2}/\d{4})$",
+                v,
+            )
+        )
+
+    @classmethod
+    def _tokenize_property_clauses(cls, text: str) -> tuple[str, _ClauseTokens]:
+        """Canonical tokenizer for property clauses.
+
+        Detects clauses in both KV and whitespace forms and returns:
+        - title_prefix: portion before the first detected clause
+        - tokens: extracted raw values per field
+        """
+        t = (text or "").strip()
+        if not t:
+            return "", {}
+
+        # Longest-first to prefer multi-word keys like "due date".
+        variants: list[tuple[str, str]] = [
+            ("due date", "due"),
+            ("deadline-om", "due"),
+            ("duedate", "due"),
+            ("deadline", "due"),
+            ("rokom", "due"),
+            ("rok", "due"),
+            ("due", "due"),
+            ("prioritetom", "priority"),
+            ("prioritet", "priority"),
+            ("priority", "priority"),
+            ("statusom", "status"),
+            ("status", "status"),
+            ("description", "description"),
+            ("desc", "description"),
+            ("opis", "description"),
+        ]
+        variants = sorted(variants, key=lambda x: (-len(x[0]), x[0]))
+
+        def _kw_pat(kw: str) -> str:
+            # allow flexible whitespace inside multi-word keys
+            return re.escape(kw).replace("\\ ", r"\s+")
+
+        kw_to_field = {kw: field for kw, field in variants}
+        kw_alt = "|".join(_kw_pat(kw) for kw, _ in variants)
+        kw_re = re.compile(rf"(?i)\b({kw_alt})\b")
+
+        candidates: list[tuple[int, int, str]] = []  # (kw_start, value_start, field)
+
+        for m in kw_re.finditer(t):
+            kw_raw = re.sub(r"\s+", " ", (m.group(1) or "").strip().lower())
+            field = kw_to_field.get(kw_raw)
+            if not field:
+                continue
+
+            j = m.end()
+            # must be followed by ':'/'=' or whitespace + value-like
+            while j < len(t) and t[j].isspace():
+                j += 1
+            had_space = j > m.end()
+
+            delim_slice = t[m.end() : j]
+
+            if j < len(t) and t[j] in {":", "="}:
+                j += 1
+                while j < len(t) and t[j].isspace():
+                    j += 1
+            elif had_space:
+                # whitespace-form clause
+                pass
+            else:
+                continue
+
+            if j >= len(t):
+                continue
+
+            # quick preview for validation
+            tail = t[j:]
+            preview = re.split(r"[\n\r,;—\-]", tail, maxsplit=1)[0].strip()
+            if not preview:
+                continue
+
+            if field == "priority":
+                first = (preview.split() or [""])[0]
+                if not cls._looks_like_priority_value(first):
+                    continue
+            elif field == "status":
+                # allow 1-2 word status values
+                words = preview.split()
+                cand = " ".join(words[:2]).strip()
+                if not (
+                    cls._looks_like_status_value(cand)
+                    or cls._looks_like_status_value(words[0])
+                ):
+                    continue
+            elif field == "due":
+                first = (preview.split() or [""])[0]
+                if not cls._looks_like_date_value(first):
+                    continue
+            elif field == "description":
+                is_kv = ":" in delim_slice or "=" in delim_slice
+                if not is_kv:
+                    # whitespace description is allowed only when it is clearly a clause,
+                    # i.e. starts a new segment after punctuation or at the beginning.
+                    prev = t[m.start() - 1] if m.start() > 0 else ""
+                    if m.start() != 0 and prev not in {
+                        ".",
+                        ",",
+                        ";",
+                        "—",
+                        "-",
+                        "\n",
+                        "\r",
+                    }:
+                        continue
+
+            candidates.append((m.start(), j, field))
+
+        if not candidates:
+            return t.strip(), {}
+
+        candidates.sort(key=lambda x: x[0])
+        first_clause_start = candidates[0][0]
+        title_prefix = t[:first_clause_start].strip().strip(" ,;:.—-")
+
+        tokens: COOTranslationService._ClauseTokens = {}
+        for idx, (kw_start, val_start, field) in enumerate(candidates):
+            next_start = candidates[idx + 1][0] if idx + 1 < len(candidates) else len(t)
+            raw_value = t[val_start:next_start].strip().strip(" \t\r\n,;:.—-")
+            if not raw_value:
+                continue
+
+            if field not in tokens:
+                tokens[field] = raw_value
+
+        return title_prefix, tokens
+
     def _normalize_prefix_noise(self, text: str) -> str:
         t = (text or "").strip()
         if not t:
@@ -760,22 +952,31 @@ class COOTranslationService:
     def _parse_common_fields(self, text: str, *, entity: str) -> _ParsedFields:
         raw = self._normalize_prefix_noise(text)
 
+        title_prefix, clause_tokens = self._tokenize_property_clauses(raw)
+
         title_explicit = (
             self._extract_field_value(raw, "name")
             or self._extract_field_value(raw, "naziv")
             or self._extract_field_value(raw, "ime")
             or self._extract_field_value(raw, "title")
         )
+        if isinstance(title_explicit, str) and title_explicit.strip():
+            # Never allow property clauses to leak into explicit titles.
+            title_explicit, _ = self._tokenize_property_clauses(title_explicit.strip())
 
         # Support Bosnian instrumental case (-om suffix)
         status_raw = self._extract_field_value(
             raw, "statusom"
         ) or self._extract_field_value(raw, "status")
+        if clause_tokens.get("status"):
+            status_raw = clause_tokens.get("status")
         priority_raw = (
             self._extract_field_value(raw, "prioritetom")
             or self._extract_field_value(raw, "prioritet")
             or self._extract_field_value(raw, "priority")
         )
+        if clause_tokens.get("priority"):
+            priority_raw = clause_tokens.get("priority")
         due_raw = (
             self._extract_field_value(raw, "deadline-om")
             or self._extract_field_value(raw, "rokom")
@@ -785,11 +986,15 @@ class COOTranslationService:
             or self._extract_field_value(raw, "rok")
             or self._extract_field_value(raw, "deadline")
         )
+        if clause_tokens.get("due"):
+            due_raw = clause_tokens.get("due")
         desc_raw = (
             self._extract_field_value(raw, "opis")
             or self._extract_field_value(raw, "description")
             or self._extract_field_value(raw, "desc")
         )
+        if clause_tokens.get("description"):
+            desc_raw = clause_tokens.get("description")
 
         goal_rel = (
             self._extract_field_value(raw, "goal_id")
@@ -808,39 +1013,22 @@ class COOTranslationService:
             if isinstance(priority_raw, str)
             else None
         )
-        due = due_raw.strip() if isinstance(due_raw, str) and due_raw.strip() else None
+        due = None
+        if isinstance(due_raw, str) and due_raw.strip():
+            from services.date_parse import DEFAULT_DATE_POLICY, parse_date  # noqa: PLC0415
+
+            res = parse_date(due_raw.strip(), DEFAULT_DATE_POLICY, date.today)
+            due = res.iso
         description = (
             desc_raw.strip() if isinstance(desc_raw, str) and desc_raw.strip() else None
         )
 
-        cleaned = raw
-        cleaned = self._strip_kv_segments(
-            cleaned,
-            keys=[
-                "name",
-                "naziv",
-                "ime",
-                "title",
-                "statusom",
-                "status",
-                "prioritetom",
-                "prioritet",
-                "priority",
-                "deadline-om",
-                "rokom",
-                "due date",
-                "duedate",
-                "due",
-                "rok",
-                "deadline",
-                "opis",
-                "description",
-                "desc",
-                "goal",
-                "goal_id",
-                "subgoal_id",
-            ],
+        cleaned = (
+            title_explicit.strip()
+            if isinstance(title_explicit, str) and title_explicit.strip()
+            else title_prefix
         )
+        cleaned = cleaned.strip() if isinstance(cleaned, str) else ""
 
         if entity == "goal":
             cleaned = re.sub(
