@@ -2909,6 +2909,79 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             except Exception:
                 pass
 
+        # Phase 1b: Deterministic SSOT task query interception (no LLM).
+        # Covers task questions beyond show/list, e.g. "Da li imamo zadatke za danas?".
+        # Must be pre-routing: do not call agents when we can answer from SSOT snapshot.
+        try:
+            from services.ssot_task_query_engine import (  # noqa: PLC0415
+                classify_task_query,
+                render_task_query_answer,
+                run_task_query,
+            )
+
+            _snap_q = ks_for_gp if isinstance(ks_for_gp, dict) else {}
+            if bool(_snap_q.get("ready") is True):
+                qtype = classify_task_query(prompt)
+                if qtype in {
+                    "all",
+                    "today",
+                    "tomorrow",
+                    "overdue",
+                    "by_status",
+                    "by_priority",
+                    "default",
+                }:
+                    res = run_task_query(snapshot=_snap_q, user_message=prompt)
+                    txt_out = render_task_query_answer(res)
+                    _det_tr2 = {
+                        "intent": "ssot_task_query",
+                        "query_type": res.query_type,
+                        "exit_path": "deterministic_ssot_task_query",
+                        "stats": res.stats,
+                    }
+                    _det_grounding2 = _grounding_bundle(
+                        prompt=prompt,
+                        knowledge_snapshot=ks_for_gp,
+                        memory_snapshot=mem_snapshot,
+                        legacy_trace=_det_tr2,
+                        agent_id="ceo_advisor",
+                    )
+                    _det_content2: Dict[str, Any] = {
+                        "text": txt_out,
+                        "proposed_commands": [],
+                        "agent_id": "ceo_advisor",
+                        "read_only": True,
+                        "notion_ops": {
+                            "armed": False,
+                            "armed_at": None,
+                            "session_id": session_id,
+                            "armed_state": {},
+                        },
+                    }
+                    if debug_on:
+                        _det_content2["trace"] = _det_tr2
+                        _det_content2.update(kb)
+                        _det_content2.update(_det_grounding2)
+
+                    _det_content2 = _attach_and_log_audit(
+                        _det_content2,
+                        session_id=session_id,
+                        conversation_id=conversation_id,
+                        agent_id="ceo_advisor",
+                        snapshot=ks_for_gp,
+                        trace=_det_tr2,
+                        grounding=_det_grounding2,
+                        debug_on=bool(debug_on),
+                        exit_path="ceo_chat.deterministic_ssot.task_query",
+                        targeted_reads=targeted_reads_info,
+                    )
+                    return JSONResponse(
+                        content=_attach_session_id(_det_content2, session_id)
+                    )
+        except Exception:
+            # Fail-soft: never block normal chat routing.
+            pass
+
         # Build a first grounding pack early so the agent can cite KB ids deterministically.
         pre_grounding = _grounding_bundle(
             prompt=prompt,
