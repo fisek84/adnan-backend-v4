@@ -73,6 +73,12 @@ def test_task_question_today_intercepted_and_filtered(monkeypatch):
     # Must be the SSOT task query engine view.
     assert "TASKS (today)" in txt or "tasks (today)" in txt.lower()
 
+    # User-facing text must be clean (no SSOT meta header).
+    assert "SSOT:" not in txt
+
+    # Compact mode: must not show upcoming block.
+    assert "Sljedeća 3" not in txt
+
     # Must include today task and exclude tomorrow task.
     assert "Danasnji task" in txt
     assert "Sutrasnji task" not in txt

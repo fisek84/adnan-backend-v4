@@ -243,7 +243,7 @@ def classify_task_query(user_message: str) -> str:
         return "none"
 
     if re.search(r"(?i)\b(svi|sve)\b.*\b(task|zadat|zadac)\w*\b", t) or re.search(
-        r"(?i)\b(prikazi|poka(z|ž)i|listaj)\b.*\b(sve|svi)\b", t
+        r"(?i)\b(prikazi|poka(z|ž)i|(?:iz)?listaj)\b.*\b(sve|svi)\b", t
     ):
         return "all"
 
@@ -264,7 +264,7 @@ def classify_task_query(user_message: str) -> str:
 
     # Default task listing/state question.
     if re.search(r"(?i)\b(koji|koje)\b.*\b(task|zadat|zadac)\w*\b", t) or re.search(
-        r"(?i)\b(prikazi|poka(z|ž)i|navedi|lista(j)?)\b.*\b(task|zadat|zadac)\w*\b",
+        r"(?i)\b(prikazi|poka(z|ž)i|navedi|lista(j)?|(?:iz)?listaj)\b.*\b(task|zadat|zadac)\w*\b",
         t,
     ):
         return "default"
@@ -369,7 +369,8 @@ def run_task_query(
                 if _normalize_status(_pick_str(t.get("priority"), default="")) == wanted
             ]
     elif query_type == "default":
-        filtered = list(tasks_norm[:5])
+        # DATA-only: return full data; presentation decides compact vs full.
+        filtered = list(tasks_norm)
 
     # Stable ordering for time-based views.
     def _sort_key(it: Dict[str, Any]) -> Tuple[int, str, str]:
@@ -381,9 +382,6 @@ def run_task_query(
         "today",
         "tomorrow",
         "overdue",
-        "all",
-        "by_status",
-        "by_priority",
     }:
         filtered = sorted(filtered, key=_sort_key)
 
@@ -393,6 +391,7 @@ def run_task_query(
     stats: Dict[str, Any] = {
         "snapshot_tasks_count": int(len(tasks_norm)),
         "snapshot_goals_count": int(len(goals_norm)),
+        "filtered_count": int(len(filtered)),
         "counts_by_status": counts,
         "linked_to_goals_count": int(linked),
         "unlinked_count": int(unlinked),
@@ -409,76 +408,156 @@ def run_task_query(
     )
 
 
-def render_task_query_answer(res: SSOTQueryResult) -> str:
-    snapshot_tasks_count = int(res.stats.get("snapshot_tasks_count") or 0)
-    last_sync = _pick_str(res.stats.get("last_sync"), default="-")
+def _format_task_line(i: int, t: Dict[str, Any]) -> str:
+    title = _pick_str(t.get("title"))
+    status = _pick_str(t.get("status"))
+    due = _pick_str(t.get("due"))
+    priority = _pick_str(t.get("priority"))
+    goal_title = _pick_str(t.get("goal_title"))
+    return f"{i}) {title} | {status} | {due} | {priority} | {goal_title}"
 
-    lines: List[str] = [
-        f"SSOT: kontekst={snapshot_tasks_count}, last_sync={last_sync}",
-        "",
-    ]
 
-    qt = res.query_type
+def _upcoming_tasks(
+    *,
+    tasks: List[Dict[str, Any]],
+    today: date,
+    limit: int = 3,
+) -> List[Dict[str, Any]]:
+    upcoming: List[Dict[str, Any]] = []
+    for t in tasks:
+        d = _parse_iso_date(_pick_str(t.get("due"), default=""))
+        if d is None:
+            continue
+        if d <= today:
+            continue
+        if _is_completed_status(_pick_str(t.get("status"), default="")):
+            continue
+        upcoming.append(t)
 
-    if qt == "today" and not res.filtered_tasks:
-        lines.append("Nema taskova za danas.")
-        today = _parse_iso_date(_pick_str(res.stats.get("today"), default=""))
-        today = today or date.today()
+    upcoming = sorted(
+        upcoming,
+        key=lambda it: (
+            _parse_iso_date(_pick_str(it.get("due"), default="")) or date.max,
+            _pick_str(it.get("title")),
+        ),
+    )
+    return upcoming[: max(0, int(limit))]
 
-        upcoming: List[Dict[str, Any]] = []
-        for t in res.all_tasks:
-            d = _parse_iso_date(_pick_str(t.get("due"), default=""))
-            if d is None:
-                continue
-            if d <= today:
-                continue
-            if _is_completed_status(_pick_str(t.get("status"), default="")):
-                continue
-            upcoming.append(t)
 
-        upcoming = sorted(
-            upcoming,
-            key=lambda it: (
-                _parse_iso_date(_pick_str(it.get("due"), default="")) or date.max,
-                _pick_str(it.get("title")),
-            ),
-        )
+def render_task_query_answer(
+    res: SSOTQueryResult,
+    *,
+    debug: bool = False,
+    render_mode: str = "compact",
+    page: int = 1,
+    page_size: int = 20,
+) -> str:
+    """Render a user-facing task answer.
 
-        lines.append("")
-        lines.append("Sljedeća 3 nadolazeća taska:")
-        for i, t in enumerate(upcoming[:3], start=1):
-            title = _pick_str(t.get("title"))
-            status = _pick_str(t.get("status"))
-            due = _pick_str(t.get("due"))
-            priority = _pick_str(t.get("priority"))
-            goal_title = _pick_str(t.get("goal_title"))
-            lines.append(f"{i}) {title} | {status} | {due} | {priority} | {goal_title}")
+    Contract:
+      - Normal user text must be clean: no SSOT meta header lines.
+      - SSOT meta remains available in `res.stats` (caller can attach to trace).
+      - render_mode:
+          - compact (default): no upcoming; default queries show top 5
+          - full: paged/capped list with continuation hint
+          - next_upcoming_on_empty: only show upcoming when today list is empty
+          - upcoming: show next 1–3 upcoming when user explicitly asks
 
+    debug flag is reserved for callers; preferred place for meta is trace.
+    """
+
+    _ = bool(debug)  # keep param for forward-compat; do not inject meta into text.
+
+    qt = (res.query_type or "").strip() or "default"
+    mode = (render_mode or "compact").strip().lower()
+    if mode not in {"compact", "full", "next_upcoming_on_empty", "upcoming"}:
+        mode = "compact"
+
+    # Compute today's date used for upcoming.
+    today_iso = _pick_str(res.stats.get("today"), default="")
+    today_d = _parse_iso_date(today_iso) or date.today()
+
+    if mode == "upcoming":
+        up = _upcoming_tasks(tasks=res.all_tasks, today=today_d, limit=3)
+        if not up:
+            return "Nema nadolazećih taskova."
+        lines = ["TASKS (upcoming)"]
+        for i, t in enumerate(up, start=1):
+            lines.append(_format_task_line(i, t))
         return "\n".join(lines).strip()
 
-    if qt == "all":
-        lines.append("TASKS (all)")
-    elif qt == "default":
-        lines.append("TASKS (top 5)")
-    elif qt == "overdue":
-        lines.append("TASKS (overdue)")
-    elif qt == "today":
-        lines.append("TASKS (today)")
-    elif qt == "tomorrow":
-        lines.append("TASKS (tomorrow)")
-    elif qt == "by_status":
-        lines.append("TASKS (by status)")
-    elif qt == "by_priority":
-        lines.append("TASKS (by priority)")
-    else:
-        lines.append("TASKS")
+    if qt == "today" and not res.filtered_tasks:
+        # Compact: only say there are none.
+        if mode == "compact":
+            return "Nema taskova za danas."
 
-    for i, t in enumerate(res.filtered_tasks, start=1):
-        title = _pick_str(t.get("title"))
-        status = _pick_str(t.get("status"))
-        due = _pick_str(t.get("due"))
-        priority = _pick_str(t.get("priority"))
-        goal_title = _pick_str(t.get("goal_title"))
-        lines.append(f"{i}) {title} | {status} | {due} | {priority} | {goal_title}")
+        # next_upcoming_on_empty: show 1–3 upcoming only when today is empty.
+        if mode == "next_upcoming_on_empty":
+            up = _upcoming_tasks(tasks=res.all_tasks, today=today_d, limit=3)
+            lines = ["Nema taskova za danas."]
+            if up:
+                lines.append("")
+                lines.append("Sljedeća 3 nadolazeća taska:")
+                for i, t in enumerate(up, start=1):
+                    lines.append(_format_task_line(i, t))
+            return "\n".join(lines).strip()
+
+        # full: still empty for today.
+        if mode == "full":
+            return "Nema taskova za danas."
+
+    header = "TASKS"
+    if qt == "all":
+        header = "TASKS (all)"
+    elif qt == "default":
+        header = "TASKS"
+    elif qt == "overdue":
+        header = "TASKS (overdue)"
+    elif qt == "today":
+        header = "TASKS (today)"
+    elif qt == "tomorrow":
+        header = "TASKS (tomorrow)"
+    elif qt == "by_status":
+        header = "TASKS (by status)"
+    elif qt == "by_priority":
+        header = "TASKS (by priority)"
+
+    tasks = res.filtered_tasks if isinstance(res.filtered_tasks, list) else []
+
+    # Compact: preserve existing "top 5" behavior for default queries only.
+    if mode == "compact" and qt == "default":
+        tasks = list(tasks[:5])
+
+    # Full: page/cap (render-only, does not change data).
+    shown_from = 0
+    shown_to = len(tasks)
+    total = len(tasks)
+    if mode == "full":
+        p = int(page) if isinstance(page, int) else 1
+        p = 1 if p < 1 else p
+        ps = int(page_size) if isinstance(page_size, int) else 20
+        ps = 20 if ps <= 0 else min(ps, 200)
+        start = (p - 1) * ps
+        end = start + ps
+        shown_from = start
+        shown_to = min(end, total)
+        tasks = list(tasks[start:end])
+
+    if not tasks:
+        return "Nema taskova."
+
+    lines = [header]
+    for i, t in enumerate(tasks, start=1 + shown_from):
+        lines.append(_format_task_line(i, t))
+
+    if mode == "full":
+        if shown_to < total:
+            lines.append("")
+            lines.append(
+                f"Prikazano {shown_to} od {total}; reci 'nastavi' za sljedeću stranicu."
+            )
+        else:
+            lines.append("")
+            lines.append(f"Prikazano {shown_to} od {total}.")
 
     return "\n".join(lines).strip()

@@ -117,7 +117,7 @@ def test_chat_task_question_forces_notion_snapshot_in_grounding_used_sources(
     # And with snapshot tasks present, must not claim empty.
     txt = str(body.get("text") or "")
     t = txt.lower()
-    assert "tasks (top 5)" in t
+    assert "tasks" in t
     assert "t1" in t
     assert "t2" in t
     assert "t3" in t
@@ -399,8 +399,8 @@ def test_task_query_engine_all_tasks_returns_more_than_top5(monkeypatch):
 
     txt = str(r.json().get("text") or "")
     t = txt.lower()
-    assert "ssot:" in t
-    assert "kontekst=7" in t
+    # Enterprise UX: user-facing text must be clean (no SSOT meta headers).
+    assert "ssot:" not in t
     assert "tasks (all)" in t
     for x in ("t1", "t2", "t3", "t4", "t5", "t6", "t7"):
         assert x in t

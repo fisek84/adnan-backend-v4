@@ -5747,7 +5747,11 @@ async def create_ceo_advisor_agent(
                     snapshot=raw_snapshot,
                     user_message=base_text,
                 )
-                text_out = render_task_query_answer(res)
+                text_out = render_task_query_answer(
+                    res,
+                    debug=False,
+                    render_mode="compact",
+                )
                 return _final(
                     AgentOutput(
                         text=text_out,

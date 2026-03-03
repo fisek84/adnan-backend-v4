@@ -2838,32 +2838,67 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
 
         # Phase 1: Deterministic show/list goals+tasks path (no LLM).
         # If snapshot is ready and has goals or tasks, return summary directly.
+        # Phase 1: Deterministic show/list goals+tasks path (no LLM).
+        # If snapshot is ready and has goals or tasks, return summary directly.
+        # Exception: bypass for explicit “show all tasks” / “upcoming tasks” so the
+        # SSOT task query engine can render full/upcoming modes.
         if _is_show_goals_tasks_intent(prompt):
             try:
-                _snap_det = ks_for_gp if isinstance(ks_for_gp, dict) else {}
-                if bool(_snap_det.get("ready") is True):
-                    _pl_det = (
-                        _snap_det.get("payload")
-                        if isinstance(_snap_det.get("payload"), dict)
-                        else _snap_det
+
+                def _norm_bhs_ascii(text: str) -> str:
+                    t = (text or "").strip().lower()
+                    return (
+                        t.replace("č", "c")
+                        .replace("ć", "c")
+                        .replace("š", "s")
+                        .replace("đ", "dj")
+                        .replace("ž", "z")
                     )
-                    _pl_det = _pl_det if isinstance(_pl_det, dict) else {}
-                    _goals_det = (
-                        _pl_det.get("goals")
-                        if isinstance(_pl_det.get("goals"), list)
-                        else []
+
+                t0 = _norm_bhs_ascii(prompt)
+                has_task = bool(
+                    re.search(r"(?i)\b(task|taskovi|zadat|zadaci|zadatke)\b", t0)
+                )
+                wants_full = bool(
+                    re.search(
+                        r"(?i)\b(pokazi\s+sve|prikazi\s+sve|izlistaj\s+sve|kompletno|all)\b",
+                        t0,
                     )
-                    _tasks_det = (
-                        _pl_det.get("tasks")
-                        if isinstance(_pl_det.get("tasks"), list)
-                        else []
+                )
+                wants_upcoming = bool(
+                    re.search(
+                        r"(?i)\b(sl(j|j)e(de|d)e(c|ce)|naredn|upcoming)\b",
+                        t0,
                     )
-                    if (
-                        isinstance(_goals_det, list)
-                        and isinstance(_tasks_det, list)
-                        and (_goals_det or _tasks_det)
-                    ):
-                        _det_text = _render_snapshot_summary(_goals_det, _tasks_det)
+                )
+
+                bypass_for_task_mode = bool(has_task and (wants_full or wants_upcoming))
+
+                if not bypass_for_task_mode:
+                    _snap_det = ks_for_gp if isinstance(ks_for_gp, dict) else {}
+                    if bool(_snap_det.get("ready") is True):
+                        _pl_det = (
+                            _snap_det.get("payload")
+                            if isinstance(_snap_det.get("payload"), dict)
+                            else _snap_det
+                        )
+                        _pl_det = _pl_det if isinstance(_pl_det, dict) else {}
+                        _goals_det = (
+                            _pl_det.get("goals")
+                            if isinstance(_pl_det.get("goals"), list)
+                            else []
+                        )
+                        _tasks_det = (
+                            _pl_det.get("tasks")
+                            if isinstance(_pl_det.get("tasks"), list)
+                            else []
+                        )
+                        if (
+                            isinstance(_goals_det, list)
+                            and isinstance(_tasks_det, list)
+                            and (_goals_det or _tasks_det)
+                        ):
+                            _det_text = _render_snapshot_summary(_goals_det, _tasks_det)
                         _det_tr = {
                             "intent": "show_goals_tasks",
                             "exit_path": "deterministic_ssot",
@@ -2932,7 +2967,49 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                     "default",
                 }:
                     res = run_task_query(snapshot=_snap_q, user_message=prompt)
-                    txt_out = render_task_query_answer(res)
+
+                    def _norm_bhs_ascii(text: str) -> str:
+                        t = (text or "").strip().lower()
+                        return (
+                            t.replace("č", "c")
+                            .replace("ć", "c")
+                            .replace("š", "s")
+                            .replace("đ", "dj")
+                            .replace("ž", "z")
+                        )
+
+                    t0 = _norm_bhs_ascii(prompt)
+                    wants_full = bool(
+                        re.search(
+                            r"(?i)\b(pokazi\s+sve|poka(z|z)i\s+sve|izlistaj\s+sve|kompletno|all)\b",
+                            t0,
+                        )
+                        and re.search(
+                            r"(?i)\b(task|taskovi|zadat|zadaci|zadatke)\b", t0
+                        )
+                    )
+
+                    wants_upcoming = bool(
+                        re.search(
+                            r"(?i)\b(sl(j|j)e(de|d)e(c|ce)|naredn|upcoming)\b",
+                            t0,
+                        )
+                        and re.search(
+                            r"(?i)\b(task|taskovi|zadat|zadaci|zadatke)\b", t0
+                        )
+                    )
+
+                    render_mode = "compact"
+                    if wants_full:
+                        render_mode = "full"
+                    elif wants_upcoming:
+                        render_mode = "upcoming"
+
+                    txt_out = render_task_query_answer(
+                        res,
+                        debug=False,
+                        render_mode=render_mode,
+                    )
                     _det_tr2 = {
                         "intent": "ssot_task_query",
                         "query_type": res.query_type,

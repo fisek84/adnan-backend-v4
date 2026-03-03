@@ -7,7 +7,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from models.ai_command import AICommand
@@ -1069,35 +1069,16 @@ class COOTranslationService:
         if not isinstance(value, str) or not value.strip():
             return None
 
-        v = value.strip()
+        from services.date_parse import DateParsingPolicy, parse_date  # noqa: PLC0415
 
-        lv = v.lower()
-        now = datetime.utcnow().date()
-        if lv in ("danas", "today"):
-            return now.strftime("%Y-%m-%d")
-        if lv in ("sutra", "tomorrow"):
-            return (now + timedelta(days=1)).strftime("%Y-%m-%d")
-        if lv in ("prekosutra",):
-            return (now + timedelta(days=2)).strftime("%Y-%m-%d")
-
-        m = re.match(r"^(\d{4})[-/](\d{2})[-/](\d{2})$", v)
-        if m:
-            y, mo, d = m.group(1), m.group(2), m.group(3)
-            return f"{y}-{mo}-{d}"
-
-        m = re.match(r"^(\d{2})\.(\d{2})\.(\d{4})\.?$", v)
-        if m:
-            d, mo, y = m.group(1), m.group(2), m.group(3)
-            return f"{y}-{mo}-{d}"
-
-        for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%d.%m.%Y"):
-            try:
-                dt = datetime.strptime(v, fmt)
-                return dt.strftime("%Y-%m-%d")
-            except Exception:
-                continue
-
-        return None
+        res = parse_date(
+            value,
+            policy=DateParsingPolicy(),
+            now_provider=lambda: datetime.utcnow().date(),
+        )
+        # Keep existing public behavior: return only ISO or None.
+        # Issues are available in `res.issues` for optional logging/auditing by callers.
+        return res.iso
 
     @staticmethod
     def _looks_like_question(text: str) -> bool:
