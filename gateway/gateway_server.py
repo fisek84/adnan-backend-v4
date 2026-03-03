@@ -1828,9 +1828,77 @@ def _unwrap_proposal_wrapper_or_raise(
         if isinstance(hint_intent, str) and hint_intent.strip():
             hi = hint_intent.strip().lower()
             if hi in {"create_task", "create_goal", "create_project", "create_page"}:
+                from datetime import date as _date  # noqa: PLC0415
+                from services.date_parse import (  # noqa: PLC0415
+                    DEFAULT_DATE_POLICY,
+                    parse_date,
+                )
+
+                def _sanitize_prompt_dates(text: str) -> str:
+                    s = (text or "").strip()
+                    if not s:
+                        return s
+                    # Only target dotted/slashed short date tokens (e.g. 3.3.26, 03.04.2026, 3/3/26).
+                    token_re = re.compile(r"\b\d{1,2}[./]\d{1,2}[./]\d{2,4}\b")
+
+                    def _repl(m: re.Match[str]) -> str:
+                        tok = (m.group(0) or "").strip()
+                        if not tok:
+                            return ""
+                        try:
+                            res0 = parse_date(tok, DEFAULT_DATE_POLICY, _date.today)
+                            iso0 = getattr(res0, "iso", None)
+                            return str(iso0) if isinstance(iso0, str) and iso0 else ""
+                        except Exception:
+                            return ""
+
+                    out = token_re.sub(_repl, s)
+                    out = re.sub(r"\s+", " ", out).strip()
+                    out = re.sub(r"\s*,\s*", ", ", out).strip(" ,")
+                    return out
+
+                def _sanitize_wrapper_patch_dates(
+                    patch: Dict[str, Any],
+                ) -> Dict[str, Any]:
+                    if not isinstance(patch, dict) or not patch:
+                        return patch
+                    outp = dict(patch)
+                    date_key_re = re.compile(r"(?i)\b(deadline|due\s*date|date|rok)\b")
+                    for k, v in list(outp.items()):
+                        if not isinstance(k, str) or not date_key_re.search(k):
+                            continue
+                        if not isinstance(v, str) or not v.strip():
+                            continue
+                        raw_v = v.strip()
+                        # If the value contains extra text, try to isolate a date token.
+                        m = re.search(r"\b\d{1,2}[./]\d{1,2}[./]\d{2,4}\b", raw_v)
+                        cand = (m.group(0) if m else raw_v).strip()
+                        try:
+                            res1 = parse_date(cand, DEFAULT_DATE_POLICY, _date.today)
+                            iso1 = getattr(res1, "iso", None)
+                            if isinstance(iso1, str) and iso1:
+                                outp[k] = iso1
+                            else:
+                                outp.pop(k, None)
+                        except Exception:
+                            outp.pop(k, None)
+                    return outp
+
                 raw_prompt = prompt.strip()
+                wrapper_prompt = _sanitize_prompt_dates(raw_prompt)
                 norm_prompt = normalize_prompt_for_property_parse(raw_prompt)
                 title = strip_prefixes_for_title(norm_prompt)
+                # Fast-path safety: also cut off property clauses when they appear
+                # after sentence punctuation (e.g. "Title. Deadline 3.3.26").
+                m_title_cut = re.search(
+                    r"(?i)(?:[,;\.]|\s{2,})\s*(status|priority|deadline|due\s+date)\b",
+                    title or "",
+                )
+                if m_title_cut:
+                    title = (
+                        (title or "")[: m_title_cut.start()].strip().rstrip(",;:. -–—")
+                    )
+                title = _sanitize_prompt_dates(title)
                 if title:
                     # create_page uses property_specs, while create_* uses structured params.
                     extra_params: Dict[str, Any]
@@ -1901,11 +1969,24 @@ def _unwrap_proposal_wrapper_or_raise(
                                     {"type": "select", "name": prio.strip()},
                                 )
                             if isinstance(deadline, str) and deadline.strip():
-                                # Prefer Due Date for tasks; schema-backed fill will reconcile.
-                                ps.setdefault(
-                                    "Due Date",
-                                    {"type": "date", "start": deadline.strip()},
+                                deadline_raw = deadline.strip()
+                                m = re.search(
+                                    r"\b\d{1,2}[./]\d{1,2}[./]\d{2,4}\b",
+                                    deadline_raw,
                                 )
+                                deadline_token = (
+                                    m.group(0) if m else deadline_raw
+                                ).strip()
+                                res = parse_date(
+                                    deadline_token, DEFAULT_DATE_POLICY, _date.today
+                                )
+                                iso = getattr(res, "iso", None)
+                                if iso:
+                                    # Prefer Due Date for tasks; schema-backed fill will reconcile.
+                                    ps.setdefault(
+                                        "Due Date",
+                                        {"type": "date", "start": iso},
+                                    )
                             if isinstance(assignees, list) and assignees:
                                 # Store as wrapper_patch to resolve by schema (people/multi_select/etc)
                                 wrapper_patch.setdefault(
@@ -1917,9 +1998,32 @@ def _unwrap_proposal_wrapper_or_raise(
                             if isinstance(status, str) and status.strip():
                                 extra_params.setdefault("status", status.strip())
                             if isinstance(deadline, str) and deadline.strip():
-                                extra_params.setdefault("deadline", deadline.strip())
+                                deadline_raw = deadline.strip()
+                                m = re.search(
+                                    r"\b\d{1,2}[./]\d{1,2}[./]\d{2,4}\b",
+                                    deadline_raw,
+                                )
+                                deadline_token = (
+                                    m.group(0) if m else deadline_raw
+                                ).strip()
+                                res = parse_date(
+                                    deadline_token, DEFAULT_DATE_POLICY, _date.today
+                                )
+                                iso = getattr(res, "iso", None)
+                                if isinstance(iso, str) and iso:
+                                    extra_params.setdefault("deadline", iso)
                             if isinstance(assignees, list) and assignees:
                                 extra_params.setdefault("assignees", assignees)
+
+                    wrapper_patch_s = (
+                        _sanitize_wrapper_patch_dates(wrapper_patch)
+                        if isinstance(wrapper_patch, dict)
+                        else wrapper_patch
+                    )
+
+                    md_base = dict(metadata) if isinstance(metadata, dict) else {}
+                    if isinstance(md_base.get("prompt"), str) and md_base.get("prompt"):
+                        md_base["prompt"] = _sanitize_prompt_dates(md_base["prompt"])
 
                     # Preserve relation intent if user specified it by title.
                     if hi == "create_task":
@@ -1949,19 +2053,19 @@ def _unwrap_proposal_wrapper_or_raise(
                         initiator=initiator,
                         validated=True,
                         metadata={
-                            **(metadata if isinstance(metadata, dict) else {}),
+                            **md_base,
                             "canon": "execute_raw_unwrap_intent_hint_fast_path",
                             "endpoint": "/api/execute/raw",
                             "wrapper": {
-                                "prompt": raw_prompt,
-                                "wrapper_patch": wrapper_patch,
+                                "prompt": wrapper_prompt,
+                                "wrapper_patch": wrapper_patch_s,
                             },
                         },
                     )
 
                     try:
-                        if isinstance(ai_command.params, dict) and wrapper_patch:
-                            ai_command.params["wrapper_patch"] = dict(wrapper_patch)
+                        if isinstance(ai_command.params, dict) and wrapper_patch_s:
+                            ai_command.params["wrapper_patch"] = dict(wrapper_patch_s)
                     except Exception:
                         pass
 
