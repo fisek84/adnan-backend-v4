@@ -22,8 +22,9 @@ class DateParsingPolicy:
     """
 
     allow_us_dotted: bool = False
-    allow_ambiguous_dotted_guess: bool = False
-    ambiguous_dotted_assumption: str = "dmy"  # "dmy" or "mdy" when guessing is enabled
+
+
+DEFAULT_DATE_POLICY = DateParsingPolicy()
 
 
 @dataclass(frozen=True)
@@ -36,7 +37,6 @@ class ParseResult:
 
 def parse_date(
     value: str,
-    *,
     policy: DateParsingPolicy,
     now_provider: Callable[[], date],
 ) -> ParseResult:
@@ -96,10 +96,29 @@ def parse_date(
                 kind=DateParseKind.INVALID,
             )
 
-    # Dotted: DD.MM.YYYY or MM.DD.YYYY
-    m = re.match(r"^(\d{2})\.(\d{2})\.(\d{4})\.?$", v)
+    # Dotted: DD.MM.YYYY or MM.DD.YYYY, and EU short year DD.MM.YY
+    m = re.match(r"^(\d{1,2})\.(\d{1,2})\.(\d{2}|\d{4})\.?$", v)
     if m:
-        a, b, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        a, b = int(m.group(1)), int(m.group(2))
+        y_raw = m.group(3)
+        y = int(y_raw)
+        if len(y_raw) == 2:
+            # Deterministic enterprise rule: 2-digit year maps to 2000 + YY.
+            y = 2000 + y
+            try:
+                return ParseResult(
+                    iso=date(y, b, a).isoformat(),
+                    issues=[],
+                    normalized_input=normalized_input,
+                    kind=DateParseKind.ABSOLUTE,
+                )
+            except ValueError:
+                return ParseResult(
+                    iso=None,
+                    issues=["invalid_calendar_date"],
+                    normalized_input=normalized_input,
+                    kind=DateParseKind.INVALID,
+                )
 
         # Clearly EU: day>12 and month<=12
         if a > 12 and b <= 12:
@@ -151,40 +170,14 @@ def parse_date(
                 kind=DateParseKind.INVALID,
             )
 
-        # Ambiguous: both <= 12
+        # Ambiguous: both <= 12. Enterprise contract: NEVER guess.
         if a <= 12 and b <= 12:
-            if not policy.allow_ambiguous_dotted_guess:
-                return ParseResult(
-                    iso=None,
-                    issues=["ambiguous_dotted_date"],
-                    normalized_input=normalized_input,
-                    kind=DateParseKind.AMBIGUOUS,
-                )
-
-            assumption = (policy.ambiguous_dotted_assumption or "dmy").strip().lower()
-            if assumption not in {"dmy", "mdy"}:
-                assumption = "dmy"
-
-            # Keep an issue marker even when guessing is enabled.
-            issues = ["ambiguous_dotted_date"]
-            try:
-                if assumption == "mdy":
-                    iso = date(y, a, b).isoformat()
-                else:
-                    iso = date(y, b, a).isoformat()
-                return ParseResult(
-                    iso=iso,
-                    issues=issues,
-                    normalized_input=normalized_input,
-                    kind=DateParseKind.ABSOLUTE,
-                )
-            except ValueError:
-                return ParseResult(
-                    iso=None,
-                    issues=issues + ["invalid_calendar_date"],
-                    normalized_input=normalized_input,
-                    kind=DateParseKind.INVALID,
-                )
+            return ParseResult(
+                iso=None,
+                issues=["ambiguous_dotted_date"],
+                normalized_input=normalized_input,
+                kind=DateParseKind.AMBIGUOUS,
+            )
 
     return ParseResult(
         iso=None,

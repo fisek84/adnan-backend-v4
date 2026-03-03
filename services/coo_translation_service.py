@@ -7,7 +7,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from models.ai_command import AICommand
@@ -654,7 +654,11 @@ class COOTranslationService:
             }
 
         if fields.due:
-            specs["Deadline"] = {"type": "date", "start": fields.due}
+            from services.date_parse import DEFAULT_DATE_POLICY, parse_date  # noqa: PLC0415
+
+            res = parse_date(fields.due, DEFAULT_DATE_POLICY, date.today)
+            if res.iso:
+                specs["Deadline"] = {"type": "date", "start": res.iso}
 
         if fields.description:
             specs["Description"] = {
@@ -710,7 +714,11 @@ class COOTranslationService:
             }
 
         if fields.due:
-            specs["Due Date"] = {"type": "date", "start": fields.due}
+            from services.date_parse import DEFAULT_DATE_POLICY, parse_date  # noqa: PLC0415
+
+            res = parse_date(fields.due, DEFAULT_DATE_POLICY, date.today)
+            if res.iso:
+                specs["Due Date"] = {"type": "date", "start": res.iso}
 
         if fields.description:
             specs["Description"] = {
@@ -800,7 +808,7 @@ class COOTranslationService:
             if isinstance(priority_raw, str)
             else None
         )
-        due = self._try_parse_date_to_iso(due_raw) if isinstance(due_raw, str) else None
+        due = due_raw.strip() if isinstance(due_raw, str) and due_raw.strip() else None
         description = (
             desc_raw.strip() if isinstance(desc_raw, str) and desc_raw.strip() else None
         )
@@ -1069,12 +1077,10 @@ class COOTranslationService:
         if not isinstance(value, str) or not value.strip():
             return None
 
-        from services.date_parse import DateParsingPolicy, parse_date  # noqa: PLC0415
+        from services.date_parse import DEFAULT_DATE_POLICY, parse_date  # noqa: PLC0415
 
         res = parse_date(
-            value,
-            policy=DateParsingPolicy(),
-            now_provider=lambda: datetime.utcnow().date(),
+            value, DEFAULT_DATE_POLICY, now_provider=lambda: datetime.utcnow().date()
         )
         # Keep existing public behavior: return only ISO or None.
         # Issues are available in `res.issues` for optional logging/auditing by callers.
