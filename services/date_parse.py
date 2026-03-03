@@ -43,7 +43,9 @@ def parse_date(
     raw = value if isinstance(value, str) else ""
     v = raw.strip()
     if not v:
-        return ParseResult(iso=None, issues=[], normalized_input="", kind=DateParseKind.EMPTY)
+        return ParseResult(
+            iso=None, issues=[], normalized_input="", kind=DateParseKind.EMPTY
+        )
 
     normalized_input = v
     lv = v.lower()
