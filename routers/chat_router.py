@@ -3134,10 +3134,82 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                     )
                 payload.metadata = md0  # type: ignore[assignment]
 
-            out = await create_ceo_advisor_agent(
-                payload,
-                ctx_for_agent,
-            )
+            out = None
+
+            # If an AgentRouterService instance is injected, use it for the default path
+            # while forcing ceo_advisor to preserve existing behavior.
+            try:
+                import inspect  # noqa: PLC0415
+
+                can_route = agent_router is not None and callable(
+                    getattr(agent_router, "route", None)
+                )
+
+                if can_route:
+                    try:
+                        # Build a cloned AgentInput for routing so we can attach full ctx
+                        # without mutating the original payload (avoids logging surprises).
+                        dumped = None
+                        try:
+                            dumped = payload.model_dump()  # type: ignore[attr-defined]
+                        except Exception:
+                            dumped = payload.dict()  # type: ignore[attr-defined]
+
+                        dumped = dumped if isinstance(dumped, dict) else {}
+                        md_r = dumped.get("metadata")
+                        md_r = md_r if isinstance(md_r, dict) else {}
+                        md_r = dict(md_r)
+
+                        agent_ctx_r = md_r.get("agent_ctx")
+                        agent_ctx_r = (
+                            agent_ctx_r if isinstance(agent_ctx_r, dict) else {}
+                        )
+                        agent_ctx_r = dict(agent_ctx_r)
+                        _deep_merge_dicts(agent_ctx_r, router_ctx)
+                        md_r["agent_ctx"] = agent_ctx_r
+
+                        dumped["metadata"] = md_r
+                        dumped["preferred_agent_id"] = "ceo_advisor"
+                        payload_for_router = AgentInput(**dumped)
+
+                    except Exception:
+                        # Best-effort fallback: mutate the existing payload in-memory.
+                        payload_for_router = payload
+                        try:
+                            payload_for_router.preferred_agent_id = "ceo_advisor"  # type: ignore[attr-defined]
+                        except Exception:
+                            pass
+
+                        md_r = getattr(payload_for_router, "metadata", None)
+                        md_r = md_r if isinstance(md_r, dict) else {}
+                        md_r = dict(md_r)
+                        agent_ctx_r = md_r.get("agent_ctx")
+                        agent_ctx_r = (
+                            agent_ctx_r if isinstance(agent_ctx_r, dict) else {}
+                        )
+                        agent_ctx_r = dict(agent_ctx_r)
+                        _deep_merge_dicts(agent_ctx_r, router_ctx)
+                        md_r["agent_ctx"] = agent_ctx_r
+                        payload_for_router.metadata = md_r  # type: ignore[assignment]
+
+                    routed = agent_router.route(payload_for_router)
+                    if inspect.isawaitable(routed):
+                        out = await routed
+                    else:
+                        out = routed
+
+                else:
+                    out = await create_ceo_advisor_agent(
+                        payload,
+                        ctx_for_agent,
+                    )
+            except LLMNotConfiguredError:
+                raise
+            except Exception:
+                out = await create_ceo_advisor_agent(
+                    payload,
+                    ctx_for_agent,
+                )
 
             # Ensure /api/chat always returns trace.snapshot + used_sources, even when
             # include_debug is off (minimal trace mode).

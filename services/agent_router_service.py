@@ -179,6 +179,26 @@ class AgentRouterService:
                 )
 
         except Exception as e:  # noqa: BLE001
+            # Preserve legacy HTTP semantics: CEO advisor missing LLM config must bubble
+            # to the caller so /api/chat can return a 500 with error.llm_not_configured.
+            #
+            # Avoid importing `services.ceo_advisor_agent` here since this path can be hit
+            # during module import / circular import scenarios.
+            if (
+                e.__class__.__name__ == "LLMNotConfiguredError"
+                and e.__class__.__module__ == "services.ceo_advisor_agent"
+            ):
+                raise
+
+            # Best-effort isinstance check (safe when imports are already settled).
+            try:
+                from services.ceo_advisor_agent import LLMNotConfiguredError  # noqa: PLC0415
+
+                if isinstance(e, LLMNotConfiguredError):
+                    raise
+            except Exception:
+                pass
+
             out = AgentOutput(
                 text="Agent execution failed.",
                 proposed_commands=[],
@@ -391,6 +411,20 @@ class AgentRouterService:
         return chosen, trace
 
     def _load_callable(self, entrypoint: str) -> AgentCallable:
+        # Back-compat hook:
+        # Many tests and some call sites monkeypatch `routers.chat_router.create_ceo_advisor_agent`.
+        # If SSOT points to the canonical CEO advisor entrypoint, prefer the chat_router symbol
+        # (it normally aliases the same underlying function), so monkeypatching keeps working.
+        if entrypoint == "services.ceo_advisor_agent:create_ceo_advisor_agent":
+            try:
+                import routers.chat_router as chat_router  # noqa: PLC0415
+
+                fn0 = getattr(chat_router, "create_ceo_advisor_agent", None)
+                if callable(fn0):
+                    return fn0  # type: ignore[return-value]
+            except Exception:
+                pass
+
         module_path, fn_name = entrypoint.split(":", 1)
         mod = importlib.import_module(module_path)
         fn = getattr(mod, fn_name, None)

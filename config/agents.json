@@ -98,21 +98,6 @@
       ]
     },
     {
-      "id": "execution_orchestrator",
-      "name": "Execution Orchestrator",
-      "enabled": true,
-      "priority": 80,
-      "entrypoint": "services.execution_orchestrator:ExecutionOrchestrator",
-      "keywords": [
-        "execute",
-        "run",
-        "approval",
-        "workflow",
-        "coordination",
-        "orchestrator"
-      ]
-    },
-    {
       "id": "dept_growth",
       "name": "Department Agent — Growth",
       "enabled": true,
