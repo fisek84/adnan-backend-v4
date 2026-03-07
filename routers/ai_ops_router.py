@@ -724,6 +724,25 @@ async def approve(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[st
         execution_result.setdefault("approval", approval)
         execution_result.setdefault("read_only", False)
 
+        # ------------------------------------------------------------
+        # Delegate-agent UX propagation (no contract expansion)
+        # ------------------------------------------------------------
+        # Many clients render `text` as the primary user-facing output.
+        # delegate_agent_task stores the child output under result.output_text,
+        # so surface it in `text` when missing.
+        try:
+            intent1 = _extract_intent_from_approval(approval)
+            if intent1 == "delegate_agent_task":
+                t0 = execution_result.get("text")
+                if not (isinstance(t0, str) and t0.strip()):
+                    res0 = execution_result.get("result")
+                    if isinstance(res0, dict):
+                        ot0 = res0.get("output_text")
+                        if isinstance(ot0, str) and ot0.strip():
+                            execution_result["text"] = ot0.strip()
+        except Exception:
+            pass
+
         def _extract_batch_operations(er: Dict[str, Any]) -> Optional[list]:
             # Newer shape: top-level failure.result.operations
             failure = er.get("failure")

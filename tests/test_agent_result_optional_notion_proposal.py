@@ -103,6 +103,7 @@ def test_agent_result_without_notion_write(monkeypatch):
     assert isinstance(inner, dict)
     assert inner.get("agent_id") == "agent_x"
     assert inner.get("output_text") == "hello"
+    assert body.get("text") == "hello"
     assert body.get("pending_approval") is None
     assert body.get("pending_next_action") is None
 
