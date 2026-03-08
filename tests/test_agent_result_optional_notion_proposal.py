@@ -175,6 +175,7 @@ def test_agent_result_with_notion_write_returns_pending_next_action(monkeypatch)
                 "agent_id": "agent_x",
                 "task_text": "Please propose Notion task",
             },
+            "metadata": {"explicit_notion_write_request": True},
             "payload_summary": {},
             "initiator": "ceo_chat",
         },
@@ -216,3 +217,86 @@ def test_agent_result_with_notion_write_returns_pending_next_action(monkeypatch)
 
     # The approve/resume path must not execute Notion.
     assert len(notion_calls) == 0
+
+
+def test_agent_result_with_notion_write_is_stripped_without_explicit_request(
+    monkeypatch,
+):
+    """If CEO did not explicitly request a Notion write, do not surface a proposal."""
+
+    monkeypatch.setenv("NOTION_API_KEY", "test-notion-key")
+    monkeypatch.setenv("NOTION_GOALS_DB_ID", "test-goals-db")
+    monkeypatch.setenv("NOTION_TASKS_DB_ID", "test-tasks-db")
+    monkeypatch.setenv("NOTION_PROJECTS_DB_ID", "test-projects-db")
+
+    notion_calls: list[object] = []
+
+    async def _fake_notion_execute(self, command):  # noqa: ANN001
+        notion_calls.append(command)
+        return {"ok": True, "success": True}
+
+    monkeypatch.setattr(
+        "services.notion_ops_agent.NotionOpsAgent.execute",
+        _fake_notion_execute,
+        raising=True,
+    )
+
+    async def _fake_delegate(_cmd):  # noqa: ANN001
+        return {
+            "ok": True,
+            "success": True,
+            "intent": "delegate_agent_task",
+            "result": {
+                "agent_id": "agent_x",
+                "output_text": "Need to write to Notion",
+                "requires_notion_write": True,
+                "notion_proposal": {
+                    "intent": "create_task",
+                    "params": {"title": "Follow up", "priority": "high"},
+                },
+            },
+        }
+
+    monkeypatch.setattr(
+        "services.execution_orchestrator._execute_delegate_agent_task_via_router",
+        _fake_delegate,
+    )
+
+    app = _load_app()
+    client = TestClient(app)
+
+    exec_r = client.post(
+        "/api/execute/raw",
+        json={
+            "command": "delegate_agent_task",
+            "intent": "delegate_agent_task",
+            "params": {
+                "agent_id": "agent_x",
+                "task_text": "Just answer; do NOT write to Notion",
+            },
+            "payload_summary": {},
+            "initiator": "ceo_chat",
+        },
+    )
+    assert exec_r.status_code == 200, exec_r.text
+    approval_id = exec_r.json().get("approval_id")
+    assert isinstance(approval_id, str) and approval_id.strip()
+
+    approve_r = client.post(
+        "/api/ai-ops/approval/approve",
+        headers={"X-Initiator": "ceo_chat"},
+        json={"approval_id": approval_id, "approved_by": "test"},
+    )
+    assert approve_r.status_code == 200, approve_r.text
+    body = approve_r.json()
+
+    assert body.get("ok") is True
+    assert body.get("pending_next_action") is None
+
+    res = body.get("result")
+    assert isinstance(res, dict)
+    assert res.get("requires_notion_write") is not True
+    assert "notion_proposal" not in res
+
+    # Still no auto-write.
+    assert notion_calls == []

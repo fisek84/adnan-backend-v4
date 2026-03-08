@@ -702,21 +702,58 @@ async def approve(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[st
         try:
             from services.agent_result_normalizer import validate_notion_proposal
 
+            def _explicit_notion_write_requested(appr: Any) -> bool:
+                if not isinstance(appr, dict):
+                    return False
+                ps = appr.get("payload_summary")
+                if not isinstance(ps, dict):
+                    return False
+                md = ps.get("metadata")
+                if not isinstance(md, dict):
+                    return False
+
+                for k in (
+                    "explicit_notion_write_request",
+                    "request_notion_write",
+                    "allow_notion_write_proposal",
+                    "allow_notion_proposal",
+                ):
+                    v = md.get(k)
+                    if isinstance(v, bool):
+                        return bool(v)
+                    if isinstance(v, str) and v.strip().lower() in {
+                        "true",
+                        "1",
+                        "yes",
+                        "y",
+                    }:
+                        return True
+
+                return False
+
+            allow_proposal = _explicit_notion_write_requested(approval)
+
             res0 = execution_result.get("result")
             if isinstance(res0, dict) and res0.get("requires_notion_write") is True:
-                proposal0 = res0.get("notion_proposal")
-                if validate_notion_proposal(proposal0) is None and isinstance(
-                    proposal0, dict
-                ):
-                    execution_result["pending_next_action"] = {
-                        "endpoint": "/api/execute/preview",
-                        "command": "notion_write",
-                        "intent": proposal0.get("intent"),
-                        "params": proposal0.get("params")
-                        if isinstance(proposal0.get("params"), dict)
-                        else {},
-                        "read_only": True,
-                    }
+                if not allow_proposal:
+                    # Hard gate: do not surface implicit Notion write proposals unless
+                    # the CEO explicitly requested it for this delegation.
+                    res0["requires_notion_write"] = False
+                    res0.pop("notion_proposal", None)
+                else:
+                    proposal0 = res0.get("notion_proposal")
+                    if validate_notion_proposal(proposal0) is None and isinstance(
+                        proposal0, dict
+                    ):
+                        execution_result["pending_next_action"] = {
+                            "endpoint": "/api/execute/preview",
+                            "command": "notion_write",
+                            "intent": proposal0.get("intent"),
+                            "params": proposal0.get("params")
+                            if isinstance(proposal0.get("params"), dict)
+                            else {},
+                            "read_only": True,
+                        }
         except Exception:
             # Fail-soft: never break approval flow due to optional proposal enrichment.
             pass
