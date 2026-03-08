@@ -58,7 +58,9 @@ def test_snapshot_to_execute_raw_payload_reuses_task_builder_via_preview(monkeyp
     assert isinstance(params.get("task_text"), str)
 
 
-def test_execute_raw_approve_runs_existing_delegate_path_and_no_notion_write(monkeypatch):
+def test_execute_raw_approve_runs_existing_delegate_path_and_no_notion_write(
+    monkeypatch,
+):
     """E2E: execute/raw -> approval -> approve -> delegate execution -> UI contract."""
 
     # Ensure boot doesn't fail in dev shells.

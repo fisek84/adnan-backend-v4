@@ -42,7 +42,9 @@ def build_execute_raw_payload_from_delegate_agent_task_preview(
         "read_only": False,
         "metadata": {
             "canon": "notion_task_delegation_execute_raw_bridge.v1",
-            "source_task": params.get("source_task") if isinstance(params, dict) else None,
+            "source_task": params.get("source_task")
+            if isinstance(params, dict)
+            else None,
         },
     }
 
