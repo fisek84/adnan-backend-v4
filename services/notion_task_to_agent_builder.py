@@ -62,7 +62,9 @@ def _allowed_task_field_keys() -> Set[str]:
 
     specs = allowlist_for_db_key("tasks")
     if specs:
-        _ALLOWED_TASK_OUT_KEYS = {s.out_key for s in specs if getattr(s, "out_key", None)}
+        _ALLOWED_TASK_OUT_KEYS = {
+            s.out_key for s in specs if getattr(s, "out_key", None)
+        }
 
     # Defensive fallback (still consistent with snapshot allowlist contract).
     if not _ALLOWED_TASK_OUT_KEYS:
