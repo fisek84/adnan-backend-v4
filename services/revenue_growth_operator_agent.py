@@ -239,7 +239,10 @@ async def revenue_growth_operator_agent(
             executor = OpenAIResponsesExecutor(model_env=model_env)
             raw = await executor.execute(
                 {
-                    "input": envelope_json,
+                    # Provider contract: when using Responses API with strict JSON output
+                    # (`text.format` = json_object), OpenAI requires the word "json" to
+                    # appear in the request input. Keep this localized to RGO.
+                    "input": f"Return only valid json (a single JSON object).\n\n{envelope_json}",
                     "instructions": _REVENUE_GROWTH_OPERATOR_SYSTEM_PROMPT,
                     "temperature": 0,
                     "allow_tools": False,
