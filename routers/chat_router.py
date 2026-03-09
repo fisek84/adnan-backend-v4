@@ -87,8 +87,80 @@ def _compute_ceo_view(snapshot: Any) -> Dict[str, Any]:
     Source: snapshot.payload.goals / snapshot.payload.tasks (normalized by
     _normalize_snapshot_wrapper, so lists are always present).
     Defensive: prefers item.fields.* for status/due/priority if available.
-    Stable ordering: as-is order from the payload (no expensive sort).
+    Deterministic ordering: rank goals by status urgency + due date (see
+    goals_top3_criteria in returned dict). This avoids "top 3" being interpreted
+    as "most important" while being just the first three in payload order.
     """
+
+    def _norm_ascii(text: str) -> str:
+        t = (text or "").strip().lower()
+        return (
+            t.replace("č", "c")
+            .replace("ć", "c")
+            .replace("š", "s")
+            .replace("đ", "dj")
+            .replace("ž", "z")
+        )
+
+    def _status_bucket(status: str) -> int:
+        s = _norm_ascii(status or "")
+        if any(x in s for x in ("blocked", "blokir", "at risk", "rizik", "stuck")):
+            return 0
+        if any(
+            x in s
+            for x in (
+                "in progress",
+                "u toku",
+                "active",
+                "aktiv",
+                "doing",
+                "ongoing",
+            )
+        ):
+            return 1
+        if any(
+            x in s
+            for x in (
+                "not started",
+                "planned",
+                "plan",
+                "todo",
+                "to do",
+                "backlog",
+            )
+        ):
+            return 2
+        if any(
+            x in s
+            for x in (
+                "done",
+                "completed",
+                "closed",
+                "archived",
+                "cancel",
+                "zavrs",
+                "gotov",
+            )
+        ):
+            return 3
+        return 9
+
+    def _parse_due(due_str: str) -> Optional[datetime]:
+        s = (due_str or "").strip()
+        if not s or s == "-":
+            return None
+        try:
+            # Accept ISO date and datetime. Handle trailing Z.
+            return datetime.fromisoformat(s.replace("Z", "+00:00"))
+        except Exception:
+            pass
+        try:
+            # Best-effort: take YYYY-MM-DD prefix.
+            if len(s) >= 10:
+                return datetime.fromisoformat(s[:10])
+        except Exception:
+            pass
+        return None
 
     def _s(v: Any, default: str = "-") -> str:
         if isinstance(v, str):
@@ -123,8 +195,32 @@ def _compute_ceo_view(snapshot: Any) -> Dict[str, Any]:
     goals_raw = payload.get("goals") if isinstance(payload.get("goals"), list) else []
     tasks_raw = payload.get("tasks") if isinstance(payload.get("tasks"), list) else []
 
+    ranked_goals: List[Dict[str, Any]] = [g for g in goals_raw if isinstance(g, dict)]
+    ranked_goals_with_key: List[tuple] = []
+    for idx, it in enumerate(ranked_goals):
+        f = it.get("fields") if isinstance(it.get("fields"), dict) else {}
+        title0 = _s(it.get("title") or it.get("name") or f.get("title") or f.get("name"))
+        status0 = _s(
+            f.get("status") or f.get("Status") or it.get("status") or it.get("Status")
+        )
+        due0 = _due(f.get("due") or f.get("Due") or it.get("due"))
+        due_dt = _parse_due(due0)
+        ranked_goals_with_key.append(
+            (
+                _status_bucket(status0),
+                1 if due_dt is None else 0,
+                due_dt or datetime.max,
+                _norm_ascii(title0),
+                idx,
+                it,
+            )
+        )
+
+    ranked_goals_with_key.sort(key=lambda x: x[:5])
+
     goals_top3 = []
-    for it in goals_raw[:3]:
+    for _k in ranked_goals_with_key[:3]:
+        it = _k[-1]
         if not isinstance(it, dict):
             continue
         f = it.get("fields") if isinstance(it.get("fields"), dict) else {}
@@ -140,6 +236,14 @@ def _compute_ceo_view(snapshot: Any) -> Dict[str, Any]:
                     or it.get("Status")
                 ),
                 "due": _due(f.get("due") or f.get("Due") or it.get("due")),
+                "owner": _s(
+                    f.get("owner")
+                    or f.get("Owner")
+                    or f.get("assigned_to")
+                    or f.get("Assigned To")
+                    or it.get("owner")
+                    or it.get("assigned_to")
+                ),
             }
         )
 
@@ -148,7 +252,19 @@ def _compute_ceo_view(snapshot: Any) -> Dict[str, Any]:
         if not isinstance(it, dict):
             continue
         f = it.get("fields") if isinstance(it.get("fields"), dict) else {}
-        goal_ids = it.get("goal_ids") or it.get("goalIds") or f.get("goal_ids") or []
+        goal_ids = (
+            it.get("goal_ids")
+            or it.get("goalIds")
+            or it.get("goal_id")
+            or it.get("goal")
+            or f.get("goal_ids")
+            or f.get("goalIds")
+            or f.get("goal_id")
+            or f.get("goal")
+            or []
+        )
+        if isinstance(goal_ids, str) and goal_ids.strip():
+            goal_ids = [goal_ids.strip()]
         tasks_top10.append(
             {
                 "title": _s(
@@ -167,6 +283,14 @@ def _compute_ceo_view(snapshot: Any) -> Dict[str, Any]:
                     or it.get("priority")
                     or it.get("Priority")
                 ),
+                "owner": _s(
+                    f.get("assigned_to")
+                    or f.get("Assigned To")
+                    or f.get("owner")
+                    or f.get("Owner")
+                    or it.get("assigned_to")
+                    or it.get("owner")
+                ),
                 "goal_ids": goal_ids if isinstance(goal_ids, list) else [],
             }
         )
@@ -174,6 +298,7 @@ def _compute_ceo_view(snapshot: Any) -> Dict[str, Any]:
     return {
         "goals_count": len(goals_raw),
         "tasks_count": len(tasks_raw),
+        "goals_top3_criteria": "Deterministic rank: status urgency (blocked/at-risk > in-progress/active > planned/todo > done) then due date (soonest first).",
         "goals_top3": goals_top3,
         "tasks_top10": tasks_top10,
     }
@@ -3057,6 +3182,318 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                     )
         except Exception:
             # Fail-soft: never block normal chat routing.
+            pass
+
+        # Phase 1c: Deterministic goal ownership lookup (no LLM).
+        # Covers questions like: "Ko radi na cilju X?", "Ko je owner cilja X?".
+        # HARD RULES:
+        # - must be strictly snapshot-derived (no guessing)
+        # - must be pre-routing (avoid LLM contradictions)
+        try:
+            _snap_g = ks_for_gp if isinstance(ks_for_gp, dict) else {}
+            if bool(_snap_g.get("ready") is True):
+                t0 = _norm_bhs_ascii(prompt)
+                is_goal_q = bool(
+                    re.search(r"(?i)\b(cilj|goal)\w*\b", t0)
+                    and re.search(
+                        r"(?i)\b(ko|who)\b.*\b(radi|work|owner|vlasnik|odgovor|zaduzen|assigned)\w*\b",
+                        t0,
+                    )
+                )
+
+                def _extract_goal_ref(user_text: str) -> str:
+                    m = re.search(
+                        r'(?i)\b(?:cilj(?:u|a)?|goal)\w*\b\s*[:\-\u2013\u2014]?\s*["\u201c\u201d\']?([^\n\r\?\"]+)',
+                        user_text or "",
+                    )
+                    if not m:
+                        return ""
+                    raw = (m.group(1) or "").strip()
+                    raw = raw.strip(" \t\r\n\"'“”„”.,;:!?")
+                    return raw
+
+                def _people_list(v: Any) -> List[str]:
+                    if v is None:
+                        return []
+                    if isinstance(v, str):
+                        s = v.strip()
+                        return [s] if s else []
+                    if isinstance(v, list):
+                        out: List[str] = []
+                        for it in v:
+                            if isinstance(it, str) and it.strip():
+                                out.append(it.strip())
+                        return out
+                    return []
+
+                def _norm_people(xs: List[str]) -> List[str]:
+                    seen = set()
+                    out: List[str] = []
+                    for x in xs:
+                        k = (x or "").strip()
+                        if not k:
+                            continue
+                        kk = k.lower()
+                        if kk in seen:
+                            continue
+                        seen.add(kk)
+                        out.append(k)
+                    return out
+
+                if is_goal_q:
+                    goal_ref = _extract_goal_ref(prompt)
+                    if goal_ref:
+                        goals = _snapshot_goals_list(_snap_g)
+                        tasks = _snapshot_tasks_list(_snap_g)
+
+                        goal_ref_norm = _norm_bhs_ascii(goal_ref)
+                        candidates: List[Dict[str, Any]] = []
+                        for g in goals:
+                            f = g.get("fields") if isinstance(g.get("fields"), dict) else {}
+                            title = _pick_str(
+                                g.get("title")
+                                or g.get("name")
+                                or f.get("title")
+                                or f.get("name")
+                            )
+                            if goal_ref_norm and goal_ref_norm in _norm_bhs_ascii(title):
+                                candidates.append(g)
+
+                        chosen = None
+                        if len(candidates) == 1:
+                            chosen = candidates[0]
+                        elif len(candidates) > 1:
+                            # Prefer exact match, else deterministic first-by-title.
+                            exact = []
+                            for g in candidates:
+                                f = g.get("fields") if isinstance(g.get("fields"), dict) else {}
+                                title = _pick_str(
+                                    g.get("title")
+                                    or g.get("name")
+                                    or f.get("title")
+                                    or f.get("name")
+                                )
+                                if _norm_bhs_ascii(title) == goal_ref_norm:
+                                    exact.append(g)
+                            if len(exact) == 1:
+                                chosen = exact[0]
+                            else:
+                                candidates_sorted = sorted(
+                                    candidates,
+                                    key=lambda g: _norm_bhs_ascii(
+                                        _pick_str(
+                                            g.get("title")
+                                            or g.get("name")
+                                            or (
+                                                g.get("fields", {}).get("title")
+                                                if isinstance(g.get("fields"), dict)
+                                                else None
+                                            )
+                                            or (
+                                                g.get("fields", {}).get("name")
+                                                if isinstance(g.get("fields"), dict)
+                                                else None
+                                            )
+                                        )
+                                    ),
+                                )
+                                chosen = candidates_sorted[0] if candidates_sorted else None
+
+                        if chosen is None:
+                            txt_out = (
+                                f"Nisam našao cilj '{goal_ref}' u snapshotu. "
+                                "Ako naziv nije tačan, pošalji tačan title cilja iz Goals DB."
+                            )
+                        else:
+                            f = (
+                                chosen.get("fields")
+                                if isinstance(chosen.get("fields"), dict)
+                                else {}
+                            )
+                            goal_title = _pick_str(
+                                chosen.get("title")
+                                or chosen.get("name")
+                                or f.get("title")
+                                or f.get("name")
+                            )
+                            goal_status = _pick_str(
+                                f.get("status")
+                                or f.get("Status")
+                                or chosen.get("status")
+                                or chosen.get("Status")
+                            )
+                            goal_due = _pick_due(
+                                f.get("due") or f.get("Due") or chosen.get("due")
+                            )
+
+                            goal_ids: List[str] = []
+                            for k in ("id", "notion_id", "notionId"):
+                                v = chosen.get(k)
+                                if isinstance(v, str) and v.strip():
+                                    goal_ids.append(v.strip())
+
+                            goal_id_set = set(goal_ids)
+
+                            owners_goal = _norm_people(
+                                _people_list(
+                                    f.get("owner")
+                                    or f.get("Owner")
+                                    or f.get("assigned_to")
+                                    or f.get("Assigned To")
+                                    or chosen.get("owner")
+                                    or chosen.get("assigned_to")
+                                )
+                            )
+
+                            linked_task_people: List[str] = []
+                            linked_tasks = 0
+                            for t in tasks:
+                                if not goal_id_set:
+                                    # Without a stable goal id, we can't safely join tasks -> goal.
+                                    break
+                                tf = t.get("fields") if isinstance(t.get("fields"), dict) else {}
+                                refs = (
+                                    t.get("goal_ids")
+                                    or t.get("goalIds")
+                                    or t.get("goal_id")
+                                    or t.get("goal")
+                                    or tf.get("goal_ids")
+                                    or tf.get("goalIds")
+                                    or tf.get("goal_id")
+                                    or tf.get("goal")
+                                    or []
+                                )
+                                if isinstance(refs, str) and refs.strip():
+                                    refs = [refs.strip()]
+                                if not isinstance(refs, list):
+                                    refs = []
+                                refs_norm = [r.strip() for r in refs if isinstance(r, str) and r.strip()]
+                                if not any(r in goal_id_set for r in refs_norm):
+                                    continue
+                                linked_tasks += 1
+                                linked_task_people.extend(
+                                    _people_list(
+                                        tf.get("assigned_to")
+                                        or tf.get("Assigned To")
+                                        or tf.get("owner")
+                                        or tf.get("Owner")
+                                        or t.get("assigned_to")
+                                        or t.get("owner")
+                                    )
+                                )
+
+                            owners_tasks = _norm_people(linked_task_people)
+
+                            lines: List[str] = [
+                                f"Cilj: {goal_title}",
+                                f"Status: {goal_status} | Rok: {goal_due}",
+                            ]
+                            if owners_goal:
+                                lines.append(f"Owner (cilj): {', '.join(owners_goal)}")
+                            if owners_tasks:
+                                lines.append(
+                                    f"Assigned/Owner (povezani taskovi): {', '.join(owners_tasks)}"
+                                )
+                            if not owners_goal and not owners_tasks:
+                                lines.append(
+                                    "U snapshotu nema owner/assigned_to informacija za ovaj cilj niti za povezane taskove."
+                                )
+                            txt_out = "\n".join(lines).strip()
+
+                        _det_tr3 = {
+                            "intent": "goal_ownership_lookup",
+                            "exit_path": "deterministic_snapshot_goal_ownership",
+                            "goal_ref": goal_ref,
+                        }
+                        _det_grounding3 = _grounding_bundle(
+                            prompt=prompt,
+                            knowledge_snapshot=ks_for_gp,
+                            memory_snapshot=mem_snapshot,
+                            legacy_trace=_det_tr3,
+                            agent_id="ceo_advisor",
+                        )
+                        _det_content3: Dict[str, Any] = {
+                            "text": txt_out,
+                            "proposed_commands": [],
+                            "agent_id": "ceo_advisor",
+                            "read_only": True,
+                            "notion_ops": {
+                                "armed": False,
+                                "armed_at": None,
+                                "session_id": session_id,
+                                "armed_state": {},
+                            },
+                        }
+                        if debug_on:
+                            _det_content3["trace"] = _det_tr3
+                            _det_content3.update(kb)
+                            _det_content3.update(_det_grounding3)
+
+                        _det_content3 = _attach_and_log_audit(
+                            _det_content3,
+                            session_id=session_id,
+                            conversation_id=conversation_id,
+                            agent_id="ceo_advisor",
+                            snapshot=ks_for_gp,
+                            trace=_det_tr3,
+                            grounding=_det_grounding3,
+                            debug_on=bool(debug_on),
+                            exit_path="ceo_chat.deterministic_ssot.goal_ownership",
+                            targeted_reads=targeted_reads_info,
+                        )
+                        return JSONResponse(
+                            content=_attach_session_id(_det_content3, session_id)
+                        )
+                    else:
+                        # If intent matches but goal reference is missing, keep behavior predictable.
+                        # Ask for the exact goal title rather than letting the LLM guess.
+                        txt_out = (
+                            "Za koji cilj? Pošalji naziv cilja (npr. 'Ko radi na cilju: Rast prihoda Q1')."
+                        )
+                        _det_tr3b = {
+                            "intent": "goal_ownership_lookup",
+                            "exit_path": "deterministic_snapshot_goal_ownership",
+                            "goal_ref": None,
+                        }
+                        _det_grounding3b = _grounding_bundle(
+                            prompt=prompt,
+                            knowledge_snapshot=ks_for_gp,
+                            memory_snapshot=mem_snapshot,
+                            legacy_trace=_det_tr3b,
+                            agent_id="ceo_advisor",
+                        )
+                        _det_content3b: Dict[str, Any] = {
+                            "text": txt_out,
+                            "proposed_commands": [],
+                            "agent_id": "ceo_advisor",
+                            "read_only": True,
+                            "notion_ops": {
+                                "armed": False,
+                                "armed_at": None,
+                                "session_id": session_id,
+                                "armed_state": {},
+                            },
+                        }
+                        if debug_on:
+                            _det_content3b["trace"] = _det_tr3b
+                            _det_content3b.update(kb)
+                            _det_content3b.update(_det_grounding3b)
+                        _det_content3b = _attach_and_log_audit(
+                            _det_content3b,
+                            session_id=session_id,
+                            conversation_id=conversation_id,
+                            agent_id="ceo_advisor",
+                            snapshot=ks_for_gp,
+                            trace=_det_tr3b,
+                            grounding=_det_grounding3b,
+                            debug_on=bool(debug_on),
+                            exit_path="ceo_chat.deterministic_ssot.goal_ownership",
+                            targeted_reads=targeted_reads_info,
+                        )
+                        return JSONResponse(
+                            content=_attach_session_id(_det_content3b, session_id)
+                        )
+        except Exception:
             pass
 
         # Build a first grounding pack early so the agent can cite KB ids deterministically.

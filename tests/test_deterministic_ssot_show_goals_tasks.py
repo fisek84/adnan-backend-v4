@@ -149,6 +149,162 @@ def test_show_goals_tasks_bosnian_variants_deterministic(monkeypatch):
         ), f"phrase={phrase!r} leaked 'Nemam SSOT snapshot'"
 
 
+def test_ceo_view_goal_ranking_deterministic():
+    """CEO_VIEW goals_top3 must be deterministically ranked (not first 3 in payload order)."""
+    from routers.chat_router import _compute_ceo_view
+
+    snap = {
+        "ready": True,
+        "status": "fresh",
+        "schema_version": "v1",
+        "payload": {
+            "goals": [
+                # Put a less-urgent goal first to ensure ranking reorders it.
+                {
+                    "id": "gA",
+                    "title": "Low urgency",
+                    "fields": {"status": "Not Started", "due": {"start": "2026-12-31"}},
+                },
+                {
+                    "id": "gB",
+                    "title": "Urgent blocked",
+                    "fields": {"status": "Blocked", "due": {"start": "2026-05-01"}},
+                },
+                {
+                    "id": "gC",
+                    "title": "Active soon",
+                    "fields": {"status": "In Progress", "due": {"start": "2026-03-01"}},
+                },
+                {
+                    "id": "gD",
+                    "title": "Done already",
+                    "fields": {"status": "Done", "due": {"start": "2026-01-01"}},
+                },
+            ],
+            "tasks": [],
+            "projects": [],
+        },
+    }
+
+    view = _compute_ceo_view(snap)
+    titles = [g.get("title") for g in (view.get("goals_top3") or [])]
+
+    assert view.get("goals_top3_criteria"), "criteria metadata must be present"
+
+    # Expected order by urgency bucket then due: Blocked first, then In Progress, then Not Started.
+    assert titles[:3] == ["Urgent blocked", "Active soon", "Low urgency"]
+
+
+def test_goal_ownership_lookup_deterministic_from_snapshot(monkeypatch):
+    """/api/chat must answer 'Ko radi na cilju X' strictly from snapshot without LLM guesses."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
+    monkeypatch.setenv("NOTION_API_KEY", "test-notion-key")
+    monkeypatch.setenv("NOTION_GOALS_DB_ID", "test-goals-db")
+    monkeypatch.setenv("NOTION_TASKS_DB_ID", "test-tasks-db")
+    monkeypatch.setenv("NOTION_PROJECTS_DB_ID", "test-projects-db")
+    monkeypatch.setenv("CEO_NOTION_TARGETED_READS_ENABLED", "false")
+    monkeypatch.setenv("CEO_ADVISOR_FORCE_OFFLINE", "1")
+
+    app = _get_app()
+    client = TestClient(app)
+
+    snap = {
+        "ready": True,
+        "status": "fresh",
+        "schema_version": "v1",
+        "payload": {
+            "goals": [
+                {
+                    "id": "g1",
+                    "title": "Rast prihoda Q1",
+                    "fields": {"status": "In Progress", "owner": ["ceo@example.com"]},
+                }
+            ],
+            "tasks": [
+                {
+                    "id": "t1",
+                    "title": "Istraživanje tržišta",
+                    "fields": {
+                        "status": "In Progress",
+                        "assigned_to": ["owner1@example.com"],
+                        "goal": ["g1"],
+                    },
+                }
+            ],
+            "projects": [],
+        },
+    }
+
+    r = client.post(
+        "/api/chat",
+        json={
+            "message": "Ko radi na cilju Rast prihoda Q1?",
+            "snapshot": snap,
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+
+    assert body.get("read_only") is True
+    txt = body.get("text") or ""
+
+    # Must strictly use snapshot: include owners/assignees when present.
+    assert "ceo@example.com" in txt
+    assert "owner1@example.com" in txt
+    assert "Nemam SSOT snapshot" not in txt
+
+
+def test_goal_ownership_lookup_reports_missing_data_without_guessing(monkeypatch):
+    """If snapshot has no owner/assigned_to for a goal, response must not invent owners."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
+    monkeypatch.setenv("NOTION_API_KEY", "test-notion-key")
+    monkeypatch.setenv("NOTION_GOALS_DB_ID", "test-goals-db")
+    monkeypatch.setenv("NOTION_TASKS_DB_ID", "test-tasks-db")
+    monkeypatch.setenv("NOTION_PROJECTS_DB_ID", "test-projects-db")
+    monkeypatch.setenv("CEO_NOTION_TARGETED_READS_ENABLED", "false")
+    monkeypatch.setenv("CEO_ADVISOR_FORCE_OFFLINE", "1")
+
+    app = _get_app()
+    client = TestClient(app)
+
+    snap = {
+        "ready": True,
+        "status": "fresh",
+        "schema_version": "v1",
+        "payload": {
+            "goals": [
+                {
+                    "id": "g1",
+                    "title": "Cilj bez ownera",
+                    "fields": {"status": "Active"},
+                }
+            ],
+            "tasks": [
+                {
+                    "id": "t1",
+                    "title": "Task bez assignee",
+                    "fields": {"status": "Todo", "goal": ["g1"]},
+                }
+            ],
+            "projects": [],
+        },
+    }
+
+    r = client.post(
+        "/api/chat",
+        json={
+            "message": "Ko radi na cilju: Cilj bez ownera?",
+            "snapshot": snap,
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    txt = body.get("text") or ""
+
+    assert body.get("read_only") is True
+    assert "nema owner/assigned_to" in txt.lower()
+
+
 # ---------------------------------------------------------------------------
 # Phase 2: test_ceo_view_present_in_instructions
 # ---------------------------------------------------------------------------
