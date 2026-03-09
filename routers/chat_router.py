@@ -69,8 +69,24 @@ _SHOW_GOALS_TASKS_RE = re.compile(
     r"|"
     r"\b(?:cilj\w*|goal\w*|task\w*|zadac\w*|zadat\w*)\b"
     r".*\b(?:pokazi|poka\u017ei|prikazi|prika\u017ei|izlistaj|navedi|lista)\b"
+    r"|"
+    # Natural question forms (Bosnian): "Kakve imamo ciljeve?", "Koje ciljeve imamo?"
+    r"\b(?:kakv\w*|koje|koji|sta|\u0161ta)\b\s+\b(?:imamo|su)\b"
+    r".*\b(?:cilj\w*|goal\w*|task\w*|zadac\w*|zadat\w*)\b"
     r")"
 )
+
+
+_TOP_GOAL_RE = re.compile(
+    r"(?i)\b(?:najbitnij\w*|najvaznij\w*|najprioritetnij\w*|top)\b.*\b(?:cilj\w*|goal\w*)\b"
+)
+
+
+def _is_top_goal_intent(text: str) -> bool:
+    t = (text or "").strip()
+    if not t:
+        return False
+    return bool(_TOP_GOAL_RE.search(t))
 
 
 def _is_show_goals_tasks_intent(text: str) -> bool:
@@ -1685,19 +1701,9 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             payload = snapshot.get("payload")
             payload = payload if isinstance(payload, dict) else snapshot
 
-            dashboard = payload.get("dashboard") if isinstance(payload, dict) else None
-            dashboard = dashboard if isinstance(dashboard, dict) else {}
-
+            # Canonical SSOT collections live under payload.*.
+            # _normalize_snapshot_wrapper already back-fills payload.* from dashboard.* when needed.
             payload_tasks = payload.get("tasks") if isinstance(payload, dict) else None
-            dash_tasks = dashboard.get("tasks") if isinstance(dashboard, dict) else None
-
-            # Prefer dashboard only when it has data; never let empty dashboard override payload.
-            if isinstance(dash_tasks, list) and len(dash_tasks) > 0:
-                return [t for t in dash_tasks if isinstance(t, dict)]
-            if isinstance(payload_tasks, list) and len(payload_tasks) > 0:
-                return [t for t in payload_tasks if isinstance(t, dict)]
-            if isinstance(dash_tasks, list):
-                return [t for t in dash_tasks if isinstance(t, dict)]
             if isinstance(payload_tasks, list):
                 return [t for t in payload_tasks if isinstance(t, dict)]
             return []
@@ -1779,18 +1785,9 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             payload = snapshot.get("payload")
             payload = payload if isinstance(payload, dict) else snapshot
 
-            dashboard = payload.get("dashboard") if isinstance(payload, dict) else None
-            dashboard = dashboard if isinstance(dashboard, dict) else {}
-
+            # Canonical SSOT collections live under payload.*.
+            # _normalize_snapshot_wrapper already back-fills payload.* from dashboard.* when needed.
             payload_goals = payload.get("goals") if isinstance(payload, dict) else None
-            dash_goals = dashboard.get("goals") if isinstance(dashboard, dict) else None
-
-            if isinstance(dash_goals, list) and len(dash_goals) > 0:
-                return [g for g in dash_goals if isinstance(g, dict)]
-            if isinstance(payload_goals, list) and len(payload_goals) > 0:
-                return [g for g in payload_goals if isinstance(g, dict)]
-            if isinstance(dash_goals, list):
-                return [g for g in dash_goals if isinstance(g, dict)]
             if isinstance(payload_goals, list):
                 return [g for g in payload_goals if isinstance(g, dict)]
             return []
@@ -3144,6 +3141,125 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             except Exception:
                 pass
 
+        # Phase 1a: Deterministic "Najbitniji cilj" (top goal) path (no LLM).
+        # HARD RULES:
+        # - strictly snapshot-derived (no guessing)
+        # - must persist last_referenced_goal_title so follow-ups work
+        if _is_top_goal_intent(prompt):
+            try:
+                _snap_top = ks_for_gp if isinstance(ks_for_gp, dict) else {}
+                if bool(_snap_top.get("ready") is True):
+                    view = _compute_ceo_view(_snap_top)
+                    top3 = view.get("goals_top3") if isinstance(view, dict) else None
+                    top3 = top3 if isinstance(top3, list) else []
+
+                    goal_title = ""
+                    status = "-"
+                    due = "-"
+
+                    if top3 and isinstance(top3[0], dict):
+                        g0 = top3[0]
+                        goal_title = (g0.get("title") or "").strip()
+                        status = (g0.get("status") or "-").strip() or "-"
+                        due = (g0.get("due") or "-").strip() or "-"
+
+                    if goal_title:
+                        txt_out = "\n".join(
+                            [
+                                "Najbitniji cilj (deterministic):",
+                                f"1) {goal_title} | {status} | {due}",
+                            ]
+                        ).strip()
+                    else:
+                        txt_out = "U snapshotu nema ciljeva, pa ne mogu odrediti najbitniji cilj."
+
+                    # Persist bounded multi-turn context even on deterministic exits.
+                    try:
+                        if isinstance(conversation_id, str) and conversation_id.strip():
+                            ConversationStateStore.append_turn(
+                                conversation_id=conversation_id.strip(),
+                                user_text=prompt or "",
+                                assistant_text=txt_out or "",
+                            )
+                    except Exception:
+                        pass
+
+                    # Persist last referenced goal title for follow-ups.
+                    try:
+                        if (
+                            isinstance(conversation_id, str)
+                            and conversation_id.strip()
+                            and isinstance(goal_title, str)
+                            and goal_title.strip()
+                        ):
+                            ConversationStateStore.update_meta(
+                                conversation_id=conversation_id.strip(),
+                                updates={
+                                    "last_referenced_goal_title": goal_title.strip(),
+                                    "last_referenced_goal_title_norm": _norm_bhs_ascii(
+                                        goal_title
+                                    ),
+                                    "last_referenced_goal_source": "deterministic_top_goal",
+                                    "last_referenced_goal_at": float(time.time()),
+                                    "last_shown_goal_titles": [goal_title.strip()],
+                                    "last_shown_goal_titles_at": float(time.time()),
+                                },
+                            )
+                    except Exception:
+                        pass
+
+                    _det_tr_top = {
+                        "intent": "top_goal",
+                        "exit_path": "deterministic_ssot_top_goal",
+                        "goal_title": goal_title,
+                        "criteria": (
+                            view.get("goals_top3_criteria")
+                            if isinstance(view, dict)
+                            else None
+                        ),
+                    }
+                    _det_grounding_top = _grounding_bundle(
+                        prompt=prompt,
+                        knowledge_snapshot=ks_for_gp,
+                        memory_snapshot=mem_snapshot,
+                        legacy_trace=_det_tr_top,
+                        agent_id="ceo_advisor",
+                    )
+                    _det_content_top: Dict[str, Any] = {
+                        "text": txt_out,
+                        "proposed_commands": [],
+                        "agent_id": "ceo_advisor",
+                        "read_only": True,
+                        "notion_ops": {
+                            "armed": False,
+                            "armed_at": None,
+                            "session_id": session_id,
+                            "armed_state": {},
+                        },
+                    }
+                    if debug_on:
+                        _det_content_top["trace"] = _det_tr_top
+                        _det_content_top.update(kb)
+                        _det_content_top.update(_det_grounding_top)
+
+                    _det_content_top = _attach_and_log_audit(
+                        _det_content_top,
+                        session_id=session_id,
+                        conversation_id=conversation_id,
+                        agent_id="ceo_advisor",
+                        snapshot=ks_for_gp,
+                        trace=_det_tr_top,
+                        grounding=_det_grounding_top,
+                        debug_on=bool(debug_on),
+                        exit_path="ceo_chat.deterministic_ssot.top_goal",
+                        targeted_reads=targeted_reads_info,
+                    )
+                    return JSONResponse(
+                        content=_attach_session_id(_det_content_top, session_id)
+                    )
+            except Exception:
+                pass
+
         # Phase 1b: Deterministic SSOT task query interception (no LLM).
         # Covers task questions beyond show/list, e.g. "Da li imamo zadatke za danas?".
         # Must be pre-routing: do not call agents when we can answer from SSOT snapshot.
@@ -3157,6 +3273,36 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             _snap_q = ks_for_gp if isinstance(ks_for_gp, dict) else {}
             if bool(_snap_q.get("ready") is True):
                 qtype = classify_task_query(prompt)
+
+                # Guard: avoid hijacking non-task deliverable prompts that merely
+                # mention a deadline like "Rok: sutra".
+                # This can become order-dependent when other tests or sessions
+                # have populated a ready snapshot with tasks.
+                try:
+                    t0_guard = _norm_bhs_ascii(prompt)
+                    has_task_token = bool(
+                        re.search(r"(?i)\b(task|taskovi|zadat|zadac)\w*\b", t0_guard)
+                    )
+                    has_query_cue = bool(
+                        re.search(
+                            r"(?i)(\?|\b(da\s+li|imamo|koji|koje|sta|shta|prikazi|pokazi|poka(z|z)i|navedi|izlistaj|lista)\b)",
+                            t0_guard,
+                        )
+                    )
+                    looks_like_deadline = bool(
+                        re.search(
+                            r"(?i)\b(rok|deadline|due)\b\s*[:\-]?\s*\b(sutra|tomorrow)\b",
+                            t0_guard,
+                        )
+                    )
+                    if (
+                        looks_like_deadline
+                        and (qtype == "tomorrow")
+                        and not (has_task_token or has_query_cue)
+                    ):
+                        qtype = "none"
+                except Exception:
+                    pass
                 if qtype in {
                     "all",
                     "today",
@@ -3292,6 +3438,11 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                     ):
                         return True
                     if re.search(
+                        r"(?i)\b(koji\s+smo\s+spomenuli|koji\s+smo\s+pomenuli|koji\s+smo\s+spominjali)\b",
+                        t,
+                    ):
+                        return True
+                    if re.search(
                         r"(?i)\b(ovaj|ovom|ovog|ovome|ovo|taj|tom|tog|tome)\b.*\b(cilj|goal)\w*\b",
                         t,
                     ):
@@ -3409,6 +3560,17 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
 
                 if is_goal_q:
                     goal_ref = _extract_goal_ref(prompt)
+                    if (
+                        is_followup_ref
+                        and isinstance(goal_ref, str)
+                        and goal_ref.strip()
+                    ):
+                        grn = _norm_bhs_ascii(goal_ref)
+                        if re.fullmatch(
+                            r"(?i)(ovaj|ovom|ovog|ovome|ovo|taj|tom|tog|tome|koji\s+smo\s+spomenuli|koji\s+smo\s+pomenuli|koji\s+smo\s+spominjali)",
+                            grn.strip(),
+                        ):
+                            goal_ref = ""
                     if not goal_ref and goal_line_title:
                         goal_ref = goal_line_title
                     if not goal_ref and is_followup_ref:
