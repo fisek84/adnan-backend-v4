@@ -199,7 +199,9 @@ def _compute_ceo_view(snapshot: Any) -> Dict[str, Any]:
     ranked_goals_with_key: List[tuple] = []
     for idx, it in enumerate(ranked_goals):
         f = it.get("fields") if isinstance(it.get("fields"), dict) else {}
-        title0 = _s(it.get("title") or it.get("name") or f.get("title") or f.get("name"))
+        title0 = _s(
+            it.get("title") or it.get("name") or f.get("title") or f.get("name")
+        )
         status0 = _s(
             f.get("status") or f.get("Status") or it.get("status") or it.get("Status")
         )
@@ -3249,14 +3251,20 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                         goal_ref_norm = _norm_bhs_ascii(goal_ref)
                         candidates: List[Dict[str, Any]] = []
                         for g in goals:
-                            f = g.get("fields") if isinstance(g.get("fields"), dict) else {}
+                            f = (
+                                g.get("fields")
+                                if isinstance(g.get("fields"), dict)
+                                else {}
+                            )
                             title = _pick_str(
                                 g.get("title")
                                 or g.get("name")
                                 or f.get("title")
                                 or f.get("name")
                             )
-                            if goal_ref_norm and goal_ref_norm in _norm_bhs_ascii(title):
+                            if goal_ref_norm and goal_ref_norm in _norm_bhs_ascii(
+                                title
+                            ):
                                 candidates.append(g)
 
                         chosen = None
@@ -3266,7 +3274,11 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                             # Prefer exact match, else deterministic first-by-title.
                             exact = []
                             for g in candidates:
-                                f = g.get("fields") if isinstance(g.get("fields"), dict) else {}
+                                f = (
+                                    g.get("fields")
+                                    if isinstance(g.get("fields"), dict)
+                                    else {}
+                                )
                                 title = _pick_str(
                                     g.get("title")
                                     or g.get("name")
@@ -3297,7 +3309,9 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                                         )
                                     ),
                                 )
-                                chosen = candidates_sorted[0] if candidates_sorted else None
+                                chosen = (
+                                    candidates_sorted[0] if candidates_sorted else None
+                                )
 
                         if chosen is None:
                             txt_out = (
@@ -3351,7 +3365,11 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                                 if not goal_id_set:
                                     # Without a stable goal id, we can't safely join tasks -> goal.
                                     break
-                                tf = t.get("fields") if isinstance(t.get("fields"), dict) else {}
+                                tf = (
+                                    t.get("fields")
+                                    if isinstance(t.get("fields"), dict)
+                                    else {}
+                                )
                                 refs = (
                                     t.get("goal_ids")
                                     or t.get("goalIds")
@@ -3367,7 +3385,11 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                                     refs = [refs.strip()]
                                 if not isinstance(refs, list):
                                     refs = []
-                                refs_norm = [r.strip() for r in refs if isinstance(r, str) and r.strip()]
+                                refs_norm = [
+                                    r.strip()
+                                    for r in refs
+                                    if isinstance(r, str) and r.strip()
+                                ]
                                 if not any(r in goal_id_set for r in refs_norm):
                                     continue
                                 linked_tasks += 1
@@ -3447,9 +3469,7 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                     else:
                         # If intent matches but goal reference is missing, keep behavior predictable.
                         # Ask for the exact goal title rather than letting the LLM guess.
-                        txt_out = (
-                            "Za koji cilj? Pošalji naziv cilja (npr. 'Ko radi na cilju: Rast prihoda Q1')."
-                        )
+                        txt_out = "Za koji cilj? Pošalji naziv cilja (npr. 'Ko radi na cilju: Rast prihoda Q1')."
                         _det_tr3b = {
                             "intent": "goal_ownership_lookup",
                             "exit_path": "deterministic_snapshot_goal_ownership",
