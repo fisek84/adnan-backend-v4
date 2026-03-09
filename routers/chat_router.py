@@ -3068,7 +3068,10 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
 
                         # Persist bounded multi-turn context even on deterministic exits.
                         try:
-                            if isinstance(conversation_id, str) and conversation_id.strip():
+                            if (
+                                isinstance(conversation_id, str)
+                                and conversation_id.strip()
+                            ):
                                 ConversationStateStore.append_turn(
                                     conversation_id=conversation_id.strip(),
                                     user_text=prompt or "",
@@ -3079,12 +3082,19 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
 
                         # Persist goal titles for follow-up grounding (no guessing).
                         try:
-                            if isinstance(conversation_id, str) and conversation_id.strip():
+                            if (
+                                isinstance(conversation_id, str)
+                                and conversation_id.strip()
+                            ):
 
                                 def _pick_goal_title(it: Any) -> str:
                                     if not isinstance(it, dict):
                                         return ""
-                                    f = it.get("fields") if isinstance(it.get("fields"), dict) else {}
+                                    f = (
+                                        it.get("fields")
+                                        if isinstance(it.get("fields"), dict)
+                                        else {}
+                                    )
                                     for k in ("title", "name"):
                                         v = it.get(k)
                                         if isinstance(v, str) and v.strip():
@@ -3100,7 +3110,11 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                                     for g in (_goals_det or [])
                                     if isinstance(g, dict)
                                 ]
-                                goal_titles = [t for t in goal_titles if isinstance(t, str) and t.strip()]
+                                goal_titles = [
+                                    t
+                                    for t in goal_titles
+                                    if isinstance(t, str) and t.strip()
+                                ]
                                 updates: Dict[str, Any] = {
                                     "last_shown_goal_titles": goal_titles[:10],
                                     "last_shown_goal_titles_at": float(time.time()),
@@ -3108,9 +3122,13 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                                 if len(goal_titles) == 1:
                                     updates.update(
                                         {
-                                            "last_referenced_goal_title": goal_titles[0],
+                                            "last_referenced_goal_title": goal_titles[
+                                                0
+                                            ],
                                             "last_referenced_goal_source": "auto_singleton_show_list",
-                                            "last_referenced_goal_at": float(time.time()),
+                                            "last_referenced_goal_at": float(
+                                                time.time()
+                                            ),
                                         }
                                     )
                                 ConversationStateStore.update_meta(
@@ -3269,7 +3287,9 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                     t = norm_text or ""
                     if not t:
                         return False
-                    if re.search(r"(?i)\b(o\s+kojem\s+pricamo|o\s+c(e|)mu\s+pricamo)\b", t):
+                    if re.search(
+                        r"(?i)\b(o\s+kojem\s+pricamo|o\s+c(e|)mu\s+pricamo)\b", t
+                    ):
                         return True
                     if re.search(
                         r"(?i)\b(ovaj|ovom|ovog|ovome|ovo|taj|tom|tog|tome)\b.*\b(cilj|goal)\w*\b",
@@ -3287,7 +3307,10 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 has_goal_token = bool(re.search(r"(?i)\b(cilj|goal)\w*\b", t0))
                 goal_line_title = _extract_goal_title_from_goal_line(prompt)
                 is_followup_ref = _is_followup_goal_reference(t0)
-                is_goal_q = bool(is_ownership_question and (has_goal_token or goal_line_title or is_followup_ref))
+                is_goal_q = bool(
+                    is_ownership_question
+                    and (has_goal_token or goal_line_title or is_followup_ref)
+                )
 
                 def _extract_goal_ref(user_text: str) -> str:
                     m = re.search(
@@ -3309,7 +3332,9 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 def _load_last_referenced_goal_title(
                     *, conversation_id: Optional[str]
                 ) -> str:
-                    if not (isinstance(conversation_id, str) and conversation_id.strip()):
+                    if not (
+                        isinstance(conversation_id, str) and conversation_id.strip()
+                    ):
                         return ""
                     try:
                         meta = ConversationStateStore.get_meta(
@@ -3326,7 +3351,9 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                     *, conversation_id: Optional[str]
                 ) -> str:
                     # Last-resort: parse from persisted assistant text (ConversationStateStore summary).
-                    if not (isinstance(conversation_id, str) and conversation_id.strip()):
+                    if not (
+                        isinstance(conversation_id, str) and conversation_id.strip()
+                    ):
                         return ""
                     try:
                         s = ConversationStateStore.get_summary(
@@ -3564,12 +3591,16 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                                 ):
                                     updates: Dict[str, Any] = {
                                         "last_referenced_goal_title": goal_title.strip(),
-                                        "last_referenced_goal_title_norm": _norm_bhs_ascii(goal_title),
+                                        "last_referenced_goal_title_norm": _norm_bhs_ascii(
+                                            goal_title
+                                        ),
                                         "last_referenced_goal_source": "deterministic_goal_ownership",
                                         "last_referenced_goal_at": float(time.time()),
                                     }
                                     if goal_ids:
-                                        updates["last_referenced_goal_ids"] = goal_ids[:3]
+                                        updates["last_referenced_goal_ids"] = goal_ids[
+                                            :3
+                                        ]
                                     ConversationStateStore.update_meta(
                                         conversation_id=conversation_id.strip(),
                                         updates=updates,
@@ -3595,7 +3626,10 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
 
                         # Persist bounded multi-turn context even on deterministic exits.
                         try:
-                            if isinstance(conversation_id, str) and conversation_id.strip():
+                            if (
+                                isinstance(conversation_id, str)
+                                and conversation_id.strip()
+                            ):
                                 ConversationStateStore.append_turn(
                                     conversation_id=conversation_id.strip(),
                                     user_text=prompt or "",
@@ -3653,7 +3687,7 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                         # Ask for the exact goal title rather than letting the LLM guess.
                         if is_followup_ref:
                             txt_out = (
-                                "Ne mogu pouzdano odrediti na koji cilj misliš (\"ovaj/taj cilj\"). "
+                                'Ne mogu pouzdano odrediti na koji cilj misliš ("ovaj/taj cilj"). '
                                 "Pošalji tačan title cilja ili kopiraj cijeli red iz liste (npr. '2) Title | Status | Due')."
                             )
                         else:
@@ -3661,7 +3695,10 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
 
                         # Persist bounded multi-turn context even on deterministic exits.
                         try:
-                            if isinstance(conversation_id, str) and conversation_id.strip():
+                            if (
+                                isinstance(conversation_id, str)
+                                and conversation_id.strip()
+                            ):
                                 ConversationStateStore.append_turn(
                                     conversation_id=conversation_id.strip(),
                                     user_text=prompt or "",
