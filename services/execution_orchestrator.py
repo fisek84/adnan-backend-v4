@@ -301,6 +301,59 @@ class ExecutionOrchestrator:
         self.registry.register(cmd)
 
         try:
+            # SSOT safety (post-approval): Notion writes must never dispatch when
+            # Notion Ops is not ARMED. Approvals resume via this method, so the
+            # gate must be enforced here (not just in `execute()`).
+            try:
+                notion_write_intents = {
+                    "notion_write",
+                    "create_page",
+                    "create_goal",
+                    "create_task",
+                    "create_project",
+                    "update_page",
+                    "batch_request",
+                    "batch",
+                    "branch_request",
+                    "delete_page",
+                }
+
+                is_notion_write = (cmd.intent in notion_write_intents) or (
+                    cmd.command in notion_write_intents
+                )
+
+                if is_notion_write:
+                    md = (
+                        cmd.metadata
+                        if isinstance(getattr(cmd, "metadata", None), dict)
+                        else {}
+                    )
+                    session_id = md.get("session_id") if isinstance(md, dict) else None
+
+                    # Session-scoped safety: only enforce when session_id is present.
+                    if isinstance(session_id, str) and session_id.strip():
+                        armed = await notion_ops_is_armed(session_id.strip())
+                        if not armed:
+                            cmd.execution_state = "BLOCKED"
+                            decision = {
+                                "allowed": False,
+                                "reason": "notion_ops_disarmed",
+                                "execution_id": cmd.execution_id,
+                                "approval_id": cmd.approval_id,
+                                "context_type": cmd.context_type or cmd.command,
+                                "directive": cmd.command,
+                            }
+                            self.registry.block(cmd.execution_id, decision)
+                            return {
+                                "execution_id": cmd.execution_id,
+                                "execution_state": "BLOCKED",
+                                "approval_id": cmd.approval_id,
+                                "reason": "notion_ops_disarmed",
+                            }
+            except Exception:
+                # Fail-soft: do not crash execution path on gating errors.
+                pass
+
             # ---------- AGENT DELEGATION (post-approval) ----------
             # Frontend creates an approval with intent=delegate_agent_task and params:
             # { agent_id, task_text, endpoint="/agents/execute" }
