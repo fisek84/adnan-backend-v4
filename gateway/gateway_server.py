@@ -7307,6 +7307,24 @@ async def ceo_console_snapshot() -> CeoConsoleSnapshotResponse:
     # Expose full knowledge snapshot (payload included, even when expired).
     knowledge_snapshot = ks
 
+    # Additive: canonical sotw.v1 world_state_snapshot derived from cached knowledge snapshot.
+    # HARD CANON: no Notion calls in this transform.
+    try:
+        from services.world_state_engine import WorldStateEngine  # noqa: PLC0415
+
+        world_state_snapshot = WorldStateEngine.build_snapshot_from_knowledge_snapshot(
+            ks if isinstance(ks, dict) else {}
+        )
+    except Exception as exc:
+        world_state_snapshot = {
+            "ready": False,
+            "trace": {
+                "snapshot_version": "sotw.v1",
+                "ready": False,
+                "error": f"build_snapshot_from_knowledge_snapshot_failed:{type(exc).__name__}:{exc}",
+            },
+        }
+
     ceo_dash = CEOConsoleSnapshotService().snapshot()
     legacy = _derive_legacy_goal_task_summaries_from_ceo_snapshot(ceo_dash)
 
@@ -7335,6 +7353,7 @@ async def ceo_console_snapshot() -> CeoConsoleSnapshotResponse:
         },
         "snapshot_meta": snapshot_meta,
         "knowledge_snapshot": knowledge_snapshot,
+        "world_state_snapshot": world_state_snapshot,
         "ceo_dashboard_snapshot": _to_serializable(ceo_dash),
         "goals_summary": legacy["goals_summary"],
         "tasks_summary": legacy["tasks_summary"],

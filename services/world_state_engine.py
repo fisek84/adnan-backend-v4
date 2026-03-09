@@ -93,6 +93,403 @@ class WorldStateEngine:
     # ----------------------------
     # Public API
     # ----------------------------
+    @classmethod
+    def build_snapshot_from_knowledge_snapshot(
+        cls, knowledge_snapshot: Dict[str, Any]
+    ) -> JsonDict:
+        """Pure transform: KnowledgeSnapshotService.get_snapshot() -> sotw.v1.
+
+        HARD CANON:
+        - NO IO
+        - NO NotionService usage
+        - Deterministic output (stable sorting)
+
+        Input is expected to be the wrapper returned by KnowledgeSnapshotService.get_snapshot(),
+        but we also tolerate passing its `payload` dict directly.
+        """
+
+        def _payload_from_wrapper(snap: Any) -> Dict[str, Any]:
+            if isinstance(snap, dict):
+                p = snap.get("payload")
+                if isinstance(p, dict):
+                    return p
+                return snap
+            return {}
+
+        def _list(x: Any) -> List[Dict[str, Any]]:
+            if isinstance(x, list):
+                return [it for it in x if isinstance(it, dict)]
+            return []
+
+        def _fields(item: Dict[str, Any]) -> Dict[str, Any]:
+            f = item.get("fields")
+            return f if isinstance(f, dict) else {}
+
+        def _date_start(v: Any) -> str:
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+            if isinstance(v, dict):
+                s = v.get("start")
+                if isinstance(s, str) and s.strip():
+                    return s.strip()
+            return "UNKNOWN"
+
+        def _people_join(v: Any) -> str:
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+            if isinstance(v, list):
+                xs = [x.strip() for x in v if isinstance(x, str) and x.strip()]
+                xs2 = sorted(set(xs))
+                return ", ".join(xs2) if xs2 else "UNKNOWN"
+            return "UNKNOWN"
+
+        def _first_relation_id(v: Any) -> str:
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+            if isinstance(v, list):
+                for it in v:
+                    if isinstance(it, str) and it.strip():
+                        return it.strip()
+            return "UNKNOWN"
+
+        def _cap(items: List[Any], key: str) -> List[Any]:
+            return items[: CAPS.get(key, len(items))]
+
+        def _priority_rank(s: str) -> int:
+            v = (s or "").strip().lower()
+            if v in {"p0", "urgent", "critical", "highest", "very high"}:
+                return 0
+            if v in {"high", "p1"}:
+                return 1
+            if v in {"medium", "normal", "p2"}:
+                return 2
+            if v in {"low", "p3"}:
+                return 3
+            return 9
+
+        now = utc_now()
+        tw_end = now
+        tw_start = tw_end - timedelta(days=7)
+        time_window = {
+            "label": "last_7_days",
+            "start": iso(tw_start),
+            "end": iso(tw_end),
+            "timezone": "UTC",
+        }
+
+        snap = knowledge_snapshot if isinstance(knowledge_snapshot, dict) else {}
+        payload = _payload_from_wrapper(snap)
+        goals_items = _list(payload.get("goals"))
+        tasks_items = _list(payload.get("tasks"))
+        projects_items = _list(payload.get("projects"))
+
+        # ----------------------------
+        # Goals
+        # ----------------------------
+        goals_all: List[JsonDict] = []
+        goals_blocked: List[JsonDict] = []
+        goals_stale: List[JsonDict] = []
+
+        for it in goals_items:
+            f = _fields(it)
+            last_edit = parse_iso(it.get("last_edited_time"))
+            stale_days = int((now - last_edit).days) if last_edit else 0
+
+            status = safe_str(f.get("status"))
+            progress_raw = f.get("progress")
+            progress_pct = (
+                int(progress_raw) if isinstance(progress_raw, (int, float)) else 0
+            )
+
+            goal: JsonDict = {
+                "id": safe_str(it.get("id")),
+                "title": safe_str(it.get("title")),
+                "priority": safe_str(f.get("priority")),
+                "status": status,
+                "progress": {"pct": progress_pct, "confidence": "UNKNOWN"},
+                "deadline": safe_str(_date_start(f.get("due"))),
+                "owner": safe_str(_people_join(f.get("owner"))),
+                "activity": {
+                    "last_updated_at": safe_str(it.get("last_edited_time")),
+                    "stale_days": stale_days,
+                },
+                "blockers": [],
+                "next_step": {"text": "UNKNOWN", "due": "UNKNOWN"},
+            }
+
+            if stale_days >= 14:
+                goals_stale.append(goal)
+
+            if status.strip().lower() in {"blocked", "stuck"}:
+                goals_blocked.append(goal)
+
+            goals_all.append(goal)
+
+        # Deterministic: highest progress first, then id asc
+        goals_all_sorted = sorted(
+            goals_all,
+            key=lambda g: (
+                -safe_int(((g.get("progress") or {}).get("pct")), 0),
+                safe_str(g.get("id")),
+            ),
+        )
+
+        goals_section: JsonDict = {
+            "top": _cap(goals_all_sorted, "goals.top"),
+            "blocked": _cap(
+                sorted(goals_blocked, key=lambda g: safe_str(g.get("id"))),
+                "goals.blocked",
+            ),
+            "stale": _cap(
+                sorted(goals_stale, key=lambda g: safe_str(g.get("id"))),
+                "goals.stale",
+            ),
+            "counts": {
+                "active": len(goals_all),
+                "blocked": len(goals_blocked),
+                "stale": len(goals_stale),
+            },
+        }
+
+        # ----------------------------
+        # Projects
+        # ----------------------------
+        projects_all: List[JsonDict] = []
+        projects_at_risk: List[JsonDict] = []
+        projects_blocked: List[JsonDict] = []
+
+        for it in projects_items:
+            f = _fields(it)
+            status = safe_str(f.get("status"))
+            next_step = safe_str(f.get("next_step"))
+
+            proj: JsonDict = {
+                "id": safe_str(it.get("id")),
+                "title": safe_str(it.get("title")),
+                "priority": safe_str(f.get("priority")),
+                "status": status,
+                "deadline": safe_str(_date_start(f.get("target_deadline"))),
+                "owner": "UNKNOWN",
+                "progress": {
+                    "pct": int(f.get("progress"))
+                    if isinstance(f.get("progress"), (int, float))
+                    else 0
+                },
+                "next_step": {"text": next_step, "due": "UNKNOWN"},
+                "risk": {"level": "low", "reasons": []},
+                "links": {
+                    "goal_id": safe_str(_first_relation_id(f.get("primary_goal"))),
+                },
+            }
+
+            blocked_like = next_step == "UNKNOWN" or status.strip().lower() in {
+                "blocked",
+                "stuck",
+            }
+            if blocked_like:
+                proj["risk"]["level"] = "high"
+                if next_step == "UNKNOWN":
+                    proj["risk"]["reasons"].append("no_next_step")
+                if status.strip().lower() in {"blocked", "stuck"}:
+                    proj["risk"]["reasons"].append("status_blocked")
+                projects_blocked.append(proj)
+                projects_at_risk.append(proj)
+            projects_all.append(proj)
+
+        # Deterministic: priority, then id asc
+        projects_all_sorted = sorted(
+            projects_all,
+            key=lambda p: (
+                _priority_rank(safe_str(p.get("priority"))),
+                safe_str(p.get("id")),
+            ),
+        )
+
+        projects_section: JsonDict = {
+            "top": _cap(projects_all_sorted, "projects.top"),
+            "at_risk": _cap(
+                sorted(projects_at_risk, key=lambda p: safe_str(p.get("id"))),
+                "projects.at_risk",
+            ),
+            "blocked": _cap(
+                sorted(projects_blocked, key=lambda p: safe_str(p.get("id"))),
+                "projects.blocked",
+            ),
+            "counts": {
+                "active": len(projects_all),
+                "at_risk": len(projects_at_risk),
+                "blocked": len(projects_blocked),
+            },
+        }
+
+        # ----------------------------
+        # Tasks
+        # ----------------------------
+        tasks_all: List[JsonDict] = []
+        tasks_overdue: List[JsonDict] = []
+        tasks_due_soon: List[JsonDict] = []
+        tasks_unlinked: List[JsonDict] = []
+
+        for it in tasks_items:
+            f = _fields(it)
+            due_s = _date_start(f.get("due"))
+            due_dt = parse_iso(due_s) if due_s != "UNKNOWN" else None
+            is_overdue = bool(due_dt and due_dt < now)
+            hours_to_due = (
+                int((due_dt - now).total_seconds() // 3600) if due_dt else None
+            )
+
+            task: JsonDict = {
+                "id": safe_str(it.get("id")),
+                "title": safe_str(it.get("title")),
+                "priority": safe_str(f.get("priority")),
+                "status": safe_str(f.get("status")),
+                "due": safe_str(due_s),
+                "owner": safe_str(_people_join(f.get("assigned_to"))),
+                "links": {
+                    "project_id": safe_str(_first_relation_id(f.get("project"))),
+                    "goal_id": safe_str(_first_relation_id(f.get("goal"))),
+                },
+                "is_blocker": False,
+            }
+
+            if is_overdue:
+                tasks_overdue.append(task)
+            if hours_to_due is not None and 0 <= hours_to_due <= 72:
+                tasks_due_soon.append(task)
+            if (
+                task["links"]["project_id"] == "UNKNOWN"
+                and task["links"]["goal_id"] == "UNKNOWN"
+            ):
+                tasks_unlinked.append(task)
+
+            tasks_all.append(task)
+
+        def _due_sort_key(t: JsonDict) -> str:
+            d = safe_str(t.get("due"))
+            return "9999" if d == "UNKNOWN" else d
+
+        tasks_all_sorted = sorted(
+            tasks_all,
+            key=lambda t: (
+                _priority_rank(safe_str(t.get("priority"))),
+                _due_sort_key(t),
+                safe_str(t.get("id")),
+            ),
+        )
+
+        tasks_section: JsonDict = {
+            "critical_path": _cap(tasks_all_sorted, "tasks.critical_path"),
+            "overdue": _cap(
+                sorted(tasks_overdue, key=lambda t: _due_sort_key(t)),
+                "tasks.overdue",
+            ),
+            "due_soon": _cap(
+                sorted(tasks_due_soon, key=lambda t: _due_sort_key(t)),
+                "tasks.due_soon",
+            ),
+            "data_quality": {
+                "unlinked_count": len(tasks_unlinked),
+                "unlinked_sample": _cap(
+                    sorted(tasks_unlinked, key=lambda t: safe_str(t.get("id"))),
+                    "tasks.unlinked.sample",
+                ),
+            },
+        }
+
+        risks: List[JsonDict] = []
+        if int(tasks_section["data_quality"]["unlinked_count"]) > 0:
+            risks.append(
+                {
+                    "id": "risk_unlinked_tasks",
+                    "title": "Unlinked tasks present",
+                    "severity": "medium",
+                    "category": "data",
+                    "evidence": ["tasks without goal/project"],
+                    "owner": "UNKNOWN",
+                }
+            )
+
+        # KPI / Agents / Summaries remain not wired here, match canonical WSE output.
+        kpis = {"summary": [], "alerts": [], "as_of": iso(tw_end)}
+        agents = {"health": [], "last_outputs": [], "errors": [], "as_of": iso(tw_end)}
+        summaries = {"recent": [], "by_goal": []}
+        alerts = [
+            {
+                "code": "NO_DATA",
+                "severity": "info",
+                "message": "KPI DB not wired",
+                "source": "KPIDB",
+                "details": {},
+            },
+            {
+                "code": "NO_DATA",
+                "severity": "info",
+                "message": "Agent DB not wired",
+                "source": "AgentDB",
+                "details": {},
+            },
+            {
+                "code": "NO_DATA",
+                "severity": "info",
+                "message": "Summary DB not wired",
+                "source": "SummaryDB",
+                "details": {},
+            },
+        ]
+
+        ready_flag = bool(snap.get("ready")) if isinstance(snap, dict) else False
+        status = safe_str(snap.get("status")) if isinstance(snap, dict) else "UNKNOWN"
+        expired = bool(snap.get("expired")) if isinstance(snap, dict) else False
+
+        sources_loaded: List[JsonDict] = [
+            {
+                "source": "KnowledgeSnapshotService",
+                "rows_fetched": {
+                    "goals": int(len(goals_items)),
+                    "tasks": int(len(tasks_items)),
+                    "projects": int(len(projects_items)),
+                },
+                "ok": True,
+                "reason": "from_cached_knowledge_snapshot",
+                "knowledge_status": status,
+                "knowledge_expired": expired,
+                "knowledge_last_sync": snap.get("last_sync")
+                if isinstance(snap, dict)
+                else None,
+            }
+        ]
+
+        snapshot_out: JsonDict = {
+            "generated_at": iso(utc_now()),
+            "time_window": time_window,
+            "goals": goals_section,
+            "projects": projects_section,
+            "tasks": tasks_section,
+            "kpis": kpis,
+            "pipeline": {"enabled": False, "stages": []},
+            "agents": agents,
+            "summaries": summaries,
+            "risks": _cap(risks, "risks"),
+            "alerts": _cap(alerts, "alerts"),
+            "trace": {
+                "snapshot_version": SNAPSHOT_VERSION,
+                "sources_loaded": sources_loaded,
+                "caps": CAPS,
+                "determinism": {"sorting": "stable", "tie_breaker": "id_asc"},
+                "transform": {
+                    "source": "KnowledgeSnapshotService.get_snapshot",
+                    "io": "none",
+                },
+            },
+            "ready": bool(ready_flag),
+        }
+
+        snapshot_out.setdefault("trace", {})
+        snapshot_out["trace"]["ready"] = bool(ready_flag)
+
+        return snapshot_out
+
     def build_snapshot(self) -> JsonDict:
         try:
             asyncio.get_running_loop()
