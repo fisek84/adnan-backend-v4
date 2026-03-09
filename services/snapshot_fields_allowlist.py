@@ -39,7 +39,7 @@ SNAPSHOT_FIELDS_ALLOWLIST: Dict[str, List[FieldSpec]] = {
         FieldSpec("priority", ["Priority", "Prio"], "select"),
         FieldSpec(
             "assigned_to",
-            ["Assigned", "Assignee", "Owner", "Assigned To"],
+            ["Assigned", "Assignee", "Owner", "Assigned To", "assigned_to"],
             "people",
         ),
         FieldSpec("goal", ["Goal", "Primary Goal", "Goals"], "relation"),
@@ -54,6 +54,9 @@ SNAPSHOT_FIELDS_ALLOWLIST: Dict[str, List[FieldSpec]] = {
             "date",
         ),
         FieldSpec("owner", ["Owner", "Assigned", "Responsible"], "people"),
+        # Some workspaces use "Assigned To" as the goal owner/assignee field.
+        # Export it as normalized fields["assigned_to"] for deterministic CEO lookups.
+        FieldSpec("assigned_to", ["Assigned To", "assigned_to"], "people"),
         FieldSpec("tasks", ["Tasks", "Tasks DB"], "relation"),
         FieldSpec("projects", ["Projects", "Projects DB"], "relation"),
     ],

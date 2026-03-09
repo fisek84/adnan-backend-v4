@@ -2010,6 +2010,38 @@ class NotionService:
             except Exception:
                 return []
 
+        def _prop_people_emails_or_names(prop: Dict[str, Any]) -> List[str]:
+            """People -> stable list of identifiers (email preferred, else name).
+
+            Used for normalized snapshot fields like fields["assigned_to"].
+            Does NOT fall back to opaque user ids.
+            """
+            try:
+                ppl = prop.get("people")
+                if not isinstance(ppl, list):
+                    return []
+                out: List[str] = []
+                for p in ppl[:MAX_LIST_LEN]:
+                    if not isinstance(p, dict):
+                        continue
+                    email = (
+                        p.get("person", {}).get("email")
+                        if isinstance(p.get("person"), dict)
+                        else None
+                    )
+                    if isinstance(email, str) and email.strip():
+                        out.append(_truncate_str(email.strip(), 120))
+                        continue
+                    nm = p.get("name")
+                    if isinstance(nm, str) and nm.strip():
+                        out.append(_truncate_str(nm.strip(), 120))
+                        continue
+
+                out2 = sorted([x for x in out if isinstance(x, str) and x.strip()])
+                return out2[:MAX_LIST_LEN]
+            except Exception:
+                return []
+
         def _prop_relation_ids(prop: Dict[str, Any]) -> List[str]:
             try:
                 rel = prop.get("relation")
@@ -2146,7 +2178,10 @@ class NotionService:
 
                     if kind == "people":
                         if t == "people":
-                            arr = _prop_people_ids(prop)
+                            if spec.out_key == "assigned_to":
+                                arr = _prop_people_emails_or_names(prop)
+                            else:
+                                arr = _prop_people_ids(prop)
                             if len(arr) > MAX_LIST_LEN:
                                 truncated = True
                             out[spec.out_key] = arr[:MAX_LIST_LEN]
