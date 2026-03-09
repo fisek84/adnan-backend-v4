@@ -318,9 +318,8 @@ class ExecutionOrchestrator:
                     "delete_page",
                 }
 
-                is_notion_write = (
-                    (cmd.intent in notion_write_intents)
-                    or (cmd.command in notion_write_intents)
+                is_notion_write = (cmd.intent in notion_write_intents) or (
+                    cmd.command in notion_write_intents
                 )
 
                 if is_notion_write:
