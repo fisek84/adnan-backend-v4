@@ -16,7 +16,17 @@ Phase 2: test_ceo_view_present_in_instructions
 
 from __future__ import annotations
 
+import pytest
+
 from fastapi.testclient import TestClient
+
+
+@pytest.fixture(autouse=True)
+def _isolate_ceo_conversation_state(monkeypatch, tmp_path):
+    # Deterministic paths now persist turns/meta; keep tests hermetic.
+    monkeypatch.setenv(
+        "CEO_CONVERSATION_STATE_PATH", str(tmp_path / "ceo_conv_state.json")
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -303,6 +313,124 @@ def test_goal_ownership_lookup_reports_missing_data_without_guessing(monkeypatch
 
     assert body.get("read_only") is True
     assert "nema owner/assigned_to" in txt.lower()
+
+
+def test_goal_ownership_lookup_parses_goal_line_format(monkeypatch):
+    """Must resolve goal ref from UI line format: '2) Title | Status | Due'."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
+    monkeypatch.setenv("NOTION_API_KEY", "test-notion-key")
+    monkeypatch.setenv("NOTION_GOALS_DB_ID", "test-goals-db")
+    monkeypatch.setenv("NOTION_TASKS_DB_ID", "test-tasks-db")
+    monkeypatch.setenv("NOTION_PROJECTS_DB_ID", "test-projects-db")
+    monkeypatch.setenv("CEO_NOTION_TARGETED_READS_ENABLED", "false")
+    monkeypatch.setenv("CEO_ADVISOR_FORCE_OFFLINE", "1")
+
+    app = _get_app()
+    client = TestClient(app)
+
+    snap = {
+        "ready": True,
+        "status": "fresh",
+        "schema_version": "v1",
+        "payload": {
+            "goals": [
+                {
+                    "id": "g1",
+                    "title": "Rast prihoda Q1",
+                    "fields": {"status": "In Progress", "owner": ["ceo@example.com"]},
+                }
+            ],
+            "tasks": [],
+            "projects": [],
+        },
+    }
+
+    r = client.post(
+        "/api/chat",
+        json={
+            "message": "Ko radi na ovom cilju: 2) Rast prihoda Q1 | In Progress | 2026-03-31?",
+            "conversation_id": "conv-line-format",
+            "session_id": "sess-line-format",
+            "snapshot": snap,
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    txt = body.get("text") or ""
+    assert body.get("read_only") is True
+    assert "ceo@example.com" in txt
+
+
+def test_goal_ownership_followup_ovaj_cilj_uses_last_referenced_goal(monkeypatch):
+    """Follow-up 'ovaj cilj' must resolve to last referenced goal and use deterministic snapshot path."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
+    monkeypatch.setenv("NOTION_API_KEY", "test-notion-key")
+    monkeypatch.setenv("NOTION_GOALS_DB_ID", "test-goals-db")
+    monkeypatch.setenv("NOTION_TASKS_DB_ID", "test-tasks-db")
+    monkeypatch.setenv("NOTION_PROJECTS_DB_ID", "test-projects-db")
+    monkeypatch.setenv("CEO_NOTION_TARGETED_READS_ENABLED", "false")
+    monkeypatch.setenv("CEO_ADVISOR_FORCE_OFFLINE", "1")
+
+    app = _get_app()
+    client = TestClient(app)
+
+    snap = {
+        "ready": True,
+        "status": "fresh",
+        "schema_version": "v1",
+        "payload": {
+            "goals": [
+                {
+                    "id": "g1",
+                    "title": "Rast prihoda Q1",
+                    "fields": {"status": "In Progress", "owner": ["ceo@example.com"]},
+                }
+            ],
+            "tasks": [
+                {
+                    "id": "t1",
+                    "title": "Istraživanje tržišta",
+                    "fields": {
+                        "status": "In Progress",
+                        "assigned_to": ["owner1@example.com"],
+                        "goal": ["g1"],
+                    },
+                }
+            ],
+            "projects": [],
+        },
+    }
+
+    conv_id = "conv-followup"
+    sess_id = "sess-followup"
+
+    r1 = client.post(
+        "/api/chat",
+        json={
+            "message": "Ko radi na cilju Rast prihoda Q1?",
+            "conversation_id": conv_id,
+            "session_id": sess_id,
+            "snapshot": snap,
+        },
+    )
+    assert r1.status_code == 200, r1.text
+    assert "ceo@example.com" in (r1.json().get("text") or "")
+
+    r2 = client.post(
+        "/api/chat",
+        json={
+            "message": "Ko radi na ovom cilju?",
+            "conversation_id": conv_id,
+            "session_id": sess_id,
+            "snapshot": snap,
+        },
+    )
+    assert r2.status_code == 200, r2.text
+    body2 = r2.json()
+    txt2 = body2.get("text") or ""
+    assert body2.get("read_only") is True
+    assert "ceo@example.com" in txt2
+    assert "owner1@example.com" in txt2
 
 
 # ---------------------------------------------------------------------------

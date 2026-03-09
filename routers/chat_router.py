@@ -3065,6 +3065,61 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                             exit_path="ceo_chat.deterministic_ssot.show_goals_tasks",
                             targeted_reads=targeted_reads_info,
                         )
+
+                        # Persist bounded multi-turn context even on deterministic exits.
+                        try:
+                            if isinstance(conversation_id, str) and conversation_id.strip():
+                                ConversationStateStore.append_turn(
+                                    conversation_id=conversation_id.strip(),
+                                    user_text=prompt or "",
+                                    assistant_text=_det_text or "",
+                                )
+                        except Exception:
+                            pass
+
+                        # Persist goal titles for follow-up grounding (no guessing).
+                        try:
+                            if isinstance(conversation_id, str) and conversation_id.strip():
+
+                                def _pick_goal_title(it: Any) -> str:
+                                    if not isinstance(it, dict):
+                                        return ""
+                                    f = it.get("fields") if isinstance(it.get("fields"), dict) else {}
+                                    for k in ("title", "name"):
+                                        v = it.get(k)
+                                        if isinstance(v, str) and v.strip():
+                                            return v.strip()
+                                    for k in ("title", "name"):
+                                        v = f.get(k)
+                                        if isinstance(v, str) and v.strip():
+                                            return v.strip()
+                                    return ""
+
+                                goal_titles = [
+                                    _pick_goal_title(g)
+                                    for g in (_goals_det or [])
+                                    if isinstance(g, dict)
+                                ]
+                                goal_titles = [t for t in goal_titles if isinstance(t, str) and t.strip()]
+                                updates: Dict[str, Any] = {
+                                    "last_shown_goal_titles": goal_titles[:10],
+                                    "last_shown_goal_titles_at": float(time.time()),
+                                }
+                                if len(goal_titles) == 1:
+                                    updates.update(
+                                        {
+                                            "last_referenced_goal_title": goal_titles[0],
+                                            "last_referenced_goal_source": "auto_singleton_show_list",
+                                            "last_referenced_goal_at": float(time.time()),
+                                        }
+                                    )
+                                ConversationStateStore.update_meta(
+                                    conversation_id=conversation_id.strip(),
+                                    updates=updates,
+                                )
+                        except Exception:
+                            pass
+
                         return JSONResponse(
                             content=_attach_session_id(_det_content, session_id)
                         )
@@ -3195,13 +3250,44 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             _snap_g = ks_for_gp if isinstance(ks_for_gp, dict) else {}
             if bool(_snap_g.get("ready") is True):
                 t0 = _norm_bhs_ascii(prompt)
-                is_goal_q = bool(
-                    re.search(r"(?i)\b(cilj|goal)\w*\b", t0)
-                    and re.search(
+
+                def _extract_goal_title_from_goal_line(user_text: str) -> str:
+                    # UI format examples:
+                    #   "2) Preseli se u EU za 30 dana. | Active | 2026-04-03"
+                    #   "2) Title | Status | Due"
+                    m = re.search(
+                        r"(?m)^\s*\d+\)\s*([^\n\r\|]+?)\s*\|\s*[^\n\r\|]*\|\s*[^\n\r]*$",
+                        user_text or "",
+                    )
+                    if not m:
+                        return ""
+                    raw = (m.group(1) or "").strip()
+                    raw = raw.strip(" \t\r\n\"'.,;:!?-")
+                    return raw
+
+                def _is_followup_goal_reference(norm_text: str) -> bool:
+                    t = norm_text or ""
+                    if not t:
+                        return False
+                    if re.search(r"(?i)\b(o\s+kojem\s+pricamo|o\s+c(e|)mu\s+pricamo)\b", t):
+                        return True
+                    if re.search(
+                        r"(?i)\b(ovaj|ovom|ovog|ovome|ovo|taj|tom|tog|tome)\b.*\b(cilj|goal)\w*\b",
+                        t,
+                    ):
+                        return True
+                    return False
+
+                is_ownership_question = bool(
+                    re.search(
                         r"(?i)\b(ko|who)\b.*\b(radi|work|owner|vlasnik|odgovor|zaduzen|assigned)\w*\b",
                         t0,
                     )
                 )
+                has_goal_token = bool(re.search(r"(?i)\b(cilj|goal)\w*\b", t0))
+                goal_line_title = _extract_goal_title_from_goal_line(prompt)
+                is_followup_ref = _is_followup_goal_reference(t0)
+                is_goal_q = bool(is_ownership_question and (has_goal_token or goal_line_title or is_followup_ref))
 
                 def _extract_goal_ref(user_text: str) -> str:
                     m = re.search(
@@ -3209,10 +3295,62 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                         user_text or "",
                     )
                     if not m:
-                        return ""
+                        # Also accept a bare goal line pasted without "cilj" keyword.
+                        return _extract_goal_title_from_goal_line(user_text or "")
                     raw = (m.group(1) or "").strip()
-                    raw = raw.strip(" \t\r\n\"'“”„”.,;:!?")
+                    raw = raw.strip(" \t\r\n\"'.,;:!?")
+                    # If user pasted the whole UI line after "cilj", normalize it to just title.
+                    if "|" in raw and re.search(r"(?m)^\s*\d+\)\s*.+\|", raw):
+                        title2 = _extract_goal_title_from_goal_line(raw)
+                        if title2:
+                            return title2
                     return raw
+
+                def _load_last_referenced_goal_title(
+                    *, conversation_id: Optional[str]
+                ) -> str:
+                    if not (isinstance(conversation_id, str) and conversation_id.strip()):
+                        return ""
+                    try:
+                        meta = ConversationStateStore.get_meta(
+                            conversation_id=conversation_id.strip()
+                        )
+                    except Exception:
+                        return ""
+                    if not isinstance(meta, dict):
+                        return ""
+                    v = meta.get("last_referenced_goal_title")
+                    return v.strip() if isinstance(v, str) and v.strip() else ""
+
+                def _extract_single_goal_title_from_summary(
+                    *, conversation_id: Optional[str]
+                ) -> str:
+                    # Last-resort: parse from persisted assistant text (ConversationStateStore summary).
+                    if not (isinstance(conversation_id, str) and conversation_id.strip()):
+                        return ""
+                    try:
+                        s = ConversationStateStore.get_summary(
+                            conversation_id=conversation_id.strip()
+                        )
+                        summary_txt = s.summary_text
+                    except Exception:
+                        return ""
+                    if not isinstance(summary_txt, str) or not summary_txt.strip():
+                        return ""
+                    # Search goal line format in the summary; if exactly one, use it.
+                    titles = re.findall(
+                        r"(?m)^\s*\d+\)\s*([^\n\r\|]+?)\s*\|\s*[^\n\r\|]*\|\s*[^\n\r]*$",
+                        summary_txt,
+                    )
+                    titles = [
+                        (t or "").strip().strip(" \t\r\n\"'.,;:!?-")
+                        for t in titles
+                        if isinstance(t, str)
+                    ]
+                    titles = [t for t in titles if t]
+                    if len(titles) == 1:
+                        return titles[0]
+                    return ""
 
                 def _people_list(v: Any) -> List[str]:
                     if v is None:
@@ -3244,6 +3382,16 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
 
                 if is_goal_q:
                     goal_ref = _extract_goal_ref(prompt)
+                    if not goal_ref and goal_line_title:
+                        goal_ref = goal_line_title
+                    if not goal_ref and is_followup_ref:
+                        goal_ref = _load_last_referenced_goal_title(
+                            conversation_id=conversation_id
+                        )
+                    if not goal_ref and is_followup_ref:
+                        goal_ref = _extract_single_goal_title_from_summary(
+                            conversation_id=conversation_id
+                        )
                     if goal_ref:
                         goals = _snapshot_goals_list(_snap_g)
                         tasks = _snapshot_tasks_list(_snap_g)
@@ -3406,6 +3554,29 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
 
                             owners_tasks = _norm_people(linked_task_people)
 
+                            # Persist the resolved goal as the latest referenced goal.
+                            try:
+                                if (
+                                    isinstance(conversation_id, str)
+                                    and conversation_id.strip()
+                                    and isinstance(goal_title, str)
+                                    and goal_title.strip()
+                                ):
+                                    updates: Dict[str, Any] = {
+                                        "last_referenced_goal_title": goal_title.strip(),
+                                        "last_referenced_goal_title_norm": _norm_bhs_ascii(goal_title),
+                                        "last_referenced_goal_source": "deterministic_goal_ownership",
+                                        "last_referenced_goal_at": float(time.time()),
+                                    }
+                                    if goal_ids:
+                                        updates["last_referenced_goal_ids"] = goal_ids[:3]
+                                    ConversationStateStore.update_meta(
+                                        conversation_id=conversation_id.strip(),
+                                        updates=updates,
+                                    )
+                            except Exception:
+                                pass
+
                             lines: List[str] = [
                                 f"Cilj: {goal_title}",
                                 f"Status: {goal_status} | Rok: {goal_due}",
@@ -3421,6 +3592,17 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                                     "U snapshotu nema owner/assigned_to informacija za ovaj cilj niti za povezane taskove."
                                 )
                             txt_out = "\n".join(lines).strip()
+
+                        # Persist bounded multi-turn context even on deterministic exits.
+                        try:
+                            if isinstance(conversation_id, str) and conversation_id.strip():
+                                ConversationStateStore.append_turn(
+                                    conversation_id=conversation_id.strip(),
+                                    user_text=prompt or "",
+                                    assistant_text=txt_out or "",
+                                )
+                        except Exception:
+                            pass
 
                         _det_tr3 = {
                             "intent": "goal_ownership_lookup",
@@ -3469,7 +3651,24 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                     else:
                         # If intent matches but goal reference is missing, keep behavior predictable.
                         # Ask for the exact goal title rather than letting the LLM guess.
-                        txt_out = "Za koji cilj? Pošalji naziv cilja (npr. 'Ko radi na cilju: Rast prihoda Q1')."
+                        if is_followup_ref:
+                            txt_out = (
+                                "Ne mogu pouzdano odrediti na koji cilj misliš (\"ovaj/taj cilj\"). "
+                                "Pošalji tačan title cilja ili kopiraj cijeli red iz liste (npr. '2) Title | Status | Due')."
+                            )
+                        else:
+                            txt_out = "Za koji cilj? Pošalji naziv cilja (npr. 'Ko radi na cilju: Rast prihoda Q1')."
+
+                        # Persist bounded multi-turn context even on deterministic exits.
+                        try:
+                            if isinstance(conversation_id, str) and conversation_id.strip():
+                                ConversationStateStore.append_turn(
+                                    conversation_id=conversation_id.strip(),
+                                    user_text=prompt or "",
+                                    assistant_text=txt_out or "",
+                                )
+                        except Exception:
+                            pass
                         _det_tr3b = {
                             "intent": "goal_ownership_lookup",
                             "exit_path": "deterministic_snapshot_goal_ownership",
