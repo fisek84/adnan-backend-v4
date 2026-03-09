@@ -3273,6 +3273,36 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             _snap_q = ks_for_gp if isinstance(ks_for_gp, dict) else {}
             if bool(_snap_q.get("ready") is True):
                 qtype = classify_task_query(prompt)
+
+                # Guard: avoid hijacking non-task deliverable prompts that merely
+                # mention a deadline like "Rok: sutra".
+                # This can become order-dependent when other tests or sessions
+                # have populated a ready snapshot with tasks.
+                try:
+                    t0_guard = _norm_bhs_ascii(prompt)
+                    has_task_token = bool(
+                        re.search(r"(?i)\b(task|taskovi|zadat|zadac)\w*\b", t0_guard)
+                    )
+                    has_query_cue = bool(
+                        re.search(
+                            r"(?i)(\?|\b(da\s+li|imamo|koji|koje|sta|shta|prikazi|pokazi|poka(z|z)i|navedi|izlistaj|lista)\b)",
+                            t0_guard,
+                        )
+                    )
+                    looks_like_deadline = bool(
+                        re.search(
+                            r"(?i)\b(rok|deadline|due)\b\s*[:\-]?\s*\b(sutra|tomorrow)\b",
+                            t0_guard,
+                        )
+                    )
+                    if (
+                        looks_like_deadline
+                        and (qtype == "tomorrow")
+                        and not (has_task_token or has_query_cue)
+                    ):
+                        qtype = "none"
+                except Exception:
+                    pass
                 if qtype in {
                     "all",
                     "today",
