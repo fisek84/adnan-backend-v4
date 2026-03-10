@@ -68,7 +68,25 @@ class TestSnapshotAssignedToPeopleMapping(unittest.IsolatedAsyncioTestCase):
             },
         }
 
-        dummy = _DummyClient(data={"results": [page1, page2], "has_more": False})
+        page3 = {
+            "id": "99999999-aaaa-bbbb-cccc-dddddddddddd",
+            "url": "https://notion.so/z",
+            "created_time": "2026-03-05T00:00:00Z",
+            "last_edited_time": "2026-03-06T00:00:00Z",
+            "properties": {
+                "Name": {"type": "title", "title": [{"plain_text": "Goal C"}]},
+                # Real-world: some workspaces store assignees as tags (multi_select).
+                "Assigned To": {
+                    "type": "multi_select",
+                    "multi_select": [
+                        {"name": "Adnan"},
+                        {"name": "Snezana"},
+                    ],
+                },
+            },
+        }
+
+        dummy = _DummyClient(data={"results": [page1, page2, page3], "has_more": False})
 
         async def _get_client():
             return dummy
@@ -82,15 +100,18 @@ class TestSnapshotAssignedToPeopleMapping(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(payload, dict)
         goals = payload.get("goals")
         self.assertIsInstance(goals, list)
-        self.assertEqual(len(goals), 2)
+        self.assertEqual(len(goals), 3)
 
         # Find items by title (more stable than id normalization differences).
         by_title = {it.get("title"): it for it in goals if isinstance(it, dict)}
         a_fields = (by_title.get("Goal A") or {}).get("fields")
         b_fields = (by_title.get("Goal B") or {}).get("fields")
+        c_fields = (by_title.get("Goal C") or {}).get("fields")
 
         self.assertIsInstance(a_fields, dict)
         self.assertIsInstance(b_fields, dict)
+        self.assertIsInstance(c_fields, dict)
 
         self.assertEqual(a_fields.get("assigned_to"), ["alice@example.com"])
         self.assertEqual(b_fields.get("assigned_to"), ["Bob"])
+        self.assertEqual(c_fields.get("assigned_to"), ["Adnan", "Snezana"])

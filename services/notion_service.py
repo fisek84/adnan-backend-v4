@@ -2185,6 +2185,20 @@ class NotionService:
                             if len(arr) > MAX_LIST_LEN:
                                 truncated = True
                             out[spec.out_key] = arr[:MAX_LIST_LEN]
+
+                        # Real-world Notion: some workspaces store assignees/owners as tags.
+                        # If the allowlist expects people but the property is multi_select/select,
+                        # treat it as a people-like list for deterministic CEO lookups.
+                        elif spec.out_key in {"assigned_to", "owner"}:
+                            if t == "multi_select":
+                                arr2 = _prop_multi_select(prop)
+                                if len(arr2) > MAX_LIST_LEN:
+                                    truncated = True
+                                out[spec.out_key] = sorted(arr2)[:MAX_LIST_LEN]
+                            elif t == "select":
+                                nm2 = _prop_select_name(prop)
+                                if nm2:
+                                    out[spec.out_key] = [nm2]
                         return
 
                     if kind == "relation":
