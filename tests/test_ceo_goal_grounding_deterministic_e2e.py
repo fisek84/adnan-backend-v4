@@ -313,3 +313,70 @@ def test_goal_ownership_followup_koji_smo_spomenuli_uses_last_referenced(monkeyp
 
     assert f"Cilj: {goal_title}" in text2
     assert "Owner (cilj): Adnan" in text2
+
+
+def test_main_goal_glavni_intent_and_multisentence_followup_resolves_owner(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "services.ceo_advisor_agent.create_ceo_advisor_agent",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("LLM path called")),
+    )
+
+    conversation_id = "conv_main_goal_multisentence_1"
+    goal_title = "Preseli se u EU za 30 dana."
+
+    snap = {
+        "ready": True,
+        "payload": {
+            "goals": [
+                {
+                    "id": "g1",
+                    "fields": {
+                        "title": goal_title,
+                        "status": "Active",
+                        "due": "2026-04-03",
+                        "assigned_to": ["Adnan"],
+                    },
+                },
+            ],
+            "tasks": [],
+        },
+    }
+
+    app = _load_app()
+    client = TestClient(app)
+
+    r1 = client.post(
+        "/api/chat",
+        json={
+            "message": "Koji je glavni cilj u firmi?",
+            "identity_pack": {"user_id": "test"},
+            "snapshot": snap,
+            "session_id": "sess_main_goal_multisentence_1",
+            "conversation_id": conversation_id,
+            "metadata": {"include_debug": True, "read_only": True},
+        },
+    )
+    assert r1.status_code == 200, r1.text
+    body1 = r1.json()
+    text1 = (body1.get("text") or "").strip()
+    assert goal_title in text1
+
+    r2 = client.post(
+        "/api/chat",
+        json={
+            "message": "Kome je dodjeljen ovaj cilj. Ko radi na ovom cilju",
+            "identity_pack": {"user_id": "test"},
+            "snapshot": snap,
+            "session_id": "sess_main_goal_multisentence_1",
+            "conversation_id": conversation_id,
+            "metadata": {"include_debug": True, "read_only": True},
+        },
+    )
+    assert r2.status_code == 200, r2.text
+    body2 = r2.json()
+    text2 = (body2.get("text") or "").strip()
+
+    assert f"Cilj: {goal_title}" in text2
+    assert "Owner (cilj): Adnan" in text2

@@ -78,7 +78,7 @@ _SHOW_GOALS_TASKS_RE = re.compile(
 
 
 _TOP_GOAL_RE = re.compile(
-    r"(?i)\b(?:najbitnij\w*|najvaznij\w*|najprioritetnij\w*|top)\b.*\b(?:cilj\w*|goal\w*)\b"
+    r"(?i)\b(?:najbitnij\w*|najvaznij\w*|najprioritetnij\w*|top|glavn\w*|main)\b.*\b(?:cilj\w*|goal\w*)\b"
 )
 
 
@@ -3472,7 +3472,23 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                         # Also accept a bare goal line pasted without "cilj" keyword.
                         return _extract_goal_title_from_goal_line(user_text or "")
                     raw = (m.group(1) or "").strip()
+                    raw = raw.lstrip(" \t\r\n\"'.,;:!?-\u2013\u2014")
+                    # If user wrote multiple sentences, keep only the first clause.
+                    raw = re.split(r"[\.!?]\s+", raw, maxsplit=1)[0].strip()
                     raw = raw.strip(" \t\r\n\"'.,;:!?")
+
+                    # If the extracted chunk is actually just the user's question or a
+                    # follow-up phrase, treat it as no explicit goal ref.
+                    rn = _norm_bhs_ascii(raw)
+                    if _is_followup_goal_reference(rn):
+                        return ""
+                    if re.search(
+                        r"(?i)\b(ko\s+radi|kome\s+je|ko\s+je|who\s+is|assigned\s+to|owner)\b",
+                        rn,
+                    ):
+                        return ""
+                    if not raw:
+                        return ""
                     # If user pasted the whole UI line after "cilj", normalize it to just title.
                     if "|" in raw and re.search(r"(?m)^\s*\d+\)\s*.+\|", raw):
                         title2 = _extract_goal_title_from_goal_line(raw)
