@@ -3560,6 +3560,110 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                         return out
                     return []
 
+                def _simplify_prop_key(s: Any) -> str:
+                    if not isinstance(s, str):
+                        return ""
+                    txt = s.strip().lower().replace("_", " ")
+                    if not txt:
+                        return ""
+                    txt = "".join(
+                        ch if (ch.isalnum() or ch.isspace()) else " " for ch in txt
+                    )
+                    txt = re.sub(r"\s+", " ", txt).strip()
+                    return txt
+
+                def _people_from_properties(
+                    item: Dict[str, Any], prop_names: List[str]
+                ) -> List[str]:
+                    """Fallback: read people-like values from snapshot item['properties'].
+
+                    Supports the sanitized export from NotionService.build_knowledge_snapshot:
+                      properties = {"Assigned To": {"type": "people", "value": ["a@x"]}}
+                    """
+                    props = item.get("properties")
+                    if not isinstance(props, dict) or not props:
+                        return []
+
+                    props_map: Dict[str, Any] = {}
+                    for k, v in props.items():
+                        if not isinstance(k, str) or not k.strip():
+                            continue
+                        k0 = k.strip().lower()
+                        if k0 not in props_map:
+                            props_map[k0] = v
+                        k1 = _simplify_prop_key(k)
+                        if k1 and k1 not in props_map:
+                            props_map[k1] = v
+
+                    for nm in prop_names:
+                        nm0 = (nm or "").strip()
+                        if not nm0:
+                            continue
+                        key0 = nm0.lower()
+                        key1 = _simplify_prop_key(nm0)
+                        cand = props_map.get(key0)
+                        if cand is None and key1:
+                            cand = props_map.get(key1)
+                        if cand is None:
+                            continue
+
+                        # Sanitized export: {"type": "people", "value": [...]}
+                        if isinstance(cand, dict):
+                            t = cand.get("type")
+                            if isinstance(t, str) and t.strip().lower() == "people":
+                                v = cand.get("value")
+                                if isinstance(v, list):
+                                    return _people_list(v)
+                                if isinstance(v, str):
+                                    return _people_list(v)
+
+                            # Some workspaces store "Assigned To" as multi_select (tags).
+                            # Treat it as a people-like list when explicitly requested via prop_names.
+                            if isinstance(t, str) and t.strip().lower() in {
+                                "multi_select",
+                                "select",
+                            }:
+                                v = cand.get("value")
+                                if isinstance(v, list) or isinstance(v, str):
+                                    return _people_list(v)
+                                # Best-effort support for a raw Notion-like shape.
+                                if t.strip().lower() == "multi_select" and isinstance(
+                                    cand.get("multi_select"), list
+                                ):
+                                    out3: List[str] = []
+                                    for it in cand.get("multi_select")[:50]:
+                                        if isinstance(it, dict):
+                                            nm = it.get("name")
+                                            if isinstance(nm, str) and nm.strip():
+                                                out3.append(nm.strip())
+                                    return _people_list(out3)
+                            # Best-effort support if a raw Notion-like payload leaks through.
+                            if cand.get("type") == "people" and isinstance(
+                                cand.get("people"), list
+                            ):
+                                ppl = cand.get("people")
+                                out2: List[str] = []
+                                for p in ppl:
+                                    if isinstance(p, dict):
+                                        email = (
+                                            p.get("person", {}).get("email")
+                                            if isinstance(p.get("person"), dict)
+                                            else None
+                                        )
+                                        if isinstance(email, str) and email.strip():
+                                            out2.append(email.strip())
+                                            continue
+                                        name = p.get("name")
+                                        if isinstance(name, str) and name.strip():
+                                            out2.append(name.strip())
+                                return _norm_people(out2)
+
+                        # Some callers may store the list directly.
+                        if isinstance(cand, list) or isinstance(cand, str):
+                            return _people_list(cand)
+
+                    return []
+
                 def _norm_people(xs: List[str]) -> List[str]:
                     seen = set()
                     out: List[str] = []
@@ -3712,6 +3816,21 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                                 )
                             )
 
+                            if not owners_goal:
+                                owners_goal = _norm_people(
+                                    _people_from_properties(
+                                        chosen,
+                                        [
+                                            "Assigned To",
+                                            "Owner",
+                                            "Assigned",
+                                            "Assignee",
+                                            "Responsible",
+                                            "assigned_to",
+                                        ],
+                                    )
+                                )
+
                             linked_task_people: List[str] = []
                             linked_tasks = 0
                             for t in tasks:
@@ -3746,16 +3865,26 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                                 if not any(r in goal_id_set for r in refs_norm):
                                     continue
                                 linked_tasks += 1
-                                linked_task_people.extend(
-                                    _people_list(
-                                        tf.get("assigned_to")
-                                        or tf.get("Assigned To")
-                                        or tf.get("owner")
-                                        or tf.get("Owner")
-                                        or t.get("assigned_to")
-                                        or t.get("owner")
-                                    )
+                                ppl_task = _people_list(
+                                    tf.get("assigned_to")
+                                    or tf.get("Assigned To")
+                                    or tf.get("owner")
+                                    or tf.get("Owner")
+                                    or t.get("assigned_to")
+                                    or t.get("owner")
                                 )
+                                if not ppl_task:
+                                    ppl_task = _people_from_properties(
+                                        t,
+                                        [
+                                            "Assigned To",
+                                            "Assigned",
+                                            "Assignee",
+                                            "Owner",
+                                            "assigned_to",
+                                        ],
+                                    )
+                                linked_task_people.extend(ppl_task)
 
                             owners_tasks = _norm_people(linked_task_people)
 
