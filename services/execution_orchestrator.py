@@ -188,6 +188,103 @@ class ExecutionOrchestrator:
         )
 
     @staticmethod
+    def _is_notion_write_intent(cmd: AICommand) -> bool:
+        """SSOT classifier for any command that results in Notion writes."""
+
+        notion_write_intents = {
+            "notion_write",
+            "create_page",
+            "create_goal",
+            "create_task",
+            "create_project",
+            "update_page",
+            "batch_request",
+            "batch",
+            "branch_request",
+            "delete_page",
+        }
+
+        intent = cmd.intent.strip() if isinstance(cmd.intent, str) else ""
+        command = cmd.command.strip() if isinstance(cmd.command, str) else ""
+        return (intent in notion_write_intents) or (command in notion_write_intents)
+
+    async def _enforce_notion_ops_gate_or_block(self, cmd: AICommand) -> Optional[Dict[str, Any]]:
+        """Fail-closed Notion Ops gate.
+
+        Returns a BLOCKED payload when the command is a Notion write and:
+        - metadata.session_id missing/blank -> notion_ops_session_missing
+        - notion_ops_is_armed(session_id) is False -> notion_ops_disarmed
+        - armed check raises -> notion_ops_gate_error
+        """
+
+        if not self._is_notion_write_intent(cmd):
+            return None
+
+        md = cmd.metadata if isinstance(getattr(cmd, "metadata", None), dict) else {}
+        session_id = md.get("session_id") if isinstance(md, dict) else None
+        if not (isinstance(session_id, str) and session_id.strip()):
+            reason = "notion_ops_session_missing"
+            cmd.execution_state = "BLOCKED"
+            decision = {
+                "allowed": False,
+                "reason": reason,
+                "execution_id": cmd.execution_id,
+                "approval_id": cmd.approval_id,
+                "context_type": cmd.context_type or cmd.command,
+                "directive": cmd.command,
+            }
+            self.registry.block(cmd.execution_id, decision)
+            return {
+                "execution_id": cmd.execution_id,
+                "execution_state": "BLOCKED",
+                "approval_id": cmd.approval_id,
+                "reason": reason,
+            }
+
+        sid = session_id.strip()
+        try:
+            armed = await notion_ops_is_armed(sid)
+        except Exception:
+            reason = "notion_ops_gate_error"
+            cmd.execution_state = "BLOCKED"
+            decision = {
+                "allowed": False,
+                "reason": reason,
+                "execution_id": cmd.execution_id,
+                "approval_id": cmd.approval_id,
+                "context_type": cmd.context_type or cmd.command,
+                "directive": cmd.command,
+            }
+            self.registry.block(cmd.execution_id, decision)
+            return {
+                "execution_id": cmd.execution_id,
+                "execution_state": "BLOCKED",
+                "approval_id": cmd.approval_id,
+                "reason": reason,
+            }
+
+        if not armed:
+            reason = "notion_ops_disarmed"
+            cmd.execution_state = "BLOCKED"
+            decision = {
+                "allowed": False,
+                "reason": reason,
+                "execution_id": cmd.execution_id,
+                "approval_id": cmd.approval_id,
+                "context_type": cmd.context_type or cmd.command,
+                "directive": cmd.command,
+            }
+            self.registry.block(cmd.execution_id, decision)
+            return {
+                "execution_id": cmd.execution_id,
+                "execution_state": "BLOCKED",
+                "approval_id": cmd.approval_id,
+                "reason": reason,
+            }
+
+        return None
+
+    @staticmethod
     def _is_failure_result(result: Any) -> bool:
         return isinstance(result, dict) and (
             result.get("ok") is False or result.get("success") is False
@@ -216,41 +313,6 @@ class ExecutionOrchestrator:
     ) -> Dict[str, Any]:
         cmd = self._normalize_command(command)
 
-        # SSOT safety: Notion writes must never dispatch when Notion Ops is not ARMED.
-        # This is session-scoped and only enforced when session_id is present.
-        try:
-            if cmd.intent == "notion_write" or cmd.command == "notion_write":
-                md = (
-                    cmd.metadata
-                    if isinstance(getattr(cmd, "metadata", None), dict)
-                    else {}
-                )
-                session_id = md.get("session_id") if isinstance(md, dict) else None
-                if isinstance(session_id, str) and session_id.strip():
-                    armed = await notion_ops_is_armed(session_id.strip())
-                    if not armed:
-                        cmd.execution_state = "BLOCKED"
-                        self.registry.block(
-                            cmd.execution_id,
-                            {
-                                "allowed": False,
-                                "reason": "notion_ops_disarmed",
-                                "execution_id": cmd.execution_id,
-                                "approval_id": cmd.approval_id,
-                                "context_type": cmd.context_type or cmd.command,
-                                "directive": cmd.command,
-                            },
-                        )
-                        return {
-                            "execution_id": cmd.execution_id,
-                            "execution_state": "BLOCKED",
-                            "approval_id": cmd.approval_id,
-                            "reason": "notion_ops_disarmed",
-                        }
-        except Exception:
-            # Fail-soft: do not crash execution path on gating errors.
-            pass
-
         if self._is_proposal_wrapper(cmd):
             raise ValueError("proposal wrapper cannot be executed")
 
@@ -274,6 +336,11 @@ class ExecutionOrchestrator:
                 "execution_state": "BLOCKED",
                 "approval_id": cmd.approval_id,
             }
+
+        # SSOT safety: Notion writes must never dispatch when Notion Ops is not ARMED.
+        blocked = await self._enforce_notion_ops_gate_or_block(cmd)
+        if isinstance(blocked, dict):
+            return blocked
 
         return await self._execute_after_approval(cmd)
 
@@ -300,59 +367,12 @@ class ExecutionOrchestrator:
         cmd.execution_state = "EXECUTING"
         self.registry.register(cmd)
 
-        try:
-            # SSOT safety (post-approval): Notion writes must never dispatch when
-            # Notion Ops is not ARMED. Approvals resume via this method, so the
-            # gate must be enforced here (not just in `execute()`).
-            try:
-                notion_write_intents = {
-                    "notion_write",
-                    "create_page",
-                    "create_goal",
-                    "create_task",
-                    "create_project",
-                    "update_page",
-                    "batch_request",
-                    "batch",
-                    "branch_request",
-                    "delete_page",
-                }
-
-                is_notion_write = (cmd.intent in notion_write_intents) or (
-                    cmd.command in notion_write_intents
-                )
-
-                if is_notion_write:
-                    md = (
-                        cmd.metadata
-                        if isinstance(getattr(cmd, "metadata", None), dict)
-                        else {}
-                    )
-                    session_id = md.get("session_id") if isinstance(md, dict) else None
-
-                    # Session-scoped safety: only enforce when session_id is present.
-                    if isinstance(session_id, str) and session_id.strip():
-                        armed = await notion_ops_is_armed(session_id.strip())
-                        if not armed:
-                            cmd.execution_state = "BLOCKED"
-                            decision = {
-                                "allowed": False,
-                                "reason": "notion_ops_disarmed",
-                                "execution_id": cmd.execution_id,
-                                "approval_id": cmd.approval_id,
-                                "context_type": cmd.context_type or cmd.command,
-                                "directive": cmd.command,
-                            }
-                            self.registry.block(cmd.execution_id, decision)
-                            return {
-                                "execution_id": cmd.execution_id,
-                                "execution_state": "BLOCKED",
-                                "approval_id": cmd.approval_id,
-                                "reason": "notion_ops_disarmed",
-                            }
-            except Exception:
-                # Fail-soft: do not crash execution path on gating errors.
-                pass
+        try:            # SSOT safety (post-approval): Notion writes must never dispatch when Notion
+            # Ops is not ARMED. Approvals resume via this method, so the gate MUST be
+            # enforced here.
+            blocked = await self._enforce_notion_ops_gate_or_block(cmd)
+            if isinstance(blocked, dict):
+                return blocked
 
             # ---------- AGENT DELEGATION (post-approval) ----------
             # Frontend creates an approval with intent=delegate_agent_task and params:

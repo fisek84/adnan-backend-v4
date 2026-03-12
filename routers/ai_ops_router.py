@@ -758,6 +758,20 @@ async def approve(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[st
             # Fail-soft: never break approval flow due to optional proposal enrichment.
             pass
 
+        # Canonical: governance BLOCKED (Notion Ops gate) must surface as read-only.
+        try:
+            st0 = _norm_status(execution_result.get("execution_state"))
+            rs0 = execution_result.get("reason")
+            rs0 = rs0.strip() if isinstance(rs0, str) else None
+            if st0 == "blocked" and rs0 in {
+                "notion_ops_session_missing",
+                "notion_ops_disarmed",
+                "notion_ops_gate_error",
+            }:
+                execution_result["read_only"] = True
+        except Exception:
+            pass
+
         execution_result.setdefault("approval", approval)
         execution_result.setdefault("read_only", False)
 
