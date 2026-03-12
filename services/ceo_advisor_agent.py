@@ -6583,6 +6583,41 @@ async def create_ceo_advisor_agent(
                 result = {"text": txt, "proposed_commands": []}
 
         text_out = _pick_text(result) or "CEO advisor nije vratio tekstualni output."
+
+        # PHASE A (TASKS) fallback guard: if router somehow didn't intercept
+        # and LLM produced a dumpy response, enforce deterministic answer-first.
+        try:
+            from services.ceo_tasks_phase_a import (  # noqa: PLC0415
+                classify_tasks_phase_a,
+            )
+            from services.ssot_task_query_engine import (  # noqa: PLC0415
+                compute_task_stats,
+                render_tasks_phase_a_answer,
+            )
+
+            phase_a_spec = classify_tasks_phase_a(base_text)
+            snapshot_ready = bool(
+                isinstance(snap_trace, dict) and snap_trace.get("ready") is True
+            )
+            if (
+                phase_a_spec
+                and snapshot_ready
+                and (not structured_mode)
+                and phase_a_spec.question_type in {"YES_NO", "COUNT", "STATUS"}
+            ):
+                stats = compute_task_stats(snapshot_payload)
+                det_txt = render_tasks_phase_a_answer(spec=phase_a_spec, stats=stats)
+                if isinstance(det_txt, str) and det_txt.strip():
+                    text_out = det_txt
+
+                    tr_guard = ctx.get("trace") if isinstance(ctx, dict) else None
+                    if isinstance(tr_guard, dict):
+                        tr_guard["tasks_phase_a_guard"] = True
+                        tr_guard["tasks_phase_a_question_type"] = (
+                            phase_a_spec.question_type
+                        )
+        except Exception:
+            pass
         ssot_ok = True
         try:
             if (

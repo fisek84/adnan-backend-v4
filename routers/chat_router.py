@@ -3266,12 +3266,80 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         try:
             from services.ssot_task_query_engine import (  # noqa: PLC0415
                 classify_task_query,
+                compute_task_stats,
                 render_task_query_answer,
+                render_tasks_phase_a_answer,
                 run_task_query,
+            )
+
+            from services.ceo_tasks_phase_a import (  # noqa: PLC0415
+                classify_tasks_phase_a,
             )
 
             _snap_q = ks_for_gp if isinstance(ks_for_gp, dict) else {}
             if bool(_snap_q.get("ready") is True):
+                phase_a_spec = classify_tasks_phase_a(prompt)
+                if phase_a_spec and phase_a_spec.question_type in {
+                    "YES_NO",
+                    "COUNT",
+                    "STATUS",
+                }:
+                    stats = compute_task_stats(_snap_q)
+                    txt_out = render_tasks_phase_a_answer(
+                        spec=phase_a_spec,
+                        stats=stats,
+                    )
+
+                    _det_tr_pa = {
+                        "intent": "ssot_task_phase_a",
+                        "question_type": phase_a_spec.question_type,
+                        "active_only": bool(phase_a_spec.active_only),
+                        "exit_path": "deterministic_ssot.task_phase_a",
+                        "stats": {
+                            "total_count": stats.get("total_count"),
+                            "active_count": stats.get("active_count"),
+                        },
+                    }
+                    _det_grounding_pa = _grounding_bundle(
+                        prompt=prompt,
+                        knowledge_snapshot=ks_for_gp,
+                        memory_snapshot=mem_snapshot,
+                        legacy_trace=_det_tr_pa,
+                        agent_id="ceo_advisor",
+                    )
+                    _det_content_pa: Dict[str, Any] = {
+                        "text": txt_out,
+                        "proposed_commands": [],
+                        "agent_id": "ceo_advisor",
+                        "read_only": True,
+                        "notion_ops": {
+                            "armed": False,
+                            "armed_at": None,
+                            "session_id": session_id,
+                            "armed_state": {},
+                        },
+                    }
+                    if debug_on:
+                        _det_content_pa["trace"] = _det_tr_pa
+                        _det_content_pa.update(kb)
+                        _det_content_pa.update(_det_grounding_pa)
+
+                    _det_content_pa = _attach_and_log_audit(
+                        _det_content_pa,
+                        session_id=session_id,
+                        conversation_id=conversation_id,
+                        agent_id="ceo_advisor",
+                        snapshot=ks_for_gp,
+                        trace=_det_tr_pa,
+                        grounding=_det_grounding_pa,
+                        debug_on=bool(debug_on),
+                        exit_path="ceo_chat.deterministic_ssot.task_phase_a",
+                        targeted_reads=targeted_reads_info,
+                    )
+                    return JSONResponse(
+                        content=_attach_session_id(_det_content_pa, session_id)
+                    )
+
                 qtype = classify_task_query(prompt)
 
                 # Guard: avoid hijacking non-task deliverable prompts that merely
