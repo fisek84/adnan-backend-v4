@@ -6,6 +6,86 @@ from datetime import date, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 
+def compute_task_stats(snapshot: Any) -> Dict[str, Any]:
+    """Compute minimal, stable task stats from an SSOT snapshot.
+
+    Phase A (TASKS) uses this to answer YES/NO(active), COUNT, and STATUS
+    deterministically without listing task titles.
+    """
+
+    tasks_raw = snapshot_tasks(snapshot)
+    tasks_norm = normalize_tasks(tasks_raw)
+
+    total_count = len(tasks_norm)
+    active_count = 0
+    for t in tasks_norm:
+        st = _pick_str(t.get("status"), default="")
+        if not _is_completed_status(st):
+            active_count += 1
+
+    return {
+        "total_count": int(total_count),
+        "active_count": int(active_count),
+        "counts_by_status": _counts_by_status(tasks_norm),
+    }
+
+
+def render_tasks_phase_a_answer(*, spec: Any, stats: Dict[str, Any]) -> str:
+    """Render Phase A TASKS answer in answer-first format.
+
+    spec is expected to be a TaskPhaseASpec-like object with:
+      - question_type: YES_NO | COUNT | STATUS
+      - active_only: bool (only for YES_NO)
+    """
+
+    q = getattr(spec, "question_type", None)
+    active_only = bool(getattr(spec, "active_only", False))
+
+    total = int(stats.get("total_count") or 0)
+    active = int(stats.get("active_count") or 0)
+    counts = (
+        stats.get("counts_by_status")
+        if isinstance(stats.get("counts_by_status"), dict)
+        else {}
+    )
+    counts = {str(k): int(v) for k, v in counts.items() if isinstance(k, str)}
+
+    if q == "YES_NO":
+        if active_only:
+            has = active > 0
+            ans = "Da." if has else "Ne."
+            return f"{ans} Trenutno imamo {active} aktivnih zadataka."
+
+        has = total > 0
+        ans = "Da." if has else "Ne."
+        return f"{ans} Trenutno imamo {total} zadataka u sistemu."
+
+    if q == "COUNT":
+        # Contract: must start with a number.
+        return f"{total}. Ukupno imamo {total} zadataka."
+
+    if q == "STATUS":
+        # Contract: short conclusion first; no task title list.
+        if total <= 0:
+            head = "Trenutno nemamo nijedan zadatak."
+        elif active <= 0:
+            head = "Trenutno nema aktivnih zadataka."
+        else:
+            head = f"Trenutno imamo {active} aktivnih zadataka."
+
+        if not counts:
+            return head
+
+        parts = []
+        for k in sorted(counts.keys()):
+            parts.append(f"{k}: {counts[k]}")
+        tail = "Po statusu: " + ", ".join(parts) + "."
+        return f"{head} {tail}"
+
+    # Phase A renderer is not defined for LIST (handled by list engine).
+    return ""
+
+
 @dataclass(frozen=True)
 class SSOTQueryResult:
     query_type: str
