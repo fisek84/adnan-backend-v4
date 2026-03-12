@@ -39,6 +39,11 @@ def classify_tasks_phase_a(user_message: str) -> Optional[TaskPhaseASpec]:
     if not has_task:
         return None
 
+    # Out of Phase A scope: goal-scoped task queries are handled by a deterministic
+    # goal-scoped join (tasks filtered by goal_id) in the router.
+    if re.search(r"(?i)\b(cilj|goal)\w*\b", t):
+        return None
+
     # Out of Phase A scope: time-scoped task queries (today/tomorrow/overdue/deadlines)
     # are handled by the legacy deterministic task query engine.
     if re.search(

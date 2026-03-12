@@ -94,6 +94,15 @@ def _is_show_goals_tasks_intent(text: str) -> bool:
     t = (text or "").strip()
     if not t:
         return False
+    # Guard: do NOT treat goal-scoped task follow-ups as a global "show goals+tasks" intent.
+    # Examples:
+    #   - "Koji su zadaci povezani sa ovim ciljem?"
+    #   - "Imamo li aktivne zadatke za taj cilj?"
+    if re.search(r"(?i)\b(task|taskovi|zadat|zadac)\w*\b", t) and re.search(
+        r"(?i)\b(ovaj|ovom|ovog|ovome|ovo|taj|tom|tog|tome|ovim)\b.*\b(cilj|goal)\w*\b",
+        t,
+    ):
+        return False
     return bool(_SHOW_GOALS_TASKS_RE.search(t))
 
 
@@ -3278,6 +3287,269 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
 
             _snap_q = ks_for_gp if isinstance(ks_for_gp, dict) else {}
             if bool(_snap_q.get("ready") is True):
+                # Goal-scoped task queries must be handled deterministically here
+                # (and must NOT be hijacked by global Phase A task stats).
+                try:
+                    t0_goal_tasks = _norm_bhs_ascii(prompt)
+                    has_task_token = bool(
+                        re.search(
+                            r"(?i)\b(task|taskovi|zadat|zadac)\w*\b", t0_goal_tasks
+                        )
+                    )
+                    has_goal_token = bool(
+                        re.search(r"(?i)\b(cilj|goal)\w*\b", t0_goal_tasks)
+                    )
+                    is_followup_goal = bool(
+                        re.search(
+                            r"(?i)\b(ovaj|ovom|ovog|ovome|ovo|taj|tom|tog|tome|ovim)\b.*\b(cilj|goal)\w*\b",
+                            t0_goal_tasks,
+                        )
+                    )
+                    is_goal_scoped_task_query = bool(
+                        has_task_token and (has_goal_token or is_followup_goal)
+                    )
+
+                    if is_goal_scoped_task_query:
+                        # Resolve goal from conversation meta (last referenced goal title).
+                        last_goal_title = ""
+                        try:
+                            if (
+                                isinstance(conversation_id, str)
+                                and conversation_id.strip()
+                            ):
+                                meta = ConversationStateStore.get_meta(
+                                    conversation_id=conversation_id.strip()
+                                )
+                                if isinstance(meta, dict):
+                                    v = meta.get("last_referenced_goal_title")
+                                    if isinstance(v, str) and v.strip():
+                                        last_goal_title = v.strip()
+                        except Exception:
+                            last_goal_title = ""
+
+                        if last_goal_title:
+                            goals = _snapshot_goals_list(_snap_q)
+                            tasks = _snapshot_tasks_list(_snap_q)
+
+                            last_goal_norm = _norm_bhs_ascii(last_goal_title)
+                            chosen_goal: Optional[Dict[str, Any]] = None
+                            if last_goal_norm:
+                                for g in goals:
+                                    f = (
+                                        g.get("fields")
+                                        if isinstance(g.get("fields"), dict)
+                                        else {}
+                                    )
+                                    title = _pick_str(
+                                        g.get("title")
+                                        or g.get("name")
+                                        or f.get("title")
+                                        or f.get("name")
+                                    )
+                                    if _norm_bhs_ascii(title) == last_goal_norm:
+                                        chosen_goal = g
+                                        break
+
+                                if chosen_goal is None:
+                                    for g in goals:
+                                        f = (
+                                            g.get("fields")
+                                            if isinstance(g.get("fields"), dict)
+                                            else {}
+                                        )
+                                        title = _pick_str(
+                                            g.get("title")
+                                            or g.get("name")
+                                            or f.get("title")
+                                            or f.get("name")
+                                        )
+                                        if (
+                                            last_goal_norm
+                                            and last_goal_norm in _norm_bhs_ascii(title)
+                                        ):
+                                            chosen_goal = g
+                                            break
+
+                            if chosen_goal is not None:
+                                goal_ids: List[str] = []
+                                for k in ("id", "notion_id", "notionId"):
+                                    v = chosen_goal.get(k)
+                                    if isinstance(v, str) and v.strip():
+                                        goal_ids.append(v.strip())
+                                goal_id_set = set(goal_ids)
+
+                                linked: List[Dict[str, Any]] = []
+                                if goal_id_set:
+                                    for t in tasks:
+                                        tf = (
+                                            t.get("fields")
+                                            if isinstance(t.get("fields"), dict)
+                                            else {}
+                                        )
+                                        refs = (
+                                            t.get("goal_ids")
+                                            or t.get("goalIds")
+                                            or t.get("goal_id")
+                                            or t.get("goal")
+                                            or tf.get("goal_ids")
+                                            or tf.get("goalIds")
+                                            or tf.get("goal_id")
+                                            or tf.get("goal")
+                                            or []
+                                        )
+                                        if isinstance(refs, str) and refs.strip():
+                                            refs = [refs.strip()]
+                                        if not isinstance(refs, list):
+                                            refs = []
+                                        refs_norm = [
+                                            r.strip()
+                                            for r in refs
+                                            if isinstance(r, str) and r.strip()
+                                        ]
+                                        if any(r in goal_id_set for r in refs_norm):
+                                            linked.append(t)
+
+                                # Compute active tasks count using the same engine logic as Phase A.
+                                active_count = 0
+                                try:
+                                    from services.ssot_task_query_engine import (  # noqa: PLC0415
+                                        compute_task_stats as _compute_task_stats,
+                                    )
+
+                                    payload0 = (
+                                        _snap_q.get("payload")
+                                        if isinstance(_snap_q.get("payload"), dict)
+                                        else {}
+                                    )
+                                    dash0 = (
+                                        payload0.get("dashboard")
+                                        if isinstance(payload0.get("dashboard"), dict)
+                                        else {}
+                                    )
+                                    payload2 = dict(payload0)
+                                    payload2["dashboard"] = dict(dash0)
+                                    payload2["tasks"] = linked
+                                    payload2["dashboard"]["tasks"] = []
+                                    snap2 = {"ready": True, "payload": payload2}
+                                    st2 = _compute_task_stats(snap2)
+                                    active_count = int(st2.get("active_count") or 0)
+                                except Exception:
+                                    active_count = 0
+
+                                total_count = len(linked)
+                                wants_active = bool(
+                                    re.search(r"(?i)\b(aktivn)\w*\b", t0_goal_tasks)
+                                )
+                                wants_list = bool(
+                                    re.search(
+                                        r"(?i)\b(koji|koje|povezan|povezani|navedi|izlistaj|lista|prikazi|pokazi|poka(z|z)i)\b",
+                                        t0_goal_tasks,
+                                    )
+                                )
+
+                                goal_title_out = _pick_str(
+                                    chosen_goal.get("title")
+                                    or chosen_goal.get("name")
+                                    or (
+                                        chosen_goal.get("fields", {}).get("title")
+                                        if isinstance(chosen_goal.get("fields"), dict)
+                                        else None
+                                    )
+                                    or (
+                                        chosen_goal.get("fields", {}).get("name")
+                                        if isinstance(chosen_goal.get("fields"), dict)
+                                        else None
+                                    )
+                                )
+
+                                if wants_list:
+                                    titles: List[str] = []
+                                    for t in linked[:30]:
+                                        tf = (
+                                            t.get("fields")
+                                            if isinstance(t.get("fields"), dict)
+                                            else {}
+                                        )
+                                        nm = _pick_str(
+                                            t.get("title")
+                                            or t.get("name")
+                                            or tf.get("title")
+                                            or tf.get("name")
+                                        )
+                                        if nm:
+                                            titles.append(nm)
+                                    if titles:
+                                        txt_out = (
+                                            f"Zadaci povezani sa ciljem '{goal_title_out}':\n"
+                                            + "\n".join(f"- {x}" for x in titles)
+                                        )
+                                    else:
+                                        txt_out = f"Nemamo zadatke povezane sa ciljem '{goal_title_out}'."
+                                else:
+                                    # YES/NO style question.
+                                    if wants_active:
+                                        ans = "Da." if active_count > 0 else "Ne."
+                                        txt_out = f"{ans} Trenutno imamo {active_count} aktivnih zadataka za cilj '{goal_title_out}'."
+                                    else:
+                                        ans = "Da." if total_count > 0 else "Ne."
+                                        txt_out = f"{ans} Trenutno imamo {total_count} zadataka za cilj '{goal_title_out}'."
+
+                                _det_tr_goal_tasks = {
+                                    "intent": "ssot_goal_scoped_tasks",
+                                    "exit_path": "deterministic_ssot.goal_scoped_tasks",
+                                    "goal_title": goal_title_out,
+                                    "goal_ids": goal_ids[:3],
+                                    "total_count": int(total_count),
+                                    "active_count": int(active_count),
+                                }
+                                _det_grounding_goal_tasks = _grounding_bundle(
+                                    prompt=prompt,
+                                    knowledge_snapshot=ks_for_gp,
+                                    memory_snapshot=mem_snapshot,
+                                    legacy_trace=_det_tr_goal_tasks,
+                                    agent_id="ceo_advisor",
+                                )
+                                _det_content_goal_tasks: Dict[str, Any] = {
+                                    "text": (txt_out or "").strip(),
+                                    "proposed_commands": [],
+                                    "agent_id": "ceo_advisor",
+                                    "read_only": True,
+                                    "notion_ops": {
+                                        "armed": False,
+                                        "armed_at": None,
+                                        "session_id": session_id,
+                                        "armed_state": {},
+                                    },
+                                }
+                                if debug_on:
+                                    _det_content_goal_tasks["trace"] = (
+                                        _det_tr_goal_tasks
+                                    )
+                                    _det_content_goal_tasks.update(kb)
+                                    _det_content_goal_tasks.update(
+                                        _det_grounding_goal_tasks
+                                    )
+
+                                _det_content_goal_tasks = _attach_and_log_audit(
+                                    _det_content_goal_tasks,
+                                    session_id=session_id,
+                                    conversation_id=conversation_id,
+                                    agent_id="ceo_advisor",
+                                    snapshot=ks_for_gp,
+                                    trace=_det_tr_goal_tasks,
+                                    grounding=_det_grounding_goal_tasks,
+                                    debug_on=bool(debug_on),
+                                    exit_path="ceo_chat.deterministic_ssot.goal_scoped_tasks",
+                                    targeted_reads=targeted_reads_info,
+                                )
+                                return JSONResponse(
+                                    content=_attach_session_id(
+                                        _det_content_goal_tasks, session_id
+                                    )
+                                )
+                except Exception:
+                    pass
+
                 phase_a_spec = classify_tasks_phase_a(prompt)
                 if phase_a_spec and phase_a_spec.question_type in {
                     "YES_NO",
@@ -3541,6 +3813,7 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                         return _extract_goal_title_from_goal_line(user_text or "")
                     raw = (m.group(1) or "").strip()
                     raw = raw.lstrip(" \t\r\n\"'.,;:!?-\u2013\u2014")
+                    raw = raw.replace("\\", " ")
                     # If user wrote multiple sentences, keep only the first clause.
                     raw = re.split(r"[\.!?]\s+", raw, maxsplit=1)[0].strip()
                     raw = raw.strip(" \t\r\n\"'.,;:!?")

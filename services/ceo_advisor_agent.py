@@ -6596,6 +6596,11 @@ async def create_ceo_advisor_agent(
             )
 
             phase_a_spec = classify_tasks_phase_a(base_text)
+            # Goal-scoped task questions must be handled by the router's deterministic
+            # goal-scoped join; do not override with global Phase A stats.
+            is_goal_scoped = bool(
+                re.search(r"(?i)\b(cilj|goal)\w*\b", (base_text or ""))
+            )
             snapshot_ready = bool(
                 isinstance(snap_trace, dict) and snap_trace.get("ready") is True
             )
@@ -6603,6 +6608,7 @@ async def create_ceo_advisor_agent(
                 phase_a_spec
                 and snapshot_ready
                 and (not structured_mode)
+                and (not is_goal_scoped)
                 and phase_a_spec.question_type in {"YES_NO", "COUNT", "STATUS"}
             ):
                 stats = compute_task_stats(snapshot_payload)
