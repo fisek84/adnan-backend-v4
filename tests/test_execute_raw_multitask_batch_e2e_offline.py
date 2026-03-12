@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Dict, List
 
 from fastapi.testclient import TestClient
@@ -85,6 +86,11 @@ def test_execute_raw_multitask_blocks_approve_executes_batch_and_returns_urls(
         "Description: Opis 2\n"
     )
 
+    session_id = "test-session-multitask-batch-1"
+    from services.notion_ops_state import set_armed  # noqa: PLC0415
+
+    asyncio.run(set_armed(session_id, True, prompt="test"))
+
     # Use TestClient context manager to guarantee startup has run.
     with TestClient(app) as client:
         from services.notion_service import get_notion_service  # noqa: PLC0415
@@ -111,6 +117,8 @@ def test_execute_raw_multitask_blocks_approve_executes_batch_and_returns_urls(
                 "command": "ceo.command.propose",
                 "intent": "ceo.command.propose",
                 "params": {"prompt": prompt, "supports_bilingual": True},
+                "session_id": session_id,
+                "metadata": {"session_id": session_id},
                 "payload_summary": {},
                 "initiator": "ceo_chat",
             },

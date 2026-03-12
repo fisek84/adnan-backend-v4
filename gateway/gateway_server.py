@@ -3953,6 +3953,26 @@ async def execute_raw_command(payload: Dict[str, Any] = Body(...)):
         metadata=normalized.metadata if isinstance(normalized.metadata, dict) else {},
     )
 
+    # Preserve session_id into the canonical executable command metadata.
+    # Proposal unwrap can build its own metadata envelope; Notion Ops gate
+    # requires metadata.session_id to be present for any Notion write.
+    try:
+        sid = None
+        md_in = normalized.metadata if isinstance(normalized.metadata, dict) else {}
+        sid = md_in.get("session_id")
+        if not (isinstance(sid, str) and sid.strip()):
+            sid = payload.get("session_id") if isinstance(payload, dict) else None
+        if not (isinstance(sid, str) and sid.strip()):
+            md_payload = payload.get("metadata") if isinstance(payload, dict) else None
+            if isinstance(md_payload, dict):
+                sid = md_payload.get("session_id")
+
+        if isinstance(sid, str) and sid.strip():
+            if isinstance(getattr(ai_command, "metadata", None), dict):
+                ai_command.metadata.setdefault("session_id", sid.strip())
+    except Exception:
+        pass
+
     # Enterprise preview editor: apply the same server-side patches at execution creation time.
     # This guarantees the registered canonical command (later resumed by approval) is 1:1.
     if enterprise_enabled and patches_in is not None:

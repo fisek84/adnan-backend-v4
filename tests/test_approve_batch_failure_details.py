@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock
 
 from fastapi.testclient import TestClient
@@ -60,6 +61,11 @@ def test_approve_batch_failure_returns_op_id_and_reason(monkeypatch):
         "Description: Opis 2\n"
     )
 
+    session_id = "test-session-approve-batch-failure-1"
+    from services.notion_ops_state import set_armed  # noqa: PLC0415
+
+    asyncio.run(set_armed(session_id, True, prompt="test"))
+
     with TestClient(app) as client:
         from services.notion_service import get_notion_service  # noqa: PLC0415
 
@@ -84,6 +90,8 @@ def test_approve_batch_failure_returns_op_id_and_reason(monkeypatch):
                 "command": "ceo.command.propose",
                 "intent": "ceo.command.propose",
                 "params": {"prompt": prompt, "supports_bilingual": True},
+                "session_id": session_id,
+                "metadata": {"session_id": session_id},
                 "payload_summary": {},
                 "initiator": "ceo_chat",
             },
