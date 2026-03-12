@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Dict, List
 from unittest.mock import AsyncMock
 
@@ -129,6 +130,11 @@ def test_execute_raw_kreiraj_task_blocks_resolves_goal_once_and_creates_tasks(
         "Description: Zona 2, bez forsiranja\n"
     )
 
+    session_id = "test-session-kreiraj-task-1"
+    from services.notion_ops_state import set_armed  # noqa: PLC0415
+
+    asyncio.run(set_armed(session_id, True, prompt="test"))
+
     with TestClient(app) as client:
         from services.notion_service import get_notion_service  # noqa: PLC0415
 
@@ -148,6 +154,8 @@ def test_execute_raw_kreiraj_task_blocks_resolves_goal_once_and_creates_tasks(
                 "command": "ceo.command.propose",
                 "intent": "ceo.command.propose",
                 "params": {"prompt": prompt, "supports_bilingual": True},
+                "session_id": session_id,
+                "metadata": {"session_id": session_id},
                 "payload_summary": {},
                 "initiator": "ceo_chat",
             },
