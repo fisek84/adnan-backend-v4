@@ -119,7 +119,9 @@ def test_ceo_goal_context_acceptance_flow_goal_scoped_tasks(monkeypatch):
     conv_id = "conv-goal-context-acceptance"
     sess_id = "sess-goal-context-acceptance"
 
-    out1 = _post_msg(client, msg="Koji je glavni cilj?", conv_id=conv_id, sess_id=sess_id, snap=snap)
+    out1 = _post_msg(
+        client, msg="Koji je glavni cilj?", conv_id=conv_id, sess_id=sess_id, snap=snap
+    )
     t1 = out1.get("text") or ""
     assert "Rast prihoda Q1" in t1
 
