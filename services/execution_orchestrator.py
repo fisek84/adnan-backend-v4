@@ -208,7 +208,9 @@ class ExecutionOrchestrator:
         command = cmd.command.strip() if isinstance(cmd.command, str) else ""
         return (intent in notion_write_intents) or (command in notion_write_intents)
 
-    async def _enforce_notion_ops_gate_or_block(self, cmd: AICommand) -> Optional[Dict[str, Any]]:
+    async def _enforce_notion_ops_gate_or_block(
+        self, cmd: AICommand
+    ) -> Optional[Dict[str, Any]]:
         """Fail-closed Notion Ops gate.
 
         Returns a BLOCKED payload when the command is a Notion write and:
@@ -367,7 +369,7 @@ class ExecutionOrchestrator:
         cmd.execution_state = "EXECUTING"
         self.registry.register(cmd)
 
-        try:            # SSOT safety (post-approval): Notion writes must never dispatch when Notion
+        try:  # SSOT safety (post-approval): Notion writes must never dispatch when Notion
             # Ops is not ARMED. Approvals resume via this method, so the gate MUST be
             # enforced here.
             blocked = await self._enforce_notion_ops_gate_or_block(cmd)

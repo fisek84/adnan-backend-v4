@@ -161,7 +161,10 @@ def test_post_approval_allows_notion_write_when_armed_and_session_id_present(
     import services.execution_orchestrator as eo
     from services.approval_state_service import get_approval_state
 
-    flags: Dict[str, Any] = {"after_approval_hit": False, "notion_execute_called": False}
+    flags: Dict[str, Any] = {
+        "after_approval_hit": False,
+        "notion_execute_called": False,
+    }
 
     class _FakeNotion:
         async def execute(self, command):  # noqa: ANN001
@@ -195,7 +198,9 @@ def test_post_approval_allows_notion_write_when_armed_and_session_id_present(
     with TestClient(app) as client:
         # App boot may repeatedly inject services; patch accessors so requests
         # always use this instrumented orchestrator and shared approval state.
-        monkeypatch.setattr(aor, "_get_orchestrator", lambda: orchestrator, raising=True)
+        monkeypatch.setattr(
+            aor, "_get_orchestrator", lambda: orchestrator, raising=True
+        )
         monkeypatch.setattr(aor, "_get_approval_state", lambda: approvals, raising=True)
 
         exec_r = client.post(
@@ -226,4 +231,3 @@ def test_post_approval_allows_notion_write_when_armed_and_session_id_present(
     assert approve_body.get("read_only") is False, approve_body
     assert flags["after_approval_hit"] is True
     assert flags["notion_execute_called"] is True
-

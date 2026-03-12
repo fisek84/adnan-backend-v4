@@ -3953,7 +3953,6 @@ async def execute_raw_command(payload: Dict[str, Any] = Body(...)):
         metadata=normalized.metadata if isinstance(normalized.metadata, dict) else {},
     )
 
-
     # Preserve session_id into the canonical executable command metadata.
     # Proposal unwrap can build its own metadata envelope; Notion Ops gate
     # requires metadata.session_id to be present for any Notion write.
@@ -7604,4 +7603,3 @@ else:
         StaticFiles(directory=str(FRONTEND_DIST_DIR), html=True),
         name="frontend",
     )
-
