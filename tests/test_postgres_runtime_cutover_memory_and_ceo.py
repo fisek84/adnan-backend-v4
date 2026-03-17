@@ -28,7 +28,9 @@ def _require_pg_memory_plane_tables() -> None:
         pg.get_conversation_turns(conversation_id="__probe__", max_turns=1)
         pg.get_last_memory_write()
     except Exception as exc:
-        pytest.skip(f"Postgres memory plane is unavailable (migrations missing?): {exc}")
+        pytest.skip(
+            f"Postgres memory plane is unavailable (migrations missing?): {exc}"
+        )
 
 
 def _load_app():
@@ -76,7 +78,9 @@ def test_postgres_ceo_conversation_continuity_no_file_fallback(monkeypatch, tmp_
 
     from services.grounding_pack_service import GroundingPackService
 
-    monkeypatch.setattr(GroundingPackService, "build", lambda **_kwargs: _grounding_pack_full())
+    monkeypatch.setattr(
+        GroundingPackService, "build", lambda **_kwargs: _grounding_pack_full()
+    )
 
     captured: Dict[str, Any] = {}
 
@@ -211,7 +215,7 @@ def test_postgres_goal_context_persists_last_referenced_goal_id_roundtrip(monkey
         },
     )
     assert r2.status_code == 200, r2.text
-    txt = (r2.json().get("text") or "")
+    txt = r2.json().get("text") or ""
     assert "cto@example.com" in txt
     assert "ceo@example.com" not in txt
 
