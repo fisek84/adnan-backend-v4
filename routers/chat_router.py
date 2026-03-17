@@ -3182,6 +3182,316 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             except Exception:
                 pass
 
+        # Phase 0x: Deterministic multi-intent handler (no LLM).
+        # Covers compound questions that ask, in one message:
+        # - what is the top goal
+        # - who owns it
+        # - which tasks are linked to it
+        # Must return ONE answer in a fixed format and must NOT ask follow-ups.
+        try:
+            _snap_mi = ks_for_gp if isinstance(ks_for_gp, dict) else {}
+            if bool(_snap_mi.get("ready") is True):
+                t0_mi = _norm_bhs_ascii(prompt)
+
+                wants_top = bool(_is_top_goal_intent(prompt))
+                wants_owner = bool(
+                    re.search(
+                        r"(?i)\b(ko|who)\b.*\b(odgovor|zaduzen|zaduzen|owner|vlasnik|radi|assigned)\w*\b",
+                        t0_mi,
+                    )
+                )
+                wants_tasks = bool(
+                    re.search(r"(?i)\b(task|taskovi|zadat|zadac)\w*\b", t0_mi)
+                )
+                is_compound = bool(wants_top and wants_owner and wants_tasks)
+
+                if is_compound:
+                    view = _compute_ceo_view(_snap_mi)
+                    top3 = view.get("goals_top3") if isinstance(view, dict) else None
+                    top3 = top3 if isinstance(top3, list) else []
+
+                    goal_title = ""
+                    goal_id = ""
+                    if top3 and isinstance(top3[0], dict):
+                        g0 = top3[0]
+                        goal_title = (g0.get("title") or "").strip()
+                        goal_id = (g0.get("id") or "").strip()
+
+                    if goal_title:
+                        goals = _snapshot_goals_list(_snap_mi)
+                        tasks = _snapshot_tasks_list(_snap_mi)
+
+                        chosen_goal: Optional[Dict[str, Any]] = None
+                        if isinstance(goal_id, str) and goal_id.strip():
+                            for g in goals:
+                                if not isinstance(g, dict):
+                                    continue
+                                if (g.get("id") or "").strip() == goal_id.strip():
+                                    chosen_goal = g
+                                    break
+
+                        if chosen_goal is None:
+                            goal_norm = _norm_bhs_ascii(goal_title)
+                            for g in goals:
+                                if not isinstance(g, dict):
+                                    continue
+                                f = (
+                                    g.get("fields")
+                                    if isinstance(g.get("fields"), dict)
+                                    else {}
+                                )
+                                title = _pick_str(
+                                    g.get("title")
+                                    or g.get("name")
+                                    or f.get("title")
+                                    or f.get("name")
+                                )
+                                if goal_norm and _norm_bhs_ascii(title) == goal_norm:
+                                    chosen_goal = g
+                                    break
+
+                        goal_title_out = goal_title
+                        goal_ids: List[str] = []
+                        if isinstance(chosen_goal, dict):
+                            f = (
+                                chosen_goal.get("fields")
+                                if isinstance(chosen_goal.get("fields"), dict)
+                                else {}
+                            )
+                            goal_title_out = _pick_str(
+                                chosen_goal.get("title")
+                                or chosen_goal.get("name")
+                                or f.get("title")
+                                or f.get("name")
+                            )
+                            for k in ("id", "notion_id", "notionId"):
+                                v = chosen_goal.get(k)
+                                if isinstance(v, str) and v.strip():
+                                    goal_ids.append(v.strip())
+
+                        goal_id_set = set([x for x in goal_ids if x])
+
+                        def _norm_people(xs: List[str]) -> List[str]:
+                            seen = set()
+                            out: List[str] = []
+                            for x in xs:
+                                k = (x or "").strip()
+                                if not k:
+                                    continue
+                                kk = k.lower()
+                                if kk in seen:
+                                    continue
+                                seen.add(kk)
+                                out.append(k)
+                            return out
+
+                        owners: List[str] = []
+                        if isinstance(chosen_goal, dict):
+                            f = (
+                                chosen_goal.get("fields")
+                                if isinstance(chosen_goal.get("fields"), dict)
+                                else {}
+                            )
+                            v_owner = (
+                                f.get("owner")
+                                or f.get("owners")
+                                or f.get("assigned_to")
+                                or f.get("assigned")
+                            )
+                            if isinstance(v_owner, str) and v_owner.strip():
+                                owners = [v_owner.strip()]
+                            elif isinstance(v_owner, list):
+                                owners = [
+                                    x.strip()
+                                    for x in v_owner
+                                    if isinstance(x, str) and x.strip()
+                                ]
+
+                            # Best-effort support for properties multi_select shape.
+                            if not owners and isinstance(
+                                chosen_goal.get("properties"), dict
+                            ):
+                                props = chosen_goal.get("properties")
+                                for key in (
+                                    "Assigned To",
+                                    "Owner",
+                                    "Owners",
+                                    "owner",
+                                    "owners",
+                                    "assigned_to",
+                                ):
+                                    cand = props.get(key)
+                                    if not isinstance(cand, dict):
+                                        continue
+                                    t = cand.get("type")
+                                    if isinstance(t, str) and t.strip().lower() in {
+                                        "multi_select",
+                                        "select",
+                                    }:
+                                        vv = cand.get("value")
+                                        if isinstance(vv, str) and vv.strip():
+                                            owners = [vv.strip()]
+                                            break
+                                        if isinstance(vv, list):
+                                            owners = [
+                                                x.strip()
+                                                for x in vv
+                                                if isinstance(x, str) and x.strip()
+                                            ]
+                                            break
+
+                        owners = _norm_people(owners)
+                        owners_out = (
+                            ", ".join(owners) if owners else "(nije definisano)"
+                        )
+
+                        linked_titles: List[str] = []
+                        if goal_id_set:
+                            for t in tasks:
+                                if not isinstance(t, dict):
+                                    continue
+                                tf = (
+                                    t.get("fields")
+                                    if isinstance(t.get("fields"), dict)
+                                    else {}
+                                )
+                                refs = (
+                                    t.get("goal_ids")
+                                    or t.get("goalIds")
+                                    or t.get("goal_id")
+                                    or t.get("goal")
+                                    or tf.get("goal_ids")
+                                    or tf.get("goalIds")
+                                    or tf.get("goal_id")
+                                    or tf.get("goal")
+                                    or []
+                                )
+                                if isinstance(refs, str) and refs.strip():
+                                    refs = [refs.strip()]
+                                if not isinstance(refs, list):
+                                    refs = []
+                                refs_norm = [
+                                    r.strip()
+                                    for r in refs
+                                    if isinstance(r, str) and r.strip()
+                                ]
+                                if not any(r in goal_id_set for r in refs_norm):
+                                    continue
+
+                                nm = _pick_str(
+                                    t.get("title")
+                                    or t.get("name")
+                                    or tf.get("title")
+                                    or tf.get("name")
+                                )
+                                if nm:
+                                    linked_titles.append(nm)
+
+                        linked_titles = linked_titles[:30]
+                        if linked_titles:
+                            tasks_out = "\n".join(f"- {x}" for x in linked_titles)
+                        else:
+                            tasks_out = "(nema povezanih zadataka)"
+
+                        txt_out = (
+                            "Glavni cilj:\n"
+                            f"{goal_title_out}\n\n"
+                            "Owner:\n"
+                            f"{owners_out}\n\n"
+                            "Zadaci za taj cilj:\n"
+                            f"{tasks_out}"
+                        ).strip()
+
+                        # Persist bounded multi-turn context even on deterministic exits.
+                        try:
+                            if (
+                                isinstance(conversation_id, str)
+                                and conversation_id.strip()
+                            ):
+                                ConversationStateStore.append_turn(
+                                    conversation_id=conversation_id.strip(),
+                                    user_text=prompt or "",
+                                    assistant_text=txt_out or "",
+                                )
+                        except Exception:
+                            pass
+
+                        # Keep follow-ups consistent with the existing top-goal path.
+                        try:
+                            if (
+                                isinstance(conversation_id, str)
+                                and conversation_id.strip()
+                                and isinstance(goal_title_out, str)
+                                and goal_title_out.strip()
+                            ):
+                                updates = {
+                                    "last_referenced_goal_title": goal_title_out.strip(),
+                                    "last_referenced_goal_title_norm": _norm_bhs_ascii(
+                                        goal_title_out
+                                    ),
+                                    "last_referenced_goal_source": "deterministic_multi_intent_top_goal",
+                                    "last_referenced_goal_at": float(time.time()),
+                                    "last_shown_goal_titles": [goal_title_out.strip()],
+                                    "last_shown_goal_titles_at": float(time.time()),
+                                }
+                                if goal_ids:
+                                    updates["last_referenced_goal_id"] = goal_ids[0]
+                                ConversationStateStore.update_meta(
+                                    conversation_id=conversation_id.strip(),
+                                    updates=updates,
+                                )
+                        except Exception:
+                            pass
+
+                        _det_tr_mi = {
+                            "intent": "multi_intent_goal_summary",
+                            "exit_path": "deterministic_ssot.multi_intent_goal_summary",
+                            "goal_title": goal_title_out,
+                            "goal_ids": list(goal_id_set)[:3],
+                            "linked_tasks_count": int(len(linked_titles)),
+                        }
+                        _det_grounding_mi = _grounding_bundle(
+                            prompt=prompt,
+                            knowledge_snapshot=ks_for_gp,
+                            memory_snapshot=mem_snapshot,
+                            legacy_trace=_det_tr_mi,
+                            agent_id="ceo_advisor",
+                        )
+                        _det_content_mi: Dict[str, Any] = {
+                            "text": txt_out,
+                            "proposed_commands": [],
+                            "agent_id": "ceo_advisor",
+                            "read_only": True,
+                            "notion_ops": {
+                                "armed": False,
+                                "armed_at": None,
+                                "session_id": session_id,
+                                "armed_state": {},
+                            },
+                        }
+                        if debug_on:
+                            _det_content_mi["trace"] = _det_tr_mi
+                            _det_content_mi.update(kb)
+                            _det_content_mi.update(_det_grounding_mi)
+
+                        _det_content_mi = _attach_and_log_audit(
+                            _det_content_mi,
+                            session_id=session_id,
+                            conversation_id=conversation_id,
+                            agent_id="ceo_advisor",
+                            snapshot=ks_for_gp,
+                            trace=_det_tr_mi,
+                            grounding=_det_grounding_mi,
+                            debug_on=bool(debug_on),
+                            exit_path="ceo_chat.deterministic_ssot.multi_intent_goal_summary",
+                            targeted_reads=targeted_reads_info,
+                        )
+                        return JSONResponse(
+                            content=_attach_session_id(_det_content_mi, session_id)
+                        )
+        except Exception:
+            pass
+
         # Phase 1a: Deterministic "Najbitniji cilj" (top goal) path (no LLM).
         # HARD RULES:
         # - strictly snapshot-derived (no guessing)
