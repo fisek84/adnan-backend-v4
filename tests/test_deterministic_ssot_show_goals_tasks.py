@@ -902,6 +902,117 @@ def test_active_goal_context_contract_followups_are_goal_bound(monkeypatch):
     assert "Unrelated task" not in txt5c
 
 
+def test_active_goal_context_followups_compact_flow_no_fallback(monkeypatch):
+    """Compact flow: top goal -> ownership -> active goal-scoped tasks via 'cilj o kojem pricamo'."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
+    monkeypatch.setenv("NOTION_API_KEY", "test-notion-key")
+    monkeypatch.setenv("NOTION_GOALS_DB_ID", "test-goals-db")
+    monkeypatch.setenv("NOTION_TASKS_DB_ID", "test-tasks-db")
+    monkeypatch.setenv("NOTION_PROJECTS_DB_ID", "test-projects-db")
+    monkeypatch.setenv("CEO_NOTION_TARGETED_READS_ENABLED", "false")
+    monkeypatch.setenv("CEO_ADVISOR_FORCE_OFFLINE", "1")
+
+    app = _get_app()
+    client = TestClient(app)
+
+    snap = {
+        "ready": True,
+        "status": "fresh",
+        "schema_version": "v1",
+        "payload": {
+            "goals": [
+                {
+                    "id": "g1",
+                    "title": "Preseli se u EU za 30 dana",
+                    "fields": {
+                        "status": "Blocked",
+                        "due": {"start": "2026-03-20"},
+                        "owner": ["Adnan", "Snezana"],
+                    },
+                },
+                {
+                    "id": "g2",
+                    "title": "Manje bitan cilj",
+                    "fields": {
+                        "status": "Not Started",
+                        "due": {"start": "2026-12-31"},
+                        "owner": ["Someone"],
+                    },
+                },
+            ],
+            "tasks": [
+                {
+                    "id": "t1",
+                    "title": "Spremi dokumente",
+                    "fields": {
+                        "status": "In Progress",
+                        "assigned_to": ["Adnan"],
+                        "goal": ["g1"],
+                    },
+                },
+                {
+                    "id": "t_unrelated",
+                    "title": "Unrelated task",
+                    "fields": {
+                        "status": "In Progress",
+                        "assigned_to": ["Someone"],
+                        "goal": ["g2"],
+                    },
+                },
+            ],
+            "projects": [],
+        },
+    }
+
+    conv_id = "conv-active-goal-context-compact"
+    sess_id = "sess-active-goal-context-compact"
+
+    r1 = client.post(
+        "/api/chat",
+        json={
+            "message": "Koji cilj je glavni?",
+            "conversation_id": conv_id,
+            "session_id": sess_id,
+            "snapshot": snap,
+        },
+    )
+    assert r1.status_code == 200, r1.text
+    txt1 = r1.json().get("text") or ""
+    assert "Preseli se u EU za 30 dana" in txt1
+    assert "Za koji cilj?" not in txt1
+
+    r2 = client.post(
+        "/api/chat",
+        json={
+            "message": "Ko je odgovoran za taj cilj?",
+            "conversation_id": conv_id,
+            "session_id": sess_id,
+            "snapshot": snap,
+        },
+    )
+    assert r2.status_code == 200, r2.text
+    txt2 = r2.json().get("text") or ""
+    assert "Za koji cilj?" not in txt2
+    assert "Adnan" in txt2
+    assert "Snezana" in txt2
+
+    r3 = client.post(
+        "/api/chat",
+        json={
+            "message": "Da li imamo aktivne zadatke za cilj o kojem pričamo?",
+            "conversation_id": conv_id,
+            "session_id": sess_id,
+            "snapshot": snap,
+        },
+    )
+    assert r3.status_code == 200, r3.text
+    txt3 = r3.json().get("text") or ""
+    assert "Za koji cilj?" not in txt3
+    assert "Preseli se u EU za 30 dana" in txt3
+    assert "aktivn" in txt3.lower()
+    assert "Unrelated task" not in txt3
+
+
 # ---------------------------------------------------------------------------
 # Phase 2: test_ceo_view_present_in_instructions
 # ---------------------------------------------------------------------------
