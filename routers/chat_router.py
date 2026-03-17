@@ -3848,6 +3848,50 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                         user_text or "",
                     )
                     if not m:
+                        # Also support cases where the goal title appears before the "cilj/goal" token.
+                        # Examples:
+                        # - "Ko je odgovoran za Preseli se u EU za 30 dana cilj?"
+                        # - "Ko je zaduzen za Preseli se u EU za 30 dana cilj?"
+                        # Keep this strictly deterministic: extract the candidate title chunk only.
+                        m2 = re.search(
+                            r'(?i)\b(?:za|o|na)\b\s*["\u201c\u201d\']?([^\n\r\?\"]+?)\s*["\u201c\u201d\']?\s+\b(?:cilj(?:u|a)?|goal)\w*\b',
+                            user_text or "",
+                        )
+                        if m2:
+                            raw2 = (m2.group(1) or "").strip()
+                            raw2 = raw2.strip(" \t\r\n\"'.,;:!?-")
+                            raw2 = raw2.replace("\\", " ")
+                            raw2 = re.split(r"[\.!?]\s+", raw2, maxsplit=1)[0].strip()
+                            raw2 = raw2.strip(" \t\r\n\"'.,;:!?")
+
+                            rn2 = _norm_bhs_ascii(raw2)
+                            if _is_followup_goal_reference(rn2):
+                                return ""
+                            if rn2.strip() in {
+                                "ovaj",
+                                "ovom",
+                                "ovog",
+                                "ovome",
+                                "ovo",
+                                "taj",
+                                "tom",
+                                "tog",
+                                "tome",
+                                "koji",
+                                "kojem",
+                                "kojim",
+                                "koju",
+                                "koje",
+                            }:
+                                return ""
+                            if re.search(
+                                r"(?i)\b(ko\s+radi|kome\s+je|ko\s+je|who\s+is|assigned\s+to|owner)\b",
+                                rn2,
+                            ):
+                                return ""
+                            if raw2:
+                                return raw2
+
                         # Also accept a bare goal line pasted without "cilj" keyword.
                         return _extract_goal_title_from_goal_line(user_text or "")
                     raw = (m.group(1) or "").strip()
