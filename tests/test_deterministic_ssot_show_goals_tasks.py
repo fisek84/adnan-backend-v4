@@ -264,6 +264,131 @@ def test_goal_ownership_lookup_deterministic_from_snapshot(monkeypatch):
     assert "Nemam SSOT snapshot" not in txt
 
 
+def test_multi_intent_top_goal_owner_and_tasks_single_answer_no_tasks(monkeypatch):
+    """Compound query must return top goal + owner + goal-scoped tasks in one deterministic answer."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
+    monkeypatch.setenv("NOTION_API_KEY", "test-notion-key")
+    monkeypatch.setenv("NOTION_GOALS_DB_ID", "test-goals-db")
+    monkeypatch.setenv("NOTION_TASKS_DB_ID", "test-tasks-db")
+    monkeypatch.setenv("NOTION_PROJECTS_DB_ID", "test-projects-db")
+    monkeypatch.setenv("CEO_NOTION_TARGETED_READS_ENABLED", "false")
+    monkeypatch.setenv("CEO_ADVISOR_FORCE_OFFLINE", "1")
+
+    app = _get_app()
+    client = TestClient(app)
+
+    snap = {
+        "ready": True,
+        "status": "fresh",
+        "schema_version": "v1",
+        "payload": {
+            "goals": [
+                {
+                    "id": "g1",
+                    "title": "Preseli se u EU za 30 dana",
+                    "fields": {
+                        "status": "In Progress",
+                        "owner": ["Adnan", "Snezana"],
+                    },
+                }
+            ],
+            "tasks": [
+                {
+                    "id": "t_unrelated",
+                    "title": "Global task that must not appear",
+                    "fields": {"status": "Todo", "goal": ["g999"]},
+                }
+            ],
+            "projects": [],
+        },
+    }
+
+    r = client.post(
+        "/api/chat",
+        json={
+            "message": "Koji je glavni cilj u nasem sistemu i ko je odgovoran za taj cilj. Dali imamo zadatke za taj cilj i koji su.",
+            "snapshot": snap,
+        },
+    )
+    assert r.status_code == 200, r.text
+    txt = r.json().get("text") or ""
+
+    assert "Glavni cilj:" in txt
+    assert "Preseli se u EU za 30 dana" in txt
+    assert "Owner:" in txt
+    assert "Adnan" in txt
+    assert "Snezana" in txt
+    assert "Zadaci za taj cilj:" in txt
+    assert "(nema povezanih zadataka)" in txt
+
+    assert "Najbitniji cilj (deterministic):" not in txt
+    assert "TASKS (top 5)" not in txt
+    assert "Global task that must not appear" not in txt
+    assert "Za koji cilj?" not in txt
+
+
+def test_multi_intent_top_goal_owner_and_tasks_lists_only_linked(monkeypatch):
+    """When linked tasks exist, they must be listed and unrelated tasks must not appear."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
+    monkeypatch.setenv("NOTION_API_KEY", "test-notion-key")
+    monkeypatch.setenv("NOTION_GOALS_DB_ID", "test-goals-db")
+    monkeypatch.setenv("NOTION_TASKS_DB_ID", "test-tasks-db")
+    monkeypatch.setenv("NOTION_PROJECTS_DB_ID", "test-projects-db")
+    monkeypatch.setenv("CEO_NOTION_TARGETED_READS_ENABLED", "false")
+    monkeypatch.setenv("CEO_ADVISOR_FORCE_OFFLINE", "1")
+
+    app = _get_app()
+    client = TestClient(app)
+
+    snap = {
+        "ready": True,
+        "status": "fresh",
+        "schema_version": "v1",
+        "payload": {
+            "goals": [
+                {
+                    "id": "g1",
+                    "title": "Preseli se u EU za 30 dana",
+                    "fields": {
+                        "status": "In Progress",
+                        "owner": ["Adnan", "Snezana"],
+                    },
+                }
+            ],
+            "tasks": [
+                {
+                    "id": "t1",
+                    "title": "Spremi dokumente",
+                    "fields": {"status": "Todo", "goal": ["g1"]},
+                },
+                {
+                    "id": "t_unrelated",
+                    "title": "Unrelated task",
+                    "fields": {"status": "Todo", "goal": ["g999"]},
+                },
+            ],
+            "projects": [],
+        },
+    }
+
+    r = client.post(
+        "/api/chat",
+        json={
+            "message": "Koji je glavni cilj i ko radi na tom cilju, i koji taskovi su vezani za njega?",
+            "snapshot": snap,
+        },
+    )
+    assert r.status_code == 200, r.text
+    txt = r.json().get("text") or ""
+
+    assert "Glavni cilj:" in txt
+    assert "Owner:" in txt
+    assert "Zadaci za taj cilj:" in txt
+    assert "- Spremi dokumente" in txt
+    assert "Unrelated task" not in txt
+    assert "Najbitniji cilj (deterministic):" not in txt
+
+
 @pytest.mark.parametrize(
     "msg",
     [
