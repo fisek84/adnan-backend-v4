@@ -92,6 +92,9 @@ def _is_top_goal_intent(text: str) -> bool:
     t = (text or "").strip()
     if not t:
         return False
+    # Guard: "Zašto je ... cilj glavni?" is a WHY follow-up, not a top-goal listing request.
+    if re.search(r"(?i)\b(zasto|zašto)\b", t):
+        return False
     return bool(_TOP_GOAL_RE.search(t))
 
 
@@ -3623,6 +3626,373 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                     )
             except Exception:
                 pass
+
+        # Phase 1a.1: Deterministic + HYBRID "Zašto je (ovaj/taj/...) cilj glavni?" path.
+        # Requirements:
+        # - strictly snapshot-derived signals first (status/due/priority)
+        # - optional short, clearly-labeled reasoning when signals are insufficient
+        # - must honor canonical active goal context: explicit ref -> last_referenced_goal_id -> fallback
+        # - do not break existing top-goal/ownership/tasks output contracts
+        try:
+            t0_why_main = _norm_bhs_ascii(prompt)
+            is_why_main_goal_q = bool(
+                re.search(r"(?i)\b(zasto|zašto)\b", t0_why_main)
+                and re.search(r"(?i)\b(glavni|najbitniji)\b", t0_why_main)
+                and re.search(r"(?i)\b(cilj|goal)\w*\b", t0_why_main)
+            )
+            if is_why_main_goal_q:
+                _snap_why = ks_for_gp if isinstance(ks_for_gp, dict) else {}
+                if bool(_snap_why.get("ready") is True):
+                    # Load canonical conversation context.
+                    last_goal_id = ""
+                    last_goal_title = ""
+                    try:
+                        if isinstance(conversation_id, str) and conversation_id.strip():
+                            meta = ConversationStateStore.get_meta(
+                                conversation_id=conversation_id.strip()
+                            )
+                            if isinstance(meta, dict):
+                                v_id = meta.get("last_referenced_goal_id")
+                                if isinstance(v_id, str) and v_id.strip():
+                                    last_goal_id = v_id.strip()
+                                v = meta.get("last_referenced_goal_title")
+                                if isinstance(v, str) and v.strip():
+                                    last_goal_title = v.strip()
+                    except Exception:
+                        last_goal_id = ""
+                        last_goal_title = ""
+
+                    # Optional explicit goal reference in the same message.
+                    explicit_goal_ref = ""
+                    try:
+                        # Prefer "Zašto je cilj <TITLE> glavni" (explicit title).
+                        m_title = re.search(
+                            r"(?i)\b(?:zasto|zašto)\b\s+je\s+\b(?:cilj|goal)\w*\b\s+(.+?)\s+\b(glavni|najbitniji)\b",
+                            prompt or "",
+                        )
+                        if m_title:
+                            raw = (m_title.group(1) or "").strip()
+                            raw = raw.strip(" \t\r\n\"'.,;:!?-\u2013\u2014")
+                            raw = re.split(r"[\.!?]\s+", raw, maxsplit=1)[0].strip()
+                            rn = _norm_bhs_ascii(raw)
+                            if rn and not re.search(
+                                r"(?i)\b(ovaj|ovom|ovog|ovome|ovo|taj|tom|tog|tome|koji\s+smo\s+spomenuli|koji\s+smo\s+pomenuli|koji\s+smo\s+spominjali|o\s+kojem\s+pricamo|o\s+c(e|)mu\s+pricamo)\b",
+                                rn,
+                            ):
+                                explicit_goal_ref = raw
+                        if not explicit_goal_ref:
+                            # Generic "cilj: <TITLE>" / "cilj <TITLE>" extraction.
+                            m_exp = re.search(
+                                r'(?i)\b(?:cilj(?:u|a)?|goal)\w*\b\s*[:\-\u2013\u2014]?\s*["\u201c\u201d\']?([^\n\r\?\"]+)',
+                                prompt or "",
+                            )
+                            if m_exp:
+                                raw2 = (m_exp.group(1) or "").strip()
+                                raw2 = raw2.strip(" \t\r\n\"'.,;:!?-\u2013\u2014")
+                                raw2 = re.split(r"[\.!?]\s+", raw2, maxsplit=1)[
+                                    0
+                                ].strip()
+                                rn2 = _norm_bhs_ascii(raw2)
+                                if rn2 and not re.search(
+                                    r"(?i)\b(glavni|najbitniji|ovaj|ovom|ovog|ovome|ovo|taj|tom|tog|tome|koji\s+smo\s+spomenuli|koji\s+smo\s+pomenuli|koji\s+smo\s+spominjali|o\s+kojem\s+pricamo|o\s+c(e|)mu\s+pricamo)\b",
+                                    rn2,
+                                ):
+                                    explicit_goal_ref = raw2
+                    except Exception:
+                        explicit_goal_ref = ""
+
+                    goals = _snapshot_goals_list(_snap_why)
+                    chosen_goal: Optional[Dict[str, Any]] = None
+
+                    # Resolution order: explicit ref -> last_referenced_goal_id -> title fallback.
+                    if explicit_goal_ref:
+                        ref_norm = _norm_bhs_ascii(explicit_goal_ref)
+                        if ref_norm:
+                            for g in goals:
+                                if not isinstance(g, dict):
+                                    continue
+                                f = (
+                                    g.get("fields")
+                                    if isinstance(g.get("fields"), dict)
+                                    else {}
+                                )
+                                title = _pick_str(
+                                    g.get("title")
+                                    or g.get("name")
+                                    or f.get("title")
+                                    or f.get("name")
+                                )
+                                if ref_norm == _norm_bhs_ascii(title):
+                                    chosen_goal = g
+                                    break
+                        if chosen_goal is None and ref_norm:
+                            for g in goals:
+                                if not isinstance(g, dict):
+                                    continue
+                                f = (
+                                    g.get("fields")
+                                    if isinstance(g.get("fields"), dict)
+                                    else {}
+                                )
+                                title = _pick_str(
+                                    g.get("title")
+                                    or g.get("name")
+                                    or f.get("title")
+                                    or f.get("name")
+                                )
+                                if ref_norm in _norm_bhs_ascii(title):
+                                    chosen_goal = g
+                                    break
+
+                    if chosen_goal is None and last_goal_id:
+                        for g in goals:
+                            if not isinstance(g, dict):
+                                continue
+                            gid = (g.get("id") or "").strip()
+                            if gid and gid == last_goal_id:
+                                chosen_goal = g
+                                break
+
+                    if chosen_goal is None and last_goal_title:
+                        last_goal_norm = _norm_bhs_ascii(last_goal_title)
+                        if last_goal_norm:
+                            for g in goals:
+                                if not isinstance(g, dict):
+                                    continue
+                                f = (
+                                    g.get("fields")
+                                    if isinstance(g.get("fields"), dict)
+                                    else {}
+                                )
+                                title = _pick_str(
+                                    g.get("title")
+                                    or g.get("name")
+                                    or f.get("title")
+                                    or f.get("name")
+                                )
+                                if _norm_bhs_ascii(title) == last_goal_norm:
+                                    chosen_goal = g
+                                    break
+                        if chosen_goal is None and last_goal_norm:
+                            for g in goals:
+                                if not isinstance(g, dict):
+                                    continue
+                                f = (
+                                    g.get("fields")
+                                    if isinstance(g.get("fields"), dict)
+                                    else {}
+                                )
+                                title = _pick_str(
+                                    g.get("title")
+                                    or g.get("name")
+                                    or f.get("title")
+                                    or f.get("name")
+                                )
+                                if last_goal_norm in _norm_bhs_ascii(title):
+                                    chosen_goal = g
+                                    break
+
+                    if chosen_goal is None:
+                        # Keep existing fallback behavior if we cannot resolve the goal.
+                        pass
+                    else:
+                        f = (
+                            chosen_goal.get("fields")
+                            if isinstance(chosen_goal.get("fields"), dict)
+                            else {}
+                        )
+                        goal_title_out = _pick_str(
+                            chosen_goal.get("title")
+                            or chosen_goal.get("name")
+                            or f.get("title")
+                            or f.get("name")
+                        )
+                        goal_id_out = (chosen_goal.get("id") or "").strip()
+
+                        status_out = _pick_str(
+                            f.get("status") or chosen_goal.get("status")
+                        )
+
+                        due_out = ""
+                        due_v = f.get("due") if isinstance(f, dict) else None
+                        if isinstance(due_v, dict):
+                            due_out = _pick_str(
+                                due_v.get("start")
+                                or due_v.get("date")
+                                or due_v.get("end")
+                            )
+                        elif isinstance(due_v, str):
+                            due_out = due_v.strip()
+                        if not due_out:
+                            due_out = _pick_str(
+                                f.get("rok") or f.get("due_date") or f.get("deadline")
+                            )
+
+                        priority_out = ""
+                        for k in ("priority", "prioritet", "prio"):
+                            if k in f:
+                                pv = f.get(k)
+                                if isinstance(pv, str) and pv.strip():
+                                    priority_out = pv.strip()
+                                    break
+                                if isinstance(pv, (int, float)):
+                                    priority_out = str(pv)
+                                    break
+
+                        signals: List[str] = []
+                        if status_out:
+                            signals.append(f"- Status: {status_out}")
+                        if due_out:
+                            signals.append(f"- Rok: {due_out}")
+                        if priority_out:
+                            signals.append(f"- Prioritet: {priority_out}")
+
+                        # If we have at least two concrete signals, provide deterministic conclusion.
+                        has_enough_signals = bool(len(signals) >= 2)
+                        if has_enough_signals:
+                            reasons: List[str] = []
+                            if status_out:
+                                reasons.append(f"status '{status_out}'")
+                            if due_out:
+                                reasons.append(f"rok '{due_out}'")
+                            if priority_out:
+                                reasons.append(f"prioritet '{priority_out}'")
+                            reason_txt = ", ".join(reasons)
+                            txt_out = (
+                                "Za ovaj cilj imamo sljedeće signale:\n"
+                                + "\n".join(signals)
+                                + "\n\nZaključak:\n"
+                                + (
+                                    f"Ovaj cilj je glavni jer u snapshotu ima {reason_txt}."
+                                    if reason_txt
+                                    else "Ovaj cilj je glavni na osnovu dostupnih signala iz snapshot-a."
+                                )
+                            ).strip()
+                        else:
+                            # HYBRID: keep signals deterministic; add clearly-labeled, non-SSOT reasoning.
+                            reason_bits: List[str] = []
+                            if due_out:
+                                reason_bits.append(
+                                    f"ima definisan rok ('{due_out}'), što često znači da je vremenski osjetljiv"
+                                )
+                            if priority_out:
+                                reason_bits.append(
+                                    f"označen je kao viši prioritet ('{priority_out}')"
+                                )
+                            if status_out:
+                                reason_bits.append(
+                                    f"status je '{status_out}', što može ukazivati na blokadu ili kritičnost"
+                                )
+                            if reason_bits:
+                                hybrid_reason = " i ".join(reason_bits)
+                            else:
+                                hybrid_reason = "u snapshotu postoje signali koji mogu ukazivati na prioritet"
+
+                            txt_out = (
+                                "Deterministic signali:\n"
+                                + (
+                                    "\n".join(signals)
+                                    if signals
+                                    else "- (nema dostupnih signala u snapshotu)"
+                                )
+                                + "\n\nRazumno objašnjenje:\n"
+                                + f"Na osnovu ovih signala, ovaj cilj vjerovatno ima prioritet zato što {hybrid_reason}."
+                            ).strip()
+
+                        # Ensure the response stays anchored to the resolved goal context.
+                        if goal_title_out:
+                            txt_out = f"{goal_title_out}\n\n{txt_out}".strip()
+
+                        # Persist bounded multi-turn context even on deterministic exits.
+                        try:
+                            if (
+                                isinstance(conversation_id, str)
+                                and conversation_id.strip()
+                            ):
+                                ConversationStateStore.append_turn(
+                                    conversation_id=conversation_id.strip(),
+                                    user_text=prompt or "",
+                                    assistant_text=txt_out or "",
+                                )
+                        except Exception:
+                            pass
+
+                        # Refresh active goal context for subsequent follow-ups.
+                        try:
+                            if (
+                                isinstance(conversation_id, str)
+                                and conversation_id.strip()
+                                and isinstance(goal_title_out, str)
+                                and goal_title_out.strip()
+                            ):
+                                updates = {
+                                    "last_referenced_goal_title": goal_title_out.strip(),
+                                    "last_referenced_goal_title_norm": _norm_bhs_ascii(
+                                        goal_title_out
+                                    ),
+                                    "last_referenced_goal_source": "deterministic_why_main_goal_hybrid",
+                                    "last_referenced_goal_at": float(time.time()),
+                                }
+                                if isinstance(goal_id_out, str) and goal_id_out.strip():
+                                    updates["last_referenced_goal_id"] = (
+                                        goal_id_out.strip()
+                                    )
+                                ConversationStateStore.update_meta(
+                                    conversation_id=conversation_id.strip(),
+                                    updates=updates,
+                                )
+                        except Exception:
+                            pass
+
+                        _det_tr_why = {
+                            "intent": "why_main_goal",
+                            "exit_path": "deterministic_ssot.why_main_goal_hybrid",
+                            "goal_title": goal_title_out,
+                            "goal_id": goal_id_out,
+                            "signals_count": int(len(signals)),
+                            "mode": "deterministic" if has_enough_signals else "hybrid",
+                        }
+                        _det_grounding_why = _grounding_bundle(
+                            prompt=prompt,
+                            knowledge_snapshot=ks_for_gp,
+                            memory_snapshot=mem_snapshot,
+                            legacy_trace=_det_tr_why,
+                            agent_id="ceo_advisor",
+                        )
+                        _det_content_why: Dict[str, Any] = {
+                            "text": txt_out,
+                            "proposed_commands": [],
+                            "agent_id": "ceo_advisor",
+                            "read_only": True,
+                            "notion_ops": {
+                                "armed": False,
+                                "armed_at": None,
+                                "session_id": session_id,
+                                "armed_state": {},
+                            },
+                        }
+                        if debug_on:
+                            _det_content_why["trace"] = _det_tr_why
+                            _det_content_why.update(kb)
+                            _det_content_why.update(_det_grounding_why)
+
+                        _det_content_why = _attach_and_log_audit(
+                            _det_content_why,
+                            session_id=session_id,
+                            conversation_id=conversation_id,
+                            agent_id="ceo_advisor",
+                            snapshot=ks_for_gp,
+                            trace=_det_tr_why,
+                            grounding=_det_grounding_why,
+                            debug_on=bool(debug_on),
+                            exit_path="ceo_chat.deterministic_ssot.why_main_goal_hybrid",
+                            targeted_reads=targeted_reads_info,
+                        )
+                        return JSONResponse(
+                            content=_attach_session_id(_det_content_why, session_id)
+                        )
+        except Exception:
+            pass
 
         # Phase 1b: Deterministic SSOT task query interception (no LLM).
         # Covers task questions beyond show/list, e.g. "Da li imamo zadatke za danas?".

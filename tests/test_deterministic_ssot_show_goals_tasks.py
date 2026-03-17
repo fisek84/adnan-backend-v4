@@ -825,6 +825,11 @@ def test_active_goal_context_contract_followups_are_goal_bound(monkeypatch):
     txt2 = r2.json().get("text") or ""
     assert "Preseli se u EU za 30 dana" in txt2
     assert "Za koji cilj?" not in txt2
+    assert "Najbitniji cilj (deterministic):" not in txt2
+    assert "Za ovaj cilj imamo sljedeće signale:" in txt2
+    assert "- Status:" in txt2
+    assert "- Rok:" in txt2
+    assert "Zaključak:" in txt2
 
     # TEST 3: ownership follow-up uses canonical context and does not ask 'Za koji cilj?'
     r3 = client.post(
@@ -884,7 +889,14 @@ def test_active_goal_context_contract_followups_are_goal_bound(monkeypatch):
         },
     )
     assert r5b.status_code == 200, r5b.text
-    assert "Preseli se u EU za 30 dana" in (r5b.json().get("text") or "")
+    txt5b = r5b.json().get("text") or ""
+    assert "Preseli se u EU za 30 dana" in txt5b
+    assert "Za koji cilj?" not in txt5b
+    assert "Najbitniji cilj (deterministic):" not in txt5b
+    assert "Za ovaj cilj imamo sljedeće signale:" in txt5b
+    assert "- Status:" in txt5b
+    assert "- Rok:" in txt5b
+    assert "Zaključak:" in txt5b
 
     r5c = client.post(
         "/api/chat",
@@ -1011,6 +1023,69 @@ def test_active_goal_context_followups_compact_flow_no_fallback(monkeypatch):
     assert "Preseli se u EU za 30 dana" in txt3
     assert "aktivn" in txt3.lower()
     assert "Unrelated task" not in txt3
+
+
+def test_why_main_goal_explicit_title_hybrid(monkeypatch):
+    """Explicit title variant must return deterministic/hybrid signals without follow-up questions."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
+    monkeypatch.setenv("NOTION_API_KEY", "test-notion-key")
+    monkeypatch.setenv("NOTION_GOALS_DB_ID", "test-goals-db")
+    monkeypatch.setenv("NOTION_TASKS_DB_ID", "test-tasks-db")
+    monkeypatch.setenv("NOTION_PROJECTS_DB_ID", "test-projects-db")
+    monkeypatch.setenv("CEO_NOTION_TARGETED_READS_ENABLED", "false")
+    monkeypatch.setenv("CEO_ADVISOR_FORCE_OFFLINE", "1")
+
+    app = _get_app()
+    client = TestClient(app)
+
+    snap = {
+        "ready": True,
+        "status": "fresh",
+        "schema_version": "v1",
+        "payload": {
+            "goals": [
+                {
+                    "id": "g1",
+                    "title": "Preseli se u EU za 30 dana",
+                    "fields": {
+                        "status": "Blocked",
+                        "due": {"start": "2026-03-20"},
+                        "owner": ["Adnan", "Snezana"],
+                    },
+                },
+                {
+                    "id": "g2",
+                    "title": "Manje bitan cilj",
+                    "fields": {
+                        "status": "Not Started",
+                        "due": {"start": "2026-12-31"},
+                        "owner": ["Someone"],
+                    },
+                },
+            ],
+            "tasks": [],
+            "projects": [],
+        },
+    }
+
+    r = client.post(
+        "/api/chat",
+        json={
+            "message": "Zašto je cilj Preseli se u EU za 30 dana glavni?",
+            "conversation_id": "conv-why-main-explicit",
+            "session_id": "sess-why-main-explicit",
+            "snapshot": snap,
+        },
+    )
+    assert r.status_code == 200, r.text
+    txt = r.json().get("text") or ""
+    assert "Za koji cilj?" not in txt
+    assert "Najbitniji cilj (deterministic):" not in txt
+    assert "Preseli se u EU za 30 dana" in txt
+    assert "Za ovaj cilj imamo sljedeće signale:" in txt
+    assert "- Status:" in txt
+    assert "- Rok:" in txt
+    assert "Zaključak:" in txt
 
 
 # ---------------------------------------------------------------------------
