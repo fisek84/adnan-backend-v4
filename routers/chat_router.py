@@ -3855,6 +3855,24 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                     v = meta.get("last_referenced_goal_title")
                     return v.strip() if isinstance(v, str) and v.strip() else ""
 
+                def _load_last_referenced_goal_id(
+                    *, conversation_id: Optional[str]
+                ) -> str:
+                    if not (
+                        isinstance(conversation_id, str) and conversation_id.strip()
+                    ):
+                        return ""
+                    try:
+                        meta = ConversationStateStore.get_meta(
+                            conversation_id=conversation_id.strip()
+                        )
+                    except Exception:
+                        return ""
+                    if not isinstance(meta, dict):
+                        return ""
+                    v = meta.get("last_referenced_goal_id")
+                    return v.strip() if isinstance(v, str) and v.strip() else ""
+
                 def _extract_single_goal_title_from_summary(
                     *, conversation_id: Optional[str]
                 ) -> str:
@@ -4021,6 +4039,7 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
 
                 if is_goal_q:
                     goal_ref = _extract_goal_ref(prompt)
+                    goal_id_ref = ""
                     if (
                         is_followup_ref
                         and isinstance(goal_ref, str)
@@ -4035,6 +4054,10 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                     if not goal_ref and goal_line_title:
                         goal_ref = goal_line_title
                     if not goal_ref and is_followup_ref:
+                        goal_id_ref = _load_last_referenced_goal_id(
+                            conversation_id=conversation_id
+                        )
+                    if not goal_ref and is_followup_ref:
                         goal_ref = _load_last_referenced_goal_title(
                             conversation_id=conversation_id
                         )
@@ -4042,30 +4065,43 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                         goal_ref = _extract_single_goal_title_from_summary(
                             conversation_id=conversation_id
                         )
-                    if goal_ref:
+                    if goal_ref or goal_id_ref:
                         goals = _snapshot_goals_list(_snap_g)
                         tasks = _snapshot_tasks_list(_snap_g)
 
-                        goal_ref_norm = _norm_bhs_ascii(goal_ref)
-                        candidates: List[Dict[str, Any]] = []
-                        for g in goals:
-                            f = (
-                                g.get("fields")
-                                if isinstance(g.get("fields"), dict)
-                                else {}
-                            )
-                            title = _pick_str(
-                                g.get("title")
-                                or g.get("name")
-                                or f.get("title")
-                                or f.get("name")
-                            )
-                            if goal_ref_norm and goal_ref_norm in _norm_bhs_ascii(
-                                title
-                            ):
-                                candidates.append(g)
-
+                        # If we have a canonical ID reference, prefer an exact ID match.
                         chosen = None
+                        if isinstance(goal_id_ref, str) and goal_id_ref.strip():
+                            for g in goals:
+                                if not isinstance(g, dict):
+                                    continue
+                                if (g.get("id") or "").strip() == goal_id_ref.strip():
+                                    chosen = g
+                                    break
+
+                        if chosen is not None:
+                            candidates = [chosen]
+                            goal_ref_norm = ""
+                        else:
+                            goal_ref_norm = _norm_bhs_ascii(goal_ref)
+                            candidates: List[Dict[str, Any]] = []
+                            for g in goals:
+                                f = (
+                                    g.get("fields")
+                                    if isinstance(g.get("fields"), dict)
+                                    else {}
+                                )
+                                title = _pick_str(
+                                    g.get("title")
+                                    or g.get("name")
+                                    or f.get("title")
+                                    or f.get("name")
+                                )
+                                if goal_ref_norm and goal_ref_norm in _norm_bhs_ascii(
+                                    title
+                                ):
+                                    candidates.append(g)
+
                         if len(candidates) == 1:
                             chosen = candidates[0]
                         elif len(candidates) > 1:
@@ -4246,6 +4282,14 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                                         "last_referenced_goal_at": float(time.time()),
                                     }
                                     if goal_ids:
+                                        # Canonical reference (single) + back-compat list.
+                                        if (
+                                            isinstance(goal_ids[0], str)
+                                            and goal_ids[0].strip()
+                                        ):
+                                            updates["last_referenced_goal_id"] = (
+                                                goal_ids[0].strip()
+                                            )
                                         updates["last_referenced_goal_ids"] = goal_ids[
                                             :3
                                         ]

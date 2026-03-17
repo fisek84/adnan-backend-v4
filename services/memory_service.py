@@ -39,6 +39,22 @@ class MemoryService:
         # A non-reentrant Lock would deadlock; use RLock.
         self._lock = threading.RLock()
 
+        # Feature flag: switch canonical memory plane backend.
+        # Default remains file-backed for repo compatibility.
+        self._backend_kind = (os.getenv("MEMORY_BACKEND") or "file").strip().lower()
+        self._pg = None
+        if self._backend_kind == "postgres":
+            try:
+                from services.memory_postgres_backend import PostgresMemoryBackend
+
+                pg = PostgresMemoryBackend()
+                if pg.is_configured():
+                    self._pg = pg
+                else:
+                    self._backend_kind = "file"
+            except Exception:
+                self._backend_kind = "file"
+
         base_path = (os.getenv("MEMORY_PATH") or "").strip()
         base = Path(base_path) if base_path else _DEFAULT_BASE_PATH
         base.mkdir(parents=True, exist_ok=True)
@@ -80,6 +96,23 @@ class MemoryService:
                 scopes[st] = {}
 
         self._save()
+
+        # Best-effort: if Postgres backend is enabled, seed the public snapshot fields.
+        # This keeps existing ReadOnlyMemoryService snapshot surfaces working.
+        if self._backend_kind == "postgres" and self._pg is not None:
+            try:
+                last_write = self._pg.get_last_memory_write()
+                if isinstance(last_write, str) and last_write.strip():
+                    self.memory["last_memory_write"] = last_write
+                # Keep bounded recent items in RAM only (no disk write).
+                recent = self._pg.get_recent_memory_items(limit=50)
+                if isinstance(recent, list):
+                    self.memory["memory_items"] = [
+                        x for x in recent if isinstance(x, dict)
+                    ]
+            except Exception:
+                # Fail-soft: do not block startup.
+                pass
 
     def _utc_now_iso(self) -> str:
         return datetime.now(timezone.utc).isoformat()
@@ -194,6 +227,98 @@ class MemoryService:
                 items = []
                 self.memory["memory_items"] = items
 
+            # Postgres backend: canonical write goes to DB (idempotent), and we mirror
+            # the latest record into RAM for snapshot/export compatibility.
+            if self._backend_kind == "postgres" and self._pg is not None:
+                try:
+                    from services.memory_postgres_backend import MemoryWriteRecord
+
+                    stored_id = f"mem_{idem[:16]}"
+                    rec = MemoryWriteRecord(
+                        stored_id=stored_id,
+                        idempotency_key=idem,
+                        item_type=str(item_type).strip().lower(),
+                        item_text=str(item_text).strip(),
+                        item_tags=[
+                            str(x).strip()
+                            for x in (tags or [])
+                            if isinstance(x, str) and x.strip()
+                        ],
+                        item_source=str(source).strip().lower(),
+                        grounded_on=list(grounded_on_list),
+                        approval_id=approval_id,
+                        execution_id=execution_id,
+                        identity_id=identity_id,
+                    )
+
+                    row = self._pg.upsert_memory_item(rec)
+                    created_at = row.get("created_at")
+                    if not isinstance(created_at, str) or not created_at.strip():
+                        created_at = self._utc_now_iso()
+
+                    # Mirror to in-memory list (bounded) for read-only snapshot surfaces.
+                    for it in items:
+                        if not isinstance(it, dict):
+                            continue
+                        if it.get("idempotency_key") == idem:
+                            last_write0 = self.memory.get("last_memory_write")
+                            return {
+                                "ok": True,
+                                "stored_id": it.get("stored_id") or stored_id,
+                                "memory_count": int(
+                                    len([x for x in items if isinstance(x, dict)])
+                                ),
+                                "last_write": last_write0,
+                                "errors": [],
+                            }
+
+                    mirror = {
+                        "stored_id": stored_id,
+                        "schema_version": "memory_write.v1",
+                        "idempotency_key": idem,
+                        "item": {
+                            "type": rec.item_type,
+                            "text": rec.item_text,
+                            "tags": list(rec.item_tags),
+                            "source": rec.item_source,
+                        },
+                        "grounded_on": list(rec.grounded_on),
+                        "approval_id": approval_id,
+                        "execution_id": execution_id,
+                        "identity_id": identity_id,
+                        "created_at": created_at,
+                    }
+                    items.append(mirror)
+                    # Keep bounded in-RAM mirror.
+                    if len(items) > 200:
+                        self.memory["memory_items"] = [
+                            x for x in items[-200:] if isinstance(x, dict)
+                        ]
+                        items = self.memory["memory_items"]
+
+                    self.memory["last_memory_write"] = created_at
+
+                    return {
+                        "ok": True,
+                        "stored_id": stored_id,
+                        "memory_count": int(
+                            len([x for x in items if isinstance(x, dict)])
+                        ),
+                        "last_write": created_at,
+                        "errors": [],
+                    }
+                except Exception:
+                    return {
+                        "ok": False,
+                        "stored_id": None,
+                        "memory_count": None,
+                        "last_write": None,
+                        "errors": ["pg_backend_unavailable"],
+                        "diagnostics": {
+                            "recommended_action": "set_DATABASE_URL_and_run_alembic_upgrade",
+                        },
+                    }
+
             # Idempotency: if same idempotency_key already exists, return existing.
             for it in items:
                 if not isinstance(it, dict):
@@ -244,6 +369,12 @@ class MemoryService:
                 "last_write": now_iso,
                 "errors": [],
             }
+
+    # ============================================================
+    # BACKEND SWITCH HELPERS
+    # ============================================================
+    def _pg_enabled(self) -> bool:
+        return bool(self._backend_kind == "postgres" and self._pg is not None)
 
     # ============================================================
     # INTERNALS
@@ -330,6 +461,19 @@ class MemoryService:
         if not isinstance(key, str) or not key:
             return default
 
+        if self._pg_enabled():
+            try:
+                norm = self._validate_scope(scope_type, scope_id)
+                if norm is None:
+                    return default
+                st, sid = norm
+                rec = self._pg.get_scope_kv(scope_type=st, scope_id=sid, key=key)
+                if not isinstance(rec, dict):
+                    return default
+                return rec.get("value", default)
+            except Exception:
+                return default
+
         with self._lock:
             self._purge_expired_locked(st, sid)
             scopes = self.memory["scopes"]
@@ -364,6 +508,20 @@ class MemoryService:
         if isinstance(ttl_seconds, int) and ttl_seconds > 0:
             exp = self._now() + float(ttl_seconds)
 
+        if self._pg_enabled():
+            try:
+                self._pg.upsert_scope_kv(
+                    scope_type=st,
+                    scope_id=sid,
+                    key=key,
+                    value=value,
+                    exp_unix=exp,
+                    meta=metadata or {},
+                )
+                return True
+            except Exception:
+                return False
+
         rec = {
             "value": value,
             "ts": self._now(),
@@ -391,6 +549,13 @@ class MemoryService:
         if not isinstance(key, str) or not key:
             return False
 
+        if self._pg_enabled():
+            try:
+                n = self._pg.delete_scope_kv(scope_type=st, scope_id=sid, key=key)
+                return bool(n > 0)
+            except Exception:
+                return False
+
         with self._lock:
             scopes = self.memory["scopes"]
             bucket = scopes[st]
@@ -408,6 +573,13 @@ class MemoryService:
         if norm is None:
             return False
         st, sid = norm
+
+        if self._pg_enabled():
+            try:
+                n = self._pg.clear_scope(scope_type=st, scope_id=sid)
+                return bool(n >= 0)
+            except Exception:
+                return False
 
         with self._lock:
             scopes = self.memory["scopes"]
@@ -553,6 +725,13 @@ class MemoryService:
         if not isinstance(event, dict):
             return
 
+        if self._pg_enabled():
+            try:
+                self._pg.insert_audit_event(event)
+            except Exception:
+                # Fail-soft: still keep local in-memory audit list.
+                pass
+
         self.memory.setdefault("write_audit_events", [])
         self.memory["write_audit_events"].append({**event, "ts": self._now()})
 
@@ -561,7 +740,9 @@ class MemoryService:
                 -self.MAX_WRITE_AUDIT_EVENTS :
             ]
 
-        self._save()
+        # In Postgres mode, do not persist audit events back to disk.
+        if not self._pg_enabled():
+            self._save()
 
     # ============================================================
     # READ-ONLY ANALYTICS (legacy)

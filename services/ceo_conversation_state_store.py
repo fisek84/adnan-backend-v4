@@ -16,6 +16,24 @@ _DEFAULT_MAX_TURN_CHARS = 600
 _LOCK = threading.Lock()
 
 
+def _backend_kind() -> str:
+    return (os.getenv("MEMORY_BACKEND") or "file").strip().lower()
+
+
+def _pg_backend():
+    if _backend_kind() != "postgres":
+        return None
+    try:
+        from services.memory_postgres_backend import PostgresMemoryBackend
+
+        pg = PostgresMemoryBackend()
+        if not pg.is_configured():
+            return None
+        return pg
+    except Exception:
+        return None
+
+
 def _now_unix() -> float:
     return time.time()
 
@@ -107,16 +125,28 @@ class ConversationStateStore:
                 conversation_id_hash=_sha256_prefix(""),
             )
 
-        with _LOCK:
-            db = _load_db()
-            st = db.get(cid)
-            st = st if isinstance(st, dict) else {}
-            turns = st.get("turns")
-            turns = turns if isinstance(turns, list) else []
+        pg = _pg_backend()
+        if pg is not None:
+            try:
+                pairs = pg.get_conversation_turns(
+                    conversation_id=cid,
+                    max_turns=int(max_turns),
+                )
+                pairs = [t for t in pairs if isinstance(t, dict)]
+            except Exception:
+                pairs = []
+        else:
+            with _LOCK:
+                db = _load_db()
+                st = db.get(cid)
+                st = st if isinstance(st, dict) else {}
+                turns = st.get("turns")
+                turns = turns if isinstance(turns, list) else []
+
+            pairs = [t for t in turns if isinstance(t, dict)]
 
         # keep last N pairs (user+assistant) => store uses list of dicts
         # We interpret one "turn" as a pair (user, assistant) in storage.
-        pairs: List[Dict[str, Any]] = [t for t in turns if isinstance(t, dict)]
         if max_turns <= 0:
             pairs = []
         else:
@@ -160,6 +190,20 @@ class ConversationStateStore:
         u = _truncate((user_text or "").strip(), max_chars=int(max_turn_chars))
         a = _truncate((assistant_text or "").strip(), max_chars=int(max_turn_chars))
 
+        pg = _pg_backend()
+        if pg is not None:
+            try:
+                pg.append_conversation_turn(
+                    conversation_id=cid,
+                    user_text=u,
+                    assistant_text=a,
+                    max_turns=int(max_turns),
+                )
+                return
+            except Exception:
+                # Fail-soft: fall back to file store.
+                pass
+
         with _LOCK:
             db = _load_db()
             st = db.get(cid)
@@ -191,6 +235,14 @@ class ConversationStateStore:
         if not cid:
             return {}
 
+        pg = _pg_backend()
+        if pg is not None:
+            try:
+                meta = pg.get_conversation_meta(conversation_id=cid)
+                return dict(meta) if isinstance(meta, dict) else {}
+            except Exception:
+                pass
+
         with _LOCK:
             db = _load_db()
             st = db.get(cid)
@@ -206,6 +258,15 @@ class ConversationStateStore:
             return
         if not isinstance(updates, dict) or not updates:
             return
+
+        pg = _pg_backend()
+        if pg is not None:
+            try:
+                pg.upsert_conversation_meta(conversation_id=cid, updates=updates)
+                return
+            except Exception:
+                # Fail-soft: fall back to file store.
+                pass
 
         with _LOCK:
             db = _load_db()
