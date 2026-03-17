@@ -251,8 +251,15 @@ def _compute_ceo_view(snapshot: Any) -> Dict[str, Any]:
         if not isinstance(it, dict):
             continue
         f = it.get("fields") if isinstance(it.get("fields"), dict) else {}
+        gid = None
+        for k in ("id", "notion_id", "notionId"):
+            v = it.get(k)
+            if isinstance(v, str) and v.strip():
+                gid = v.strip()
+                break
         goals_top3.append(
             {
+                "id": gid,
                 "title": _s(
                     it.get("title") or it.get("name") or f.get("title") or f.get("name")
                 ),
@@ -3137,6 +3144,31 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                                             ),
                                         }
                                     )
+
+                                    # Canonical: if the singleton goal has a stable ID, persist it.
+                                    try:
+                                        g0 = (
+                                            (
+                                                _goals_det[0]
+                                                if isinstance(_goals_det, list)
+                                                else None
+                                            )
+                                            if len(_goals_det or []) == 1
+                                            else None
+                                        )
+                                        if isinstance(g0, dict):
+                                            gid = None
+                                            for k in ("id", "notion_id", "notionId"):
+                                                v = g0.get(k)
+                                                if isinstance(v, str) and v.strip():
+                                                    gid = v.strip()
+                                                    break
+                                            if isinstance(gid, str) and gid.strip():
+                                                updates["last_referenced_goal_id"] = (
+                                                    gid.strip()
+                                                )
+                                    except Exception:
+                                        pass
                                 ConversationStateStore.update_meta(
                                     conversation_id=conversation_id.strip(),
                                     updates=updates,
@@ -3165,12 +3197,14 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                     goal_title = ""
                     status = "-"
                     due = "-"
+                    goal_id = ""
 
                     if top3 and isinstance(top3[0], dict):
                         g0 = top3[0]
                         goal_title = (g0.get("title") or "").strip()
                         status = (g0.get("status") or "-").strip() or "-"
                         due = (g0.get("due") or "-").strip() or "-"
+                        goal_id = (g0.get("id") or "").strip()
 
                     if goal_title:
                         txt_out = "\n".join(
@@ -3212,6 +3246,11 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                                     "last_referenced_goal_at": float(time.time()),
                                     "last_shown_goal_titles": [goal_title.strip()],
                                     "last_shown_goal_titles_at": float(time.time()),
+                                    **(
+                                        {"last_referenced_goal_id": goal_id.strip()}
+                                        if isinstance(goal_id, str) and goal_id.strip()
+                                        else {}
+                                    ),
                                 },
                             )
                     except Exception:
@@ -4496,6 +4535,22 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 "conversation_id": conversation_id,
                 "conversation_state": conv_summary,
             }
+
+            # Explicitly propagate conversation meta + canonical goal reference.
+            try:
+                conv_meta: Dict[str, Any] = {}
+                if isinstance(conversation_id, str) and conversation_id.strip():
+                    meta0 = ConversationStateStore.get_meta(
+                        conversation_id=conversation_id.strip()
+                    )
+                    if isinstance(meta0, dict):
+                        conv_meta = dict(meta0)
+                router_ctx["conversation_meta"] = conv_meta
+                v = conv_meta.get("last_referenced_goal_id")
+                if isinstance(v, str) and v.strip():
+                    router_ctx["last_referenced_goal_id"] = v.strip()
+            except Exception:
+                router_ctx["conversation_meta"] = {}
 
             # Deep-merge metadata.agent_ctx with router_ctx so nested objects aren't overwritten/dropped.
             ctx_for_agent: Dict[str, Any] = (

@@ -34,6 +34,24 @@ def _pg_backend():
         return None
 
 
+def _pg_backend_required():
+    """Return Postgres backend when MEMORY_BACKEND=postgres, else None.
+
+    In postgres mode, we must not silently fall back to the legacy file store.
+    If Postgres is not configured/available, we raise loudly.
+    """
+
+    if _backend_kind() != "postgres":
+        return None
+    pg = _pg_backend()
+    if pg is None:
+        raise RuntimeError(
+            "MEMORY_BACKEND=postgres but Postgres memory backend is unavailable. "
+            "Set DATABASE_URL (and run migrations) or use MEMORY_BACKEND=file."
+        )
+    return pg
+
+
 def _now_unix() -> float:
     return time.time()
 
@@ -125,16 +143,13 @@ class ConversationStateStore:
                 conversation_id_hash=_sha256_prefix(""),
             )
 
-        pg = _pg_backend()
+        pg = _pg_backend_required()
         if pg is not None:
-            try:
-                pairs = pg.get_conversation_turns(
-                    conversation_id=cid,
-                    max_turns=int(max_turns),
-                )
-                pairs = [t for t in pairs if isinstance(t, dict)]
-            except Exception:
-                pairs = []
+            pairs = pg.get_conversation_turns(
+                conversation_id=cid,
+                max_turns=int(max_turns),
+            )
+            pairs = [t for t in pairs if isinstance(t, dict)]
         else:
             with _LOCK:
                 db = _load_db()
@@ -190,19 +205,15 @@ class ConversationStateStore:
         u = _truncate((user_text or "").strip(), max_chars=int(max_turn_chars))
         a = _truncate((assistant_text or "").strip(), max_chars=int(max_turn_chars))
 
-        pg = _pg_backend()
+        pg = _pg_backend_required()
         if pg is not None:
-            try:
-                pg.append_conversation_turn(
-                    conversation_id=cid,
-                    user_text=u,
-                    assistant_text=a,
-                    max_turns=int(max_turns),
-                )
-                return
-            except Exception:
-                # Fail-soft: fall back to file store.
-                pass
+            pg.append_conversation_turn(
+                conversation_id=cid,
+                user_text=u,
+                assistant_text=a,
+                max_turns=int(max_turns),
+            )
+            return
 
         with _LOCK:
             db = _load_db()
@@ -235,13 +246,10 @@ class ConversationStateStore:
         if not cid:
             return {}
 
-        pg = _pg_backend()
+        pg = _pg_backend_required()
         if pg is not None:
-            try:
-                meta = pg.get_conversation_meta(conversation_id=cid)
-                return dict(meta) if isinstance(meta, dict) else {}
-            except Exception:
-                pass
+            meta = pg.get_conversation_meta(conversation_id=cid)
+            return dict(meta) if isinstance(meta, dict) else {}
 
         with _LOCK:
             db = _load_db()
@@ -259,14 +267,10 @@ class ConversationStateStore:
         if not isinstance(updates, dict) or not updates:
             return
 
-        pg = _pg_backend()
+        pg = _pg_backend_required()
         if pg is not None:
-            try:
-                pg.upsert_conversation_meta(conversation_id=cid, updates=updates)
-                return
-            except Exception:
-                # Fail-soft: fall back to file store.
-                pass
+            pg.upsert_conversation_meta(conversation_id=cid, updates=updates)
+            return
 
         with _LOCK:
             db = _load_db()

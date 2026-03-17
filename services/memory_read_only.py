@@ -44,6 +44,38 @@ class ReadOnlyMemoryService:
     # Minimal read-only export (for LLM context)
     # ----------------------------
     def export_public_snapshot(self) -> Dict[str, Any]:
+        # In Postgres mode, read from the canonical memory plane (DB), not from
+        # the in-process RAM/file mirror.
+        try:
+            pg_enabled = bool(getattr(self._mem, "_pg_enabled", lambda: False)())
+        except Exception:
+            pg_enabled = False
+
+        if pg_enabled:
+            pg = getattr(self._mem, "_pg", None)
+            if pg is None:
+                return {}
+            try:
+                last_write = pg.get_last_memory_write()
+                recent = pg.get_recent_memory_items(limit=1000)
+                recent = recent if isinstance(recent, list) else []
+                items_count = len([x for x in recent if isinstance(x, dict)])
+            except Exception:
+                return {}
+
+            return {
+                "schema_version": getattr(self._mem, "SCHEMA_VERSION", None),
+                # Legacy fields are intentionally empty in postgres mode unless/until
+                # they are migrated to the memory plane.
+                "decision_outcomes": [],
+                "execution_stats": {},
+                "write_audit_events": [],
+                "active_decision": None,
+                "memory_items_count": int(items_count),
+                "last_memory_write": last_write,
+            }
+
+        # File backend (legacy) mode: preserve existing behavior.
         try:
             raw = getattr(self._mem, "memory", {})
         except Exception:
@@ -85,11 +117,26 @@ class ReadOnlyMemoryService:
         if not isinstance(limit, int) or limit <= 0:
             return []
 
-        raw = getattr(self._mem, "memory", {})
-        if not isinstance(raw, dict):
-            return []
+        # In Postgres mode, read from the canonical DB plane.
+        try:
+            pg_enabled = bool(getattr(self._mem, "_pg_enabled", lambda: False)())
+        except Exception:
+            pg_enabled = False
 
-        items0 = raw.get("memory_items")
+        if pg_enabled:
+            pg = getattr(self._mem, "_pg", None)
+            if pg is None:
+                return []
+            try:
+                items0 = pg.get_recent_memory_items(limit=int(limit))
+            except Exception:
+                return []
+        else:
+            raw = getattr(self._mem, "memory", {})
+            if not isinstance(raw, dict):
+                return []
+            items0 = raw.get("memory_items")
+
         if not isinstance(items0, list) or not items0:
             return []
 

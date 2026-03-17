@@ -5,6 +5,34 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 from datetime import datetime, timezone
 import threading
+import os
+
+
+def _backend_kind() -> str:
+    return (os.getenv("MEMORY_BACKEND") or "file").strip().lower()
+
+
+def _pg_backend_required():
+    if _backend_kind() != "postgres":
+        return None
+    try:
+        from services.memory_postgres_backend import PostgresMemoryBackend
+
+        pg = PostgresMemoryBackend()
+        if not pg.is_configured():
+            raise RuntimeError(
+                "MEMORY_BACKEND=postgres but DATABASE_URL is not set; weekly memory cannot be persisted"
+            )
+        return pg
+    except Exception as e:
+        raise RuntimeError(
+            "MEMORY_BACKEND=postgres but Postgres backend is unavailable for weekly memory"
+        ) from e
+
+
+_WEEKLY_SCOPE_TYPE = "user"
+_WEEKLY_SCOPE_ID = "ceo_weekly_memory"
+_WEEKLY_KEY = "latest_ai_summary"
 
 
 class WeeklyMemoryService:
@@ -27,6 +55,23 @@ class WeeklyMemoryService:
         if not isinstance(payload, dict):
             payload = {}
 
+        # Canonical persistence in postgres mode (restart-safe).
+        pg = _pg_backend_required()
+        if pg is not None:
+            updated_at = datetime.now(timezone.utc).isoformat()
+            pg.upsert_scope_kv(
+                scope_type=_WEEKLY_SCOPE_TYPE,
+                scope_id=_WEEKLY_SCOPE_ID,
+                key=_WEEKLY_KEY,
+                value=dict(payload),
+                exp_unix=None,
+                meta={"updated_at": updated_at},
+            )
+            with self._lock:
+                self._latest_ai_summary = dict(payload)
+                self._updated_at = updated_at
+            return
+
         with self._lock:
             self._latest_ai_summary = dict(payload)
             self._updated_at = datetime.now(timezone.utc).isoformat()
@@ -35,6 +80,28 @@ class WeeklyMemoryService:
         """
         READ-only snapshot za frontend.
         """
+        pg = _pg_backend_required()
+        if pg is not None:
+            rec = pg.get_scope_kv(
+                scope_type=_WEEKLY_SCOPE_TYPE,
+                scope_id=_WEEKLY_SCOPE_ID,
+                key=_WEEKLY_KEY,
+            )
+            val = rec.get("value") if isinstance(rec, dict) else None
+            meta = rec.get("meta") if isinstance(rec, dict) else None
+            updated_at = (
+                (meta.get("updated_at") if isinstance(meta, dict) else None)
+                if isinstance(meta, dict)
+                else None
+            )
+            if not (isinstance(updated_at, str) and updated_at.strip()):
+                updated_at = None
+            latest = val if isinstance(val, dict) else None
+            return {
+                "latest_ai_summary": latest,
+                "updated_at": updated_at,
+            }
+
         with self._lock:
             return {
                 "latest_ai_summary": self._latest_ai_summary,
