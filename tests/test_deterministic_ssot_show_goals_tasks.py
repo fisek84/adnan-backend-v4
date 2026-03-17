@@ -667,6 +667,241 @@ def test_goal_ownership_followup_ovaj_cilj_uses_last_referenced_goal(monkeypatch
     assert "owner1@example.com" in txt2
 
 
+def test_top_goal_intent_matches_goal_before_glavni_word_order(monkeypatch):
+    """'Koji cilj je glavni?' must hit deterministic top-goal path (not GOALS/TASKS dump)."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
+    monkeypatch.setenv("NOTION_API_KEY", "test-notion-key")
+    monkeypatch.setenv("NOTION_GOALS_DB_ID", "test-goals-db")
+    monkeypatch.setenv("NOTION_TASKS_DB_ID", "test-tasks-db")
+    monkeypatch.setenv("NOTION_PROJECTS_DB_ID", "test-projects-db")
+    monkeypatch.setenv("CEO_NOTION_TARGETED_READS_ENABLED", "false")
+    monkeypatch.setenv("CEO_ADVISOR_FORCE_OFFLINE", "1")
+
+    app = _get_app()
+    client = TestClient(app)
+
+    snap = {
+        "ready": True,
+        "status": "fresh",
+        "schema_version": "v1",
+        "payload": {
+            "goals": [
+                {
+                    "id": "g1",
+                    "title": "Preseli se u EU za 30 dana",
+                    "fields": {
+                        "status": "Blocked",
+                        "due": {"start": "2026-03-20"},
+                        "owner": ["Adnan", "Snezana"],
+                    },
+                },
+                {
+                    "id": "g2",
+                    "title": "Manje bitan cilj",
+                    "fields": {
+                        "status": "Not Started",
+                        "due": {"start": "2026-12-31"},
+                        "owner": ["Someone"],
+                    },
+                },
+            ],
+            "tasks": [],
+            "projects": [],
+        },
+    }
+
+    r = client.post(
+        "/api/chat",
+        json={
+            "message": "Koji cilj je glavni?",
+            "conversation_id": "conv-top-goal-word-order",
+            "session_id": "sess-top-goal-word-order",
+            "snapshot": snap,
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    txt = body.get("text") or ""
+    assert body.get("read_only") is True
+
+    assert "Najbitniji cilj (deterministic):" in txt
+    assert "Preseli se u EU za 30 dana" in txt
+    assert "GOALS (top 3)" not in txt
+    assert "TASKS (top 5)" not in txt
+
+
+def test_active_goal_context_contract_followups_are_goal_bound(monkeypatch):
+    """After top-goal resolution, follow-ups must bind to the same goal via canonical context (ID-first)."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
+    monkeypatch.setenv("NOTION_API_KEY", "test-notion-key")
+    monkeypatch.setenv("NOTION_GOALS_DB_ID", "test-goals-db")
+    monkeypatch.setenv("NOTION_TASKS_DB_ID", "test-tasks-db")
+    monkeypatch.setenv("NOTION_PROJECTS_DB_ID", "test-projects-db")
+    monkeypatch.setenv("CEO_NOTION_TARGETED_READS_ENABLED", "false")
+    monkeypatch.setenv("CEO_ADVISOR_FORCE_OFFLINE", "1")
+
+    app = _get_app()
+    client = TestClient(app)
+
+    snap = {
+        "ready": True,
+        "status": "fresh",
+        "schema_version": "v1",
+        "payload": {
+            "goals": [
+                {
+                    "id": "g1",
+                    "title": "Preseli se u EU za 30 dana",
+                    "fields": {
+                        "status": "Blocked",
+                        "due": {"start": "2026-03-20"},
+                        "owner": ["Adnan", "Snezana"],
+                    },
+                },
+                {
+                    "id": "g2",
+                    "title": "Manje bitan cilj",
+                    "fields": {
+                        "status": "Not Started",
+                        "due": {"start": "2026-12-31"},
+                        "owner": ["Someone"],
+                    },
+                },
+            ],
+            "tasks": [
+                {
+                    "id": "t1",
+                    "title": "Spremi dokumente",
+                    "fields": {
+                        "status": "In Progress",
+                        "assigned_to": ["Adnan"],
+                        "goal": ["g1"],
+                    },
+                },
+                {
+                    "id": "t_unrelated",
+                    "title": "Unrelated task",
+                    "fields": {
+                        "status": "In Progress",
+                        "assigned_to": ["Someone"],
+                        "goal": ["g2"],
+                    },
+                },
+            ],
+            "projects": [],
+        },
+    }
+
+    conv_id = "conv-active-goal-context"
+    sess_id = "sess-active-goal-context"
+
+    # TEST 1: resolve top goal
+    r1 = client.post(
+        "/api/chat",
+        json={
+            "message": "Koji cilj je glavni?",
+            "conversation_id": conv_id,
+            "session_id": sess_id,
+            "snapshot": snap,
+        },
+    )
+    assert r1.status_code == 200, r1.text
+    txt1 = r1.json().get("text") or ""
+    assert "Najbitniji cilj (deterministic):" in txt1
+    assert "Preseli se u EU za 30 dana" in txt1
+    assert "GOALS (top 3)" not in txt1
+
+    # TEST 2: why follow-up uses same goal and does not ask for title
+    r2 = client.post(
+        "/api/chat",
+        json={
+            "message": "Zašto je ovaj cilj glavni?",
+            "conversation_id": conv_id,
+            "session_id": sess_id,
+            "snapshot": snap,
+        },
+    )
+    assert r2.status_code == 200, r2.text
+    txt2 = r2.json().get("text") or ""
+    assert "Preseli se u EU za 30 dana" in txt2
+    assert "Za koji cilj?" not in txt2
+
+    # TEST 3: ownership follow-up uses canonical context and does not ask 'Za koji cilj?'
+    r3 = client.post(
+        "/api/chat",
+        json={
+            "message": "Ko je odgovoran za ovaj cilj?",
+            "conversation_id": conv_id,
+            "session_id": sess_id,
+            "snapshot": snap,
+        },
+    )
+    assert r3.status_code == 200, r3.text
+    txt3 = r3.json().get("text") or ""
+    assert "Za koji cilj?" not in txt3
+    assert "Adnan" in txt3
+    assert "Snezana" in txt3
+
+    # TEST 4: goal-scoped tasks follow-up uses same goal and avoids global dump
+    r4 = client.post(
+        "/api/chat",
+        json={
+            "message": "Da li imamo zadatke za taj cilj?",
+            "conversation_id": conv_id,
+            "session_id": sess_id,
+            "snapshot": snap,
+        },
+    )
+    assert r4.status_code == 200, r4.text
+    txt4 = r4.json().get("text") or ""
+    assert "Preseli se u EU za 30 dana" in txt4
+    assert "TASKS (top 5)" not in txt4
+    assert "Unrelated task" not in txt4
+
+    # TEST 5: follow-up variants keep the same active goal context
+    r5a = client.post(
+        "/api/chat",
+        json={
+            "message": "Ko radi na cilju o kojem pričamo?",
+            "conversation_id": conv_id,
+            "session_id": sess_id,
+            "snapshot": snap,
+        },
+    )
+    assert r5a.status_code == 200, r5a.text
+    txt5a = r5a.json().get("text") or ""
+    assert "Za koji cilj?" not in txt5a
+    assert "Adnan" in txt5a
+    assert "Snezana" in txt5a
+
+    r5b = client.post(
+        "/api/chat",
+        json={
+            "message": "Zašto je taj cilj glavni?",
+            "conversation_id": conv_id,
+            "session_id": sess_id,
+            "snapshot": snap,
+        },
+    )
+    assert r5b.status_code == 200, r5b.text
+    assert "Preseli se u EU za 30 dana" in (r5b.json().get("text") or "")
+
+    r5c = client.post(
+        "/api/chat",
+        json={
+            "message": "Da li imamo aktivne zadatke za taj cilj?",
+            "conversation_id": conv_id,
+            "session_id": sess_id,
+            "snapshot": snap,
+        },
+    )
+    assert r5c.status_code == 200, r5c.text
+    txt5c = r5c.json().get("text") or ""
+    assert "Preseli se u EU za 30 dana" in txt5c
+    assert "aktivn" in txt5c.lower()
+    assert "Unrelated task" not in txt5c
+
+
 # ---------------------------------------------------------------------------
 # Phase 2: test_ceo_view_present_in_instructions
 # ---------------------------------------------------------------------------
