@@ -3402,13 +3402,15 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                         else:
                             tasks_out = "(nema povezanih zadataka)"
 
+                        tasks_sentence = (
+                            "Trenutno nema zadataka vezanih za ovaj cilj."
+                            if tasks_out == "(nema povezanih zadataka)"
+                            else f"Zadaci vezani za ovaj cilj:\n{tasks_out}"
+                        )
                         txt_out = (
-                            "Glavni cilj:\n"
-                            f"{goal_title_out}\n\n"
-                            "Owner:\n"
-                            f"{owners_out}\n\n"
-                            "Zadaci za taj cilj:\n"
-                            f"{tasks_out}"
+                            f'Glavni cilj je "{goal_title_out}".\n\n'
+                            f"Za njega su odgovorni: {owners_out}.\n\n"
+                            f"{tasks_sentence}"
                         ).strip()
 
                         # Persist bounded multi-turn context even on deterministic exits.
@@ -3526,11 +3528,9 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                         goal_id = (g0.get("id") or "").strip()
 
                     if goal_title:
-                        txt_out = "\n".join(
-                            [
-                                "Najbitniji cilj (deterministic):",
-                                f"1) {goal_title} | {status} | {due}",
-                            ]
+                        txt_out = (
+                            f'Glavni cilj trenutno je "{goal_title}".\n'
+                            f"Status: {status} | Rok: {due}"
                         ).strip()
                     else:
                         txt_out = "U snapshotu nema ciljeva, pa ne mogu odrediti najbitniji cilj."
@@ -3839,69 +3839,39 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                                     priority_out = str(pv)
                                     break
 
+                        # Trace helpers (do not affect output logic).
                         signals: List[str] = []
                         if status_out:
-                            signals.append(f"- Status: {status_out}")
+                            signals.append("status")
                         if due_out:
-                            signals.append(f"- Rok: {due_out}")
+                            signals.append("due")
                         if priority_out:
-                            signals.append(f"- Prioritet: {priority_out}")
+                            signals.append("priority")
+                        has_enough_signals = bool(signals)
 
-                        # If we have at least two concrete signals, provide deterministic conclusion.
-                        has_enough_signals = bool(len(signals) >= 2)
-                        if has_enough_signals:
-                            reasons: List[str] = []
-                            if status_out:
-                                reasons.append(f"status '{status_out}'")
-                            if due_out:
-                                reasons.append(f"rok '{due_out}'")
-                            if priority_out:
-                                reasons.append(f"prioritet '{priority_out}'")
-                            reason_txt = ", ".join(reasons)
+                        # Natural CEO-style phrasing (no bullets/headers). Use only deterministic fields.
+                        if goal_title_out and status_out and due_out:
                             txt_out = (
-                                "Za ovaj cilj imamo sljedeće signale:\n"
-                                + "\n".join(signals)
-                                + "\n\nZaključak:\n"
-                                + (
-                                    f"Ovaj cilj je glavni jer u snapshotu ima {reason_txt}."
-                                    if reason_txt
-                                    else "Ovaj cilj je glavni na osnovu dostupnih signala iz snapshot-a."
-                                )
+                                f'Glavni cilj je "{goal_title_out}" jer je trenutno {status_out.lower()} i ima rok {due_out}. '
+                                "To znači da zahtijeva prioritet i fokus u ovom trenutku."
+                            ).strip()
+                        elif goal_title_out and status_out:
+                            txt_out = (
+                                f'Glavni cilj je "{goal_title_out}" jer je trenutno {status_out.lower()}. '
+                                "To znači da zahtijeva prioritet i fokus u ovom trenutku."
+                            ).strip()
+                        elif goal_title_out and due_out:
+                            txt_out = (
+                                f'Glavni cilj je "{goal_title_out}" jer ima rok {due_out}. '
+                                "To znači da zahtijeva prioritet i fokus u ovom trenutku."
+                            ).strip()
+                        elif goal_title_out:
+                            txt_out = (
+                                f'Glavni cilj je "{goal_title_out}". '
+                                "U snapshotu nemam dovoljno podataka (status/rok/prioritet) da objasnim zašto je glavni."
                             ).strip()
                         else:
-                            # HYBRID: keep signals deterministic; add clearly-labeled, non-SSOT reasoning.
-                            reason_bits: List[str] = []
-                            if due_out:
-                                reason_bits.append(
-                                    f"ima definisan rok ('{due_out}'), što često znači da je vremenski osjetljiv"
-                                )
-                            if priority_out:
-                                reason_bits.append(
-                                    f"označen je kao viši prioritet ('{priority_out}')"
-                                )
-                            if status_out:
-                                reason_bits.append(
-                                    f"status je '{status_out}', što može ukazivati na blokadu ili kritičnost"
-                                )
-                            if reason_bits:
-                                hybrid_reason = " i ".join(reason_bits)
-                            else:
-                                hybrid_reason = "u snapshotu postoje signali koji mogu ukazivati na prioritet"
-
-                            txt_out = (
-                                "Deterministic signali:\n"
-                                + (
-                                    "\n".join(signals)
-                                    if signals
-                                    else "- (nema dostupnih signala u snapshotu)"
-                                )
-                                + "\n\nRazumno objašnjenje:\n"
-                                + f"Na osnovu ovih signala, ovaj cilj vjerovatno ima prioritet zato što {hybrid_reason}."
-                            ).strip()
-
-                        # Ensure the response stays anchored to the resolved goal context.
-                        if goal_title_out:
-                            txt_out = f"{goal_title_out}\n\n{txt_out}".strip()
+                            txt_out = "U snapshotu nemam dovoljno podataka da objasnim zašto je cilj glavni."
 
                         # Persist bounded multi-turn context even on deterministic exits.
                         try:
@@ -4293,19 +4263,19 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                                         titles.append(nm)
                                 if titles:
                                     txt_out = (
-                                        f"Zadaci povezani sa ciljem '{goal_title_out}':\n"
+                                        f'Zadaci vezani za cilj "{goal_title_out}":\n'
                                         + "\n".join(f"- {x}" for x in titles)
                                     )
                                 else:
-                                    txt_out = f"Nemamo zadatke povezane sa ciljem '{goal_title_out}'."
+                                    txt_out = f'Trenutno nema zadataka vezanih za cilj "{goal_title_out}".'
                             else:
                                 # YES/NO style question.
                                 if wants_active:
                                     ans = "Da." if active_count > 0 else "Ne."
-                                    txt_out = f"{ans} Trenutno imamo {active_count} aktivnih zadataka za cilj '{goal_title_out}'."
+                                    txt_out = f'{ans} Trenutno imamo {active_count} aktivnih zadataka vezanih za cilj "{goal_title_out}".'
                                 else:
                                     ans = "Da." if total_count > 0 else "Ne."
-                                    txt_out = f"{ans} Trenutno imamo {total_count} zadataka za cilj '{goal_title_out}'."
+                                    txt_out = f'{ans} Trenutno imamo {total_count} zadataka vezanih za cilj "{goal_title_out}".'
 
                             _det_tr_goal_tasks = {
                                 "intent": "ssot_goal_scoped_tasks",
@@ -5021,15 +4991,6 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                                 or f.get("title")
                                 or f.get("name")
                             )
-                            goal_status = _pick_str(
-                                f.get("status")
-                                or f.get("Status")
-                                or chosen.get("status")
-                                or chosen.get("Status")
-                            )
-                            goal_due = _pick_due(
-                                f.get("due") or f.get("Due") or chosen.get("due")
-                            )
 
                             goal_ids: List[str] = []
                             for k in ("id", "notion_id", "notionId"):
@@ -5056,11 +5017,11 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                                         chosen,
                                         [
                                             "Assigned To",
-                                            "Owner",
                                             "Assigned",
                                             "Assignee",
-                                            "Responsible",
+                                            "Owner",
                                             "assigned_to",
+                                            "owner",
                                         ],
                                     )
                                 )
@@ -5157,21 +5118,32 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                             except Exception:
                                 pass
 
-                            lines: List[str] = [
-                                f"Cilj: {goal_title}",
-                                f"Status: {goal_status} | Rok: {goal_due}",
-                            ]
                             if owners_goal:
-                                lines.append(f"Owner (cilj): {', '.join(owners_goal)}")
-                            if owners_tasks:
-                                lines.append(
-                                    f"Assigned/Owner (povezani taskovi): {', '.join(owners_tasks)}"
-                                )
-                            if not owners_goal and not owners_tasks:
-                                lines.append(
-                                    "U snapshotu nema owner/assigned_to informacija za ovaj cilj niti za povezane taskove."
-                                )
-                            txt_out = "\n".join(lines).strip()
+                                txt_out = (
+                                    f"Za cilj \"{goal_title}\" su odgovorni: {', '.join(owners_goal)}."
+                                ).strip()
+
+                                if owners_tasks:
+                                    owners_tasks_extra = [
+                                        o
+                                        for o in owners_tasks
+                                        if isinstance(o, str)
+                                        and o.strip()
+                                        and o not in owners_goal
+                                    ]
+                                    if owners_tasks_extra:
+                                        txt_out = (
+                                            txt_out
+                                            + f" Na povezanim zadacima su zaduženi: {', '.join(owners_tasks_extra)}."
+                                        )
+                            elif owners_tasks:
+                                txt_out = (
+                                    f"Za cilj \"{goal_title}\" su navedeni kao zaduženi na povezanim zadacima: {', '.join(owners_tasks)}."
+                                ).strip()
+                            else:
+                                txt_out = (
+                                    f'Za cilj "{goal_title}" u snapshotu nema owner/assigned_to niti zaduženih na povezanim zadacima.'
+                                ).strip()
 
                         # Persist bounded multi-turn context even on deterministic exits.
                         try:

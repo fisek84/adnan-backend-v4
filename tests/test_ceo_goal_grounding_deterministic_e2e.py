@@ -126,7 +126,7 @@ def test_top_goal_najbitniji_sets_last_referenced_goal(monkeypatch):
     body = r.json()
 
     text = (body.get("text") or "").strip()
-    assert "Najbitniji cilj" in text
+    assert "Glavni cilj" in text
     assert "Some other goal" in text
 
     meta = ConversationStateStore.get_meta(conversation_id=conversation_id)
@@ -185,8 +185,9 @@ def test_goal_ownership_prefers_payload_over_dashboard_and_prints_fields(monkeyp
     body = r.json()
     text = (body.get("text") or "").strip()
 
-    assert f"Cilj: {goal_title}" in text
-    assert "Owner (cilj): Adnan" in text
+    assert goal_title in text
+    assert "Za cilj" in text
+    assert "Adnan" in text
 
 
 def test_goal_ownership_followup_ovom_cilju_uses_last_referenced(monkeypatch):
@@ -249,8 +250,9 @@ def test_goal_ownership_followup_ovom_cilju_uses_last_referenced(monkeypatch):
     body2 = r2.json()
     text2 = (body2.get("text") or "").strip()
 
-    assert f"Cilj: {goal_title}" in text2
-    assert "Owner (cilj): Adnan" in text2
+    assert goal_title in text2
+    assert "Za cilj" in text2
+    assert "Adnan" in text2
 
 
 def test_goal_ownership_followup_koji_smo_spomenuli_uses_last_referenced(monkeypatch):
@@ -311,8 +313,9 @@ def test_goal_ownership_followup_koji_smo_spomenuli_uses_last_referenced(monkeyp
     body2 = r2.json()
     text2 = (body2.get("text") or "").strip()
 
-    assert f"Cilj: {goal_title}" in text2
-    assert "Owner (cilj): Adnan" in text2
+    assert goal_title in text2
+    assert "Za cilj" in text2
+    assert "Adnan" in text2
 
 
 def test_main_goal_glavni_intent_and_multisentence_followup_resolves_owner(
@@ -378,5 +381,6 @@ def test_main_goal_glavni_intent_and_multisentence_followup_resolves_owner(
     body2 = r2.json()
     text2 = (body2.get("text") or "").strip()
 
-    assert f"Cilj: {goal_title}" in text2
-    assert "Owner (cilj): Adnan" in text2
+    assert goal_title in text2
+    assert "Za cilj" in text2
+    assert "Adnan" in text2

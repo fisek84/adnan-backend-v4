@@ -313,13 +313,12 @@ def test_multi_intent_top_goal_owner_and_tasks_single_answer_no_tasks(monkeypatc
     assert r.status_code == 200, r.text
     txt = r.json().get("text") or ""
 
-    assert "Glavni cilj:" in txt
+    assert "Glavni cilj je" in txt
     assert "Preseli se u EU za 30 dana" in txt
-    assert "Owner:" in txt
+    assert "Za njega su odgovorni:" in txt
     assert "Adnan" in txt
     assert "Snezana" in txt
-    assert "Zadaci za taj cilj:" in txt
-    assert "(nema povezanih zadataka)" in txt
+    assert "Trenutno nema zadataka vezanih" in txt
 
     assert "Najbitniji cilj (deterministic):" not in txt
     assert "TASKS (top 5)" not in txt
@@ -381,9 +380,9 @@ def test_multi_intent_top_goal_owner_and_tasks_lists_only_linked(monkeypatch):
     assert r.status_code == 200, r.text
     txt = r.json().get("text") or ""
 
-    assert "Glavni cilj:" in txt
-    assert "Owner:" in txt
-    assert "Zadaci za taj cilj:" in txt
+    assert "Glavni cilj je" in txt
+    assert "Za njega su odgovorni:" in txt
+    assert "Zadaci vezani za ovaj cilj:" in txt
     assert "- Spremi dokumente" in txt
     assert "Unrelated task" not in txt
     assert "Najbitniji cilj (deterministic):" not in txt
@@ -724,7 +723,7 @@ def test_top_goal_intent_matches_goal_before_glavni_word_order(monkeypatch):
     txt = body.get("text") or ""
     assert body.get("read_only") is True
 
-    assert "Najbitniji cilj (deterministic):" in txt
+    assert "Glavni cilj trenutno je" in txt
     assert "Preseli se u EU za 30 dana" in txt
     assert "GOALS (top 3)" not in txt
     assert "TASKS (top 5)" not in txt
@@ -807,7 +806,7 @@ def test_active_goal_context_contract_followups_are_goal_bound(monkeypatch):
     )
     assert r1.status_code == 200, r1.text
     txt1 = r1.json().get("text") or ""
-    assert "Najbitniji cilj (deterministic):" in txt1
+    assert "Glavni cilj trenutno je" in txt1
     assert "Preseli se u EU za 30 dana" in txt1
     assert "GOALS (top 3)" not in txt1
 
@@ -826,10 +825,9 @@ def test_active_goal_context_contract_followups_are_goal_bound(monkeypatch):
     assert "Preseli se u EU za 30 dana" in txt2
     assert "Za koji cilj?" not in txt2
     assert "Najbitniji cilj (deterministic):" not in txt2
-    assert "Za ovaj cilj imamo sljedeće signale:" in txt2
-    assert "- Status:" in txt2
-    assert "- Rok:" in txt2
-    assert "Zaključak:" in txt2
+    assert "Glavni cilj je" in txt2
+    assert "jer" in txt2.lower()
+    assert "rok" in txt2.lower()
 
     # TEST 3: ownership follow-up uses canonical context and does not ask 'Za koji cilj?'
     r3 = client.post(
@@ -893,10 +891,9 @@ def test_active_goal_context_contract_followups_are_goal_bound(monkeypatch):
     assert "Preseli se u EU za 30 dana" in txt5b
     assert "Za koji cilj?" not in txt5b
     assert "Najbitniji cilj (deterministic):" not in txt5b
-    assert "Za ovaj cilj imamo sljedeće signale:" in txt5b
-    assert "- Status:" in txt5b
-    assert "- Rok:" in txt5b
-    assert "Zaključak:" in txt5b
+    assert "Glavni cilj je" in txt5b
+    assert "jer" in txt5b.lower()
+    assert "rok" in txt5b.lower()
 
     r5c = client.post(
         "/api/chat",
@@ -1082,10 +1079,9 @@ def test_why_main_goal_explicit_title_hybrid(monkeypatch):
     assert "Za koji cilj?" not in txt
     assert "Najbitniji cilj (deterministic):" not in txt
     assert "Preseli se u EU za 30 dana" in txt
-    assert "Za ovaj cilj imamo sljedeće signale:" in txt
-    assert "- Status:" in txt
-    assert "- Rok:" in txt
-    assert "Zaključak:" in txt
+    assert "Glavni cilj je" in txt
+    assert "jer" in txt.lower()
+    assert "rok" in txt.lower()
 
 
 # ---------------------------------------------------------------------------
