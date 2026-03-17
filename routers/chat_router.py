@@ -4538,7 +4538,9 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                             goal_ref = ""
                     if not goal_ref and goal_line_title:
                         goal_ref = goal_line_title
-                    if not goal_ref and is_followup_ref:
+                    # Canonical: if no explicit goal_ref is present, always try the
+                    # active goal context ID before asking for a title.
+                    if not goal_ref:
                         goal_id_ref = _load_last_referenced_goal_id(
                             conversation_id=conversation_id
                         )
