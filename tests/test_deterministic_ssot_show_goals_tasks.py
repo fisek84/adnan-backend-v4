@@ -264,6 +264,60 @@ def test_goal_ownership_lookup_deterministic_from_snapshot(monkeypatch):
     assert "Nemam SSOT snapshot" not in txt
 
 
+@pytest.mark.parametrize(
+    "msg",
+    [
+        "Ko je odgovoran za Preseli se u EU za 30 dana cilj?",
+        "Ko je zaduzen za Preseli se u EU za 30 dana cilj?",
+        "Ko radi na cilju Preseli se u EU za 30 dana?",
+    ],
+)
+def test_goal_ownership_direct_goal_entity_in_same_sentence(monkeypatch, msg):
+    """If the goal title is present in the same sentence, do not ask a follow-up ('Za koji cilj?')."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
+    monkeypatch.setenv("NOTION_API_KEY", "test-notion-key")
+    monkeypatch.setenv("NOTION_GOALS_DB_ID", "test-goals-db")
+    monkeypatch.setenv("NOTION_TASKS_DB_ID", "test-tasks-db")
+    monkeypatch.setenv("NOTION_PROJECTS_DB_ID", "test-projects-db")
+    monkeypatch.setenv("CEO_NOTION_TARGETED_READS_ENABLED", "false")
+    monkeypatch.setenv("CEO_ADVISOR_FORCE_OFFLINE", "1")
+
+    app = _get_app()
+    client = TestClient(app)
+
+    snap = {
+        "ready": True,
+        "status": "fresh",
+        "schema_version": "v1",
+        "payload": {
+            "goals": [
+                {
+                    "id": "g1",
+                    "title": "Preseli se u EU za 30 dana",
+                    "fields": {"status": "In Progress", "owner": ["ceo@example.com"]},
+                }
+            ],
+            "tasks": [],
+            "projects": [],
+        },
+    }
+
+    r = client.post(
+        "/api/chat",
+        json={
+            "message": msg,
+            "snapshot": snap,
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    txt = body.get("text") or ""
+
+    assert body.get("read_only") is True
+    assert "ceo@example.com" in txt
+    assert "Za koji cilj?" not in txt
+
+
 def test_goal_ownership_lookup_reports_missing_data_without_guessing(monkeypatch):
     """If snapshot has no owner/assigned_to for a goal, response must not invent owners."""
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
