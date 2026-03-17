@@ -78,7 +78,13 @@ _SHOW_GOALS_TASKS_RE = re.compile(
 
 
 _TOP_GOAL_RE = re.compile(
-    r"(?i)\b(?:najbitnij\w*|najvaznij\w*|najprioritetnij\w*|top|glavn\w*|main)\b.*\b(?:cilj\w*|goal\w*)\b"
+    r"(?i)(?:"
+    # Order A: adjective/keyword before 'goal'
+    r"\b(?:najbitnij\w*|najvaznij\w*|najprioritetnij\w*|top|glavn\w*|main)\b.*\b(?:cilj\w*|goal\w*)\b"
+    r"|"
+    # Order B: 'goal' before adjective/keyword (e.g., 'Koji cilj je glavni?')
+    r"\b(?:cilj\w*|goal\w*)\b.*\b(?:najbitnij\w*|najvaznij\w*|najprioritetnij\w*|top|glavn\w*|main)\b"
+    r")"
 )
 
 
@@ -3654,12 +3660,24 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                             t0_goal_tasks,
                         )
                     )
+                    if not is_followup_goal:
+                        is_followup_goal = bool(
+                            re.search(
+                                r"(?i)\b(o\s+kojem\s+pricamo|o\s+c(e|)mu\s+pricamo)\b",
+                                t0_goal_tasks,
+                            )
+                            or re.search(
+                                r"(?i)\b(koji\s+smo\s+spomenuli|koji\s+smo\s+pomenuli|koji\s+smo\s+spominjali)\b",
+                                t0_goal_tasks,
+                            )
+                        )
                     is_goal_scoped_task_query = bool(
                         has_task_token and (has_goal_token or is_followup_goal)
                     )
 
                     if is_goal_scoped_task_query:
-                        # Resolve goal from conversation meta (last referenced goal title).
+                        # Resolve goal using canonical active goal context.
+                        last_goal_id = ""
                         last_goal_title = ""
                         try:
                             if (
@@ -3670,20 +3688,94 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                                     conversation_id=conversation_id.strip()
                                 )
                                 if isinstance(meta, dict):
+                                    v_id = meta.get("last_referenced_goal_id")
+                                    if isinstance(v_id, str) and v_id.strip():
+                                        last_goal_id = v_id.strip()
                                     v = meta.get("last_referenced_goal_title")
                                     if isinstance(v, str) and v.strip():
                                         last_goal_title = v.strip()
                         except Exception:
+                            last_goal_id = ""
                             last_goal_title = ""
 
-                        if last_goal_title:
-                            goals = _snapshot_goals_list(_snap_q)
-                            tasks = _snapshot_tasks_list(_snap_q)
+                        # Optional explicit goal reference in the same message.
+                        explicit_goal_ref = ""
+                        try:
+                            m_exp = re.search(
+                                r'(?i)\b(?:cilj(?:u|a)?|goal)\w*\b\s*[:\-\u2013\u2014]?\s*["\u201c\u201d\']?([^\n\r\?\"]+)',
+                                prompt or "",
+                            )
+                            if m_exp:
+                                raw = (m_exp.group(1) or "").strip()
+                                raw = raw.strip(" \t\r\n\"'.,;:!?-")
+                                raw = re.split(r"[\.!?]\s+", raw, maxsplit=1)[0].strip()
+                                rn = _norm_bhs_ascii(raw)
+                                if rn and not re.search(
+                                    r"(?i)\b(ovaj|ovom|ovog|ovome|ovo|taj|tom|tog|tome|koji\s+smo\s+spomenuli|koji\s+smo\s+pomenuli|koji\s+smo\s+spominjali|o\s+kojem\s+pricamo|o\s+c(e|)mu\s+pricamo)\b",
+                                    rn,
+                                ):
+                                    explicit_goal_ref = raw
+                        except Exception:
+                            explicit_goal_ref = ""
 
+                        goals = _snapshot_goals_list(_snap_q)
+                        tasks = _snapshot_tasks_list(_snap_q)
+
+                        chosen_goal: Optional[Dict[str, Any]] = None
+                        # Resolution order: explicit ref -> last_referenced_goal_id -> title fallback.
+                        if explicit_goal_ref:
+                            ref_norm = _norm_bhs_ascii(explicit_goal_ref)
+                            for g in goals:
+                                if not isinstance(g, dict):
+                                    continue
+                                f = (
+                                    g.get("fields")
+                                    if isinstance(g.get("fields"), dict)
+                                    else {}
+                                )
+                                title = _pick_str(
+                                    g.get("title")
+                                    or g.get("name")
+                                    or f.get("title")
+                                    or f.get("name")
+                                )
+                                if ref_norm and ref_norm == _norm_bhs_ascii(title):
+                                    chosen_goal = g
+                                    break
+                            if chosen_goal is None and ref_norm:
+                                for g in goals:
+                                    if not isinstance(g, dict):
+                                        continue
+                                    f = (
+                                        g.get("fields")
+                                        if isinstance(g.get("fields"), dict)
+                                        else {}
+                                    )
+                                    title = _pick_str(
+                                        g.get("title")
+                                        or g.get("name")
+                                        or f.get("title")
+                                        or f.get("name")
+                                    )
+                                    if ref_norm in _norm_bhs_ascii(title):
+                                        chosen_goal = g
+                                        break
+
+                        if chosen_goal is None and last_goal_id:
+                            for g in goals:
+                                if not isinstance(g, dict):
+                                    continue
+                                gid = (g.get("id") or "").strip()
+                                if gid and gid == last_goal_id:
+                                    chosen_goal = g
+                                    break
+
+                        if chosen_goal is None and last_goal_title:
                             last_goal_norm = _norm_bhs_ascii(last_goal_title)
-                            chosen_goal: Optional[Dict[str, Any]] = None
                             if last_goal_norm:
                                 for g in goals:
+                                    if not isinstance(g, dict):
+                                        continue
                                     f = (
                                         g.get("fields")
                                         if isinstance(g.get("fields"), dict)
@@ -3701,6 +3793,8 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
 
                                 if chosen_goal is None:
                                     for g in goals:
+                                        if not isinstance(g, dict):
+                                            continue
                                         f = (
                                             g.get("fields")
                                             if isinstance(g.get("fields"), dict)
@@ -3719,183 +3813,181 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                                             chosen_goal = g
                                             break
 
-                            if chosen_goal is not None:
-                                goal_ids: List[str] = []
-                                for k in ("id", "notion_id", "notionId"):
-                                    v = chosen_goal.get(k)
-                                    if isinstance(v, str) and v.strip():
-                                        goal_ids.append(v.strip())
-                                goal_id_set = set(goal_ids)
+                        if chosen_goal is not None:
+                            goal_ids: List[str] = []
+                            for k in ("id", "notion_id", "notionId"):
+                                v = chosen_goal.get(k)
+                                if isinstance(v, str) and v.strip():
+                                    goal_ids.append(v.strip())
+                            goal_id_set = set(goal_ids)
 
-                                linked: List[Dict[str, Any]] = []
-                                if goal_id_set:
-                                    for t in tasks:
-                                        tf = (
-                                            t.get("fields")
-                                            if isinstance(t.get("fields"), dict)
-                                            else {}
-                                        )
-                                        refs = (
-                                            t.get("goal_ids")
-                                            or t.get("goalIds")
-                                            or t.get("goal_id")
-                                            or t.get("goal")
-                                            or tf.get("goal_ids")
-                                            or tf.get("goalIds")
-                                            or tf.get("goal_id")
-                                            or tf.get("goal")
-                                            or []
-                                        )
-                                        if isinstance(refs, str) and refs.strip():
-                                            refs = [refs.strip()]
-                                        if not isinstance(refs, list):
-                                            refs = []
-                                        refs_norm = [
-                                            r.strip()
-                                            for r in refs
-                                            if isinstance(r, str) and r.strip()
-                                        ]
-                                        if any(r in goal_id_set for r in refs_norm):
-                                            linked.append(t)
+                            linked: List[Dict[str, Any]] = []
+                            if goal_id_set:
+                                for t in tasks:
+                                    tf = (
+                                        t.get("fields")
+                                        if isinstance(t.get("fields"), dict)
+                                        else {}
+                                    )
+                                    refs = (
+                                        t.get("goal_ids")
+                                        or t.get("goalIds")
+                                        or t.get("goal_id")
+                                        or t.get("goal")
+                                        or tf.get("goal_ids")
+                                        or tf.get("goalIds")
+                                        or tf.get("goal_id")
+                                        or tf.get("goal")
+                                        or []
+                                    )
+                                    if isinstance(refs, str) and refs.strip():
+                                        refs = [refs.strip()]
+                                    if not isinstance(refs, list):
+                                        refs = []
+                                    refs_norm = [
+                                        r.strip()
+                                        for r in refs
+                                        if isinstance(r, str) and r.strip()
+                                    ]
+                                    if any(r in goal_id_set for r in refs_norm):
+                                        linked.append(t)
 
-                                # Compute active tasks count using the same engine logic as Phase A.
+                            # Compute active tasks count using the same engine logic as Phase A.
+                            active_count = 0
+                            try:
+                                from services.ssot_task_query_engine import (  # noqa: PLC0415
+                                    compute_task_stats as _compute_task_stats,
+                                )
+
+                                payload0 = (
+                                    _snap_q.get("payload")
+                                    if isinstance(_snap_q.get("payload"), dict)
+                                    else {}
+                                )
+                                dash0 = (
+                                    payload0.get("dashboard")
+                                    if isinstance(payload0.get("dashboard"), dict)
+                                    else {}
+                                )
+                                payload2 = dict(payload0)
+                                payload2["dashboard"] = dict(dash0)
+                                payload2["tasks"] = linked
+                                payload2["dashboard"]["tasks"] = []
+                                snap2 = {"ready": True, "payload": payload2}
+                                st2 = _compute_task_stats(snap2)
+                                active_count = int(st2.get("active_count") or 0)
+                            except Exception:
                                 active_count = 0
-                                try:
-                                    from services.ssot_task_query_engine import (  # noqa: PLC0415
-                                        compute_task_stats as _compute_task_stats,
-                                    )
 
-                                    payload0 = (
-                                        _snap_q.get("payload")
-                                        if isinstance(_snap_q.get("payload"), dict)
+                            total_count = len(linked)
+                            wants_active = bool(
+                                re.search(r"(?i)\b(aktivn)\w*\b", t0_goal_tasks)
+                            )
+                            wants_list = bool(
+                                re.search(
+                                    r"(?i)\b(koji|koje|povezan|povezani|navedi|izlistaj|lista|prikazi|pokazi|poka(z|z)i)\b",
+                                    t0_goal_tasks,
+                                )
+                            )
+
+                            goal_title_out = _pick_str(
+                                chosen_goal.get("title")
+                                or chosen_goal.get("name")
+                                or (
+                                    chosen_goal.get("fields", {}).get("title")
+                                    if isinstance(chosen_goal.get("fields"), dict)
+                                    else None
+                                )
+                                or (
+                                    chosen_goal.get("fields", {}).get("name")
+                                    if isinstance(chosen_goal.get("fields"), dict)
+                                    else None
+                                )
+                            )
+
+                            if wants_list:
+                                titles: List[str] = []
+                                for t in linked[:30]:
+                                    tf = (
+                                        t.get("fields")
+                                        if isinstance(t.get("fields"), dict)
                                         else {}
                                     )
-                                    dash0 = (
-                                        payload0.get("dashboard")
-                                        if isinstance(payload0.get("dashboard"), dict)
-                                        else {}
+                                    nm = _pick_str(
+                                        t.get("title")
+                                        or t.get("name")
+                                        or tf.get("title")
+                                        or tf.get("name")
                                     )
-                                    payload2 = dict(payload0)
-                                    payload2["dashboard"] = dict(dash0)
-                                    payload2["tasks"] = linked
-                                    payload2["dashboard"]["tasks"] = []
-                                    snap2 = {"ready": True, "payload": payload2}
-                                    st2 = _compute_task_stats(snap2)
-                                    active_count = int(st2.get("active_count") or 0)
-                                except Exception:
-                                    active_count = 0
-
-                                total_count = len(linked)
-                                wants_active = bool(
-                                    re.search(r"(?i)\b(aktivn)\w*\b", t0_goal_tasks)
-                                )
-                                wants_list = bool(
-                                    re.search(
-                                        r"(?i)\b(koji|koje|povezan|povezani|navedi|izlistaj|lista|prikazi|pokazi|poka(z|z)i)\b",
-                                        t0_goal_tasks,
+                                    if nm:
+                                        titles.append(nm)
+                                if titles:
+                                    txt_out = (
+                                        f"Zadaci povezani sa ciljem '{goal_title_out}':\n"
+                                        + "\n".join(f"- {x}" for x in titles)
                                     )
-                                )
-
-                                goal_title_out = _pick_str(
-                                    chosen_goal.get("title")
-                                    or chosen_goal.get("name")
-                                    or (
-                                        chosen_goal.get("fields", {}).get("title")
-                                        if isinstance(chosen_goal.get("fields"), dict)
-                                        else None
-                                    )
-                                    or (
-                                        chosen_goal.get("fields", {}).get("name")
-                                        if isinstance(chosen_goal.get("fields"), dict)
-                                        else None
-                                    )
-                                )
-
-                                if wants_list:
-                                    titles: List[str] = []
-                                    for t in linked[:30]:
-                                        tf = (
-                                            t.get("fields")
-                                            if isinstance(t.get("fields"), dict)
-                                            else {}
-                                        )
-                                        nm = _pick_str(
-                                            t.get("title")
-                                            or t.get("name")
-                                            or tf.get("title")
-                                            or tf.get("name")
-                                        )
-                                        if nm:
-                                            titles.append(nm)
-                                    if titles:
-                                        txt_out = (
-                                            f"Zadaci povezani sa ciljem '{goal_title_out}':\n"
-                                            + "\n".join(f"- {x}" for x in titles)
-                                        )
-                                    else:
-                                        txt_out = f"Nemamo zadatke povezane sa ciljem '{goal_title_out}'."
                                 else:
-                                    # YES/NO style question.
-                                    if wants_active:
-                                        ans = "Da." if active_count > 0 else "Ne."
-                                        txt_out = f"{ans} Trenutno imamo {active_count} aktivnih zadataka za cilj '{goal_title_out}'."
-                                    else:
-                                        ans = "Da." if total_count > 0 else "Ne."
-                                        txt_out = f"{ans} Trenutno imamo {total_count} zadataka za cilj '{goal_title_out}'."
+                                    txt_out = f"Nemamo zadatke povezane sa ciljem '{goal_title_out}'."
+                            else:
+                                # YES/NO style question.
+                                if wants_active:
+                                    ans = "Da." if active_count > 0 else "Ne."
+                                    txt_out = f"{ans} Trenutno imamo {active_count} aktivnih zadataka za cilj '{goal_title_out}'."
+                                else:
+                                    ans = "Da." if total_count > 0 else "Ne."
+                                    txt_out = f"{ans} Trenutno imamo {total_count} zadataka za cilj '{goal_title_out}'."
 
-                                _det_tr_goal_tasks = {
-                                    "intent": "ssot_goal_scoped_tasks",
-                                    "exit_path": "deterministic_ssot.goal_scoped_tasks",
-                                    "goal_title": goal_title_out,
-                                    "goal_ids": goal_ids[:3],
-                                    "total_count": int(total_count),
-                                    "active_count": int(active_count),
-                                }
-                                _det_grounding_goal_tasks = _grounding_bundle(
-                                    prompt=prompt,
-                                    knowledge_snapshot=ks_for_gp,
-                                    memory_snapshot=mem_snapshot,
-                                    legacy_trace=_det_tr_goal_tasks,
-                                    agent_id="ceo_advisor",
+                            _det_tr_goal_tasks = {
+                                "intent": "ssot_goal_scoped_tasks",
+                                "exit_path": "deterministic_ssot.goal_scoped_tasks",
+                                "goal_title": goal_title_out,
+                                "goal_ids": goal_ids[:3],
+                                "total_count": int(total_count),
+                                "active_count": int(active_count),
+                            }
+                            _det_grounding_goal_tasks = _grounding_bundle(
+                                prompt=prompt,
+                                knowledge_snapshot=ks_for_gp,
+                                memory_snapshot=mem_snapshot,
+                                legacy_trace=_det_tr_goal_tasks,
+                                agent_id="ceo_advisor",
+                            )
+                            _det_content_goal_tasks: Dict[str, Any] = {
+                                "text": (txt_out or "").strip(),
+                                "proposed_commands": [],
+                                "agent_id": "ceo_advisor",
+                                "read_only": True,
+                                "notion_ops": {
+                                    "armed": False,
+                                    "armed_at": None,
+                                    "session_id": session_id,
+                                    "armed_state": {},
+                                },
+                            }
+                            if debug_on:
+                                _det_content_goal_tasks["trace"] = _det_tr_goal_tasks
+                                _det_content_goal_tasks.update(kb)
+                                _det_content_goal_tasks.update(
+                                    _det_grounding_goal_tasks
                                 )
-                                _det_content_goal_tasks: Dict[str, Any] = {
-                                    "text": (txt_out or "").strip(),
-                                    "proposed_commands": [],
-                                    "agent_id": "ceo_advisor",
-                                    "read_only": True,
-                                    "notion_ops": {
-                                        "armed": False,
-                                        "armed_at": None,
-                                        "session_id": session_id,
-                                        "armed_state": {},
-                                    },
-                                }
-                                if debug_on:
-                                    _det_content_goal_tasks["trace"] = (
-                                        _det_tr_goal_tasks
-                                    )
-                                    _det_content_goal_tasks.update(kb)
-                                    _det_content_goal_tasks.update(
-                                        _det_grounding_goal_tasks
-                                    )
 
-                                _det_content_goal_tasks = _attach_and_log_audit(
-                                    _det_content_goal_tasks,
-                                    session_id=session_id,
-                                    conversation_id=conversation_id,
-                                    agent_id="ceo_advisor",
-                                    snapshot=ks_for_gp,
-                                    trace=_det_tr_goal_tasks,
-                                    grounding=_det_grounding_goal_tasks,
-                                    debug_on=bool(debug_on),
-                                    exit_path="ceo_chat.deterministic_ssot.goal_scoped_tasks",
-                                    targeted_reads=targeted_reads_info,
+                            _det_content_goal_tasks = _attach_and_log_audit(
+                                _det_content_goal_tasks,
+                                session_id=session_id,
+                                conversation_id=conversation_id,
+                                agent_id="ceo_advisor",
+                                snapshot=ks_for_gp,
+                                trace=_det_tr_goal_tasks,
+                                grounding=_det_grounding_goal_tasks,
+                                debug_on=bool(debug_on),
+                                exit_path="ceo_chat.deterministic_ssot.goal_scoped_tasks",
+                                targeted_reads=targeted_reads_info,
+                            )
+                            return JSONResponse(
+                                content=_attach_session_id(
+                                    _det_content_goal_tasks, session_id
                                 )
-                                return JSONResponse(
-                                    content=_attach_session_id(
-                                        _det_content_goal_tasks, session_id
-                                    )
-                                )
+                            )
                 except Exception:
                     pass
 
