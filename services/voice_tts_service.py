@@ -5,7 +5,12 @@ from typing import Optional, Tuple
 
 
 def _env_true(name: str, default: str = "false") -> bool:
-    return (os.getenv(name, default) or "").strip().lower() in {"1", "true", "yes", "on"}
+    return (os.getenv(name, default) or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 class VoiceTTSService:
@@ -91,7 +96,9 @@ class VoiceTTSService:
         if audio_bytes is None:
             raise RuntimeError("tts_failed: empty_audio")
 
-        content_type = "audio/mpeg" if self._format == "mp3" else "application/octet-stream"
+        content_type = (
+            "audio/mpeg" if self._format == "mp3" else "application/octet-stream"
+        )
         return audio_bytes, content_type
 
 
