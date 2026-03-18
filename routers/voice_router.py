@@ -1,38 +1,44 @@
-import os
+from __future__ import annotations
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from typing import Any, Dict
+
+import httpx
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from pydantic import BaseModel
+from starlette.responses import JSONResponse
 
 from integrations.voice_service import VoiceService
-from services.adnan_ai_decision_service import AdnanAIDecisionService
-from services.agent_router.agent_router import AgentRouter
 
 router = APIRouter(prefix="/voice", tags=["Voice Input"])
 
 # Instances
-decision_engine = AdnanAIDecisionService()
 voice_service = VoiceService()
-agent_router = AgentRouter()  # <<< NOVO — mozak delegacije
 
 
-_WRITE_INTENTS = {
-    "notion_write",
-    "goal_write",
-    "update_goal",
-    "goal_task_workflow",
-    "memory_write",
-}
+async def _forward_to_canonical_chat(
+    request: Request,
+    *,
+    message: str,
+    extra_payload: Dict[str, Any] | None = None,
+) -> httpx.Response:
+    """Forward to canonical /api/chat using an in-process ASGI transport.
 
+    This guarantees we hit the exact same canonical path (governance, sanitizers,
+    session/identity propagation rules) without calling AgentRouter.execute or
+    AdnanAIDecisionService in the voice runtime path.
+    """
 
-def _guard_enabled() -> bool:
-    v = (os.getenv("ENABLE_WRITE_INTENT_GUARD", "0") or "0").strip()
-    return v in {"1", "true", "True"}
+    payload: Dict[str, Any] = {"message": message}
+    if isinstance(extra_payload, dict) and extra_payload:
+        payload.update(extra_payload)
 
-
-def _extract_command_name(notion_cmd):
-    if isinstance(notion_cmd, dict):
-        return notion_cmd.get("command")
-    return getattr(notion_cmd, "command", None)
+    transport = httpx.ASGITransport(app=request.app)
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        timeout=30.0,
+    ) as client:
+        return await client.post("/api/chat", json=payload)
 
 
 class VoiceText(BaseModel):
@@ -40,19 +46,26 @@ class VoiceText(BaseModel):
 
 
 @router.post("/exec_text")
-async def voice_exec_text(payload: VoiceText):
-    decision = decision_engine.process_ceo_instruction(payload.text)
-    return {
-        "success": True,
-        "transcribed_text": payload.text,
-        "engine_output": decision,
-    }
+async def voice_exec_text(payload: VoiceText, request: Request):
+    # Voice is a pure input adapter; canonical processing happens in /api/chat.
+    resp = await _forward_to_canonical_chat(request, message=payload.text)
+
+    try:
+        content = resp.json()
+    except Exception:
+        content = {"error": "canonical_chat_non_json_response", "raw": resp.text}
+
+    if isinstance(content, dict) and "transcribed_text" not in content:
+        content["transcribed_text"] = payload.text
+
+    return JSONResponse(status_code=resp.status_code, content=content)
 
 
 @router.post("/exec")
-async def voice_exec(audio: UploadFile = File(...)):
-    """
-    CEO govori → Whisper → Adnan.ai → AgentRouter → Notion Ops → izvršenje u Notionu
+async def voice_exec(request: Request, audio: UploadFile = File(...)):
+    """CEO govori → Whisper → canonical /api/chat.
+
+    Voice layer is STT-only; it never executes or bypasses approvals.
     """
     if not audio:
         raise HTTPException(400, "Missing audio file")
@@ -61,51 +74,18 @@ async def voice_exec(audio: UploadFile = File(...)):
         # 1. Transcribe voice → text
         text = await voice_service.transcribe(audio)
 
-        # 2. Adnan.ai decision engine → produce notion_command
-        decision = decision_engine.process_ceo_instruction(text)
+        # 2. Forward to canonical /api/chat (in-process, no network).
+        resp = await _forward_to_canonical_chat(request, message=text)
 
-        op = decision.get("operational_output", {})
-        notion_cmd = op.get("notion_command")
+        try:
+            content = resp.json()
+        except Exception:
+            content = {"error": "canonical_chat_non_json_response", "raw": resp.text}
 
-        if not notion_cmd:
-            return {
-                "success": False,
-                "transcribed_text": text,
-                "reason": "Adnan.ai did not produce a Notion command.",
-                "engine_output": decision,
-            }
+        if isinstance(content, dict) and "transcribed_text" not in content:
+            content["transcribed_text"] = text
 
-        cmd_name = _extract_command_name(notion_cmd)
-        if (
-            _guard_enabled()
-            and isinstance(cmd_name, str)
-            and cmd_name in _WRITE_INTENTS
-        ):
-            return {
-                "proposal_required": True,
-                "success": False,
-                "blocked_by": "write_intent_guard",
-                "reason": "write_intent_not_allowed_on_voice_exec",
-                "transcribed_text": text,
-                "engine_output": decision,
-                "suggested_action": {
-                    "endpoint": "POST /api/chat",
-                    "payload": {"message": text},
-                },
-            }
-
-        # 3. AGENT ROUTER → delegira pravom agentu
-        agent_result = await agent_router.execute(notion_cmd)
-
-        return {
-            "success": True,
-            "transcribed_text": text,
-            "engine_output": decision,
-            "delegation": {
-                "agent": agent_result.get("agent"),
-                "agent_response": agent_result.get("agent_response"),
-            },
-        }
+        return JSONResponse(status_code=resp.status_code, content=content)
 
     except Exception as e:
         raise HTTPException(500, f"Voice execution failed: {e}")

@@ -3,6 +3,7 @@ from fastapi.testclient import TestClient
 from unittest.mock import AsyncMock, patch
 
 from gateway.gateway_server import app
+from models.agent_contract import AgentOutput
 
 
 def _set_required_gateway_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -21,82 +22,52 @@ def _post_voice_exec(client: TestClient):
     )
 
 
-def test_voice_exec_blocks_write_intent_when_guard_enabled(
+def test_voice_exec_forwards_to_canonical_chat(
     monkeypatch: pytest.MonkeyPatch,
-):
+) -> None:
     _set_required_gateway_env(monkeypatch)
-    monkeypatch.setenv("ENABLE_WRITE_INTENT_GUARD", "1")
 
-    notion_cmd = {"command": "notion_write", "payload": {"x": 1}}
-    decision = {"operational_output": {"notion_command": notion_cmd}}
-    agent_result = {"agent": "noop", "agent_response": {}}
+    chat_agent_mock = AsyncMock(
+        return_value=AgentOutput(
+            text="OK",
+            proposed_commands=[],
+            agent_id="ceo_advisor",
+            read_only=True,
+            trace={"exit_reason": "stub.voice.forward"},
+        )
+    )
 
     with (
         patch(
             "routers.voice_router.voice_service.transcribe",
-            new=AsyncMock(return_value="Kreiraj goal Test"),
+            new=AsyncMock(return_value="Molim te analiziraj ovaj plan"),
         ) as m_transcribe,
         patch(
-            "routers.voice_router.decision_engine.process_ceo_instruction",
-            return_value=decision,
-        ) as m_decision,
-        patch(
-            "routers.voice_router.agent_router.execute",
-            new=AsyncMock(return_value=agent_result),
-        ) as m_execute,
+            "routers.chat_router.create_ceo_advisor_agent",
+            new=chat_agent_mock,
+        ),
     ):
         with TestClient(app) as client:
             resp = _post_voice_exec(client)
 
-        assert resp.status_code == 200
-        data = resp.json()
+    assert resp.status_code == 200
+    data = resp.json()
 
-        # Must block write intents when flag is enabled
-        assert data.get("blocked_by") == "write_intent_guard"
-        reason = str(data.get("reason") or "")
-        assert "write_intent" in reason
-        assert data.get("proposal_required") is True or (
-            data.get("success") is False and "write_intent" in reason
-        )
+    # Voice is STT-only: response is the canonical /api/chat output.
+    assert data.get("read_only") is True
+    assert data.get("proposed_commands") == []
+    assert str(data.get("text") or "") == "OK"
 
-        # Must not execute when blocked
-        assert m_execute.call_count == 0
+    # Adapter convenience: transcribed text should be present.
+    assert data.get("transcribed_text") == "Molim te analiziraj ovaj plan"
 
-        # Sanity: upstream mocks were used
-        assert m_transcribe.call_count == 1
-        assert m_decision.call_count == 1
+    # Ensure we actually went through chat routing.
+    assert chat_agent_mock.call_count == 1
+    assert m_transcribe.call_count == 1
 
 
-def test_voice_exec_does_not_block_when_guard_disabled(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    _set_required_gateway_env(monkeypatch)
-    monkeypatch.setenv("ENABLE_WRITE_INTENT_GUARD", "0")
+def test_voice_router_has_no_legacy_decision_or_agent_execute() -> None:
+    import routers.voice_router as vr
 
-    notion_cmd = {"command": "notion_write", "payload": {"x": 1}}
-    decision = {"operational_output": {"notion_command": notion_cmd}}
-    agent_result = {"agent": "noop", "agent_response": {}}
-
-    with (
-        patch(
-            "routers.voice_router.voice_service.transcribe",
-            new=AsyncMock(return_value="Kreiraj goal Test"),
-        ),
-        patch(
-            "routers.voice_router.decision_engine.process_ceo_instruction",
-            return_value=decision,
-        ),
-        patch(
-            "routers.voice_router.agent_router.execute",
-            new=AsyncMock(return_value=agent_result),
-        ) as m_execute,
-    ):
-        with TestClient(app) as client:
-            resp = _post_voice_exec(client)
-
-        assert resp.status_code == 200
-        data = resp.json()
-
-        # Default behavior unchanged: guard should not trigger
-        assert data.get("blocked_by") != "write_intent_guard"
-        assert m_execute.call_count == 1
+    assert not hasattr(vr, "decision_engine")
+    assert not hasattr(vr, "agent_router")
