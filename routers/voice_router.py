@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import os
+import uuid
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 import httpx
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, WebSocket
 from pydantic import BaseModel, Field
 from starlette.responses import JSONResponse
 
@@ -105,6 +108,132 @@ def _truthy(value: object) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "on"}
     return False
+
+
+def _env_true(name: str, default: str = "false") -> bool:
+    raw = (os.getenv(name) or default or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except Exception:
+        return default
+
+
+def _voice_realtime_ws_enabled() -> bool:
+    return _env_true("VOICE_REALTIME_WS_ENABLED", "false")
+
+
+def _voice_realtime_ws_idle_timeout_sec() -> float:
+    # Keep conservative defaults; WS is opt-in.
+    v = _env_int("VOICE_REALTIME_WS_IDLE_TIMEOUT_SEC", 60)
+    return float(max(5, min(v, 600)))
+
+
+def _voice_realtime_ws_turn_timeout_sec() -> float:
+    v = _env_int("VOICE_REALTIME_WS_TURN_TIMEOUT_SEC", 120)
+    return float(max(5, min(v, 600)))
+
+
+def _iso_utc_now() -> str:
+    return (
+        datetime.now(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
+
+def _chunk_text(text: str, *, max_chars: int = 240) -> list[str]:
+    t = text or ""
+    if not t:
+        return []
+    if max_chars <= 0:
+        return [t]
+    out: list[str] = []
+    i = 0
+    n = len(t)
+    while i < n:
+        j = min(n, i + max_chars)
+        if j < n:
+            k = t.rfind(" ", i, j)
+            if k > i + int(max_chars * 0.6):
+                j = k + 1
+        out.append(t[i:j])
+        i = j
+    return out
+
+
+def _ceo_token_enforcement_enabled() -> bool:
+    # Mirrors gateway behaviour but kept local to avoid import cycles.
+    return _env_true("CEO_TOKEN_ENFORCEMENT", "false")
+
+
+def _extract_bearer_token(authorization: str) -> str:
+    auth = (authorization or "").strip()
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip()
+    return ""
+
+
+def _require_ceo_token_if_enforced_ws(websocket: WebSocket) -> str:
+    """Return token if enforced; else return empty string.
+
+    NOTE: Browsers cannot set arbitrary headers for WebSocket.
+    For v1 we accept token via query string when enforcement is enabled.
+    """
+
+    if not _ceo_token_enforcement_enabled():
+        return ""
+
+    expected = (os.getenv("CEO_APPROVAL_TOKEN") or "").strip()
+    if not expected:
+        raise RuntimeError(
+            "CEO token enforcement enabled but CEO_APPROVAL_TOKEN is not set"
+        )
+
+    qp = websocket.query_params
+    provided = (qp.get("ceo_token") or qp.get("token") or "").strip()
+    if not provided:
+        # Allow subprotocol-like fallback via query param only.
+        # (WebSocket API can't send headers from browsers.)
+        provided = ""
+
+    if provided != expected:
+        raise PermissionError("ceo_token_required")
+
+    return provided
+
+
+async def _call_canonical_chat_via_asgi(
+    *,
+    app: Any,
+    payload: Dict[str, Any],
+    headers: Dict[str, str],
+    timeout_sec: float,
+) -> Dict[str, Any]:
+    """Call canonical /api/chat in-process via ASGI transport and return decoded JSON."""
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        timeout=timeout_sec,
+    ) as client:
+        res = await client.post("/api/chat", json=payload, headers=headers)
+        try:
+            body = res.json()
+        except Exception:
+            body = {"error": "canonical_chat_non_json_response", "raw": res.text}
+        if not isinstance(body, dict):
+            body = {"error": "canonical_chat_non_object_response", "raw": body}
+        body.setdefault("_http_status", res.status_code)
+        return body
 
 
 def _voice_output_max_audio_bytes() -> int:
@@ -360,3 +489,413 @@ async def voice_exec(
 
     except Exception as e:
         raise HTTPException(500, f"Voice execution failed: {e}")
+
+
+@router.websocket("/realtime/ws")
+async def voice_realtime_ws(websocket: WebSocket):
+    """WebSocket realtime adapter v1 (text-only input/final + cancel).
+
+    This is transport/session only. It bridges to canonical /api/chat (brain) via
+    in-process ASGI HTTP and emits a stream-like event contract.
+    """
+
+    # Always accept first, then close with a deterministic code.
+    await websocket.accept()
+
+    if not _voice_realtime_ws_enabled():
+        await websocket.close(code=4404, reason="voice_realtime_disabled")
+        return
+
+    try:
+        ceo_token = _require_ceo_token_if_enforced_ws(websocket)
+    except PermissionError:
+        await websocket.close(code=4403, reason="ceo_token_required")
+        return
+    except Exception:
+        await websocket.close(code=1011, reason="server_misconfigured")
+        return
+
+    send_lock = asyncio.Lock()
+    seq = 0
+
+    session_id: Optional[str] = None
+    conversation_id: Optional[str] = None
+
+    active_turn_task: Optional[asyncio.Task] = None
+    active_turn_id: Optional[str] = None
+    active_request_id: Optional[str] = None
+    active_cancelled = False
+
+    idle_timeout = _voice_realtime_ws_idle_timeout_sec()
+    turn_timeout = _voice_realtime_ws_turn_timeout_sec()
+
+    async def _send_event(
+        evt_type: str,
+        data: Dict[str, Any],
+        *,
+        request_id: Optional[str] = None,
+        turn_id: Optional[str] = None,
+    ) -> None:
+        nonlocal seq
+
+        rid = request_id if request_id is not None else active_request_id
+        evt = {
+            "v": 1,
+            "type": evt_type,
+            "seq": seq,
+            "ts": _iso_utc_now(),
+            "request_id": rid,
+            "session_id": session_id,
+            "conversation_id": conversation_id,
+            "data": {**(data or {}), **({"turn_id": turn_id} if turn_id else {})},
+        }
+        seq += 1
+        raw = json.dumps(evt, ensure_ascii=False)
+        async with send_lock:
+            await websocket.send_text(raw)
+
+    async def _cancel_active_turn(*, reason: str) -> None:
+        nonlocal active_turn_task, active_turn_id, active_request_id, active_cancelled
+        if active_turn_task is None:
+            return
+        active_cancelled = True
+        try:
+            current = asyncio.current_task()
+            if active_turn_task is not current:
+                active_turn_task.cancel()
+        except Exception:
+            pass
+        try:
+            await _send_event(
+                "done",
+                {"ok": False, "reason": reason},
+                request_id=active_request_id,
+                turn_id=active_turn_id,
+            )
+        except Exception:
+            pass
+        active_turn_task = None
+        active_turn_id = None
+        active_request_id = None
+
+    def _normalize_incoming_event(obj: Any) -> Dict[str, Any]:
+        return obj if isinstance(obj, dict) else {}
+
+    async def _recv_event() -> Dict[str, Any]:
+        raw = await asyncio.wait_for(websocket.receive_text(), timeout=idle_timeout)
+        try:
+            return _normalize_incoming_event(json.loads(raw))
+        except Exception:
+            return {"type": "_invalid_json", "data": {"raw": raw}}
+
+    # Require session.start as the first meaningful event.
+    try:
+        first = await _recv_event()
+    except asyncio.TimeoutError:
+        await websocket.close(code=4408, reason="idle_timeout")
+        return
+    except Exception:
+        await websocket.close(code=1011, reason="receive_failed")
+        return
+
+    if str(first.get("type") or "") != "session.start":
+        await _send_event(
+            "error",
+            {
+                "code": "bad_request",
+                "message": "Expected session.start",
+                "retryable": False,
+                "http_status": 400,
+            },
+            request_id=uuid.uuid4().hex,
+        )
+        await websocket.close(code=4400, reason="expected_session_start")
+        return
+
+    data0 = first.get("data") if isinstance(first.get("data"), dict) else {}
+    session_id = (
+        str(data0.get("session_id") or "").strip() or f"ws_session_{uuid.uuid4().hex}"
+    )
+    conversation_id = str(data0.get("conversation_id") or "").strip() or session_id
+
+    await _send_event(
+        "session.started",
+        {
+            "session_id": session_id,
+            "conversation_id": conversation_id,
+            "capabilities": {
+                "text_streaming": True,
+                "final_response": True,
+                "cancel": True,
+            },
+        },
+        request_id=uuid.uuid4().hex,
+    )
+
+    async def _process_turn(
+        *,
+        text: str,
+        preferred_agent_id: Optional[str],
+        output_lang: Optional[str],
+        metadata: Dict[str, Any],
+        context_hint: Any,
+        identity_pack: Dict[str, Any],
+        request_id: str,
+        turn_id: str,
+    ) -> None:
+        nonlocal active_turn_task, active_turn_id, active_request_id
+
+        await _send_event(
+            "meta",
+            {
+                "source_endpoint": "/api/voice/realtime/ws",
+                "bridge": {
+                    "brain": "/api/chat",
+                    "streaming_semantics": "/api/chat/stream",
+                },
+                "capabilities": {"text_streaming": True, "final_response": True},
+            },
+            request_id=request_id,
+            turn_id=turn_id,
+        )
+        await _send_event(
+            "turn.started",
+            {"turn_id": turn_id, "request_id": request_id},
+            request_id=request_id,
+            turn_id=turn_id,
+        )
+
+        # Build canonical chat payload (do NOT invent a new brain contract).
+        chat_payload: Dict[str, Any] = {
+            "message": text,
+            "text": text,
+            "input_text": text,
+            "initiator": "ceo_chat",
+            "session_id": session_id,
+            "conversation_id": conversation_id,
+        }
+        if preferred_agent_id:
+            chat_payload["preferred_agent_id"] = preferred_agent_id
+        if output_lang:
+            chat_payload["output_lang"] = output_lang
+
+        # Keep metadata additive; allowlist only a minimal set.
+        md_out: Dict[str, Any] = {}
+        md_in = metadata if isinstance(metadata, dict) else {}
+        for k in ("session_id", "initiator", "source", "channel", "ui_output_lang"):
+            if k in md_in:
+                md_out[k] = md_in.get(k)
+        md_out.setdefault("session_id", session_id)
+        md_out.setdefault("initiator", "ceo_chat")
+        md_out.setdefault("source", "voice")
+        md_out.setdefault("channel", "voice")
+        chat_payload["metadata"] = md_out
+
+        if isinstance(context_hint, dict):
+            chat_payload["context_hint"] = context_hint
+        if isinstance(identity_pack, dict) and identity_pack:
+            chat_payload["identity_pack"] = identity_pack
+
+        headers: Dict[str, str] = {
+            "Content-Type": "application/json",
+            "X-Initiator": "ceo_chat",
+            "X-Session-Id": session_id,
+            "X-Request-Id": request_id,
+        }
+        if ceo_token:
+            headers["X-CEO-Token"] = ceo_token
+
+        body_obj = await asyncio.wait_for(
+            _call_canonical_chat_via_asgi(
+                app=websocket.app,
+                payload=chat_payload,
+                headers=headers,
+                timeout_sec=turn_timeout,
+            ),
+            timeout=turn_timeout,
+        )
+
+        text_out = str(body_obj.get("text") or "")
+        for part in _chunk_text(text_out):
+            if active_cancelled:
+                return
+            if part:
+                await _send_event(
+                    "assistant.delta",
+                    {"delta_text": part},
+                    request_id=request_id,
+                    turn_id=turn_id,
+                )
+
+        await _send_event(
+            "assistant.final",
+            {"text": text_out, "response": body_obj},
+            request_id=request_id,
+            turn_id=turn_id,
+        )
+        await _send_event(
+            "done",
+            {"ok": True, "reason": "completed"},
+            request_id=request_id,
+            turn_id=turn_id,
+        )
+        active_turn_task = None
+        active_turn_id = None
+        active_request_id = None
+
+    async def _run_turn_task(
+        *,
+        request_id: str,
+        turn_id: str,
+        text: str,
+        preferred_agent_id: Optional[str],
+        output_lang: Optional[str],
+        metadata: Dict[str, Any],
+        context_hint: Any,
+        identity_pack: Dict[str, Any],
+    ) -> None:
+        try:
+            await asyncio.wait_for(
+                _process_turn(
+                    text=text,
+                    preferred_agent_id=preferred_agent_id,
+                    output_lang=output_lang,
+                    metadata=metadata,
+                    context_hint=context_hint,
+                    identity_pack=identity_pack,
+                    request_id=request_id,
+                    turn_id=turn_id,
+                ),
+                timeout=turn_timeout,
+            )
+        except asyncio.CancelledError:
+            # Cancelled by control.cancel or disconnect.
+            raise
+        except asyncio.TimeoutError:
+            try:
+                await _send_event(
+                    "error",
+                    {
+                        "code": "turn_timeout",
+                        "message": "Turn timed out",
+                        "retryable": False,
+                        "http_status": 504,
+                    },
+                    request_id=request_id,
+                    turn_id=turn_id,
+                )
+            finally:
+                await _cancel_active_turn(reason="turn_timeout")
+        except Exception as exc:
+            try:
+                await _send_event(
+                    "error",
+                    {
+                        "code": "internal_error",
+                        "message": str(exc),
+                        "retryable": False,
+                        "http_status": 500,
+                    },
+                    request_id=request_id,
+                    turn_id=turn_id,
+                )
+            finally:
+                await _cancel_active_turn(reason="error")
+
+    try:
+        while True:
+            try:
+                evt = await _recv_event()
+            except asyncio.TimeoutError:
+                await _cancel_active_turn(reason="idle_timeout")
+                await websocket.close(code=4408, reason="idle_timeout")
+                return
+
+            evt_type = str(evt.get("type") or "")
+            data = evt.get("data") if isinstance(evt.get("data"), dict) else {}
+
+            if evt_type == "session.end":
+                await _cancel_active_turn(reason="session_end")
+                await websocket.close(code=1000, reason="session_end")
+                return
+
+            if evt_type == "control.cancel":
+                await _cancel_active_turn(reason="cancelled")
+                continue
+
+            if evt_type == "input.final":
+                if active_turn_task is not None:
+                    await _send_event(
+                        "error",
+                        {
+                            "code": "turn_in_progress",
+                            "message": "Turn already in progress",
+                            "retryable": False,
+                            "http_status": 409,
+                        },
+                        request_id=uuid.uuid4().hex,
+                    )
+                    continue
+
+                text_in = str(data.get("text") or "").strip()
+                if not text_in:
+                    await _send_event(
+                        "error",
+                        {
+                            "code": "bad_request",
+                            "message": "Missing text",
+                            "retryable": False,
+                            "http_status": 400,
+                        },
+                        request_id=uuid.uuid4().hex,
+                    )
+                    continue
+
+                active_cancelled = False
+                active_request_id = uuid.uuid4().hex
+                active_turn_id = (
+                    str(data.get("turn_id") or "").strip() or uuid.uuid4().hex
+                )
+
+                preferred_agent_id = (
+                    str(data.get("preferred_agent_id") or "").strip() or None
+                )
+                output_lang = str(data.get("output_lang") or "").strip() or None
+                context_hint = data.get("context_hint")
+                identity_pack = (
+                    data.get("identity_pack")
+                    if isinstance(data.get("identity_pack"), dict)
+                    else {}
+                )
+                metadata = (
+                    data.get("metadata")
+                    if isinstance(data.get("metadata"), dict)
+                    else {}
+                )
+
+                active_turn_task = asyncio.create_task(
+                    _run_turn_task(
+                        request_id=active_request_id,
+                        turn_id=active_turn_id,
+                        text=text_in,
+                        preferred_agent_id=preferred_agent_id,
+                        output_lang=output_lang,
+                        metadata=metadata,
+                        context_hint=context_hint,
+                        identity_pack=identity_pack,
+                    )
+                )
+                continue
+
+            # Ignore other event types for forward-compat.
+
+    except Exception:
+        # Best-effort cleanup.
+        try:
+            await _cancel_active_turn(reason="error")
+        except Exception:
+            pass
+        try:
+            await websocket.close(code=1011, reason="internal_error")
+        except Exception:
+            pass

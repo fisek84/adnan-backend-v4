@@ -121,7 +121,11 @@ export type CeoConsoleApi = {
 
   // Voice adapter endpoint (STT optional on client; TTS optional on server).
   // This remains additive: text flow stays on /api/chat.
-  sendVoiceExecText: (req: CeoCommandRequest, signal?: AbortSignal) => Promise<NormalizedConsoleResponse>;
+  sendVoiceExecText: (
+    req: CeoCommandRequest,
+    signal?: AbortSignal,
+    opts?: { forceHttp?: boolean }
+  ) => Promise<NormalizedConsoleResponse>;
 
   approve: (approvalRequestId: string, signal?: AbortSignal) => Promise<any>;
 
@@ -186,6 +190,255 @@ function deriveApiUrl(fromBaseUrl: string, apiPathWithoutPrefix: string): string
   } catch {
     return `/api${p}`;
   }
+}
+
+function deriveWsApiUrl(
+  fromBaseUrl: string,
+  apiPathWithoutPrefix: string,
+  query?: Record<string, string | undefined>
+): string {
+  const p = apiPathWithoutPrefix.startsWith("/") ? apiPathWithoutPrefix : `/${apiPathWithoutPrefix}`;
+  const apiPath = `/api${p}`;
+
+  const qs = new URLSearchParams();
+  for (const [k, v] of Object.entries(query || {})) {
+    if (typeof v === "string" && v.trim()) qs.set(k, v);
+  }
+  const q = qs.toString();
+  const suffix = q ? `?${q}` : "";
+
+  // Absolute base URL -> convert protocol to ws/wss
+  if (/^https?:\/\//i.test(fromBaseUrl)) {
+    try {
+      const base = new URL(fromBaseUrl);
+      const proto = base.protocol.toLowerCase() === "https:" ? "wss:" : "ws:";
+      return `${proto}//${base.host}${apiPath}${suffix}`;
+    } catch {
+      // fallthrough
+    }
+  }
+
+  // Relative base URL -> best-effort use window.location when available.
+  try {
+    const loc = (globalThis as any)?.location;
+    const protocol = String(loc?.protocol || "").toLowerCase();
+    const host = String(loc?.host || "");
+    if (host) {
+      const proto = protocol === "https:" ? "wss:" : "ws:";
+      return `${proto}//${host}${apiPath}${suffix}`;
+    }
+  } catch {
+    // ignore
+  }
+
+  // Last resort: return a path URL (browser may resolve it).
+  return `${apiPath}${suffix}`;
+}
+
+function streamTextFromVoiceRealtimeWebSocket(opts: {
+  wsUrl: string;
+  text: string;
+  sessionId?: string | null;
+  conversationId?: string | null;
+  preferredAgentId?: string | null;
+  outputLang?: string | null;
+  contextHint?: any;
+  identityPack?: Record<string, any> | null;
+  metadata?: Record<string, any> | null;
+  signal?: AbortSignal;
+}): AsyncIterable<string> {
+  let resolveFinal: (v: any) => void = () => undefined;
+  let rejectFinal: (e: any) => void = () => undefined;
+  const finalResponse = new Promise<any>((resolve, reject) => {
+    resolveFinal = resolve;
+    rejectFinal = reject;
+  });
+
+  let finalSettled = false;
+  let finalRaw: any = null;
+
+  const gen = (async function* () {
+    const { wsUrl, signal } = opts;
+    const WS: any = (globalThis as any)?.WebSocket;
+    if (typeof WS !== "function") {
+      throw new Error("WebSocket not supported");
+    }
+
+    const ws: any = new WS(wsUrl);
+
+    const queue: any[] = [];
+    let wake: (() => void) | null = null;
+    let closed = false;
+    let closeEvent: any = null;
+
+    const nextMessage = async (): Promise<any> => {
+      while (queue.length === 0) {
+        if (closed) return null;
+        await new Promise<void>((resolve) => {
+          wake = resolve;
+        });
+      }
+      return queue.shift();
+    };
+
+    const finishWithError = (err: any) => {
+      if (!finalSettled) {
+        finalSettled = true;
+        rejectFinal(err);
+      }
+      throw err;
+    };
+
+    const onAbort = () => {
+      const err = new Error("aborted");
+      (err as any).name = "AbortError";
+      try {
+        ws.close?.(1000, "aborted");
+      } catch {
+        // ignore
+      }
+      if (!finalSettled) {
+        finalSettled = true;
+        rejectFinal(err);
+      }
+    };
+
+    if (signal) {
+      if (signal.aborted) onAbort();
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
+
+    await new Promise<void>((resolve, reject) => {
+      ws.onopen = () => resolve();
+      ws.onerror = () => reject(new Error("WebSocket connection failed"));
+      ws.onclose = (ev: any) => {
+        closed = true;
+        closeEvent = ev;
+        if (wake) {
+          const w = wake;
+          wake = null;
+          w();
+        }
+      };
+      ws.onmessage = (ev: any) => {
+        queue.push(ev?.data);
+        if (wake) {
+          const w = wake;
+          wake = null;
+          w();
+        }
+      };
+    });
+
+    const sessionId = String(opts.sessionId || "").trim() || `ws_session_${Date.now()}`;
+    const conversationId = String(opts.conversationId || "").trim() || sessionId;
+
+    ws.send(
+      JSON.stringify({
+        type: "session.start",
+        data: { session_id: sessionId, conversation_id: conversationId },
+      })
+    );
+
+    ws.send(
+      JSON.stringify({
+        type: "input.final",
+        data: {
+          text: opts.text,
+          preferred_agent_id: opts.preferredAgentId || undefined,
+          output_lang: opts.outputLang || undefined,
+          context_hint: opts.contextHint ?? undefined,
+          identity_pack: opts.identityPack ?? undefined,
+          metadata: opts.metadata ?? undefined,
+        },
+      })
+    );
+
+    try {
+      while (true) {
+        if (signal?.aborted) {
+          finishWithError(Object.assign(new Error("aborted"), { name: "AbortError" }));
+        }
+
+        const raw = await nextMessage();
+        if (raw == null) {
+          const code = closeEvent?.code;
+          const reason = closeEvent?.reason;
+          const err = new Error(
+            typeof reason === "string" && reason.trim()
+              ? reason
+              : `WebSocket closed${typeof code === "number" ? ` (${code})` : ""}`
+          );
+          (err as any).closeCode = code;
+          throw err;
+        }
+
+        const evt = typeof raw === "string" ? JSON.parse(raw) : raw;
+        const type = String(evt?.type || "");
+
+        if (type === "assistant.delta") {
+          const delta = evt?.data?.delta_text;
+          if (typeof delta === "string" && delta) yield delta;
+          continue;
+        }
+
+        if (type === "assistant.final") {
+          finalRaw = evt?.data?.response ?? evt?.data ?? null;
+          if (!finalSettled) {
+            finalSettled = true;
+            resolveFinal(finalRaw);
+          }
+          continue;
+        }
+
+        if (type === "error") {
+          const msg =
+            typeof evt?.data?.message === "string" && evt.data.message.trim()
+              ? evt.data.message.trim()
+              : "Stream error";
+          const err = new Error(msg);
+          (err as any).code = evt?.data?.code;
+          (err as any).httpStatus = evt?.data?.http_status;
+          finishWithError(err);
+        }
+
+        if (type === "done") {
+          if (!finalSettled) {
+            finalSettled = true;
+            resolveFinal(finalRaw);
+          }
+          try {
+            ws.close?.(1000, "done");
+          } catch {
+            // ignore
+          }
+          return;
+        }
+
+        // Ignore other event types for forward-compat.
+      }
+    } catch (e) {
+      if (!finalSettled) {
+        finalSettled = true;
+        rejectFinal(e);
+      }
+      throw e;
+    } finally {
+      try {
+        if (signal) signal.removeEventListener("abort", onAbort);
+      } catch {
+        // ignore
+      }
+      try {
+        ws.close?.(1000, "cleanup");
+      } catch {
+        // ignore
+      }
+    }
+  })();
+
+  (gen as any).finalResponse = finalResponse;
+  return gen;
 }
 
 function extractProposedCommands(raw: any): ProposedCommand[] {
@@ -506,15 +759,47 @@ export function createCeoConsoleApi(opts: {
       return resp;
     },
 
-    sendVoiceExecText: async (req: CeoCommandRequest, signal?: AbortSignal): Promise<NormalizedConsoleResponse> => {
-      const url = deriveApiUrl(ceoCommandUrl, "/voice/exec_text");
+    sendVoiceExecText: async (
+      req: CeoCommandRequest,
+      signal?: AbortSignal,
+      opts2?: { forceHttp?: boolean }
+    ): Promise<NormalizedConsoleResponse> => {
       const payload = buildVoiceExecTextPayload(req);
-      return await fetchAndNormalize({
-        url,
-        payload,
-        signal,
-        headers,
-      });
+
+      // Prefer realtime WS when available; fall back to HTTP voice adapter.
+      if (!opts2?.forceHttp && typeof (globalThis as any)?.WebSocket === "function") {
+        const token =
+          (headers as any)?.["X-CEO-Token"] ||
+          (headers as any)?.["x-ceo-token"] ||
+          (headers as any)?.["x-ceo_token"] ||
+          undefined;
+
+        const wsUrl = deriveWsApiUrl(ceoCommandUrl, "/voice/realtime/ws", {
+          ceo_token: typeof token === "string" ? token : undefined,
+        });
+
+        const stream = streamTextFromVoiceRealtimeWebSocket({
+          wsUrl,
+          text: String(payload?.text || ""),
+          sessionId: payload?.session_id ?? null,
+          conversationId: (payload as any)?.conversation_id ?? null,
+          preferredAgentId: payload?.preferred_agent_id ?? null,
+          outputLang: (req as any)?.output_lang ?? null,
+          contextHint: payload?.context_hint ?? null,
+          identityPack: (req as any)?.identity_pack ?? null,
+          metadata: payload?.metadata ?? null,
+          signal,
+        });
+
+        return {
+          stream,
+          raw: { stream: true },
+          source_endpoint: wsUrl,
+        };
+      }
+
+      const url = deriveApiUrl(ceoCommandUrl, "/voice/exec_text");
+      return await fetchAndNormalize({ url, payload, signal, headers });
     },
 
     approve: async (approvalRequestId: string, signal?: AbortSignal): Promise<any> => {

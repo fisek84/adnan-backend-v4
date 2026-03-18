@@ -870,9 +870,21 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       try {
         await flushResponseToUi(placeholder.id, resp);
       } catch (e) {
-        // If streaming fails to parse/consume, fallback to canonical JSON /api/chat.
-        // This keeps UX functional even if the stream endpoint is temporarily broken.
-        if (origin !== "voice" && (resp as any)?.stream) {
+        // If streaming fails to parse/consume, fallback to non-streaming.
+        // - Chat streaming: fallback to canonical JSON /api/chat.
+        // - Voice realtime WS streaming: fallback to HTTP /api/voice/exec_text.
+        // Never fallback on abort.
+        if (!isAbortError(e) && (resp as any)?.stream) {
+          if (origin === "voice") {
+            const fallback = await api.sendVoiceExecText(req, controller.signal, {
+              forceHttp: true,
+            });
+            await flushResponseToUi(placeholder.id, fallback);
+            setBusy("idle");
+            setLastError(null);
+            return;
+          }
+
           const fallback = await api.sendCommand(req, controller.signal, undefined, {
             forceNonStreaming: true,
           });
