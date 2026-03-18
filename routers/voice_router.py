@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 import json
+import os
 from typing import Any, Dict, Optional
 
 import httpx
@@ -9,6 +11,7 @@ from pydantic import BaseModel, Field
 from starlette.responses import JSONResponse
 
 from integrations.voice_service import VoiceService
+from services.voice_tts_service import VoiceTTSService, tts_enabled
 
 router = APIRouter(prefix="/voice", tags=["Voice Input"])
 
@@ -90,6 +93,79 @@ def _sanitize_metadata(md: Any) -> Dict[str, Any]:
     out.setdefault("channel", "voice")
     out.setdefault("initiator", "voice")
     return out
+
+
+def _truthy(value: object) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return False
+
+
+def _voice_output_max_audio_bytes() -> int:
+    raw = (os.getenv("VOICE_TTS_MAX_AUDIO_BYTES") or "").strip()
+    if not raw:
+        return 512 * 1024
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 512 * 1024
+
+
+def _voice_output_max_text_chars() -> int:
+    raw = (os.getenv("VOICE_TTS_MAX_TEXT_CHARS") or "").strip()
+    if not raw:
+        return 2000
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 2000
+
+
+def _maybe_build_voice_output(
+    *, text: str, want_voice_output: bool
+) -> Optional[Dict[str, Any]]:
+    if not want_voice_output:
+        return None
+
+    if not tts_enabled():
+        return {"available": False, "reason": "tts_disabled"}
+
+    max_text_chars = _voice_output_max_text_chars()
+    if max_text_chars and len(text) > max_text_chars:
+        return {
+            "available": False,
+            "reason": "text_too_long",
+            "max_text_chars": max_text_chars,
+        }
+
+    service = VoiceTTSService()
+    if not service.is_configured():
+        return {"available": False, "reason": "tts_not_configured"}
+
+    try:
+        audio_bytes, content_type = service.synthesize(text=text)
+    except Exception as exc:
+        return {"available": False, "reason": "tts_failed", "error": str(exc)}
+
+    max_audio_bytes = _voice_output_max_audio_bytes()
+    if max_audio_bytes and len(audio_bytes) > max_audio_bytes:
+        return {
+            "available": False,
+            "reason": "audio_too_large",
+            "max_audio_bytes": max_audio_bytes,
+        }
+
+    return {
+        "available": True,
+        "content_type": content_type,
+        "audio_base64": base64.b64encode(audio_bytes).decode("ascii"),
+    }
 
 
 def _forward_headers(request: Request) -> Dict[str, str]:
@@ -176,6 +252,7 @@ class VoiceText(BaseModel):
     preferred_agent_id: Optional[str] = None
     context_hint: Any = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
+    want_voice_output: Optional[bool] = None
 
 
 @router.post("/exec_text")
@@ -201,6 +278,14 @@ async def voice_exec_text(payload: VoiceText, request: Request):
     if isinstance(content, dict) and "transcribed_text" not in content:
         content["transcribed_text"] = payload.text
 
+    if isinstance(content, dict):
+        voice_output = _maybe_build_voice_output(
+            text=str(content.get("text") or ""),
+            want_voice_output=_truthy(payload.want_voice_output),
+        )
+        if voice_output is not None:
+            content["voice_output"] = voice_output
+
     return JSONResponse(status_code=resp.status_code, content=content)
 
 
@@ -214,6 +299,7 @@ async def voice_exec(
     identity_pack: Optional[str] = Form(None),
     context_hint: Optional[str] = Form(None),
     metadata: Optional[str] = Form(None),
+    want_voice_output: Optional[str] = Form(None),
 ):
     """CEO govori → Whisper → canonical /api/chat.
 
@@ -261,6 +347,14 @@ async def voice_exec(
 
         if isinstance(content, dict) and "transcribed_text" not in content:
             content["transcribed_text"] = text
+
+        if isinstance(content, dict):
+            voice_output = _maybe_build_voice_output(
+                text=str(content.get("text") or ""),
+                want_voice_output=_truthy(want_voice_output),
+            )
+            if voice_output is not None:
+                content["voice_output"] = voice_output
 
         return JSONResponse(status_code=resp.status_code, content=content)
 

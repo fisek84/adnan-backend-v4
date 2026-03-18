@@ -1,6 +1,8 @@
+import base64
+from unittest.mock import AsyncMock, patch
+
 import pytest
 from fastapi.testclient import TestClient
-from unittest.mock import AsyncMock, patch
 
 from gateway.gateway_server import app
 from models.agent_contract import AgentOutput
@@ -155,3 +157,164 @@ def test_voice_exec_text_propagates_x_session_id_header(
     assert resp.status_code == 200
     body = resp.json()
     assert body.get("session_id") == "sid-from-header"
+
+
+def test_voice_exec_text_does_not_include_voice_output_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_required_gateway_env(monkeypatch)
+
+    agent_mock = AsyncMock(
+        return_value=AgentOutput(
+            text="OK",
+            proposed_commands=[],
+            agent_id="ceo_advisor",
+            read_only=True,
+            trace={"exit_reason": "stub.voice.no_tts"},
+        )
+    )
+
+    monkeypatch.setenv("VOICE_TTS_ENABLED", "true")
+
+    with patch("routers.chat_router.create_ceo_advisor_agent", new=agent_mock):
+        with TestClient(app) as client:
+            resp = client.post(
+                "/api/voice/exec_text",
+                json={"text": "Pozdrav"},
+            )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "voice_output" not in body
+
+
+def test_voice_exec_text_voice_output_success_when_requested_and_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_required_gateway_env(monkeypatch)
+
+    agent_mock = AsyncMock(
+        return_value=AgentOutput(
+            text="Hello",
+            proposed_commands=[],
+            agent_id="ceo_advisor",
+            read_only=True,
+            trace={"exit_reason": "stub.voice.tts.success"},
+        )
+    )
+
+    monkeypatch.setenv("VOICE_TTS_ENABLED", "true")
+
+    class _StubTTS:
+        def is_configured(self) -> bool:  # noqa: D401
+            return True
+
+        def synthesize(self, *, text: str):
+            assert text == "Hello"
+            return b"abc", "audio/mpeg"
+
+    with (
+        patch("routers.chat_router.create_ceo_advisor_agent", new=agent_mock),
+        patch("routers.voice_router.VoiceTTSService", new=_StubTTS),
+    ):
+        with TestClient(app) as client:
+            resp = client.post(
+                "/api/voice/exec_text",
+                json={"text": "Pozdrav", "want_voice_output": True},
+            )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    vo = body.get("voice_output")
+    assert isinstance(vo, dict)
+    assert vo.get("available") is True
+    assert vo.get("content_type") == "audio/mpeg"
+    assert vo.get("audio_base64") == base64.b64encode(b"abc").decode("ascii")
+
+
+def test_voice_exec_text_voice_output_fail_safe_on_tts_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_required_gateway_env(monkeypatch)
+
+    agent_mock = AsyncMock(
+        return_value=AgentOutput(
+            text="Hello",
+            proposed_commands=[],
+            agent_id="ceo_advisor",
+            read_only=True,
+            trace={"exit_reason": "stub.voice.tts.error"},
+        )
+    )
+
+    monkeypatch.setenv("VOICE_TTS_ENABLED", "true")
+
+    class _StubTTS:
+        def is_configured(self) -> bool:
+            return True
+
+        def synthesize(self, *, text: str):
+            raise RuntimeError("boom")
+
+    with (
+        patch("routers.chat_router.create_ceo_advisor_agent", new=agent_mock),
+        patch("routers.voice_router.VoiceTTSService", new=_StubTTS),
+    ):
+        with TestClient(app) as client:
+            resp = client.post(
+                "/api/voice/exec_text",
+                json={"text": "Pozdrav", "want_voice_output": True},
+            )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    vo = body.get("voice_output")
+    assert isinstance(vo, dict)
+    assert vo.get("available") is False
+    assert vo.get("reason") == "tts_failed"
+    assert vo.get("error")
+
+
+def test_voice_exec_text_voice_output_declines_when_audio_too_large(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_required_gateway_env(monkeypatch)
+
+    agent_mock = AsyncMock(
+        return_value=AgentOutput(
+            text="Hello",
+            proposed_commands=[],
+            agent_id="ceo_advisor",
+            read_only=True,
+            trace={"exit_reason": "stub.voice.tts.too_large"},
+        )
+    )
+
+    monkeypatch.setenv("VOICE_TTS_ENABLED", "true")
+    monkeypatch.setenv("VOICE_TTS_MAX_AUDIO_BYTES", "1")
+
+    class _StubTTS:
+        def is_configured(self) -> bool:
+            return True
+
+        def synthesize(self, *, text: str):
+            return b"ab", "audio/mpeg"
+
+    with (
+        patch("routers.chat_router.create_ceo_advisor_agent", new=agent_mock),
+        patch("routers.voice_router.VoiceTTSService", new=_StubTTS),
+    ):
+        with TestClient(app) as client:
+            resp = client.post(
+                "/api/voice/exec_text",
+                json={"text": "Pozdrav", "want_voice_output": True},
+            )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    vo = body.get("voice_output")
+    assert isinstance(vo, dict)
+    assert vo.get("available") is False
+    assert vo.get("reason") == "audio_too_large"
+    assert vo.get("max_audio_bytes") == 1
+    assert "audio_base64" not in vo
