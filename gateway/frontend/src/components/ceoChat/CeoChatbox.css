@@ -200,6 +200,14 @@
   color: rgba(34, 197, 94, 0.92);
 }
 
+.ceoAudioWrap {
+  margin-top: 8px;
+}
+
+.ceoAudio {
+  width: 100%;
+}
+
 .ceoHeaderButton-stop {
   background: rgba(239, 68, 68, 0.14);
   border-color: rgba(239, 68, 68, 0.35);

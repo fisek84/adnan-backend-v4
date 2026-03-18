@@ -118,6 +118,10 @@ export type CeoConsoleApi = {
     onPartial?: (partial: NormalizedConsoleResponse) => void
   ) => Promise<NormalizedConsoleResponse>;
 
+  // Voice adapter endpoint (STT optional on client; TTS optional on server).
+  // This remains additive: text flow stays on /api/chat.
+  sendVoiceExecText: (req: CeoCommandRequest, signal?: AbortSignal) => Promise<NormalizedConsoleResponse>;
+
   approve: (approvalRequestId: string, signal?: AbortSignal) => Promise<any>;
 
   // Notion bulk ops (read/search)
@@ -317,6 +321,42 @@ function buildPayload(endpointUrl: string, req: CeoCommandRequest): any {
   };
 }
 
+function buildVoiceExecTextPayload(req: CeoCommandRequest): any {
+  const text = extractText(req);
+
+  const initiator = (req as any)?.initiator || "ceo_chat";
+  const session_id = (req as any)?.session_id ?? null;
+
+  const ctx = ((req as any)?.context_hint ?? {}) as Record<string, any>;
+  const preferred =
+    (typeof ctx.preferred_agent_id === "string" && ctx.preferred_agent_id.trim()) ||
+    (typeof ctx.agent_id === "string" && ctx.agent_id.trim()) ||
+    "ceo_advisor";
+
+  const uiOutputLang =
+    (req as any)?.output_lang ||
+    (ctx as any)?.ui_output_lang ||
+    (req as any)?.metadata?.ui_output_lang ||
+    null;
+
+  return {
+    text,
+    preferred_agent_id: preferred,
+    session_id,
+    context_hint: (req as any)?.context_hint ?? null,
+    metadata: {
+      initiator,
+      session_id,
+      source: "ceoChatbox",
+      context_hint: (req as any)?.context_hint ?? null,
+      smart_context: (req as any)?.smart_context ?? null,
+      ui_output_lang: uiOutputLang,
+    },
+    // Explicitly request additive backend audio output if enabled server-side.
+    want_voice_output: true,
+  };
+}
+
 async function fetchJsonOrText(res: Response): Promise<any> {
   // pokušaj json, fallback na text
   return await res.json().catch(async () => {
@@ -432,6 +472,17 @@ export function createCeoConsoleApi(opts: {
       // ne pokušavamo nikakav fallback. Samo vraćamo response.
       // (Chatbox UI odlučuje šta i kako prikazati.)
       return resp;
+    },
+
+    sendVoiceExecText: async (req: CeoCommandRequest, signal?: AbortSignal): Promise<NormalizedConsoleResponse> => {
+      const url = deriveApiUrl(ceoCommandUrl, "/voice/exec_text");
+      const payload = buildVoiceExecTextPayload(req);
+      return await fetchAndNormalize({
+        url,
+        payload,
+        signal,
+        headers,
+      });
     },
 
     approve: async (approvalRequestId: string, signal?: AbortSignal): Promise<any> => {

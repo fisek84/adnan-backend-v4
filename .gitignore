@@ -80,6 +80,9 @@ tsconfig.tsbuildinfo
 .vite/
 **/.vite/
 
+.node-test-dist/
+**/.node-test-dist/
+
 # =========================
 # Archives / bundles (do not commit)
 # =========================

@@ -13,6 +13,10 @@ export type ChatMessageItem = {
   status: ChatStatus;
   createdAt: number;
 
+  // Optional: backend-provided TTS audio for this message (additive capability).
+  audioUrl?: string;
+  audioContentType?: string;
+
   // vezivanje request/response (korisno za debug + retry)
   requestId?: string;
 };

@@ -11,6 +11,11 @@ import { createCeoConsoleApi } from "./api";
 import { defaultStrings } from "./strings";
 import { useAutoScroll } from "./hooks";
 import { useSpeechSynthesis } from "../../hooks/useSpeechSynthesis";
+import {
+  createAudioFromVoiceOutputUsingGlobals,
+  extractVoiceOutputFromResponse,
+  safeRevokeObjectUrl,
+} from "../../utils/voiceOutputAudio";
 import { Header } from "../Header";
 import { CommandPreviewModal } from "./CommandPreviewModal";
 import "./CeoChatbox.css";
@@ -561,6 +566,21 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
   const previewAbortRef = useRef<AbortController | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
 
+  // Track whether the current draft was last produced by voice recognition.
+  // This lets us route dictation submits through /api/voice/exec_text without touching typed flow.
+  const lastDraftFromVoiceRef = useRef(false);
+
+  // Track created ObjectURLs so we can revoke them (avoid leaks).
+  const audioUrlByMsgIdRef = useRef<Map<string, string>>(new Map());
+
+  useEffect(() => {
+    return () => {
+      // On unmount, revoke all ObjectURLs we created.
+      for (const url of audioUrlByMsgIdRef.current.values()) safeRevokeObjectUrl(url);
+      audioUrlByMsgIdRef.current.clear();
+    };
+  }, []);
+
   const resizeComposer = useCallback(() => {
     const el = composerRef.current;
     if (!el) return;
@@ -640,6 +660,17 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
   const updateItem = useCallback((id: string, patch: Partial<ChatItem>) => {
     setItems((prev) => prev.map((x) => (x.id === id ? ({ ...x, ...(patch as any) } as ChatItem) : x)));
   }, []);
+
+  useEffect(() => {
+    // Revoke ObjectURLs for messages that are no longer present.
+    const liveIds = new Set(items.map((it) => it.id));
+    for (const [id, url] of audioUrlByMsgIdRef.current.entries()) {
+      if (!liveIds.has(id)) {
+        safeRevokeObjectUrl(url);
+        audioUrlByMsgIdRef.current.delete(id);
+      }
+    }
+  }, [items]);
 
   const removeItem = useCallback((id: string) => {
     setItems((prev) => prev.filter((x) => x.id !== id));
@@ -759,7 +790,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
 
   // Shared helper for sending a chat message from arbitrary text.
   // Used both by the manual composer (submit) and voice auto-send.
-  const sendChatFromText = async (rawText: string) => {
+  const sendChatFromText = async (rawText: string, opts?: { origin?: "voice" | "text" }) => {
     const trimmed = rawText.trim();
     if (!trimmed) return;
     if (busy === "submitting" || busy === "streaming") return;
@@ -815,7 +846,14 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         },
       };
 
-      const resp = await api.sendCommand(req, controller.signal);
+      const origin = opts?.origin ?? (lastDraftFromVoiceRef.current ? "voice" : "text");
+      // Once submitted, clear the origin marker.
+      lastDraftFromVoiceRef.current = false;
+
+      const resp =
+        origin === "voice"
+          ? await api.sendVoiceExecText(req, controller.signal)
+          : await api.sendCommand(req, controller.signal);
       
       // Check if Notion ops state changed (per test: resp.notion_ops.armed)
       const notionOps = (resp as any)?.raw?.notion_ops || (resp as any)?.notion_ops;
@@ -961,12 +999,15 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       }
 
       const combined = (finalText || interim || "").trim();
-      if (combined) setDraft(combined);
+      if (combined) {
+        lastDraftFromVoiceRef.current = true;
+        setDraft(combined);
+      }
 
       // Auto-send behaves like ChatGPT voice: on final result,
       // if the setting is enabled and there is some text, submit it.
       if (autoSendOnVoiceFinalEnabled && finalText.trim()) {
-        void sendChatFromText(finalText);
+        void sendChatFromText(finalText, { origin: "voice" });
       }
     };
 
@@ -1018,6 +1059,24 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       setListening(false);
     }
   }, [voiceEnabled, listening]);
+
+  const attachBackendAudioIfPresent = useCallback(
+    (messageId: string, resp: NormalizedConsoleResponse) => {
+      const vo = extractVoiceOutputFromResponse(resp);
+      const audio = createAudioFromVoiceOutputUsingGlobals(vo);
+      if (!audio) return;
+
+      const prev = audioUrlByMsgIdRef.current.get(messageId);
+      if (prev && prev !== audio.url) safeRevokeObjectUrl(prev);
+      audioUrlByMsgIdRef.current.set(messageId, audio.url);
+
+      updateItem(messageId, {
+        audioUrl: audio.url,
+        audioContentType: audio.contentType,
+      } as any);
+    },
+    [updateItem]
+  );
 
   // ------------------------------
   // APPROVAL FLOW HELPERS
@@ -1387,6 +1446,8 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
           }
 
           updateItem(placeholderId, { content: acc.trim(), status: "final" });
+
+          attachBackendAudioIfPresent(placeholderId, resp);
           
           // Auto-speak if enabled
           if (ttsEnabled && (autoSpeakEnabled || autoSendOnVoiceFinalEnabled) && acc.trim()) {
@@ -1414,6 +1475,8 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         "";
 
       updateItem(placeholderId, { content: sysText, status: "final" });
+
+      attachBackendAudioIfPresent(placeholderId, resp);
 
       // Auto-speak if enabled
       if (ttsEnabled && (autoSpeakEnabled || autoSendOnVoiceFinalEnabled) && sysText) {
@@ -1446,7 +1509,17 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       setBusy("idle");
       setLastError(null);
     },
-    [appendItem, updateItem, isPinnedToBottom, scrollToBottom, ttsEnabled, autoSpeakEnabled, autoSendOnVoiceFinalEnabled, speak]
+    [
+      appendItem,
+      updateItem,
+      isPinnedToBottom,
+      scrollToBottom,
+      ttsEnabled,
+      autoSpeakEnabled,
+      autoSendOnVoiceFinalEnabled,
+      speak,
+      attachBackendAudioIfPresent,
+    ]
   );
 
   // ------------------------------
@@ -1734,10 +1807,26 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
                     ) : (
                       typeof it.content === "string" ? renderTextWithNotionLink(it.content) : it.content
                     )}
+
+                    {it.role === "system" && it.status === "final" && it.audioUrl ? (
+                      <div className="ceoAudioWrap">
+                        <audio
+                          className="ceoAudio"
+                          controls
+                          src={it.audioUrl}
+                          preload="none"
+                        />
+                      </div>
+                    ) : null}
                     <div className="ceoMeta">
                       <span className={dotCls} />
                       <span>{formatTime(it.createdAt)}</span>
-                      {ttsEnabled && ttsSupported && it.role === "system" && it.content && it.status === "final" && (
+                      {ttsEnabled &&
+                        ttsSupported &&
+                        it.role === "system" &&
+                        !it.audioUrl &&
+                        it.content &&
+                        it.status === "final" && (
                         <button
                           className="ceoMetaButton"
                           onClick={() => speak(String(it.content))}
@@ -2049,6 +2138,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
             value={draft}
             placeholder={ui.inputPlaceholder}
             onChange={(e) => {
+              lastDraftFromVoiceRef.current = false;
               setDraft(e.target.value);
             }}
             onKeyDown={onKeyDown}
