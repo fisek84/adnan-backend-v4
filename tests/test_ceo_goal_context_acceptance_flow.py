@@ -185,3 +185,124 @@ def test_ceo_goal_context_acceptance_flow_goal_scoped_tasks(monkeypatch):
     assert "goals (top" not in all_txt.lower()
     assert "tasks (top" not in all_txt.lower()
     assert "Imamo 7 zadataka u sistemu" not in all_txt
+
+
+def test_ceo_create_task_uses_active_goal_context_two_turn(monkeypatch):
+    """Acceptance: "Dodaj zadatak za ovaj cilj" uses last_referenced_goal_id.
+
+    Expectations:
+    - If title missing: asks only for task title (not goal).
+    - Next user turn is treated as the title and returns a create_task wrapper proposal
+      with goal_id in params (even when Notion Ops is disarmed).
+    """
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
+    monkeypatch.setenv("NOTION_API_KEY", "test-notion-key")
+    monkeypatch.setenv("NOTION_GOALS_DB_ID", "test-goals-db")
+    monkeypatch.setenv("NOTION_TASKS_DB_ID", "test-tasks-db")
+    monkeypatch.setenv("NOTION_PROJECTS_DB_ID", "test-projects-db")
+    monkeypatch.setenv("CEO_NOTION_TARGETED_READS_ENABLED", "false")
+    monkeypatch.setenv("CEO_ADVISOR_FORCE_OFFLINE", "1")
+
+    app = _get_app()
+    client = TestClient(app)
+
+    snap = _ready_snapshot()
+    conv_id = "conv-create-task-active-goal-2turn"
+    sess_id = "sess-create-task-active-goal-2turn"
+
+    out1 = _post_msg(
+        client, msg="Koji je glavni cilj?", conv_id=conv_id, sess_id=sess_id, snap=snap
+    )
+    assert "Rast prihoda Q1" in (out1.get("text") or "")
+
+    out2 = _post_msg(
+        client,
+        msg="Ko je zadužen za ovaj cilj?",
+        conv_id=conv_id,
+        sess_id=sess_id,
+        snap=snap,
+    )
+    assert "Rast prihoda Q1" in (out2.get("text") or "")
+
+    out3 = _post_msg(
+        client,
+        msg="Dodaj zadatak za ovaj cilj",
+        conv_id=conv_id,
+        sess_id=sess_id,
+        snap=snap,
+    )
+    t3 = (out3.get("text") or "").lower()
+    assert "zadatak" in t3
+    assert "kako se zove" in t3
+    # Must NOT ask for goal when context exists.
+    assert "za koji cilj" not in t3
+    assert out3.get("proposed_commands") == []
+
+    out4 = _post_msg(
+        client,
+        msg="Pripremi Q1 plan",
+        conv_id=conv_id,
+        sess_id=sess_id,
+        snap=snap,
+    )
+    pcs = out4.get("proposed_commands")
+    assert isinstance(pcs, list) and pcs, out4
+    pc0 = pcs[0]
+    assert pc0.get("command") == "ceo.command.propose"
+    args = pc0.get("args") or pc0.get("params")
+    assert isinstance(args, dict)
+    assert args.get("intent") == "create_task"
+    assert args.get("goal_id") == "g1"
+
+    # Disarmed contract: wrapper proposals must be non-executable.
+    assert pc0.get("scope") == "none"
+    assert pc0.get("requires_approval") is False
+
+
+def test_ceo_create_task_uses_active_goal_context_inline_title(monkeypatch):
+    """Acceptance: inline title is extracted and goal_id threaded into wrapper params."""
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
+    monkeypatch.setenv("NOTION_API_KEY", "test-notion-key")
+    monkeypatch.setenv("NOTION_GOALS_DB_ID", "test-goals-db")
+    monkeypatch.setenv("NOTION_TASKS_DB_ID", "test-tasks-db")
+    monkeypatch.setenv("NOTION_PROJECTS_DB_ID", "test-projects-db")
+    monkeypatch.setenv("CEO_NOTION_TARGETED_READS_ENABLED", "false")
+    monkeypatch.setenv("CEO_ADVISOR_FORCE_OFFLINE", "1")
+
+    app = _get_app()
+    client = TestClient(app)
+
+    snap = _ready_snapshot()
+    conv_id = "conv-create-task-active-goal-inline"
+    sess_id = "sess-create-task-active-goal-inline"
+
+    _post_msg(
+        client, msg="Koji je glavni cilj?", conv_id=conv_id, sess_id=sess_id, snap=snap
+    )
+    _post_msg(
+        client,
+        msg="Ko je zadužen za ovaj cilj?",
+        conv_id=conv_id,
+        sess_id=sess_id,
+        snap=snap,
+    )
+
+    out = _post_msg(
+        client,
+        msg='Dodaj zadatak "Pripremi Q1 plan" za ovaj cilj',
+        conv_id=conv_id,
+        sess_id=sess_id,
+        snap=snap,
+    )
+
+    pcs = out.get("proposed_commands")
+    assert isinstance(pcs, list) and pcs, out
+    pc0 = pcs[0]
+    assert pc0.get("command") == "ceo.command.propose"
+    args = pc0.get("args") or pc0.get("params")
+    assert isinstance(args, dict)
+    assert args.get("intent") == "create_task"
+    assert args.get("goal_id") == "g1"
+    assert "Pripremi Q1 plan" in (args.get("prompt") or "")

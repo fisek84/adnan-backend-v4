@@ -147,14 +147,21 @@ async def notion_ops_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> Agen
             )
         elif intent:
             # Single intent detected
+            goal_id = md.get("goal_id")
+            goal_id_s = goal_id.strip() if isinstance(goal_id, str) else ""
+
+            args: Dict[str, Any] = {
+                "prompt": msg,
+                "intent": intent,
+                "supports_bilingual": True,
+            }
+            if intent == "create_task" and goal_id_s:
+                args["goal_id"] = goal_id_s
+
             proposed.append(
                 ProposedCommand(
                     command="ceo.command.propose",
-                    args={
-                        "prompt": msg,
-                        "intent": intent,
-                        "supports_bilingual": True,
-                    },
+                    args=args,
                     reason=f"Notion write/workflow mora ići kroz approval/execution pipeline. Detected intent: {intent}",
                     requires_approval=True,
                     risk="HIGH",

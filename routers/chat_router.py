@@ -2844,6 +2844,292 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         armed = bool(st.get("armed") is True)
 
         # ------------------------------------------------------------
+        # CEO-NATIVE UX: create_task for active goal context (2-turn)
+        # - If user says "Dodaj zadatak za ovaj cilj" and we have last_referenced_goal_id,
+        #   ask only for the task title (do NOT ask for goal).
+        # - On the next user message, treat it as the title and propose create_task
+        #   with goal_id threaded into the proposal wrapper params.
+        # ------------------------------------------------------------
+        def _load_conv_meta(cid: Optional[str]) -> Dict[str, Any]:
+            if not (isinstance(cid, str) and cid.strip()):
+                return {}
+            try:
+                m0 = ConversationStateStore.get_meta(conversation_id=cid.strip())
+                return dict(m0) if isinstance(m0, dict) else {}
+            except Exception:
+                return {}
+
+        def _update_conv_meta(cid: Optional[str], updates: Dict[str, Any]) -> None:
+            if not (isinstance(cid, str) and cid.strip()):
+                return
+            try:
+                ConversationStateStore.update_meta(
+                    conversation_id=cid.strip(),
+                    updates=updates if isinstance(updates, dict) else {},
+                )
+            except Exception:
+                return
+
+        def _extract_inline_task_title(user_text: str) -> str:
+            s = (user_text or "").strip()
+            if not s:
+                return ""
+
+            # Prefer quoted title.
+            m_q = re.search(r"\"([^\"\n\r]+)\"|\'([^\'\n\r]+)\'", s)
+            if m_q:
+                cand = (m_q.group(1) or m_q.group(2) or "").strip()
+                return cand.strip(" \t\r\n\"'.,;:!?")
+
+            # Colon/dash form: "Dodaj zadatak: XYZ" / "Kreiraj task - XYZ".
+            m = re.search(
+                r"(?i)\b(?:dodaj|kreiraj|napravi|create)\s+(?:zadatak|task)\b\s*[:\-\u2013\u2014]\s*(.+)$",
+                s,
+            )
+            if m:
+                tail = (m.group(1) or "").strip()
+                # Cut common follow-up goal refs.
+                tail = re.split(
+                    r"(?i)\b(?:za\s+ovaj\s+cilj|za\s+taj\s+cilj|za\s+ovaj|za\s+taj|ovaj\s+cilj|taj\s+cilj)\b",
+                    tail,
+                    maxsplit=1,
+                )[0].strip()
+                return tail.strip(" \t\r\n\"'.,;:!?")
+
+            return ""
+
+        def _looks_like_for_this_goal(user_text: str) -> bool:
+            t = _norm_bhs_ascii(user_text)
+            return bool(
+                re.search(
+                    r"(?i)\b(za\s+ovaj\s+cilj|za\s+taj\s+cilj|ovaj\s+cilj|taj\s+cilj|ovim\s+ciljem|tim\s+ciljem)\b",
+                    t,
+                )
+            )
+
+        conv_meta_for_ux = _load_conv_meta(conversation_id)
+        pending_ct = conv_meta_for_ux.get("pending_create_task_for_goal")
+        if isinstance(pending_ct, dict):
+            exp = pending_ct.get("expires_at")
+            try:
+                exp_f = float(exp) if exp is not None else 0.0
+            except Exception:
+                exp_f = 0.0
+            if exp_f and exp_f < float(time.time()):
+                _update_conv_meta(
+                    conversation_id, {"pending_create_task_for_goal": None}
+                )
+                pending_ct = None
+
+        if isinstance(pending_ct, dict) and (prompt or "").strip():
+            # Allow cancel.
+            p_norm = _norm_bhs_ascii(prompt).strip()
+            if p_norm in {"ne", "otkazi", "otkaži", "cancel", "stop"}:
+                _update_conv_meta(
+                    conversation_id, {"pending_create_task_for_goal": None}
+                )
+                txt_out = "Uredu — otkazano."
+                try:
+                    if isinstance(conversation_id, str) and conversation_id.strip():
+                        ConversationStateStore.append_turn(
+                            conversation_id=conversation_id.strip(),
+                            user_text=prompt or "",
+                            assistant_text=txt_out,
+                        )
+                except Exception:
+                    pass
+                content = {
+                    "text": txt_out,
+                    "proposed_commands": [],
+                    "agent_id": "ceo_advisor",
+                    "read_only": True,
+                    "notion_ops": {
+                        "armed": bool(armed),
+                        "armed_at": st.get("armed_at") if armed else None,
+                        "session_id": session_id,
+                        "armed_state": st,
+                    },
+                    "trace": {
+                        "intent": "create_task_active_goal_cancel",
+                        "canon": "ceo_native_create_task_slot_fill",
+                    },
+                }
+                if debug_on:
+                    content.update(kb)
+                content = _attach_and_log_audit(
+                    content,
+                    session_id=session_id,
+                    conversation_id=conversation_id,
+                    agent_id=content.get("agent_id"),
+                    snapshot=getattr(payload, "snapshot", None),
+                    trace=content.get("trace"),
+                    grounding={},
+                    debug_on=bool(debug_on),
+                    exit_path="ceo_chat.create_task_active_goal.cancel",
+                    targeted_reads=targeted_reads_info,
+                )
+                return JSONResponse(content=_attach_session_id(content, session_id))
+
+            title = (prompt or "").strip().strip(" \t\r\n\"'.,;:!?")
+            if title:
+                goal_id0 = pending_ct.get("goal_id")
+                goal_id0 = goal_id0.strip() if isinstance(goal_id0, str) else ""
+                if goal_id0:
+                    try:
+                        mdx = getattr(payload, "metadata", None)
+                        mdx = dict(mdx) if isinstance(mdx, dict) else {}
+                        mdx["goal_id"] = goal_id0
+                        payload.metadata = mdx  # type: ignore[assignment]
+                    except Exception:
+                        pass
+
+                # Synthesize a canonical create_task prompt so unwrap fast-path extracts title reliably.
+                try:
+                    payload.message = f"Kreiraj task: {title}"  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+                prompt = f"Kreiraj task: {title}"
+
+                _update_conv_meta(
+                    conversation_id, {"pending_create_task_for_goal": None}
+                )
+
+        # If the current message is a create_task request scoped to "ovaj cilj",
+        # and we have an active goal context, either:
+        # - extract inline title and proceed, or
+        # - ask only for title and persist pending state.
+        try:
+            from services.notion_keyword_mapper import NotionKeywordMapper  # noqa: PLC0415
+
+            _ux_intent = NotionKeywordMapper.detect_intent(prompt or "")
+        except Exception:
+            _ux_intent = None
+
+        if (
+            _ux_intent == "create_task"
+            and _looks_like_for_this_goal(prompt or "")
+            and isinstance(conversation_id, str)
+            and conversation_id.strip()
+        ):
+            active_goal_id = conv_meta_for_ux.get("last_referenced_goal_id")
+            active_goal_id = (
+                active_goal_id.strip() if isinstance(active_goal_id, str) else ""
+            )
+
+            if not active_goal_id:
+                txt_out = (
+                    'Ne mogu pouzdano odrediti na koji cilj misliš ("ovaj/taj cilj"). '
+                    "Pošalji tačan title cilja ili kopiraj cijeli red iz liste (npr. '2) Title | Status | Due')."
+                )
+                try:
+                    ConversationStateStore.append_turn(
+                        conversation_id=conversation_id.strip(),
+                        user_text=prompt or "",
+                        assistant_text=txt_out,
+                    )
+                except Exception:
+                    pass
+                content = {
+                    "text": txt_out,
+                    "proposed_commands": [],
+                    "agent_id": "ceo_advisor",
+                    "read_only": True,
+                    "notion_ops": {
+                        "armed": bool(armed),
+                        "armed_at": st.get("armed_at") if armed else None,
+                        "session_id": session_id,
+                        "armed_state": st,
+                    },
+                    "trace": {
+                        "intent": "create_task_active_goal_missing_goal_context",
+                        "canon": "ceo_native_create_task_slot_fill",
+                    },
+                }
+                if debug_on:
+                    content.update(kb)
+                content = _attach_and_log_audit(
+                    content,
+                    session_id=session_id,
+                    conversation_id=conversation_id,
+                    agent_id=content.get("agent_id"),
+                    snapshot=getattr(payload, "snapshot", None),
+                    trace=content.get("trace"),
+                    grounding={},
+                    debug_on=bool(debug_on),
+                    exit_path="ceo_chat.create_task_active_goal.missing_goal_context",
+                    targeted_reads=targeted_reads_info,
+                )
+                return JSONResponse(content=_attach_session_id(content, session_id))
+
+            inline_title = _extract_inline_task_title(prompt or "")
+            if not inline_title:
+                # Ask ONLY for title.
+                _update_conv_meta(
+                    conversation_id,
+                    {
+                        "pending_create_task_for_goal": {
+                            "goal_id": active_goal_id,
+                            "created_at": float(time.time()),
+                            "expires_at": float(time.time()) + 10 * 60.0,
+                        }
+                    },
+                )
+                txt_out = "Kako se zove zadatak? (pošalji samo naslov)"
+                try:
+                    ConversationStateStore.append_turn(
+                        conversation_id=conversation_id.strip(),
+                        user_text=prompt or "",
+                        assistant_text=txt_out,
+                    )
+                except Exception:
+                    pass
+                content = {
+                    "text": txt_out,
+                    "proposed_commands": [],
+                    "agent_id": "ceo_advisor",
+                    "read_only": True,
+                    "notion_ops": {
+                        "armed": bool(armed),
+                        "armed_at": st.get("armed_at") if armed else None,
+                        "session_id": session_id,
+                        "armed_state": st,
+                    },
+                    "trace": {
+                        "intent": "create_task_active_goal_ask_title",
+                        "canon": "ceo_native_create_task_slot_fill",
+                    },
+                }
+                if debug_on:
+                    content.update(kb)
+                content = _attach_and_log_audit(
+                    content,
+                    session_id=session_id,
+                    conversation_id=conversation_id,
+                    agent_id=content.get("agent_id"),
+                    snapshot=getattr(payload, "snapshot", None),
+                    trace=content.get("trace"),
+                    grounding={},
+                    debug_on=bool(debug_on),
+                    exit_path="ceo_chat.create_task_active_goal.ask_title",
+                    targeted_reads=targeted_reads_info,
+                )
+                return JSONResponse(content=_attach_session_id(content, session_id))
+
+            # Inline title provided; normalize prompt and thread goal_id into metadata.
+            try:
+                mdx = getattr(payload, "metadata", None)
+                mdx = dict(mdx) if isinstance(mdx, dict) else {}
+                mdx["goal_id"] = active_goal_id
+                payload.metadata = mdx  # type: ignore[assignment]
+            except Exception:
+                pass
+            try:
+                payload.message = f"Kreiraj task: {inline_title}"  # type: ignore[attr-defined]
+            except Exception:
+                pass
+            prompt = f"Kreiraj task: {inline_title}"
+
+        # ------------------------------------------------------------
         # CANON: write intent -> always route to notion_ops (proposal-only)
         # - ARMED must NOT block proposal generation; it only gates execution.
         # - CEO advisor remains advisory/read-only and must not swallow write intents.

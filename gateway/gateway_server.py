@@ -1351,6 +1351,9 @@ def _extract_wrapper_patch_from_params(params: Dict[str, Any]) -> Dict[str, Any]
         "db_key",
         "database",
         "operations",
+        # CEO-native context threading (not a Notion field patch)
+        "goal_id",
+        "goal_title",
     }
 
     patch: Dict[str, Any] = {}
@@ -2027,6 +2030,14 @@ def _unwrap_proposal_wrapper_or_raise(
 
                     # Preserve relation intent if user specified it by title.
                     if hi == "create_task":
+                        # CEO-native context: allow an explicit goal_id to be threaded in.
+                        try:
+                            goal_id_in = params.get("goal_id")
+                            if isinstance(goal_id_in, str) and goal_id_in.strip():
+                                extra_params["goal_id"] = goal_id_in.strip()
+                        except Exception:
+                            pass
+
                         goal_title = _extract_relation_title_from_prompt(
                             raw_prompt, kind="goal"
                         )
