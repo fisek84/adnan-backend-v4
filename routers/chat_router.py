@@ -364,7 +364,7 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         )
 
     def _chunk_text(text: str, *, max_chars: int = 240) -> List[str]:
-        t = (text or "")
+        t = text or ""
         if not t:
             return []
         if max_chars <= 0:
@@ -6215,7 +6215,9 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         """
 
         if not _chat_streaming_enabled():
-            return JSONResponse(status_code=404, content={"error": "chat_streaming_disabled"})
+            return JSONResponse(
+                status_code=404, content={"error": "chat_streaming_disabled"}
+            )
 
         request_id = uuid.uuid4().hex
         session_id = (
