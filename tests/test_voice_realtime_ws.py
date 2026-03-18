@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import uuid
 
 import pytest
 from fastapi.testclient import TestClient
@@ -83,12 +84,15 @@ def test_voice_realtime_ws_happy_path_event_order_and_parity(monkeypatch):
     app = _load_app()
     client = TestClient(app)
 
+    sid = f"s_{uuid.uuid4().hex}"
+    cid = f"c_{uuid.uuid4().hex}"
+
     with client.websocket_connect("/api/voice/realtime/ws") as ws:
         ws.send_text(
             json.dumps(
                 {
                     "type": "session.start",
-                    "data": {"session_id": "s_test", "conversation_id": "c_test"},
+                    "data": {"session_id": sid, "conversation_id": cid},
                 }
             )
         )
@@ -119,7 +123,9 @@ def test_voice_realtime_ws_happy_path_event_order_and_parity(monkeypatch):
         assert types[-1] == "done"
 
         deltas = [e for e in evts if e.get("type") == "assistant.delta"]
-        joined = "".join(str((e.get("data") or {}).get("delta_text") or "") for e in deltas)
+        joined = "".join(
+            str((e.get("data") or {}).get("delta_text") or "") for e in deltas
+        )
         assert joined == "hello ws"
 
         final = next(e for e in evts if e.get("type") == "assistant.final")
