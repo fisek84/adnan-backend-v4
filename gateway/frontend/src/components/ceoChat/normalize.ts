@@ -155,8 +155,119 @@ export function normalizeConsoleResponse(
  * api.ts očekuje string → stream helper
  */
 export function streamTextFromResponse(input: any): AsyncIterable<string> {
-  const { text } = deriveSystemTextFromCeoConsole(input);
-  return (async function* () {
-    yield text;
+  // Back-compat: if this isn't a fetch Response-like object, keep legacy behavior.
+  const body = (input as any)?.body;
+  const hasReader = body && typeof body.getReader === "function";
+  if (!hasReader) {
+    const { text } = deriveSystemTextFromCeoConsole(input);
+    return (async function* () {
+      yield text;
+    })();
+  }
+
+  let resolveFinal: (v: any) => void = () => undefined;
+  let rejectFinal: (e: any) => void = () => undefined;
+  const finalResponse = new Promise<any>((resolve, reject) => {
+    resolveFinal = resolve;
+    rejectFinal = reject;
+  });
+
+  let finalSettled = false;
+  let finalRaw: any = null;
+
+  const gen = (async function* () {
+    const reader = body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let buf = "";
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (value) buf += decoder.decode(value, { stream: true });
+
+        while (true) {
+          const nl = buf.indexOf("\n");
+          if (nl < 0) break;
+          const line = buf.slice(0, nl);
+          buf = buf.slice(nl + 1);
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+
+          let evt: any = null;
+          try {
+            evt = JSON.parse(trimmed);
+          } catch (e) {
+            const err = new Error("Invalid NDJSON event");
+            (err as any).cause = e;
+            throw err;
+          }
+
+          const type = String(evt?.type || "");
+          if (type === "assistant.delta") {
+            const delta = evt?.data?.delta_text;
+            if (typeof delta === "string" && delta) {
+              yield delta;
+            }
+            continue;
+          }
+
+          if (type === "assistant.final") {
+            finalRaw = evt?.data?.response ?? evt?.data ?? null;
+            if (!finalSettled) {
+              finalSettled = true;
+              resolveFinal(finalRaw);
+            }
+            continue;
+          }
+
+          if (type === "error") {
+            const msg =
+              typeof evt?.data?.message === "string" && evt.data.message.trim()
+                ? evt.data.message.trim()
+                : "Stream error";
+            const err = new Error(msg);
+            (err as any).code = evt?.data?.code;
+            if (!finalSettled) {
+              finalSettled = true;
+              rejectFinal(err);
+            }
+            throw err;
+          }
+
+          if (type === "done") {
+            // Stream complete. If we didn't observe assistant.final, resolve null.
+            if (!finalSettled) {
+              finalSettled = true;
+              resolveFinal(finalRaw);
+            }
+            return;
+          }
+
+          // Ignore unknown event types for forward-compat.
+        }
+      }
+
+      // EOF: resolve best-effort.
+      if (!finalSettled) {
+        finalSettled = true;
+        resolveFinal(finalRaw);
+      }
+    } catch (e) {
+      if (!finalSettled) {
+        finalSettled = true;
+        rejectFinal(e);
+      }
+      throw e;
+    } finally {
+      try {
+        reader.releaseLock();
+      } catch {
+        // ignore
+      }
+    }
   })();
+
+  // Attach finalResponse promise for callers that need governance parity.
+  (gen as any).finalResponse = finalResponse;
+  return gen;
 }

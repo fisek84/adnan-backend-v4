@@ -867,7 +867,22 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       }
 
       abortRef.current = null;
-      await flushResponseToUi(placeholder.id, resp);
+      try {
+        await flushResponseToUi(placeholder.id, resp);
+      } catch (e) {
+        // If streaming fails to parse/consume, fallback to canonical JSON /api/chat.
+        // This keeps UX functional even if the stream endpoint is temporarily broken.
+        if (origin !== "voice" && (resp as any)?.stream) {
+          const fallback = await api.sendCommand(req, controller.signal, undefined, {
+            forceNonStreaming: true,
+          });
+          await flushResponseToUi(placeholder.id, fallback);
+          setBusy("idle");
+          setLastError(null);
+          return;
+        }
+        throw e;
+      }
 
       setBusy("idle");
       setLastError(null);
@@ -1445,22 +1460,53 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
             if (isPinnedToBottom) scrollToBottom(false);
           }
 
+          // Best-effort: recover canonical final response payload for parity.
+          const finalPromise = (resp as any)?.stream?.finalResponse;
+          let finalRaw: any = null;
+          if (finalPromise && typeof finalPromise.then === "function") {
+            finalRaw = await finalPromise;
+          }
+
+          const respAfter: any =
+            finalRaw && typeof finalRaw === "object" ? { ...(resp as any), raw: finalRaw } : (resp as any);
+
           updateItem(placeholderId, { content: acc.trim(), status: "final" });
 
-          attachBackendAudioIfPresent(placeholderId, resp);
+          attachBackendAudioIfPresent(placeholderId, respAfter);
           
           // Auto-speak if enabled
           if (ttsEnabled && (autoSpeakEnabled || autoSendOnVoiceFinalEnabled) && acc.trim()) {
             speak(acc.trim());
           }
+
+          // Governance/proposals parity: evaluate proposals from assistant.final payload.
+          const proposalsRaw = _extractProposedCommands(respAfter);
+          const proposals = proposalsRaw.filter(isActionableProposal);
+          const actionableCount = proposals.length;
+
+          const gov = toGovernanceCard(respAfter as any);
+          if (gov && shouldShowBackendGovernanceCard(gov, actionableCount)) appendItem(gov);
+
+          if (actionableCount > 0) {
+            appendItem({
+              id: uid(),
+              kind: "governance",
+              createdAt: now(),
+              state: "BLOCKED",
+              title: "Approval required",
+              summary: "Review the proposed action and either approve or dismiss it.",
+              reasons: undefined,
+              approvalRequestId: undefined,
+              requestId: (respAfter as any)?.requestId,
+              proposedCommands: proposals,
+            } as any);
+          }
           
           setBusy("idle");
           setLastError(null);
         } catch (e) {
-          const msg = e instanceof Error ? e.message : String(e);
-          updateItem(placeholderId, { status: "error", content: acc.trim() });
-          setBusy("error");
-          setLastError(msg);
+          // Let caller decide whether to fallback to non-streaming.
+          throw e;
         }
         return;
       }

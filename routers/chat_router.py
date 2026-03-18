@@ -16,6 +16,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
+from starlette.responses import StreamingResponse
 
 from models.agent_contract import AgentInput, AgentOutput, ProposedCommand
 from services.ceo_advisor_agent import (
@@ -349,6 +350,38 @@ def _compute_ceo_view(snapshot: Any) -> Dict[str, Any]:
 
 def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
     router = APIRouter()
+
+    def _chat_streaming_enabled() -> bool:
+        raw = (os.getenv("CHAT_STREAMING_ENABLED") or "").strip().lower()
+        return raw in {"1", "true", "yes", "on"}
+
+    def _iso_utc_now() -> str:
+        return (
+            datetime.now(timezone.utc)
+            .replace(microsecond=0)
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
+
+    def _chunk_text(text: str, *, max_chars: int = 240) -> List[str]:
+        t = (text or "")
+        if not t:
+            return []
+        if max_chars <= 0:
+            return [t]
+        out: List[str] = []
+        i = 0
+        n = len(t)
+        while i < n:
+            j = min(n, i + max_chars)
+            # Prefer splitting at whitespace when possible.
+            if j < n:
+                k = t.rfind(" ", i, j)
+                if k > i + int(max_chars * 0.6):
+                    j = k + 1
+            out.append(t[i:j])
+            i = j
+        return out
 
     def _attach_session_id(
         content: Dict[str, Any], session_id: Optional[str]
@@ -6172,5 +6205,112 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             targeted_reads=targeted_reads_info,
         )
         return JSONResponse(content=_attach_session_id(content, session_id))
+
+    @router.post("/chat/stream")
+    async def chat_stream(payload: AgentInput, request: Request):
+        """NDJSON streaming wrapper for canonical chat.
+
+        - Feature-flagged via CHAT_STREAMING_ENABLED (default OFF).
+        - Does NOT modify /chat behavior; it delegates final response generation to /chat.
+        """
+
+        if not _chat_streaming_enabled():
+            return JSONResponse(status_code=404, content={"error": "chat_streaming_disabled"})
+
+        request_id = uuid.uuid4().hex
+        session_id = (
+            getattr(payload, "session_id", None)
+            if isinstance(getattr(payload, "session_id", None), str)
+            else None
+        )
+        conversation_id = (
+            getattr(payload, "conversation_id", None)
+            if isinstance(getattr(payload, "conversation_id", None), str)
+            else None
+        )
+        if not conversation_id:
+            conversation_id = session_id
+
+        async def _iter_ndjson():
+            seq = 0
+
+            def _emit(evt_type: str, data: Dict[str, Any]):
+                nonlocal seq
+                evt = {
+                    "v": 1,
+                    "type": evt_type,
+                    "seq": seq,
+                    "ts": _iso_utc_now(),
+                    "request_id": request_id,
+                    "session_id": session_id,
+                    "conversation_id": conversation_id,
+                    "data": data,
+                }
+                seq += 1
+                return (json.dumps(evt, ensure_ascii=False) + "\n").encode("utf-8")
+
+            yield _emit(
+                "meta",
+                {
+                    "source_endpoint": "/api/chat/stream",
+                    "model": None,
+                    "agent_id": None,
+                    "capabilities": {"text_streaming": True, "final_response": True},
+                },
+            )
+
+            try:
+                final_resp = await chat(payload, request)
+
+                body_bytes = getattr(final_resp, "body", b"")
+                if not isinstance(body_bytes, (bytes, bytearray, memoryview)):
+                    body_bytes = b""
+                if not body_bytes:
+                    raise RuntimeError("canonical_chat_empty_body")
+
+                try:
+                    body_obj = json.loads(bytes(body_bytes).decode("utf-8"))
+                except Exception as exc:
+                    raise RuntimeError(f"canonical_chat_non_json_body: {exc}")
+
+                if not isinstance(body_obj, dict):
+                    raise RuntimeError("canonical_chat_non_object_body")
+
+                text_out = str(body_obj.get("text") or "")
+                for part in _chunk_text(text_out):
+                    if part:
+                        yield _emit("assistant.delta", {"delta_text": part})
+
+                yield _emit(
+                    "assistant.final",
+                    {
+                        "text": text_out,
+                        "response": body_obj,
+                    },
+                )
+                yield _emit("done", {"ok": True, "reason": "completed"})
+
+            except Exception as exc:
+                yield _emit(
+                    "error",
+                    {
+                        "code": "internal_error",
+                        "message": str(exc),
+                        "retryable": False,
+                        "http_status": 500,
+                    },
+                )
+                yield _emit("done", {"ok": False, "reason": "error"})
+
+        return StreamingResponse(
+            _iter_ndjson(),
+            status_code=200,
+            media_type="application/x-ndjson",
+            headers={
+                "Content-Type": "application/x-ndjson; charset=utf-8",
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     return router

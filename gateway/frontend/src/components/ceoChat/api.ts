@@ -115,7 +115,8 @@ export type CeoConsoleApi = {
   sendCommand: (
     req: CeoCommandRequest,
     signal?: AbortSignal,
-    onPartial?: (partial: NormalizedConsoleResponse) => void
+    onPartial?: (partial: NormalizedConsoleResponse) => void,
+    opts?: { forceNonStreaming?: boolean }
   ) => Promise<NormalizedConsoleResponse>;
 
   // Voice adapter endpoint (STT optional on client; TTS optional on server).
@@ -147,6 +148,11 @@ function extractText(req: CeoCommandRequest): string {
 
 function isChatEndpoint(url: string): boolean {
   return url.includes("/api/chat") || url.endsWith("/chat");
+}
+
+function deriveChatStreamUrl(fromBaseUrl: string): string {
+  // Always derive an /api/chat/stream URL (relative or absolute) from the configured base.
+  return deriveApiUrl(fromBaseUrl, "/chat/stream");
 }
 
 function deriveNotionOpsUrl(fromBaseUrl: string, path: string): string {
@@ -411,9 +417,7 @@ async function fetchAndNormalize(opts: {
     }
   }
 
-  // ✅ ADDED: runtime proof of what client actually receives (for debugging frontend mismatch)
   const raw = await fetchJsonOrText(res);
-  console.log("[api.ts] raw from /api/chat =", raw);
 
   return normalizeRawToUi(raw, url, res.headers);
 }
@@ -459,8 +463,36 @@ export function createCeoConsoleApi(opts: {
 
   return {
     // CANON: single source of truth for chat is /api/chat (no fallback to other endpoints).
-    sendCommand: async (req: CeoCommandRequest, signal?: AbortSignal): Promise<NormalizedConsoleResponse> => {
+    sendCommand: async (
+      req: CeoCommandRequest,
+      signal?: AbortSignal,
+      _onPartial?: (partial: NormalizedConsoleResponse) => void,
+      opts2?: { forceNonStreaming?: boolean }
+    ): Promise<NormalizedConsoleResponse> => {
       const payload = buildPayload(ceoCommandUrl, req);
+
+      // Stream-first for chat, with strict fallback:
+      // - Only fallback when stream endpoint is disabled/unavailable (404).
+      // - Any other error should surface (don’t hide server bugs).
+      if (!opts2?.forceNonStreaming && isChatEndpoint(ceoCommandUrl)) {
+        const streamUrl = deriveChatStreamUrl(ceoCommandUrl);
+        try {
+          return await fetchAndNormalize({
+            url: streamUrl,
+            payload,
+            signal,
+            headers,
+          });
+        } catch (e: any) {
+          const msg = typeof e?.message === "string" ? e.message : String(e);
+          if (msg.includes(`HTTP 404 from ${streamUrl}`)) {
+            // Expected when CHAT_STREAMING_ENABLED is OFF.
+          } else {
+            throw e;
+          }
+        }
+      }
+
       const resp = await fetchAndNormalize({
         url: ceoCommandUrl,
         payload,

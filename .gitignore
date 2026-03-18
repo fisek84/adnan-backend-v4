@@ -83,6 +83,9 @@ tsconfig.tsbuildinfo
 .node-test-dist/
 **/.node-test-dist/
 
+.node-test-dist-*/
+**/.node-test-dist-*/
+
 # =========================
 # Archives / bundles (do not commit)
 # =========================
