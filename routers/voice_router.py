@@ -4,14 +4,16 @@ import asyncio
 import base64
 import json
 import os
+import threading
+import time
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 import httpx
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, WebSocket
 from pydantic import BaseModel, Field
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
 
 from integrations.voice_service import VoiceService
 from services.voice_tts_service import VoiceTTSService, tts_enabled
@@ -20,6 +22,87 @@ router = APIRouter(prefix="/voice", tags=["Voice Input"])
 
 # Instances
 voice_service = VoiceService()
+
+# Ephemeral store for large TTS payloads.
+# When audio is too large to inline as base64 in JSON, we store it briefly and
+# return a fetchable URL. This keeps backend voice primary without bloating JSON.
+_VOICE_OUTPUT_STORE_LOCK = threading.Lock()
+_VOICE_OUTPUT_STORE: Dict[str, Tuple[float, bytes, str]] = {}
+
+
+def _voice_output_audio_url_ttl_sec() -> int:
+    raw = (os.getenv("VOICE_TTS_AUDIO_URL_TTL_SEC") or "").strip()
+    if not raw:
+        return 300
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 300
+
+
+def _voice_output_audio_url_max_items() -> int:
+    raw = (os.getenv("VOICE_TTS_AUDIO_URL_MAX_ITEMS") or "").strip()
+    if not raw:
+        return 64
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 64
+
+
+def _store_voice_output_bytes(*, audio_bytes: bytes, content_type: str) -> str:
+    now = time.time()
+    ttl = _voice_output_audio_url_ttl_sec()
+    max_items = _voice_output_audio_url_max_items()
+
+    with _VOICE_OUTPUT_STORE_LOCK:
+        if ttl:
+            expired = [
+                k
+                for k, (ts, _b, _ct) in _VOICE_OUTPUT_STORE.items()
+                if now - ts > ttl
+            ]
+            for k in expired:
+                _VOICE_OUTPUT_STORE.pop(k, None)
+
+        if max_items:
+            while len(_VOICE_OUTPUT_STORE) >= max_items:
+                oldest_key = next(iter(_VOICE_OUTPUT_STORE), None)
+                if not oldest_key:
+                    break
+                _VOICE_OUTPUT_STORE.pop(oldest_key, None)
+
+        key = uuid.uuid4().hex
+        _VOICE_OUTPUT_STORE[key] = (now, audio_bytes, content_type)
+        return key
+
+
+def _get_voice_output_bytes(key: str) -> Optional[Tuple[bytes, str]]:
+    now = time.time()
+    ttl = _voice_output_audio_url_ttl_sec()
+    with _VOICE_OUTPUT_STORE_LOCK:
+        item = _VOICE_OUTPUT_STORE.get(key)
+        if item is None:
+            return None
+        ts, audio_bytes, content_type = item
+        if ttl and now - ts > ttl:
+            _VOICE_OUTPUT_STORE.pop(key, None)
+            return None
+        return audio_bytes, content_type
+
+
+@router.get("/output/{key}")
+async def voice_output_get(key: str):
+    item = _get_voice_output_bytes(key)
+    if item is None:
+        raise HTTPException(status_code=404, detail="voice_output_not_found")
+
+    audio_bytes, content_type = item
+    ttl = _voice_output_audio_url_ttl_sec()
+    headers = {
+        "Cache-Control": f"private, max-age={int(ttl) if ttl else 0}",
+    }
+    return Response(content=audio_bytes, media_type=content_type, headers=headers)
 
 
 _ALLOWED_CHAT_FORWARD_HEADERS = {
@@ -284,16 +367,23 @@ def _maybe_build_voice_output(
 
     max_audio_bytes = _voice_output_max_audio_bytes()
     if max_audio_bytes and len(audio_bytes) > max_audio_bytes:
+        key = _store_voice_output_bytes(audio_bytes=audio_bytes, content_type=content_type)
         return {
-            "available": False,
-            "reason": "audio_too_large",
-            "max_audio_bytes": max_audio_bytes,
+            "available": True,
+            "reason": "delivered_via_url",
+            "delivery": "url",
+            "content_type": content_type,
+            "audio_url": f"/api/voice/output/{key}",
+            "inline_max_audio_bytes": max_audio_bytes,
+            "audio_bytes": len(audio_bytes),
         }
 
     return {
         "available": True,
+        "delivery": "inline",
         "content_type": content_type,
         "audio_base64": base64.b64encode(audio_bytes).decode("ascii"),
+        "audio_bytes": len(audio_bytes),
     }
 
 

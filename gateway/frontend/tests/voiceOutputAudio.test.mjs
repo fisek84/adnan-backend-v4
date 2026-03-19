@@ -39,6 +39,8 @@ test("isPlayableVoiceOutput: requires available true + fields", () => {
   assert.equal(isPlayableVoiceOutput({ available: true, audio_base64: "AA==" }), false);
 
   assert.equal(isPlayableVoiceOutput({ available: true, content_type: "audio/wav", audio_base64: "AA==" }), true);
+
+  assert.equal(isPlayableVoiceOutput({ available: true, content_type: "audio/mpeg", audio_url: "/api/voice/output/x" }), true);
 });
 
 test("createAudioFromVoiceOutput: returns object URL and content type", () => {
@@ -70,6 +72,27 @@ test("createAudioFromVoiceOutput: enforces maxBase64Chars", () => {
   const vo = { available: true, content_type: "audio/wav", audio_base64: "AAAA" };
   const res = createAudioFromVoiceOutput(vo, { atob: atobViaBuffer, Blob: FakeBlob, createObjectURL: () => "x" }, { maxBase64Chars: 1 });
   assert.equal(res, null);
+});
+
+test("createAudioFromVoiceOutput: uses audio_url when present", () => {
+  const vo = {
+    available: true,
+    content_type: "audio/mpeg",
+    audio_url: "/api/voice/output/abc",
+    audio_base64: "AAAA", // should be ignored
+  };
+
+  const res = createAudioFromVoiceOutput(vo, {
+    atob: atobViaBuffer,
+    Blob: FakeBlob,
+    createObjectURL: () => {
+      throw new Error("should not be called");
+    },
+  }, { maxBase64Chars: 1 });
+
+  assert.ok(res);
+  assert.equal(res.url, "/api/voice/output/abc");
+  assert.equal(res.contentType, "audio/mpeg");
 });
 
 test("createAudioFromVoiceOutputUsingGlobals: null in Node", () => {

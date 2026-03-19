@@ -314,7 +314,20 @@ def test_voice_exec_text_voice_output_declines_when_audio_too_large(
     body = resp.json()
     vo = body.get("voice_output")
     assert isinstance(vo, dict)
-    assert vo.get("available") is False
-    assert vo.get("reason") == "audio_too_large"
-    assert vo.get("max_audio_bytes") == 1
+    assert vo.get("available") is True
+    assert vo.get("delivery") == "url"
+    assert vo.get("reason") == "delivered_via_url"
+    assert vo.get("content_type") == "audio/mpeg"
+    assert vo.get("inline_max_audio_bytes") == 1
     assert "audio_base64" not in vo
+
+    audio_url = vo.get("audio_url")
+    assert isinstance(audio_url, str)
+    assert audio_url.startswith("/api/voice/output/")
+
+    # The audio bytes should be retrievable via the URL.
+    with TestClient(app) as client:
+        audio_resp = client.get(audio_url)
+    assert audio_resp.status_code == 200
+    assert audio_resp.headers.get("content-type", "").startswith("audio/mpeg")
+    assert audio_resp.content == b"ab"

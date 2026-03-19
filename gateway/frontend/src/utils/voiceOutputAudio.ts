@@ -4,6 +4,7 @@ export type VoiceOutput = {
   available?: boolean;
   content_type?: string;
   audio_base64?: string;
+  audio_url?: string;
   reason?: string;
   [k: string]: any;
 };
@@ -30,10 +31,16 @@ export function extractVoiceOutputFromResponse(resp: any): VoiceOutput | null {
   return nested && typeof nested === "object" ? (nested as VoiceOutput) : null;
 }
 
-export function isPlayableVoiceOutput(vo: VoiceOutput | null | undefined): vo is Required<Pick<VoiceOutput, "content_type" | "audio_base64">> & VoiceOutput {
+export function isPlayableVoiceOutput(
+  vo: VoiceOutput | null | undefined
+): vo is Required<Pick<VoiceOutput, "content_type">> & (Required<Pick<VoiceOutput, "audio_base64">> | Required<Pick<VoiceOutput, "audio_url">>) & VoiceOutput {
   if (!vo || typeof vo !== "object") return false;
   if ((vo as any).available !== true) return false;
-  return typeof (vo as any).content_type === "string" && typeof (vo as any).audio_base64 === "string";
+  if (typeof (vo as any).content_type !== "string") return false;
+
+  const hasBase64 = typeof (vo as any).audio_base64 === "string";
+  const hasUrl = typeof (vo as any).audio_url === "string";
+  return hasBase64 || hasUrl;
 }
 
 export function createAudioFromVoiceOutput(
@@ -43,7 +50,12 @@ export function createAudioFromVoiceOutput(
 ): VoiceOutputAudio | null {
   if (!isPlayableVoiceOutput(vo)) return null;
 
+  if (typeof vo.audio_url === "string" && vo.audio_url) {
+    return { url: vo.audio_url, contentType: vo.content_type };
+  }
+
   const maxChars = opts?.maxBase64Chars ?? DEFAULT_MAX_BASE64_CHARS;
+  if (!vo.audio_base64) return null;
   if (maxChars > 0 && vo.audio_base64.length > maxChars) return null;
 
   const bin = deps.atob(vo.audio_base64);

@@ -69,6 +69,15 @@ export const Header: React.FC<HeaderProps> = ({
   const { theme, toggleTheme } = useTheme();
   const [settingsOpen, setSettingsOpen] = useState(false);
 
+  const showFallbackVoiceControls = !!(
+    ttsVoices &&
+    ttsVoices.length > 0 &&
+    typeof onTtsVoiceChange === 'function'
+  );
+  const showFallbackSliders = showFallbackVoiceControls && (
+    enableTTS === false || !!(selectedTtsVoiceId && selectedTtsVoiceId.trim())
+  );
+
   return (
     <header className="ceoHeader">
       <div className="ceoHeaderTitleRow">
@@ -231,9 +240,9 @@ export const Header: React.FC<HeaderProps> = ({
                     </label>
                   )}
 
-                  {ttsVoices && ttsVoices.length > 0 && onTtsVoiceChange && (
+                  {showFallbackVoiceControls && (
                     <label className="ceoHeaderSettingsRow">
-                      <span>Fallback voice (browser)</span>
+                      <span>Fallback voice (browser only)</span>
                       <select
                         className="ceoHeaderSelect"
                         value={selectedTtsVoiceId || ''}
@@ -249,9 +258,9 @@ export const Header: React.FC<HeaderProps> = ({
                     </label>
                   )}
 
-                  {onSpeechRateChange && speechRate !== undefined && (
+                  {showFallbackSliders && onSpeechRateChange && speechRate !== undefined && (
                     <label className="ceoHeaderSettingsRow">
-                      <span>Speech rate</span>
+                      <span>Fallback speech rate</span>
                       <input
                         type="range"
                         min={0.6}
@@ -263,9 +272,9 @@ export const Header: React.FC<HeaderProps> = ({
                     </label>
                   )}
 
-                  {onSpeechPitchChange && speechPitch !== undefined && (
+                  {showFallbackSliders && onSpeechPitchChange && speechPitch !== undefined && (
                     <label className="ceoHeaderSettingsRow">
-                      <span>Pitch</span>
+                      <span>Fallback pitch</span>
                       <input
                         type="range"
                         min={0.6}
