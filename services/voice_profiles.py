@@ -128,7 +128,11 @@ def _load_agent_defaults() -> Dict[str, Dict[str, Any]]:
     try:
         for entry in reg.list_agents(enabled_only=False):
             md = entry.metadata if isinstance(entry.metadata, dict) else {}
-            vp = md.get("voice_profile") if isinstance(md.get("voice_profile"), dict) else {}
+            vp = (
+                md.get("voice_profile")
+                if isinstance(md.get("voice_profile"), dict)
+                else {}
+            )
             if isinstance(vp, dict) and vp:
                 out[str(entry.id)] = vp
     except Exception:
@@ -177,7 +181,9 @@ def resolve_voice_profile(
 ) -> ResolvedVoiceProfile:
     agent = (agent_id or "").strip() or "unknown"
 
-    request_map = request_voice_profiles if isinstance(request_voice_profiles, dict) else {}
+    request_map = (
+        request_voice_profiles if isinstance(request_voice_profiles, dict) else {}
+    )
     request_for_agent = (
         request_map.get(agent)
         if isinstance(request_map.get(agent), dict)
@@ -197,7 +203,9 @@ def resolve_voice_profile(
     )
     if not lang:
         lang = _norm_lang(
-            str(agent_default.get("language")) if agent_default.get("language") is not None else None
+            str(agent_default.get("language"))
+            if agent_default.get("language") is not None
+            else None
         )
     if not lang:
         lang = _norm_lang(output_lang)
@@ -211,27 +219,43 @@ def resolve_voice_profile(
     )
     if not gender:
         gender = _norm_gender(
-            str(agent_default.get("gender")) if agent_default.get("gender") is not None else None
+            str(agent_default.get("gender"))
+            if agent_default.get("gender") is not None
+            else None
         )
     if not gender:
         gender = "neutral"
 
-    preset_id = (
-        str(request_for_agent.get("preset_id") or request_for_agent.get("preset") or "").strip()
-    )
+    preset_id = str(
+        request_for_agent.get("preset_id") or request_for_agent.get("preset") or ""
+    ).strip()
     if not preset_id:
-        preset_id = str(agent_default.get("preset_id") or agent_default.get("preset") or "").strip()
+        preset_id = str(
+            agent_default.get("preset_id") or agent_default.get("preset") or ""
+        ).strip()
 
     source = "global_default"
     if preset_id and preset_id in VOICE_PRESETS:
         preset = VOICE_PRESETS[preset_id]
-        source = "request_override" if request_for_agent else "agent_default" if agent_default else "global_default"
+        source = (
+            "request_override"
+            if request_for_agent
+            else "agent_default"
+            if agent_default
+            else "global_default"
+        )
         vendor_voice = preset.vendor_voice
     else:
         # If no preset specified (or unknown), fall back to global env voice.
         preset_id = "default"
         vendor_voice = _env_default_voice()
-        source = "request_override" if request_for_agent else "agent_default" if agent_default else "global_default"
+        source = (
+            "request_override"
+            if request_for_agent
+            else "agent_default"
+            if agent_default
+            else "global_default"
+        )
 
     # Optional model/format overrides (kept production-safe: only accept strings).
     model = (

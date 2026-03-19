@@ -49,7 +49,9 @@ def test_voice_output_uses_resolved_voice(monkeypatch: pytest.MonkeyPatch) -> No
         calls["format"] = audio_format
         return (b"abc", "audio/mpeg")
 
-    monkeypatch.setattr(voice_router.VoiceTTSService, "is_configured", fake_is_configured)
+    monkeypatch.setattr(
+        voice_router.VoiceTTSService, "is_configured", fake_is_configured
+    )
     monkeypatch.setattr(voice_router.VoiceTTSService, "synthesize", fake_synthesize)
 
     vo = voice_router._maybe_build_voice_output(
