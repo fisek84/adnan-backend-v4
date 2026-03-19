@@ -6,6 +6,61 @@ from datetime import date, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 
+def _is_english_output(output_lang: Optional[str]) -> bool:
+    raw = str(output_lang or "").strip().lower()
+    return raw.startswith("en")
+
+
+def _t(output_lang: Optional[str], key: str, **kwargs: Any) -> str:
+    en = _is_english_output(output_lang)
+
+    # Keep this minimal and local to this engine (no global i18n refactor).
+    table_en = {
+        "yes": "Yes.",
+        "no": "No.",
+        "phase_a_active": "{ans} We currently have {n} active tasks.",
+        "phase_a_total": "{ans} We currently have {n} tasks in the system.",
+        "phase_a_count": "{n}. Total tasks: {n}.",
+        "phase_a_head_none": "We currently have no tasks.",
+        "phase_a_head_none_active": "There are currently no active tasks.",
+        "phase_a_head_active": "We currently have {n} active tasks.",
+        "phase_a_by_status": "By status: {tail}.",
+        "no_upcoming": "No upcoming tasks.",
+        "no_today": "No tasks for today.",
+        "next_upcoming_3": "Next 3 upcoming tasks:",
+        "no_tasks": "No tasks.",
+        "shown_more": "Showing {shown} of {total}; say 'continue' for the next page.",
+        "shown_all": "Showing {shown} of {total}.",
+    }
+
+    table_bs = {
+        "yes": "Da.",
+        "no": "Ne.",
+        "phase_a_active": "{ans} Trenutno imamo {n} aktivnih zadataka.",
+        "phase_a_total": "{ans} Trenutno imamo {n} zadataka u sistemu.",
+        "phase_a_count": "{n}. Ukupno imamo {n} zadataka.",
+        "phase_a_head_none": "Trenutno nemamo nijedan zadatak.",
+        "phase_a_head_none_active": "Trenutno nema aktivnih zadataka.",
+        "phase_a_head_active": "Trenutno imamo {n} aktivnih zadataka.",
+        "phase_a_by_status": "Po statusu: {tail}.",
+        "no_upcoming": "Nema nadolazećih taskova.",
+        "no_today": "Nema taskova za danas.",
+        "next_upcoming_3": "Sljedeća 3 nadolazeća taska:",
+        "no_tasks": "Nema taskova.",
+        "shown_more": "Prikazano {shown} od {total}; reci 'nastavi' za sljedeću stranicu.",
+        "shown_all": "Prikazano {shown} od {total}.",
+    }
+
+    table = table_en if en else table_bs
+    tmpl = table.get(key)
+    if not isinstance(tmpl, str):
+        tmpl = table_bs.get(key) or ""
+    try:
+        return str(tmpl).format(**kwargs)
+    except Exception:
+        return str(tmpl)
+
+
 def compute_task_stats(snapshot: Any) -> Dict[str, Any]:
     """Compute minimal, stable task stats from an SSOT snapshot.
 
@@ -30,7 +85,12 @@ def compute_task_stats(snapshot: Any) -> Dict[str, Any]:
     }
 
 
-def render_tasks_phase_a_answer(*, spec: Any, stats: Dict[str, Any]) -> str:
+def render_tasks_phase_a_answer(
+    *,
+    spec: Any,
+    stats: Dict[str, Any],
+    output_lang: Optional[str] = None,
+) -> str:
     """Render Phase A TASKS answer in answer-first format.
 
     spec is expected to be a TaskPhaseASpec-like object with:
@@ -53,25 +113,25 @@ def render_tasks_phase_a_answer(*, spec: Any, stats: Dict[str, Any]) -> str:
     if q == "YES_NO":
         if active_only:
             has = active > 0
-            ans = "Da." if has else "Ne."
-            return f"{ans} Trenutno imamo {active} aktivnih zadataka."
+            ans = _t(output_lang, "yes") if has else _t(output_lang, "no")
+            return _t(output_lang, "phase_a_active", ans=ans, n=active)
 
         has = total > 0
-        ans = "Da." if has else "Ne."
-        return f"{ans} Trenutno imamo {total} zadataka u sistemu."
+        ans = _t(output_lang, "yes") if has else _t(output_lang, "no")
+        return _t(output_lang, "phase_a_total", ans=ans, n=total)
 
     if q == "COUNT":
         # Contract: must start with a number.
-        return f"{total}. Ukupno imamo {total} zadataka."
+        return _t(output_lang, "phase_a_count", n=total)
 
     if q == "STATUS":
         # Contract: short conclusion first; no task title list.
         if total <= 0:
-            head = "Trenutno nemamo nijedan zadatak."
+            head = _t(output_lang, "phase_a_head_none")
         elif active <= 0:
-            head = "Trenutno nema aktivnih zadataka."
+            head = _t(output_lang, "phase_a_head_none_active")
         else:
-            head = f"Trenutno imamo {active} aktivnih zadataka."
+            head = _t(output_lang, "phase_a_head_active", n=active)
 
         if not counts:
             return head
@@ -79,8 +139,8 @@ def render_tasks_phase_a_answer(*, spec: Any, stats: Dict[str, Any]) -> str:
         parts = []
         for k in sorted(counts.keys()):
             parts.append(f"{k}: {counts[k]}")
-        tail = "Po statusu: " + ", ".join(parts) + "."
-        return f"{head} {tail}"
+        tail = ", ".join(parts)
+        return f"{head} {_t(output_lang, 'phase_a_by_status', tail=tail)}"
 
     # Phase A renderer is not defined for LIST (handled by list engine).
     return ""
@@ -531,6 +591,7 @@ def render_task_query_answer(
     render_mode: str = "compact",
     page: int = 1,
     page_size: int = 20,
+    output_lang: Optional[str] = None,
 ) -> str:
     """Render a user-facing task answer.
 
@@ -560,7 +621,7 @@ def render_task_query_answer(
     if mode == "upcoming":
         up = _upcoming_tasks(tasks=res.all_tasks, today=today_d, limit=3)
         if not up:
-            return "Nema nadolazećih taskova."
+            return _t(output_lang, "no_upcoming")
         lines = ["TASKS (upcoming)"]
         for i, t in enumerate(up, start=1):
             lines.append(_format_task_line(i, t))
@@ -569,22 +630,22 @@ def render_task_query_answer(
     if qt == "today" and not res.filtered_tasks:
         # Compact: only say there are none.
         if mode == "compact":
-            return "Nema taskova za danas."
+            return _t(output_lang, "no_today")
 
         # next_upcoming_on_empty: show 1–3 upcoming only when today is empty.
         if mode == "next_upcoming_on_empty":
             up = _upcoming_tasks(tasks=res.all_tasks, today=today_d, limit=3)
-            lines = ["Nema taskova za danas."]
+            lines = [_t(output_lang, "no_today")]
             if up:
                 lines.append("")
-                lines.append("Sljedeća 3 nadolazeća taska:")
+                lines.append(_t(output_lang, "next_upcoming_3"))
                 for i, t in enumerate(up, start=1):
                     lines.append(_format_task_line(i, t))
             return "\n".join(lines).strip()
 
         # full: still empty for today.
         if mode == "full":
-            return "Nema taskova za danas."
+            return _t(output_lang, "no_today")
 
     header = "TASKS"
     if qt == "all":
@@ -624,7 +685,7 @@ def render_task_query_answer(
         tasks = list(tasks[start:end])
 
     if not tasks:
-        return "Nema taskova."
+        return _t(output_lang, "no_tasks")
 
     lines = [header]
     for i, t in enumerate(tasks, start=1 + shown_from):
@@ -633,11 +694,9 @@ def render_task_query_answer(
     if mode == "full":
         if shown_to < total:
             lines.append("")
-            lines.append(
-                f"Prikazano {shown_to} od {total}; reci 'nastavi' za sljedeću stranicu."
-            )
+            lines.append(_t(output_lang, "shown_more", shown=shown_to, total=total))
         else:
             lines.append("")
-            lines.append(f"Prikazano {shown_to} od {total}.")
+            lines.append(_t(output_lang, "shown_all", shown=shown_to, total=total))
 
     return "\n".join(lines).strip()

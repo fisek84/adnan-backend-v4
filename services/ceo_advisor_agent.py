@@ -5751,6 +5751,7 @@ async def create_ceo_advisor_agent(
                     res,
                     debug=False,
                     render_mode="compact",
+                    output_lang=("en" if english_output else "bs"),
                 )
                 return _final(
                     AgentOutput(
@@ -6612,7 +6613,11 @@ async def create_ceo_advisor_agent(
                 and phase_a_spec.question_type in {"YES_NO", "COUNT", "STATUS"}
             ):
                 stats = compute_task_stats(snapshot_payload)
-                det_txt = render_tasks_phase_a_answer(spec=phase_a_spec, stats=stats)
+                det_txt = render_tasks_phase_a_answer(
+                    spec=phase_a_spec,
+                    stats=stats,
+                    output_lang=("en" if english_output else "bs"),
+                )
                 if isinstance(det_txt, str) and det_txt.strip():
                     text_out = det_txt
 

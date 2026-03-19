@@ -4650,6 +4650,15 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 except Exception:
                     pass
 
+                md_lang = (
+                    payload.metadata
+                    if isinstance(getattr(payload, "metadata", None), dict)
+                    else {}
+                )
+                out_lang = str(
+                    md_lang.get("ui_output_lang") or md_lang.get("output_lang") or ""
+                ).strip()
+
                 phase_a_spec = classify_tasks_phase_a(prompt)
                 if phase_a_spec and phase_a_spec.question_type in {
                     "YES_NO",
@@ -4660,6 +4669,7 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                     txt_out = render_tasks_phase_a_answer(
                         spec=phase_a_spec,
                         stats=stats,
+                        output_lang=out_lang or None,
                     )
 
                     _det_tr_pa = {
@@ -4795,6 +4805,7 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                         res,
                         debug=False,
                         render_mode=render_mode,
+                        output_lang=out_lang or None,
                     )
                     _det_tr2 = {
                         "intent": "ssot_task_query",
