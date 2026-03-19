@@ -209,7 +209,7 @@ def test_voice_exec_text_voice_output_success_when_requested_and_enabled(
         def is_configured(self) -> bool:  # noqa: D401
             return True
 
-        def synthesize(self, *, text: str):
+        def synthesize(self, *, text: str, **_: object):
             assert text == "Hello"
             return b"abc", "audio/mpeg"
 
@@ -253,7 +253,7 @@ def test_voice_exec_text_voice_output_fail_safe_on_tts_error(
         def is_configured(self) -> bool:
             return True
 
-        def synthesize(self, *, text: str):
+        def synthesize(self, *, text: str, **_: object):
             raise RuntimeError("boom")
 
     with (
@@ -297,7 +297,7 @@ def test_voice_exec_text_voice_output_declines_when_audio_too_large(
         def is_configured(self) -> bool:
             return True
 
-        def synthesize(self, *, text: str):
+        def synthesize(self, *, text: str, **_: object):
             return b"ab", "audio/mpeg"
 
     with (

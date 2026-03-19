@@ -6289,6 +6289,39 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 if not isinstance(body_obj, dict):
                     raise RuntimeError("canonical_chat_non_object_body")
 
+                # IMPORTANT: StreamingResponse bypasses the JSON-response middleware
+                # that enforces the "no internal template leak" contract.
+                # Apply the same sanitizer here to prevent CEO intro / memory
+                # boilerplate from ever appearing in stream payloads.
+                try:
+                    from gateway.gateway_server import (  # type: ignore
+                        sanitize_user_visible_answer,
+                    )
+
+                    sanitized = sanitize_user_visible_answer(
+                        body_obj=body_obj,
+                        prompt=str(getattr(payload, "message", "") or ""),
+                        session_id=session_id or "",
+                        conversation_id=conversation_id or "",
+                    )
+                    if isinstance(sanitized, dict):
+                        body_obj = sanitized
+
+                        # Streaming payloads should not include the leaked internal
+                        # template anywhere (even in debug fields) because tests
+                        # and downstream clients may inspect raw NDJSON.
+                        md = body_obj.get("metadata")
+                        if isinstance(md, dict):
+                            dbg = md.get("debug")
+                            if isinstance(dbg, dict) and "internal_system_text" in dbg:
+                                dbg.pop("internal_system_text", None)
+                                if not dbg:
+                                    md.pop("debug", None)
+                                body_obj["metadata"] = md
+                except Exception:
+                    # Fail-safe: if sanitizer import or logic fails, do not block streaming.
+                    pass
+
                 text_out = str(body_obj.get("text") or "")
                 for part in _chunk_text(text_out):
                     if part:
