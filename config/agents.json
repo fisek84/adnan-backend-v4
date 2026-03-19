@@ -25,6 +25,13 @@
       "enabled": true,
       "priority": 120,
       "entrypoint": "services.ceo_advisor_agent:create_ceo_advisor_agent",
+      "metadata": {
+        "voice_profile": {
+          "language": "bs",
+          "gender": "male",
+          "preset_id": "onyx"
+        }
+      },
       "keywords": [
         "plan",
         "strategy",
@@ -73,6 +80,13 @@
       "enabled": true,
       "priority": 90,
       "entrypoint": "services.notion_ops_agent:notion_ops_agent",
+      "metadata": {
+        "voice_profile": {
+          "language": "bs",
+          "gender": "female",
+          "preset_id": "nova"
+        }
+      },
       "keywords": [
         "notion",
         "database",

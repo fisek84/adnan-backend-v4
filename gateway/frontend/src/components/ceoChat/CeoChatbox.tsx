@@ -535,10 +535,81 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
     if (typeof window === 'undefined') return 'bs';
     try {
       const stored = localStorage.getItem('ceo_output_lang');
-      if (stored === 'en' || stored === 'bs') return stored;
+      if (stored === 'en' || stored === 'bs' || stored === 'hr' || stored === 'sr' || stored === 'de') return stored;
     } catch {}
     return 'bs';
   });
+
+  // Backend voice profiles (per-agent) — persisted client-side, resolved server-side.
+  type BackendVoiceProfile = {
+    language?: string;
+    gender?: string;
+    preset_id?: string;
+  };
+
+  type BackendVoicePreset = {
+    preset_id: string;
+    label: string;
+    vendor_voice: string;
+    gender: string;
+    languages: string[];
+  };
+
+  type BackendVoiceProfilesResponse = {
+    provider?: { type?: string; configured?: boolean; enabled?: boolean };
+    catalog?: {
+      supported_languages?: string[];
+      supported_genders?: string[];
+      presets?: BackendVoicePreset[];
+    };
+    agents?: { agent_id: string; name: string }[];
+  };
+
+  const [backendVoiceAgents, setBackendVoiceAgents] = useState<{ agent_id: string; name: string }[]>([]);
+  const [backendVoicePresets, setBackendVoicePresets] = useState<BackendVoicePreset[]>([]);
+
+  const [voiceProfileTargetAgentId, setVoiceProfileTargetAgentId] = useState<string>(() => {
+    if (typeof window === 'undefined') return 'ceo_advisor';
+    try {
+      const stored = localStorage.getItem('ceo_backend_voice_target_agent');
+      if (stored && stored.trim()) return stored;
+    } catch {}
+    return 'ceo_advisor';
+  });
+
+  const [backendVoiceProfiles, setBackendVoiceProfiles] = useState<Record<string, BackendVoiceProfile>>(() => {
+    if (typeof window === 'undefined') return {};
+    try {
+      const raw = localStorage.getItem('ceo_backend_voice_profiles_v1');
+      if (!raw) return {};
+      const obj = JSON.parse(raw);
+      return obj && typeof obj === 'object' ? obj : {};
+    } catch {
+      return {};
+    }
+  });
+
+  useEffect(() => {
+    let cancelled = false;
+    const run = async () => {
+      try {
+        const res = await fetch('/api/voice/profiles', { method: 'GET' });
+        if (!res.ok) return;
+        const data = (await res.json()) as BackendVoiceProfilesResponse;
+        if (cancelled) return;
+        const agents = Array.isArray(data?.agents) ? data.agents : [];
+        const presets = Array.isArray(data?.catalog?.presets) ? data.catalog!.presets! : [];
+        setBackendVoiceAgents(agents);
+        setBackendVoicePresets(presets);
+      } catch {
+        // ignore (UI should still work with stored selections)
+      }
+    };
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   
   // Session ID for Notion ops tracking
   const [sessionId] = useState<string>(() => {
@@ -888,6 +959,14 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       const origin =
         opts?.origin ??
         (ttsEnabled ? "voice" : lastDraftFromVoiceRef.current ? "voice" : "text");
+
+      if (origin === 'voice' && ttsEnabled) {
+        const vp = backendVoiceProfiles && typeof backendVoiceProfiles === 'object' ? backendVoiceProfiles : {};
+        if (Object.keys(vp).length > 0) {
+          req.metadata = req.metadata && typeof req.metadata === 'object' ? req.metadata : {};
+          req.metadata.voice_profiles = vp;
+        }
+      }
       // Once submitted, clear the origin marker.
       lastDraftFromVoiceRef.current = false;
 
@@ -1940,13 +2019,39 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         }}
         outputLanguage={outputLanguage}
         onOutputLanguageChange={(val) => {
-          const norm = val === 'en' ? 'en' : 'bs';
+          const norm = val === 'en' || val === 'bs' || val === 'hr' || val === 'sr' || val === 'de' ? val : 'bs';
           setOutputLanguage(norm);
           try {
             if (typeof window !== 'undefined') {
               localStorage.setItem('ceo_output_lang', norm);
             }
           } catch {}
+        }}
+
+        backendVoiceAgents={backendVoiceAgents}
+        backendVoicePresets={backendVoicePresets}
+        backendVoiceTargetAgentId={voiceProfileTargetAgentId}
+        onBackendVoiceTargetAgentIdChange={(id) => {
+          setVoiceProfileTargetAgentId(id);
+          try {
+            if (typeof window !== 'undefined') {
+              localStorage.setItem('ceo_backend_voice_target_agent', id);
+            }
+          } catch {}
+        }}
+        backendVoiceProfile={backendVoiceProfiles[voiceProfileTargetAgentId] || {}}
+        onBackendVoiceProfileChange={(patch) => {
+          setBackendVoiceProfiles((prev) => {
+            const next = { ...(prev || {}) } as Record<string, BackendVoiceProfile>;
+            const cur = next[voiceProfileTargetAgentId] || {};
+            next[voiceProfileTargetAgentId] = { ...cur, ...(patch || {}) };
+            try {
+              if (typeof window !== 'undefined') {
+                localStorage.setItem('ceo_backend_voice_profiles_v1', JSON.stringify(next));
+              }
+            } catch {}
+            return next;
+          });
         }}
       />
 

@@ -33,6 +33,24 @@ interface HeaderProps {
   // Backend output language (Bosanski / English)
   outputLanguage?: string;
   onOutputLanguageChange?: (value: string) => void;
+
+  // Backend per-agent voice profiles (resolved server-side)
+  backendVoiceAgents?: { agent_id: string; name: string }[];
+  backendVoicePresets?: {
+    preset_id: string;
+    label: string;
+    vendor_voice: string;
+    gender: string;
+    languages: string[];
+  }[];
+  backendVoiceTargetAgentId?: string;
+  onBackendVoiceTargetAgentIdChange?: (agentId: string) => void;
+  backendVoiceProfile?: { language?: string; gender?: string; preset_id?: string };
+  onBackendVoiceProfileChange?: (patch: {
+    language?: string;
+    gender?: string;
+    preset_id?: string;
+  }) => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -65,6 +83,13 @@ export const Header: React.FC<HeaderProps> = ({
   onSpeechPitchChange,
   outputLanguage,
   onOutputLanguageChange,
+
+  backendVoiceAgents,
+  backendVoicePresets,
+  backendVoiceTargetAgentId,
+  onBackendVoiceTargetAgentIdChange,
+  backendVoiceProfile,
+  onBackendVoiceProfileChange,
 }) => {
   const { theme, toggleTheme } = useTheme();
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -77,6 +102,14 @@ export const Header: React.FC<HeaderProps> = ({
   const showFallbackSliders = showFallbackVoiceControls && (
     enableTTS === false || !!(selectedTtsVoiceId && selectedTtsVoiceId.trim())
   );
+
+  const showBackendVoiceProfiles =
+    typeof onBackendVoiceProfileChange === 'function' &&
+    typeof onBackendVoiceTargetAgentIdChange === 'function' &&
+    Array.isArray(backendVoiceAgents) &&
+    backendVoiceAgents.length > 0 &&
+    Array.isArray(backendVoicePresets) &&
+    backendVoicePresets.length > 0;
 
   return (
     <header className="ceoHeader">
@@ -188,6 +221,71 @@ export const Header: React.FC<HeaderProps> = ({
                     </label>
                   )}
 
+                  {showBackendVoiceProfiles && (
+                    <>
+                      <label className="ceoHeaderSettingsRow">
+                        <span>Backend voice agent</span>
+                        <select
+                          className="ceoHeaderSelect"
+                          value={backendVoiceTargetAgentId || ''}
+                          onChange={(e) => onBackendVoiceTargetAgentIdChange(e.target.value)}
+                        >
+                          {backendVoiceAgents!.map((a) => (
+                            <option key={a.agent_id} value={a.agent_id}>
+                              {a.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+
+                      <label className="ceoHeaderSettingsRow">
+                        <span>Backend voice language</span>
+                        <select
+                          className="ceoHeaderSelect"
+                          value={(backendVoiceProfile?.language as any) || ''}
+                          onChange={(e) => onBackendVoiceProfileChange({ language: e.target.value || undefined })}
+                        >
+                          <option value="">Default</option>
+                          <option value="bs">Bosanski</option>
+                          <option value="hr">Hrvatski</option>
+                          <option value="sr">Srpski</option>
+                          <option value="en">English</option>
+                          <option value="de">Deutsch</option>
+                        </select>
+                      </label>
+
+                      <label className="ceoHeaderSettingsRow">
+                        <span>Backend voice gender</span>
+                        <select
+                          className="ceoHeaderSelect"
+                          value={(backendVoiceProfile?.gender as any) || ''}
+                          onChange={(e) => onBackendVoiceProfileChange({ gender: e.target.value || undefined })}
+                        >
+                          <option value="">Default</option>
+                          <option value="male">Male</option>
+                          <option value="female">Female</option>
+                          <option value="neutral">Neutral</option>
+                        </select>
+                      </label>
+
+                      <label className="ceoHeaderSettingsRow">
+                        <span>Backend voice preset</span>
+                        <select
+                          className="ceoHeaderSelect"
+                          value={(backendVoiceProfile?.preset_id as any) || ''}
+                          onChange={(e) => onBackendVoiceProfileChange({ preset_id: e.target.value || undefined })}
+                        >
+                          <option value="">Default</option>
+                          {backendVoicePresets!.map((p) => (
+                            <option key={p.preset_id} value={p.preset_id}>
+                              {p.label} ({p.gender})
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    </>
+                  )}
+
                   {onAutoSpeakChange !== undefined && (
                     <label className="ceoHeaderSettingsRow">
                       <span>Auto-play replies</span>
@@ -222,6 +320,8 @@ export const Header: React.FC<HeaderProps> = ({
                         <option value="en-GB">English (UK)</option>
                         <option value="bs-BA">Bosanski</option>
                         <option value="hr-HR">Hrvatski</option>
+                        <option value="sr-RS">Srpski</option>
+                        <option value="de-DE">Deutsch</option>
                       </select>
                     </label>
                   )}
@@ -234,8 +334,11 @@ export const Header: React.FC<HeaderProps> = ({
                         value={outputLanguage || 'bs'}
                         onChange={(e) => onOutputLanguageChange(e.target.value)}
                       >
-                        <option value="bs">Bosanski / Hrvatski</option>
+                        <option value="bs">Bosanski</option>
+                        <option value="hr">Hrvatski</option>
+                        <option value="sr">Srpski</option>
                         <option value="en">English</option>
+                        <option value="de">Deutsch</option>
                       </select>
                     </label>
                   )}

@@ -17,6 +17,12 @@ from starlette.responses import JSONResponse, Response
 
 from integrations.voice_service import VoiceService
 from services.voice_tts_service import VoiceTTSService, tts_enabled
+from services.voice_profiles import (
+    SUPPORTED_VOICE_LANGS,
+    catalog_for_ui,
+    list_agents_for_voice_ui,
+    resolve_voice_profile,
+)
 
 router = APIRouter(prefix="/voice", tags=["Voice Input"])
 
@@ -129,6 +135,8 @@ _ALLOWED_CHAT_FORWARD_PAYLOAD_KEYS = {
     "context_hint",
     # Metadata (sanitized)
     "metadata",
+    # Output language preference (safe)
+    "output_lang",
 }
 
 
@@ -138,6 +146,9 @@ _ALLOWED_FORWARD_METADATA_KEYS = {
     "initiator",
     "source",
     "channel",
+    # Language preferences (safe)
+    "ui_output_lang",
+    "output_lang",
 }
 
 
@@ -177,6 +188,60 @@ def _sanitize_metadata(md: Any) -> Dict[str, Any]:
     out.setdefault("channel", "voice")
     out.setdefault("initiator", "voice")
     return out
+
+
+def _extract_voice_profiles_from_metadata(md: Any) -> Dict[str, Any]:
+    """Best-effort extraction of per-agent voice profile overrides.
+
+    This is intentionally NOT forwarded to canonical /api/chat.
+    """
+
+    md0 = md if isinstance(md, dict) else {}
+    vp = md0.get("voice_profiles")
+    if not isinstance(vp, dict):
+        return {}
+
+    # Clamp size/shape for production safety.
+    out: Dict[str, Any] = {}
+    for agent_id, prof in list(vp.items())[:32]:
+        if not isinstance(agent_id, str) or not agent_id.strip():
+            continue
+        if not isinstance(prof, dict):
+            continue
+        safe_prof: Dict[str, Any] = {}
+        for k in ("language", "gender", "preset_id", "preset", "model", "format"):
+            if k in prof:
+                safe_prof[k] = prof.get(k)
+        if safe_prof:
+            out[agent_id.strip()] = safe_prof
+
+    # Allow wildcard default via "*".
+    wildcard = vp.get("*")
+    if isinstance(wildcard, dict):
+        safe_wc: Dict[str, Any] = {}
+        for k in ("language", "gender", "preset_id", "preset", "model", "format"):
+            if k in wildcard:
+                safe_wc[k] = wildcard.get(k)
+        if safe_wc:
+            out["*"] = safe_wc
+
+    return out
+
+
+def _resolve_output_lang_from_request(
+    *, output_lang: Optional[str], metadata: Any, context_hint: Any
+) -> Optional[str]:
+    if isinstance(output_lang, str) and output_lang.strip():
+        return output_lang.strip()
+    md = metadata if isinstance(metadata, dict) else {}
+    cand = md.get("ui_output_lang") or md.get("output_lang")
+    if isinstance(cand, str) and cand.strip():
+        return cand.strip()
+    ch = context_hint if isinstance(context_hint, dict) else {}
+    cand2 = ch.get("ui_output_lang") or ch.get("output_lang")
+    if isinstance(cand2, str) and cand2.strip():
+        return cand2.strip()
+    return None
 
 
 def _truthy(value: object) -> bool:
@@ -338,7 +403,12 @@ def _voice_output_max_text_chars() -> int:
 
 
 def _maybe_build_voice_output(
-    *, text: str, want_voice_output: bool
+    *,
+    text: str,
+    want_voice_output: bool,
+    agent_id: Optional[str] = None,
+    output_lang: Optional[str] = None,
+    request_voice_profiles: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
     if not want_voice_output:
         return None
@@ -358,8 +428,19 @@ def _maybe_build_voice_output(
     if not service.is_configured():
         return {"available": False, "reason": "tts_not_configured"}
 
+    prof = resolve_voice_profile(
+        agent_id=agent_id,
+        output_lang=output_lang,
+        request_voice_profiles=request_voice_profiles,
+    )
+
     try:
-        audio_bytes, content_type = service.synthesize(text=text)
+        audio_bytes, content_type = service.synthesize(
+            text=text,
+            voice=prof.vendor_voice,
+            model=prof.model,
+            audio_format=prof.audio_format,
+        )
     except Exception as exc:
         return {"available": False, "reason": "tts_failed", "error": str(exc)}
 
@@ -376,6 +457,16 @@ def _maybe_build_voice_output(
             "audio_url": f"/api/voice/output/{key}",
             "inline_max_audio_bytes": max_audio_bytes,
             "audio_bytes": len(audio_bytes),
+            "voice_profile": {
+                "agent_id": prof.agent_id,
+                "language": prof.language,
+                "gender": prof.gender,
+                "preset_id": prof.preset_id,
+                "voice": prof.vendor_voice,
+                "model": prof.model,
+                "format": prof.audio_format,
+                "source": prof.source,
+            },
         }
 
     return {
@@ -384,6 +475,16 @@ def _maybe_build_voice_output(
         "content_type": content_type,
         "audio_base64": base64.b64encode(audio_bytes).decode("ascii"),
         "audio_bytes": len(audio_bytes),
+        "voice_profile": {
+            "agent_id": prof.agent_id,
+            "language": prof.language,
+            "gender": prof.gender,
+            "preset_id": prof.preset_id,
+            "voice": prof.vendor_voice,
+            "model": prof.model,
+            "format": prof.audio_format,
+            "source": prof.source,
+        },
     }
 
 
@@ -469,6 +570,7 @@ class VoiceText(BaseModel):
     conversation_id: Optional[str] = None
     identity_pack: Dict[str, Any] = Field(default_factory=dict)
     preferred_agent_id: Optional[str] = None
+    output_lang: Optional[str] = None
     context_hint: Any = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
     want_voice_output: Optional[bool] = None
@@ -476,12 +578,20 @@ class VoiceText(BaseModel):
 
 @router.post("/exec_text")
 async def voice_exec_text(payload: VoiceText, request: Request):
+    voice_profiles = _extract_voice_profiles_from_metadata(payload.metadata)
+    out_lang = _resolve_output_lang_from_request(
+        output_lang=payload.output_lang,
+        metadata=payload.metadata,
+        context_hint=payload.context_hint,
+    )
+
     # Voice is a pure input adapter; canonical processing happens in /api/chat.
     extra: Dict[str, Any] = {
         "session_id": payload.session_id,
         "conversation_id": payload.conversation_id,
         "identity_pack": payload.identity_pack,
         "preferred_agent_id": payload.preferred_agent_id,
+        "output_lang": payload.output_lang,
         "context_hint": payload.context_hint,
         "metadata": payload.metadata,
     }
@@ -501,6 +611,9 @@ async def voice_exec_text(payload: VoiceText, request: Request):
         voice_output = _maybe_build_voice_output(
             text=str(content.get("text") or ""),
             want_voice_output=_truthy(payload.want_voice_output),
+            agent_id=str(content.get("agent_id") or "").strip() or None,
+            output_lang=out_lang,
+            request_voice_profiles=voice_profiles,
         )
         if voice_output is not None:
             content["voice_output"] = voice_output
@@ -519,6 +632,7 @@ async def voice_exec(
     context_hint: Optional[str] = Form(None),
     metadata: Optional[str] = Form(None),
     want_voice_output: Optional[str] = Form(None),
+    output_lang: Optional[str] = Form(None),
 ):
     """CEO govori → Whisper → canonical /api/chat.
 
@@ -546,6 +660,13 @@ async def voice_exec(
             field_name="metadata",
         )
 
+        voice_profiles = _extract_voice_profiles_from_metadata(metadata_obj)
+        out_lang = _resolve_output_lang_from_request(
+            output_lang=output_lang,
+            metadata=metadata_obj,
+            context_hint=context_hint_obj,
+        )
+
         # 2. Forward to canonical /api/chat (in-process, no network).
         extra2: Dict[str, Any] = {
             "session_id": session_id,
@@ -554,6 +675,7 @@ async def voice_exec(
             "preferred_agent_id": preferred_agent_id,
             "context_hint": context_hint_obj,
             "metadata": metadata_obj,
+            "output_lang": output_lang,
         }
         resp = await _forward_to_canonical_chat(
             request, message=text, extra_payload=extra2
@@ -571,6 +693,9 @@ async def voice_exec(
             voice_output = _maybe_build_voice_output(
                 text=str(content.get("text") or ""),
                 want_voice_output=_truthy(want_voice_output),
+                agent_id=str(content.get("agent_id") or "").strip() or None,
+                output_lang=out_lang,
+                request_voice_profiles=voice_profiles,
             )
             if voice_output is not None:
                 content["voice_output"] = voice_output
@@ -812,9 +937,13 @@ async def voice_realtime_ws(websocket: WebSocket):
         # This does NOT change canonical /api/chat; it only enriches the WS adapter response.
         if want_voice_output:
             try:
+                voice_profiles = _extract_voice_profiles_from_metadata(metadata)
                 voice_output = _maybe_build_voice_output(
                     text=text_out,
                     want_voice_output=True,
+                    agent_id=str(body_obj.get("agent_id") or "").strip() or None,
+                    output_lang=output_lang,
+                    request_voice_profiles=voice_profiles,
                 )
                 if voice_output is not None:
                     body_obj["voice_output"] = voice_output
@@ -1008,3 +1137,22 @@ async def voice_realtime_ws(websocket: WebSocket):
             await websocket.close(code=1011, reason="internal_error")
         except Exception:
             pass
+
+
+@router.get("/profiles")
+async def voice_profiles_get():
+    """Canonical voice profile catalog for the frontend.
+
+    This endpoint intentionally exposes only stable, UI-safe data.
+    """
+
+    return {
+        "provider": {
+            "type": "openai_tts",
+            "configured": bool(VoiceTTSService().is_configured()),
+            "enabled": bool(tts_enabled()),
+        },
+        "catalog": catalog_for_ui(),
+        "agents": list_agents_for_voice_ui(),
+        "supported_voice_langs": list(SUPPORTED_VOICE_LANGS),
+    }

@@ -37,11 +37,23 @@ class VoiceTTSService:
             return False
         return True
 
-    def synthesize(self, *, text: str) -> Tuple[bytes, str]:
+    def synthesize(
+        self,
+        *,
+        text: str,
+        voice: Optional[str] = None,
+        model: Optional[str] = None,
+        audio_format: Optional[str] = None,
+    ) -> Tuple[bytes, str]:
         """Return (audio_bytes, content_type). Raises on error."""
 
         if not self.is_configured():
             raise RuntimeError("tts_not_configured")
+
+        # Resolve overrides (fail-soft to configured defaults).
+        model0 = (model or "").strip() or self._model
+        voice0 = (voice or "").strip() or self._voice
+        fmt0 = (audio_format or "").strip().lower() or self._format
 
         # Import inside method to avoid import-time side effects.
         audio_bytes: Optional[bytes] = None
@@ -55,17 +67,17 @@ class VoiceTTSService:
             # `format` for compatibility with older/alternate SDK shapes.
             try:
                 resp = client.audio.speech.create(
-                    model=self._model,
-                    voice=self._voice,
+                    model=model0,
+                    voice=voice0,
                     input=text,
-                    response_format=self._format,
+                    response_format=fmt0,
                 )
             except TypeError:
                 resp = client.audio.speech.create(
-                    model=self._model,
-                    voice=self._voice,
+                    model=model0,
+                    voice=voice0,
                     input=text,
-                    format=self._format,
+                    format=fmt0,
                 )
 
             # SDK response shapes vary; handle defensively.
@@ -88,17 +100,17 @@ class VoiceTTSService:
                 openai.api_key = self._api_key
                 try:
                     resp2 = openai.audio.speech.create(
-                        model=self._model,
-                        voice=self._voice,
+                        model=model0,
+                        voice=voice0,
                         input=text,
-                        response_format=self._format,
+                        response_format=fmt0,
                     )
                 except TypeError:
                     resp2 = openai.audio.speech.create(
-                        model=self._model,
-                        voice=self._voice,
+                        model=model0,
+                        voice=voice0,
                         input=text,
-                        format=self._format,
+                        format=fmt0,
                     )
                 if hasattr(resp2, "content"):
                     c2 = getattr(resp2, "content")
@@ -114,9 +126,7 @@ class VoiceTTSService:
         if audio_bytes is None:
             raise RuntimeError("tts_failed: empty_audio")
 
-        content_type = (
-            "audio/mpeg" if self._format == "mp3" else "application/octet-stream"
-        )
+        content_type = "audio/mpeg" if fmt0 == "mp3" else "application/octet-stream"
         return audio_bytes, content_type
 
 

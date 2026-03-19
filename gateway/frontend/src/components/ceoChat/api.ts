@@ -600,10 +600,13 @@ function buildVoiceExecTextPayload(req: CeoCommandRequest): any {
     (req as any)?.metadata?.ui_output_lang ||
     null;
 
+  const voiceProfiles = (req as any)?.metadata?.voice_profiles ?? null;
+
   return {
     text,
     preferred_agent_id: preferred,
     session_id,
+    output_lang: uiOutputLang,
     context_hint: (req as any)?.context_hint ?? null,
     metadata: {
       initiator,
@@ -612,6 +615,7 @@ function buildVoiceExecTextPayload(req: CeoCommandRequest): any {
       context_hint: (req as any)?.context_hint ?? null,
       smart_context: (req as any)?.smart_context ?? null,
       ui_output_lang: uiOutputLang,
+      ...(voiceProfiles ? { voice_profiles: voiceProfiles } : {}),
     },
     // Explicitly request additive backend audio output if enabled server-side.
     want_voice_output: true,
