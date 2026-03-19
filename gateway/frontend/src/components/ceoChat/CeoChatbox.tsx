@@ -846,7 +846,12 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         },
       };
 
-      const origin = opts?.origin ?? (lastDraftFromVoiceRef.current ? "voice" : "text");
+      // Backend voice_output is only available when routing through the voice adapter.
+      // Today we do that for dictation (origin=voice). When the user explicitly enables
+      // TTS, route through the voice adapter as well so the UX can prefer backend audio.
+      const origin =
+        opts?.origin ??
+        (ttsEnabled ? "voice" : lastDraftFromVoiceRef.current ? "voice" : "text");
       // Once submitted, clear the origin marker.
       lastDraftFromVoiceRef.current = false;
 
@@ -876,13 +881,24 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         // Never fallback on abort.
         if (!isAbortError(e) && (resp as any)?.stream) {
           if (origin === "voice") {
-            const fallback = await api.sendVoiceExecText(req, controller.signal, {
-              forceHttp: true,
-            });
-            await flushResponseToUi(placeholder.id, fallback);
-            setBusy("idle");
-            setLastError(null);
-            return;
+            try {
+              const fallback = await api.sendVoiceExecText(req, controller.signal, {
+                forceHttp: true,
+              });
+              await flushResponseToUi(placeholder.id, fallback);
+              setBusy("idle");
+              setLastError(null);
+              return;
+            } catch {
+              // Last-resort safety: if voice endpoints are unavailable, fall back to canonical chat.
+              const fallbackChat = await api.sendCommand(req, controller.signal, undefined, {
+                forceNonStreaming: true,
+              });
+              await flushResponseToUi(placeholder.id, fallbackChat);
+              setBusy("idle");
+              setLastError(null);
+              return;
+            }
           }
 
           const fallback = await api.sendCommand(req, controller.signal, undefined, {
