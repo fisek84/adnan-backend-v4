@@ -58,9 +58,7 @@ def _store_voice_output_bytes(*, audio_bytes: bytes, content_type: str) -> str:
     with _VOICE_OUTPUT_STORE_LOCK:
         if ttl:
             expired = [
-                k
-                for k, (ts, _b, _ct) in _VOICE_OUTPUT_STORE.items()
-                if now - ts > ttl
+                k for k, (ts, _b, _ct) in _VOICE_OUTPUT_STORE.items() if now - ts > ttl
             ]
             for k in expired:
                 _VOICE_OUTPUT_STORE.pop(k, None)
@@ -367,7 +365,9 @@ def _maybe_build_voice_output(
 
     max_audio_bytes = _voice_output_max_audio_bytes()
     if max_audio_bytes and len(audio_bytes) > max_audio_bytes:
-        key = _store_voice_output_bytes(audio_bytes=audio_bytes, content_type=content_type)
+        key = _store_voice_output_bytes(
+            audio_bytes=audio_bytes, content_type=content_type
+        )
         return {
             "available": True,
             "reason": "delivered_via_url",
