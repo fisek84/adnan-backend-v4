@@ -170,7 +170,7 @@ export const Header: React.FC<HeaderProps> = ({
 
                   {onEnableTTSChange !== undefined && (
                     <label className="ceoHeaderSettingsRow">
-                      <span>Text-to-Speech</span>
+                      <span>Backend voice output</span>
                       <input
                         type="checkbox"
                         checked={enableTTS !== false}
@@ -181,7 +181,7 @@ export const Header: React.FC<HeaderProps> = ({
 
                   {onAutoSpeakChange !== undefined && (
                     <label className="ceoHeaderSettingsRow">
-                      <span>Auto-read replies</span>
+                      <span>Auto-play replies</span>
                       <input
                         type="checkbox"
                         checked={autoSpeak === true}
@@ -192,7 +192,7 @@ export const Header: React.FC<HeaderProps> = ({
 
                   {onAutoSendOnVoiceFinalChange !== undefined && (
                     <label className="ceoHeaderSettingsRow">
-                      <span>Auto-send on voice</span>
+                      <span>Auto-send after pause (voice)</span>
                       <input
                         type="checkbox"
                         checked={autoSendOnVoiceFinal === true}
@@ -233,7 +233,7 @@ export const Header: React.FC<HeaderProps> = ({
 
                   {ttsVoices && ttsVoices.length > 0 && onTtsVoiceChange && (
                     <label className="ceoHeaderSettingsRow">
-                      <span>Glas / Voice</span>
+                      <span>Fallback voice (browser)</span>
                       <select
                         className="ceoHeaderSelect"
                         value={selectedTtsVoiceId || ''}

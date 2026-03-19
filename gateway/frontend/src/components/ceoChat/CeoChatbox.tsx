@@ -573,13 +573,47 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
   // Track created ObjectURLs so we can revoke them (avoid leaks).
   const audioUrlByMsgIdRef = useRef<Map<string, string>>(new Map());
 
+  // Track currently playing backend audio (autoplay / stop support).
+  const backendAudioRef = useRef<HTMLAudioElement | null>(null);
+
+  const stopBackendAudio = useCallback(() => {
+    const a = backendAudioRef.current;
+    if (!a) return;
+    try {
+      a.pause();
+    } catch {
+      // ignore
+    }
+    backendAudioRef.current = null;
+  }, []);
+
+  const tryAutoplayBackendAudioUrl = useCallback(
+    async (url: string): Promise<boolean> => {
+      if (!url) return false;
+      stopBackendAudio();
+      try {
+        const a = new Audio(url);
+        a.preload = "auto";
+        backendAudioRef.current = a;
+        await a.play();
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [stopBackendAudio]
+  );
+
   useEffect(() => {
     return () => {
       // On unmount, revoke all ObjectURLs we created.
       for (const url of audioUrlByMsgIdRef.current.values()) safeRevokeObjectUrl(url);
       audioUrlByMsgIdRef.current.clear();
+
+      // Stop any in-flight backend audio playback.
+      stopBackendAudio();
     };
-  }, []);
+  }, [stopBackendAudio]);
 
   const resizeComposer = useCallback(() => {
     const el = composerRef.current;
@@ -681,8 +715,10 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
     abortRef.current = null;
     previewAbortRef.current?.abort();
     previewAbortRef.current = null;
+    cancelSpeech();
+    stopBackendAudio();
     setBusy("idle");
-  }, []);
+  }, [cancelSpeech, stopBackendAudio]);
 
   // --- URL resolver (resolve a specific API path against a configurable base URL) ---
   // IMPORTANT: For endpoints like /api/execute/preview we must NOT reuse the base URL path
@@ -1014,6 +1050,9 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
   const [listening, setListening] = useState(false);
   const recognitionRef = useRef<any>(null);
 
+  // Natural auto-send: capture final text during recognition and submit on `onend`.
+  const pendingVoiceFinalRef = useRef<string>("");
+
   useEffect(() => {
     if (!voiceEnabled) return;
 
@@ -1048,9 +1087,9 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       }
 
       // Auto-send behaves like ChatGPT voice: on final result,
-      // if the setting is enabled and there is some text, submit it.
+      // if the setting is enabled and there is some text, submit it after speech ends.
       if (autoSendOnVoiceFinalEnabled && finalText.trim()) {
-        void sendChatFromText(finalText, { origin: "voice" });
+        pendingVoiceFinalRef.current = finalText.trim();
       }
     };
 
@@ -1060,6 +1099,14 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
 
     rec.onend = () => {
       setListening(false);
+
+      if (autoSendOnVoiceFinalEnabled) {
+        const txt = (pendingVoiceFinalRef.current || "").trim();
+        pendingVoiceFinalRef.current = "";
+        if (txt) {
+          void sendChatFromText(txt, { origin: "voice" });
+        }
+      }
     };
 
     recognitionRef.current = rec;
@@ -1536,10 +1583,15 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
 
           attachBackendAudioIfPresent(placeholderId, respAfter);
           attachVoiceDebugIfPresent(placeholderId, respAfter);
-          
-          // Auto-speak if enabled
+
+          // Unified voice output: prefer backend audio. Browser speechSynthesis is fallback-only.
           if (ttsEnabled && (autoSpeakEnabled || autoSendOnVoiceFinalEnabled) && acc.trim()) {
-            speak(acc.trim());
+            const url = audioUrlByMsgIdRef.current.get(placeholderId);
+            if (url) {
+              void tryAutoplayBackendAudioUrl(url);
+            } else if (ttsSupported) {
+              speak(acc.trim());
+            }
           }
 
           // Governance/proposals parity: evaluate proposals from assistant.final payload.
@@ -1588,9 +1640,14 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       attachBackendAudioIfPresent(placeholderId, resp);
       attachVoiceDebugIfPresent(placeholderId, resp);
 
-      // Auto-speak if enabled
+      // Unified voice output: prefer backend audio. Browser speechSynthesis is fallback-only.
       if (ttsEnabled && (autoSpeakEnabled || autoSendOnVoiceFinalEnabled) && sysText) {
-        speak(sysText);
+        const url = audioUrlByMsgIdRef.current.get(placeholderId);
+        if (url) {
+          void tryAutoplayBackendAudioUrl(url);
+        } else if (ttsSupported) {
+          speak(sysText);
+        }
       }
 
       const proposalsRaw = _extractProposedCommands(resp as any);
@@ -1628,8 +1685,10 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       autoSpeakEnabled,
       autoSendOnVoiceFinalEnabled,
       speak,
+      ttsSupported,
       attachBackendAudioIfPresent,
       attachVoiceDebugIfPresent,
+      tryAutoplayBackendAudioUrl,
     ]
   );
 
