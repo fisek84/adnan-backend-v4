@@ -51,12 +51,22 @@ class VoiceTTSService:
             from openai import OpenAI  # type: ignore
 
             client = OpenAI(api_key=self._api_key)
-            resp = client.audio.speech.create(
-                model=self._model,
-                voice=self._voice,
-                input=text,
-                format=self._format,
-            )
+            # OpenAI SDK uses `response_format` for TTS. Keep a fallback to
+            # `format` for compatibility with older/alternate SDK shapes.
+            try:
+                resp = client.audio.speech.create(
+                    model=self._model,
+                    voice=self._voice,
+                    input=text,
+                    response_format=self._format,
+                )
+            except TypeError:
+                resp = client.audio.speech.create(
+                    model=self._model,
+                    voice=self._voice,
+                    input=text,
+                    format=self._format,
+                )
 
             # SDK response shapes vary; handle defensively.
             if hasattr(resp, "content"):
@@ -76,12 +86,20 @@ class VoiceTTSService:
                 import openai  # type: ignore
 
                 openai.api_key = self._api_key
-                resp2 = openai.audio.speech.create(
-                    model=self._model,
-                    voice=self._voice,
-                    input=text,
-                    format=self._format,
-                )
+                try:
+                    resp2 = openai.audio.speech.create(
+                        model=self._model,
+                        voice=self._voice,
+                        input=text,
+                        response_format=self._format,
+                    )
+                except TypeError:
+                    resp2 = openai.audio.speech.create(
+                        model=self._model,
+                        voice=self._voice,
+                        input=text,
+                        format=self._format,
+                    )
                 if hasattr(resp2, "content"):
                     c2 = getattr(resp2, "content")
                     if isinstance(c2, (bytes, bytearray)):
