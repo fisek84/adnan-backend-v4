@@ -1121,6 +1121,37 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
     [updateItem]
   );
 
+  const deriveVoiceDebugPath = useCallback((resp: NormalizedConsoleResponse) => {
+    const ep = (resp as any)?.source_endpoint;
+    const s = typeof ep === "string" ? ep : "";
+    if (!s) return "chat" as const;
+    if (s.startsWith("ws:") || s.startsWith("wss:") || s.includes("/voice/realtime/ws")) return "voice_ws" as const;
+    if (s.includes("/voice/exec_text")) return "voice_http" as const;
+    return "chat" as const;
+  }, []);
+
+  const attachVoiceDebugIfPresent = useCallback(
+    (messageId: string, resp: NormalizedConsoleResponse) => {
+      const vo = extractVoiceOutputFromResponse(resp);
+      const path = deriveVoiceDebugPath(resp);
+      const reason = vo && typeof (vo as any).reason === "string" ? String((vo as any).reason) : undefined;
+      const backendAudio = Boolean(vo && (vo as any).available === true);
+      const hasAudioUrl = audioUrlByMsgIdRef.current.has(messageId);
+      const sourceEndpoint = typeof (resp as any)?.source_endpoint === "string" ? String((resp as any).source_endpoint) : undefined;
+
+      updateItem(messageId, {
+        voiceDebug: {
+          backend_audio: backendAudio,
+          audioUrl: hasAudioUrl,
+          voice_output_reason: reason,
+          path,
+          source_endpoint: sourceEndpoint,
+        },
+      } as any);
+    },
+    [deriveVoiceDebugPath, updateItem]
+  );
+
   // ------------------------------
   // APPROVAL FLOW HELPERS
   // ------------------------------
@@ -1480,6 +1511,9 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         setBusy("streaming");
         updateItem(placeholderId, { content: "", status: "streaming" });
 
+        // Debug visibility: record which transport we are using as early as possible.
+        attachVoiceDebugIfPresent(placeholderId, resp);
+
         let acc = "";
         try {
           for await (const chunk of (resp as any).stream) {
@@ -1501,6 +1535,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
           updateItem(placeholderId, { content: acc.trim(), status: "final" });
 
           attachBackendAudioIfPresent(placeholderId, respAfter);
+          attachVoiceDebugIfPresent(placeholderId, respAfter);
           
           // Auto-speak if enabled
           if (ttsEnabled && (autoSpeakEnabled || autoSendOnVoiceFinalEnabled) && acc.trim()) {
@@ -1551,6 +1586,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       updateItem(placeholderId, { content: sysText, status: "final" });
 
       attachBackendAudioIfPresent(placeholderId, resp);
+      attachVoiceDebugIfPresent(placeholderId, resp);
 
       // Auto-speak if enabled
       if (ttsEnabled && (autoSpeakEnabled || autoSendOnVoiceFinalEnabled) && sysText) {
@@ -1593,6 +1629,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       autoSendOnVoiceFinalEnabled,
       speak,
       attachBackendAudioIfPresent,
+      attachVoiceDebugIfPresent,
     ]
   );
 
@@ -1895,6 +1932,11 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
                     <div className="ceoMeta">
                       <span className={dotCls} />
                       <span>{formatTime(it.createdAt)}</span>
+                      {it.role === "system" && (it as any).voiceDebug ? (
+                        <span className="ceoMetaDebug">
+                          backend_audio={String(Boolean((it as any).voiceDebug.backend_audio))} audioUrl={String(Boolean((it as any).voiceDebug.audioUrl))} reason={String(((it as any).voiceDebug.voice_output_reason ?? "") as any)} path={String(((it as any).voiceDebug.path ?? "") as any)}
+                        </span>
+                      ) : null}
                       {ttsEnabled &&
                         ttsSupported &&
                         it.role === "system" &&

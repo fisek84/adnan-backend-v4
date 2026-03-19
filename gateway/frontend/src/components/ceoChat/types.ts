@@ -5,6 +5,16 @@ export type BusyState = "idle" | "submitting" | "streaming" | "error";
 export type ChatStatus = "delivered" | "streaming" | "final" | "error";
 export type ChatRole = "ceo" | "system";
 
+export type VoiceDebugPath = "chat" | "voice_ws" | "voice_http";
+
+export type VoiceDebugInfo = {
+  backend_audio: boolean;
+  audioUrl: boolean;
+  voice_output_reason?: string;
+  path: VoiceDebugPath;
+  source_endpoint?: string;
+};
+
 export type ChatMessageItem = {
   id: string;
   kind: "message";
@@ -16,6 +26,9 @@ export type ChatMessageItem = {
   // Optional: backend-provided TTS audio for this message (additive capability).
   audioUrl?: string;
   audioContentType?: string;
+
+  // Temporary UI debug visibility (production-safe; no behavior changes)
+  voiceDebug?: VoiceDebugInfo;
 
   // vezivanje request/response (korisno za debug + retry)
   requestId?: string;
