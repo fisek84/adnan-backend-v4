@@ -29,8 +29,13 @@ def _tail4(secret: str) -> str:
     return s[-4:] if len(s) >= 4 else s
 
 
-# Učitamo .env konfiguraciju
-if os.getenv("RENDER") != "true":
+# Učitamo .env konfiguraciju (lokalni dev).
+# U test modu NE smijemo učitati .env jer bi override=True pregazio monkeypatch env.
+_is_pytest = (os.getenv("TESTING") or "").strip() == "1" or (
+    "PYTEST_CURRENT_TEST" in os.environ
+)
+
+if os.getenv("RENDER") != "true" and not _is_pytest:
     load_dotenv(override=True)
     logger.info(
         "dotenv_loaded override=true notion_api_key_tail=%s",

@@ -833,7 +833,11 @@ try:
 except Exception:  # noqa: BLE001
     load_dotenv = None  # type: ignore
 
-if os.getenv("RENDER") != "true" and load_dotenv:
+_is_pytest = (os.getenv("TESTING") or "").strip() == "1" or (
+    "PYTEST_CURRENT_TEST" in os.environ
+)
+
+if os.getenv("RENDER") != "true" and load_dotenv and not _is_pytest:
     _env_path = Path(__file__).resolve().parents[1] / ".env"  # repo root .env
     load_dotenv(dotenv_path=_env_path, override=True)
 

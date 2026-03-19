@@ -637,6 +637,7 @@ async def voice_realtime_ws(websocket: WebSocket):
         text: str,
         preferred_agent_id: Optional[str],
         output_lang: Optional[str],
+        want_voice_output: bool,
         metadata: Dict[str, Any],
         context_hint: Any,
         identity_pack: Dict[str, Any],
@@ -716,6 +717,20 @@ async def voice_realtime_ws(websocket: WebSocket):
         )
 
         text_out = str(body_obj.get("text") or "")
+
+        # Additive: include backend-generated voice_output only when explicitly requested.
+        # This does NOT change canonical /api/chat; it only enriches the WS adapter response.
+        if want_voice_output:
+            try:
+                voice_output = _maybe_build_voice_output(
+                    text=text_out,
+                    want_voice_output=True,
+                )
+                if voice_output is not None:
+                    body_obj["voice_output"] = voice_output
+            except Exception:
+                # Fail-soft: text response should still complete.
+                pass
         for part in _chunk_text(text_out):
             if active_cancelled:
                 return
@@ -750,6 +765,7 @@ async def voice_realtime_ws(websocket: WebSocket):
         text: str,
         preferred_agent_id: Optional[str],
         output_lang: Optional[str],
+        want_voice_output: bool,
         metadata: Dict[str, Any],
         context_hint: Any,
         identity_pack: Dict[str, Any],
@@ -760,6 +776,7 @@ async def voice_realtime_ws(websocket: WebSocket):
                     text=text,
                     preferred_agent_id=preferred_agent_id,
                     output_lang=output_lang,
+                    want_voice_output=want_voice_output,
                     metadata=metadata,
                     context_hint=context_hint,
                     identity_pack=identity_pack,
@@ -861,6 +878,7 @@ async def voice_realtime_ws(websocket: WebSocket):
                     str(data.get("preferred_agent_id") or "").strip() or None
                 )
                 output_lang = str(data.get("output_lang") or "").strip() or None
+                want_voice_output = _truthy(data.get("want_voice_output"))
                 context_hint = data.get("context_hint")
                 identity_pack = (
                     data.get("identity_pack")
@@ -880,6 +898,7 @@ async def voice_realtime_ws(websocket: WebSocket):
                         text=text_in,
                         preferred_agent_id=preferred_agent_id,
                         output_lang=output_lang,
+                        want_voice_output=want_voice_output,
                         metadata=metadata,
                         context_hint=context_hint,
                         identity_pack=identity_pack,

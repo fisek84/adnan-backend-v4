@@ -350,6 +350,8 @@ function streamTextFromVoiceRealtimeWebSocket(opts: {
           context_hint: opts.contextHint ?? undefined,
           identity_pack: opts.identityPack ?? undefined,
           metadata: opts.metadata ?? undefined,
+          // Ask server to include additive voice_output when VOICE_TTS_ENABLED is on.
+          want_voice_output: true,
         },
       })
     );
