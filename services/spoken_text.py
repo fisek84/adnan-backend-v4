@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from urllib.parse import urlsplit
 from dataclasses import dataclass
 from typing import Dict, Optional
 
@@ -32,6 +33,8 @@ def _lang_group(lang: Optional[str]) -> str:
 def _tokens_for_lang(lang_group: str) -> Dict[str, str]:
     if lang_group == "en":
         return {
+            "link": "link",
+            "email": "email",
             "dot": "dot",
             "slash": "slash",
             "dash": "dash",
@@ -49,6 +52,8 @@ def _tokens_for_lang(lang_group: str) -> Dict[str, str]:
         }
     if lang_group == "de":
         return {
+            "link": "Link",
+            "email": "E-Mail",
             "dot": "Punkt",
             "slash": "Schrägstrich",
             "dash": "Bindestrich",
@@ -67,6 +72,8 @@ def _tokens_for_lang(lang_group: str) -> Dict[str, str]:
 
     # bhs
     return {
+        "link": "link",
+        "email": "email",
         "dot": "tačka",
         "slash": "kosa crta",
         "dash": "crta",
@@ -86,6 +93,10 @@ def _tokens_for_lang(lang_group: str) -> Dict[str, str]:
 
 _URL_RE = re.compile(r"\bhttps?://[^\s]+", re.IGNORECASE)
 _EMAIL_RE = re.compile(r"\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b")
+
+_STRUCTURED_TOKEN_RE = re.compile(r"\b[0-9A-Za-z]+(?:[\/#@:%+_=\-][0-9A-Za-z]+)+\b")
+
+_DECIMAL_RE = re.compile(r"\b(\d{1,6})([\.,])(\d{1,2})\b")
 
 
 def _strip_markdown(text: str, *, tokens: Dict[str, str]) -> tuple[str, bool]:
@@ -143,6 +154,94 @@ def _verbalize_structured(s: str, *, tokens: Dict[str, str]) -> str:
     return re.sub(r"\s+", " ", "".join(out)).strip()
 
 
+def _simplify_url_for_speech(
+    url: str, *, tokens: Dict[str, str], max_chars: int
+) -> Optional[str]:
+    """Return a shorter speakable form for long URLs, or None to keep full URL.
+
+    This is intentionally conservative: we only shorten when the URL is long
+    enough that spelling it out degrades UX.
+    """
+
+    u = (url or "").strip()
+    if not u:
+        return None
+
+    # Heuristic: for small caps, be more aggressive.
+    if len(u) < 60 and max_chars >= 200:
+        return None
+
+    try:
+        parts = urlsplit(u)
+        host = (parts.netloc or "").strip()
+        if not host:
+            return None
+
+        # Strip credentials/ports if present.
+        if "@" in host:
+            host = host.split("@", 1)[-1]
+        if ":" in host:
+            host = host.split(":", 1)[0]
+
+        if host.lower().startswith("www."):
+            host = host[4:]
+
+        if not host:
+            return None
+
+        spoken_host = _verbalize_structured(host, tokens=tokens)
+        return f"{tokens['link']} {spoken_host}".strip()
+    except Exception:
+        return None
+
+
+def _simplify_email_for_speech(email: str, *, tokens: Dict[str, str]) -> Optional[str]:
+    e = (email or "").strip()
+    if not e:
+        return None
+
+    # Keep normal emails readable; shorten only when very long.
+    if len(e) <= 40:
+        return None
+
+    try:
+        if "@" not in e:
+            return None
+        domain = e.split("@", 1)[-1].strip()
+        if not domain:
+            return None
+        spoken_domain = _verbalize_structured(domain, tokens=tokens)
+        return f"{tokens['email']} {spoken_domain}".strip()
+    except Exception:
+        return None
+
+
+def _normalize_decimals(text: str, *, lang_group: str) -> tuple[str, bool]:
+    """Normalize simple decimals in a safe way.
+
+    Only matches decimals with 1-2 fractional digits (e.g. 12.5, 3,25).
+    Avoids thousands separators like 1,234 or 1.234.
+    """
+
+    t = text or ""
+    changed = False
+
+    if lang_group == "en":
+        sep = "point"
+    elif lang_group == "de":
+        sep = "Komma"
+    else:
+        sep = "zarez"
+
+    def _repl(m: re.Match[str]) -> str:
+        nonlocal changed
+        changed = True
+        return f"{m.group(1)} {sep} {m.group(3)}"
+
+    t2 = _DECIMAL_RE.sub(_repl, t)
+    return t2, t2 != t or changed
+
+
 def _normalize_dates_times(text: str, *, lang_group: str) -> tuple[str, bool]:
     t = text or ""
     changed = False
@@ -195,7 +294,11 @@ def _normalize_percent_and_currency(text: str, *, lang_group: str) -> tuple[str,
         else "posto"
     )
 
-    t2 = re.sub(r"(\d)\s*%\b", rf"\1 {percent_word}", t)
+    t2 = re.sub(
+        r"(\d+(?:[\.,]\d{1,2})?)\s*%(?=\s|$)",
+        rf"\1 {percent_word}",
+        t,
+    )
     if t2 != t:
         changed = True
         t = t2
@@ -278,10 +381,22 @@ def build_spoken_text(
 
         # Structured strings (URL/email) verbalization.
         def _repl_url(m: re.Match[str]) -> str:
-            return _verbalize_structured(m.group(0), tokens=tokens)
+            raw = m.group(0)
+            short = _simplify_url_for_speech(raw, tokens=tokens, max_chars=max_chars)
+            return (
+                short
+                if isinstance(short, str) and short.strip()
+                else _verbalize_structured(raw, tokens=tokens)
+            )
 
         def _repl_email(m: re.Match[str]) -> str:
-            return _verbalize_structured(m.group(0), tokens=tokens)
+            raw = m.group(0)
+            short = _simplify_email_for_speech(raw, tokens=tokens)
+            return (
+                short
+                if isinstance(short, str) and short.strip()
+                else _verbalize_structured(raw, tokens=tokens)
+            )
 
         t2 = _URL_RE.sub(_repl_url, spoken)
         if t2 != spoken:
@@ -293,6 +408,23 @@ def build_spoken_text(
             normalized = True
             spoken = t2
 
+        # Speakable structured tokens outside URLs/emails (ticket ids, short paths, etc.).
+        def _repl_structured(m: re.Match[str]) -> str:
+            raw = m.group(0)
+            if "://" in raw:
+                return raw
+            # Avoid turning regular hyphenated words into "dash" speech.
+            has_digit = any(ch.isdigit() for ch in raw)
+            has_nondash_symbol = any(ch in "/#@:%+_=" for ch in raw)
+            if not (has_digit or has_nondash_symbol):
+                return raw
+            return _verbalize_structured(raw, tokens=tokens)
+
+        t2 = _STRUCTURED_TOKEN_RE.sub(_repl_structured, spoken)
+        if t2 != spoken:
+            normalized = True
+            spoken = t2
+
         t2, ch1 = _normalize_dates_times(spoken, lang_group=lang_group)
         if ch1:
             normalized = True
@@ -300,6 +432,11 @@ def build_spoken_text(
 
         t2, ch2 = _normalize_percent_and_currency(spoken, lang_group=lang_group)
         if ch2:
+            normalized = True
+            spoken = t2
+
+        t2, ch2b = _normalize_decimals(spoken, lang_group=lang_group)
+        if ch2b:
             normalized = True
             spoken = t2
 

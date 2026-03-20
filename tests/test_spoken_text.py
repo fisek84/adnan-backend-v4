@@ -1,0 +1,34 @@
+from __future__ import annotations
+
+from services.spoken_text import build_spoken_text
+
+
+def test_spoken_text_shortens_long_url_to_domain_only() -> None:
+    t = (
+        "Pogledaj ovo: https://example.com/very/long/path/with/many/segments?x=1&y=2 "
+        "i reci mi sta mislis."
+    )
+    out = build_spoken_text(text=t, output_lang="bs", max_chars=2000)
+    # Should avoid spelling out the whole URL for speech.
+    assert "https://" not in out.spoken_text
+    assert "link" in out.spoken_text
+    assert "example" in out.spoken_text
+    assert "tačka" in out.spoken_text
+
+
+def test_spoken_text_normalizes_decimal_percent_bhs() -> None:
+    t = "Rast je 12.5% i 3,2% danas."
+    out = build_spoken_text(text=t, output_lang="bs", max_chars=2000)
+    s = out.spoken_text
+    assert "12 zarez 5 posto" in s
+    assert "3 zarez 2 posto" in s
+
+
+def test_spoken_text_verbalizes_structured_tokens() -> None:
+    t = "Ticket#1234 i putanja A/B-12 su bitni."
+    out = build_spoken_text(text=t, output_lang="bs", max_chars=2000)
+    s = out.spoken_text
+    # # / - should be verbalized inside structured tokens.
+    assert "taraba" in s
+    assert "kosa crta" in s
+    assert "crta" in s
