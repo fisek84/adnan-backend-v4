@@ -187,7 +187,13 @@ def _normalize_percent_and_currency(text: str, *, lang_group: str) -> tuple[str,
     t = text or ""
     changed = False
 
-    percent_word = "percent" if lang_group == "en" else "Prozent" if lang_group == "de" else "posto"
+    percent_word = (
+        "percent"
+        if lang_group == "en"
+        else "Prozent"
+        if lang_group == "de"
+        else "posto"
+    )
 
     t2 = re.sub(r"(\d)\s*%\b", rf"\1 {percent_word}", t)
     if t2 != t:
@@ -196,11 +202,29 @@ def _normalize_percent_and_currency(text: str, *, lang_group: str) -> tuple[str,
 
     # Currency symbols (minimal and neutral forms).
     if lang_group == "en":
-        repl = {"€": " euros ", "$": " dollars ", "KM": " marks ", "EUR": " euros ", "USD": " dollars "}
+        repl = {
+            "€": " euros ",
+            "$": " dollars ",
+            "KM": " marks ",
+            "EUR": " euros ",
+            "USD": " dollars ",
+        }
     elif lang_group == "de":
-        repl = {"€": " Euro ", "$": " Dollar ", "KM": " Mark ", "EUR": " Euro ", "USD": " Dollar "}
+        repl = {
+            "€": " Euro ",
+            "$": " Dollar ",
+            "KM": " Mark ",
+            "EUR": " Euro ",
+            "USD": " Dollar ",
+        }
     else:
-        repl = {"€": " euro ", "$": " dolar ", "KM": " marka ", "EUR": " euro ", "USD": " dolar "}
+        repl = {
+            "€": " euro ",
+            "$": " dolar ",
+            "KM": " marka ",
+            "EUR": " euro ",
+            "USD": " dolar ",
+        }
 
     for k, v in repl.items():
         if k in t:
