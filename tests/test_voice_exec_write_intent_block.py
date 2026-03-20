@@ -210,7 +210,7 @@ def test_voice_exec_text_voice_output_success_when_requested_and_enabled(
             return True
 
         def synthesize(self, *, text: str, **_: object):
-            assert text == "Hello"
+            assert text.rstrip(".") == "Hello"
             return b"abc", "audio/mpeg"
 
     with (
@@ -331,3 +331,59 @@ def test_voice_exec_text_voice_output_declines_when_audio_too_large(
     assert audio_resp.status_code == 200
     assert audio_resp.headers.get("content-type", "").startswith("audio/mpeg")
     assert audio_resp.content == b"ab"
+
+
+def test_voice_exec_text_voice_output_shortens_spoken_text_when_tts_text_limit_hit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_required_gateway_env(monkeypatch)
+
+    # Force a tiny TTS input cap so we exercise spoken-text shortening.
+    monkeypatch.setenv("VOICE_TTS_ENABLED", "true")
+    monkeypatch.setenv("VOICE_TTS_MAX_TEXT_CHARS", "60")
+
+    long_answer = (
+        "Ovo je jako dug odgovor sa puno detalja, brojevima 12345 i linkom "
+        "https://example.com/path?x=1&y=2. "
+        "Treba da se skrati za govor, ali da backend TTS ostane primarni."
+    )
+
+    agent_mock = AsyncMock(
+        return_value=AgentOutput(
+            text=long_answer,
+            proposed_commands=[],
+            agent_id="ceo_advisor",
+            read_only=True,
+            trace={"exit_reason": "stub.voice.tts.spoken_shortening"},
+        )
+    )
+
+    class _StubTTS:
+        def is_configured(self) -> bool:
+            return True
+
+        def synthesize(self, *, text: str, **_: object):
+            # Must be <= cap + small deterministic suffix.
+            assert len(text) <= 200
+            assert "Detalji" in text or "Details" in text or "Details stehen" in text
+            return b"abc", "audio/mpeg"
+
+    with (
+        patch("routers.chat_router.create_ceo_advisor_agent", new=agent_mock),
+        patch("routers.voice_router.VoiceTTSService", new=_StubTTS),
+    ):
+        with TestClient(app) as client:
+            resp = client.post(
+                "/api/voice/exec_text",
+                json={"text": "Pozdrav", "want_voice_output": True},
+            )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    vo = body.get("voice_output")
+    assert isinstance(vo, dict)
+    assert vo.get("available") is True
+    st = vo.get("spoken_text")
+    assert isinstance(st, dict)
+    assert st.get("shortened") is True
+    assert st.get("max_text_chars") == 60

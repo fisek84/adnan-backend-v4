@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from starlette.responses import JSONResponse, Response
 
 from integrations.voice_service import VoiceService
+from services.spoken_text import build_spoken_text
 from services.voice_tts_service import VoiceTTSService, tts_enabled
 from services.voice_profiles import (
     SUPPORTED_VOICE_LANGS,
@@ -417,12 +418,12 @@ def _maybe_build_voice_output(
         return {"available": False, "reason": "tts_disabled"}
 
     max_text_chars = _voice_output_max_text_chars()
-    if max_text_chars and len(text) > max_text_chars:
-        return {
-            "available": False,
-            "reason": "text_too_long",
-            "max_text_chars": max_text_chars,
-        }
+    spoken = build_spoken_text(
+        text=text, output_lang=output_lang, max_chars=max_text_chars
+    )
+    spoken_text = spoken.spoken_text
+    if not spoken_text.strip():
+        return {"available": False, "reason": "empty_spoken_text"}
 
     service = VoiceTTSService()
     if not service.is_configured():
@@ -436,7 +437,7 @@ def _maybe_build_voice_output(
 
     try:
         audio_bytes, content_type = service.synthesize(
-            text=text,
+            text=spoken_text,
             voice=prof.vendor_voice,
             model=prof.model,
             audio_format=prof.audio_format,
@@ -457,6 +458,15 @@ def _maybe_build_voice_output(
             "audio_url": f"/api/voice/output/{key}",
             "inline_max_audio_bytes": max_audio_bytes,
             "audio_bytes": len(audio_bytes),
+            "spoken_text": {
+                "full_text_chars": spoken.full_text_chars,
+                "spoken_text_chars": spoken.spoken_text_chars,
+                "changed": spoken.changed,
+                "shortened": spoken.shortened,
+                "normalized": spoken.normalized,
+                "strategy": spoken.strategy,
+                "max_text_chars": max_text_chars,
+            },
             "voice_profile": {
                 "agent_id": prof.agent_id,
                 "language": prof.language,
@@ -475,6 +485,15 @@ def _maybe_build_voice_output(
         "content_type": content_type,
         "audio_base64": base64.b64encode(audio_bytes).decode("ascii"),
         "audio_bytes": len(audio_bytes),
+        "spoken_text": {
+            "full_text_chars": spoken.full_text_chars,
+            "spoken_text_chars": spoken.spoken_text_chars,
+            "changed": spoken.changed,
+            "shortened": spoken.shortened,
+            "normalized": spoken.normalized,
+            "strategy": spoken.strategy,
+            "max_text_chars": max_text_chars,
+        },
         "voice_profile": {
             "agent_id": prof.agent_id,
             "language": prof.language,
