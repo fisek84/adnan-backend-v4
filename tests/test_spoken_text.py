@@ -32,3 +32,18 @@ def test_spoken_text_verbalizes_structured_tokens() -> None:
     assert "taraba" in s
     assert "kosa crta" in s
     assert "crta" in s
+
+
+def test_spoken_text_normalizes_numbered_lists_bhs() -> None:
+    t = "1. Prvo\n2) Drugo\n3. Trece"
+    out = build_spoken_text(text=t, output_lang="bs", max_chars=2000)
+    s = out.spoken_text
+    assert "Stavka 1," in s
+    assert "Stavka 2," in s
+    assert "Stavka 3," in s
+
+
+def test_spoken_text_normalizes_arrow_bhs() -> None:
+    t = "A->B"
+    out = build_spoken_text(text=t, output_lang="bs", max_chars=2000)
+    assert "A na B" in out.spoken_text

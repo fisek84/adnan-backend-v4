@@ -99,6 +99,44 @@ _STRUCTURED_TOKEN_RE = re.compile(r"\b[0-9A-Za-z]+(?:[\/#@:%+_=\-][0-9A-Za-z]+)+
 _DECIMAL_RE = re.compile(r"\b(\d{1,6})([\.,])(\d{1,2})\b")
 
 
+def _normalize_arrows(text: str, *, lang_group: str) -> tuple[str, bool]:
+    t = text or ""
+    if "->" not in t:
+        return t, False
+
+    if lang_group == "en":
+        word = "to"
+    elif lang_group == "de":
+        word = "zu"
+    else:
+        word = "na"
+
+    t2 = re.sub(r"\s*->\s*", f" {word} ", t)
+    t2 = re.sub(r"\s+", " ", t2).strip()
+    return t2, t2 != t
+
+
+def _normalize_numbered_lists(text: str, *, lang_group: str) -> tuple[str, bool]:
+    t = text or ""
+    if not t:
+        return t, False
+
+    if lang_group == "en":
+        item = "Item"
+    elif lang_group == "de":
+        item = "Punkt"
+    else:
+        item = "Stavka"
+
+    pat = re.compile(r"(^|[.!?]\s+)(\d{1,3})[\.)]\s+", re.MULTILINE)
+
+    def _repl(m: re.Match[str]) -> str:
+        return f"{m.group(1)}{item} {m.group(2)}, "
+
+    t2 = pat.sub(_repl, t)
+    return t2, t2 != t
+
+
 def _strip_markdown(text: str, *, tokens: Dict[str, str]) -> tuple[str, bool]:
     t = text or ""
     changed = False
@@ -379,6 +417,11 @@ def build_spoken_text(
         spoken, md_changed = _strip_markdown(spoken, tokens=tokens)
         normalized = normalized or md_changed
 
+        t2, ch_arrow = _normalize_arrows(spoken, lang_group=lang_group)
+        if ch_arrow:
+            normalized = True
+            spoken = t2
+
         # Structured strings (URL/email) verbalization.
         def _repl_url(m: re.Match[str]) -> str:
             raw = m.group(0)
@@ -442,6 +485,11 @@ def build_spoken_text(
 
         t2, ch3 = _normalize_newlines_for_pacing(spoken)
         if ch3:
+            normalized = True
+            spoken = t2
+
+        t2, ch_num = _normalize_numbered_lists(spoken, lang_group=lang_group)
+        if ch_num:
             normalized = True
             spoken = t2
 

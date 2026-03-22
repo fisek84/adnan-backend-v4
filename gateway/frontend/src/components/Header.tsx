@@ -212,7 +212,7 @@ export const Header: React.FC<HeaderProps> = ({
 
                   {onEnableTTSChange !== undefined && (
                     <label className="ceoHeaderSettingsRow">
-                      <span>Backend voice output</span>
+                      <span>Voice output (backend primary)</span>
                       <input
                         type="checkbox"
                         checked={enableTTS !== false}
@@ -345,7 +345,7 @@ export const Header: React.FC<HeaderProps> = ({
 
                   {showFallbackVoiceControls && (
                     <label className="ceoHeaderSettingsRow">
-                      <span>Fallback voice (browser only)</span>
+                      <span>Fallback voice (browser only; used only if backend audio is missing)</span>
                       <select
                         className="ceoHeaderSelect"
                         value={selectedTtsVoiceId || ''}
