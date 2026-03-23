@@ -1303,6 +1303,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
   const [voiceSupported, setVoiceSupported] = useState(false);
   const [listening, setListening] = useState(false);
   const recognitionRef = useRef<any>(null);
+  const recognitionActiveRef = useRef<boolean>(false);
 
   // Natural auto-send:
   // - do NOT trigger on first isFinal
@@ -1314,6 +1315,16 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
   const autoSendSessionRef = useRef<number>(0);
   const autoSendSentForSessionRef = useRef<number>(-1);
 
+  const clearAutoSendGraceTimer = useCallback(() => {
+    if (autoSendGraceTimerRef.current == null) return;
+    try {
+      window.clearTimeout(autoSendGraceTimerRef.current);
+    } catch {
+      // ignore
+    }
+    autoSendGraceTimerRef.current = null;
+  }, []);
+
   // Track whether the user explicitly wants the browser recognizer running.
   // If `onend` fires prematurely while the user is still speaking, we auto-restart.
   const voiceListeningDesiredRef = useRef<boolean>(false);
@@ -1322,13 +1333,15 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
     const rec = recognitionRef.current;
     if (!rec) return;
     if (!listening) return;
+    clearAutoSendGraceTimer();
     try {
       rec.stop?.();
     } catch {
       // ignore
     }
+    recognitionActiveRef.current = false;
     setListening(false);
-  }, [listening]);
+  }, [listening, clearAutoSendGraceTimer]);
 
   const resumeRecognitionIfDesired = useCallback(() => {
     if (!voiceEnabled) return;
@@ -1340,14 +1353,32 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
     if (backendAudioPlaying) return;
     const rec = recognitionRef.current;
     if (!rec) return;
+    if (recognitionActiveRef.current) return;
+
+    // IMPORTANT: each hands-free "turn" must be a new auto-send session.
+    // Otherwise the double-send guard will block the next message.
+    clearAutoSendGraceTimer();
+    voiceLastFinalRef.current = "";
+    voiceLastTranscriptRef.current = "";
+    voiceLastResultAtMsRef.current = 0;
+    autoSendSessionRef.current += 1;
 
     try {
+      recognitionActiveRef.current = true;
       setListening(true);
       rec.start?.();
     } catch {
+      recognitionActiveRef.current = false;
       setListening(false);
     }
-  }, [voiceEnabled, voiceSupported, listening, speaking, backendAudioPlaying]);
+  }, [
+    voiceEnabled,
+    voiceSupported,
+    listening,
+    speaking,
+    backendAudioPlaying,
+    clearAutoSendGraceTimer,
+  ]);
 
   // Hands-free voice loop:
   // - if user wants voice on, pause recognition while assistant is responding or speaking
@@ -1379,16 +1410,6 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
     if (typeof navigator === "undefined") return false;
     const ua = String(navigator.userAgent || "");
     return /iP(hone|ad|od)/.test(ua);
-  }, []);
-
-  const clearAutoSendGraceTimer = useCallback(() => {
-    if (autoSendGraceTimerRef.current == null) return;
-    try {
-      window.clearTimeout(autoSendGraceTimerRef.current);
-    } catch {
-      // ignore
-    }
-    autoSendGraceTimerRef.current = null;
   }, []);
 
   useEffect(() => {
@@ -1478,6 +1499,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
           } catch {
             // ignore
           }
+          recognitionActiveRef.current = false;
           void sendChatFromText(txt, { origin: "voice" });
         }, VOICE_AUTO_SEND_GRACE_MS);
       }
@@ -1485,11 +1507,13 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
 
     rec.onerror = () => {
       setListening(false);
+      recognitionActiveRef.current = false;
       clearAutoSendGraceTimer();
     };
 
     rec.onend = () => {
       setListening(false);
+      recognitionActiveRef.current = false;
 
       if (!autoSendOnVoiceFinalEnabled) return;
 
@@ -1509,9 +1533,11 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         try {
           window.setTimeout(() => {
             try {
+              recognitionActiveRef.current = true;
               setListening(true);
               rec.start?.();
             } catch {
+              recognitionActiveRef.current = false;
               setListening(false);
             }
           }, 150);
@@ -1555,6 +1581,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         } catch {
           // ignore
         }
+        recognitionActiveRef.current = false;
         void sendChatFromText(txt, { origin: "voice" });
       }, VOICE_AUTO_SEND_GRACE_MS);
     };
@@ -1589,6 +1616,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       } catch {
         // ignore
       }
+      recognitionActiveRef.current = false;
       setListening(false);
       return;
     }
@@ -1601,10 +1629,12 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       voiceLastResultAtMsRef.current = 0;
       autoSendSessionRef.current += 1;
       voiceListeningDesiredRef.current = true;
+      recognitionActiveRef.current = true;
       setListening(true);
       rec.start();
     } catch {
       voiceListeningDesiredRef.current = false;
+      recognitionActiveRef.current = false;
       setListening(false);
     }
   }, [voiceEnabled, listening, clearAutoSendGraceTimer]);
