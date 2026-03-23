@@ -910,6 +910,7 @@ def test_active_goal_context_contract_followups_are_goal_bound(monkeypatch):
     assert "aktivn" in txt5c.lower()
     assert "Unrelated task" not in txt5c
 
+
 def test_goal_ownership_followup_english_that_goal_works_without_goal_id(monkeypatch):
     """If the top-goal view lacks a stable goal id, English follow-ups like 'that goal'
     must still resolve via last_referenced_goal_title and not ask 'Za koji cilj?'."""
