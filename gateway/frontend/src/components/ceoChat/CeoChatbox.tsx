@@ -418,6 +418,12 @@ declare global {
   interface Window {
     webkitSpeechRecognition?: any;
     SpeechRecognition?: any;
+
+    AdnanBridgeV1?: {
+      nativeHello: (payload: any) => { ok: true } | { ok: false; reason: string };
+      submitFinalTranscript: (payload: any) => { ok: true } | { ok: false; reason: string };
+      updatePartialTranscript?: (payload: any) => { ok: true } | { ok: false; reason: string };
+    };
   }
 }
 
@@ -455,6 +461,14 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState<BusyState>("idle");
   const [lastError, setLastError] = useState<string | null>(null);
+
+  const BRIDGE_V1_GRACE_MS = 1500; // 1200–1800ms; stable for native STT final -> send
+
+  // Keep current busy state accessible to bridge callbacks/timers.
+  const busyRef = useRef<BusyState>("idle");
+  useEffect(() => {
+    busyRef.current = busy;
+  }, [busy]);
 
   // Voice / TTS settings (with localStorage persistence)
   const [currentVoiceLang, setCurrentVoiceLang] = useState<string>(() => {
@@ -1038,6 +1052,147 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       setLastError(isAbortError(e) ? null : msg);
     }
   };
+
+  // ------------------------------
+  // iOS WKWebView Bridge V1 (native STT -> web send)
+  // Contract:
+  // - window.AdnanBridgeV1
+  // - nativeHello() activates bridge
+  // - submitFinalTranscript() arms grace timer and sends via sendChatFromText(..., {origin:"voice"})
+  // - updatePartialTranscript() cancels pending grace timer (optional UI draft update)
+  // No DOM injection; explicit API only.
+  // ------------------------------
+  type BridgeResultV1 =
+    | { ok: true }
+    | { ok: false; reason: "bridge_not_ready" | "invalid_payload" | "duplicate_utterance" | "busy" };
+
+  type NativeHelloPayloadV1 = {
+    bridgeVersion: 1;
+    runtime: "ios_wkwebview";
+    appBuild?: string;
+    deviceLocale?: string;
+  };
+
+  type UpdatePartialTranscriptPayloadV1 = {
+    utteranceId: string;
+    text: string;
+    lang?: string;
+    capturedAtMs?: number;
+  };
+
+  type SubmitFinalTranscriptPayloadV1 = {
+    utteranceId: string;
+    text: string;
+    lang?: string;
+    capturedAtMs?: number;
+  };
+
+  const bridgeReadyRef = useRef<boolean>(false);
+  const bridgeSentUtterancesRef = useRef<Set<string>>(new Set());
+  const bridgeTimersByUtteranceRef = useRef<Map<string, number>>(new Map());
+  const sendChatFromTextRef = useRef(sendChatFromText);
+  sendChatFromTextRef.current = sendChatFromText;
+
+  const clearBridgeTimerForUtterance = useCallback((utteranceId: string) => {
+    const t = bridgeTimersByUtteranceRef.current.get(utteranceId);
+    if (t == null) return;
+    try {
+      window.clearTimeout(t);
+    } catch {
+      // ignore
+    }
+    bridgeTimersByUtteranceRef.current.delete(utteranceId);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const bridge: Window["AdnanBridgeV1"] = {
+      nativeHello: (payload: NativeHelloPayloadV1): BridgeResultV1 => {
+        if (!payload || typeof payload !== "object") return { ok: false, reason: "invalid_payload" };
+        if (payload.bridgeVersion !== 1) return { ok: false, reason: "invalid_payload" };
+        if (payload.runtime !== "ios_wkwebview") return { ok: false, reason: "invalid_payload" };
+        bridgeReadyRef.current = true;
+        return { ok: true };
+      },
+
+      submitFinalTranscript: (payload: SubmitFinalTranscriptPayloadV1): BridgeResultV1 => {
+        if (!bridgeReadyRef.current) return { ok: false, reason: "bridge_not_ready" };
+        if (!payload || typeof payload !== "object") return { ok: false, reason: "invalid_payload" };
+        const utteranceId = typeof payload.utteranceId === "string" ? payload.utteranceId.trim() : "";
+        const text = typeof payload.text === "string" ? payload.text.trim() : "";
+        if (!utteranceId || !text) return { ok: false, reason: "invalid_payload" };
+
+        const b = busyRef.current;
+        if (b === "submitting" || b === "streaming") return { ok: false, reason: "busy" };
+
+        if (bridgeSentUtterancesRef.current.has(utteranceId)) {
+          return { ok: false, reason: "duplicate_utterance" };
+        }
+
+        // Re-arm grace timer for this utterance.
+        clearBridgeTimerForUtterance(utteranceId);
+        const timer = window.setTimeout(() => {
+          bridgeTimersByUtteranceRef.current.delete(utteranceId);
+
+          // Re-check busy at fire time; if busy, do not send and allow native to retry.
+          const b2 = busyRef.current;
+          if (b2 === "submitting" || b2 === "streaming") return;
+
+          if (bridgeSentUtterancesRef.current.has(utteranceId)) return;
+          bridgeSentUtterancesRef.current.add(utteranceId);
+
+          // Mark as voice-origin and send via canonical helper.
+          lastDraftFromVoiceRef.current = true;
+          void sendChatFromTextRef.current(text, { origin: "voice" });
+        }, BRIDGE_V1_GRACE_MS);
+
+        bridgeTimersByUtteranceRef.current.set(utteranceId, timer);
+        return { ok: true };
+      },
+
+      updatePartialTranscript: (payload: UpdatePartialTranscriptPayloadV1): BridgeResultV1 => {
+        if (!bridgeReadyRef.current) return { ok: false, reason: "bridge_not_ready" };
+        if (!payload || typeof payload !== "object") return { ok: false, reason: "invalid_payload" };
+        const utteranceId = typeof payload.utteranceId === "string" ? payload.utteranceId.trim() : "";
+        const text = typeof payload.text === "string" ? payload.text : "";
+        if (!utteranceId) return { ok: false, reason: "invalid_payload" };
+
+        // Any partial update cancels a pending send.
+        clearBridgeTimerForUtterance(utteranceId);
+
+        // Optional: reflect partial transcript in UI draft (no sending).
+        const next = text.trim();
+        if (next) {
+          lastDraftFromVoiceRef.current = true;
+          setDraft(next);
+        } else if (lastDraftFromVoiceRef.current) {
+          // Allow native to clear its own draft without nuking typed text.
+          setDraft("");
+        }
+        return { ok: true };
+      },
+    };
+
+    const prev = window.AdnanBridgeV1;
+    window.AdnanBridgeV1 = bridge;
+
+    return () => {
+      // Cleanup timers and restore previous bridge if we replaced it.
+      for (const t of bridgeTimersByUtteranceRef.current.values()) {
+        try {
+          window.clearTimeout(t);
+        } catch {
+          // ignore
+        }
+      }
+      bridgeTimersByUtteranceRef.current.clear();
+
+      if (window.AdnanBridgeV1 === bridge) {
+        window.AdnanBridgeV1 = prev;
+      }
+    };
+  }, [BRIDGE_V1_GRACE_MS, clearBridgeTimerForUtterance, setDraft]);
 
   const handlePreviewProposal = useCallback(
     async (proposal: ProposedCmd, label?: string, patchesOverride?: EnterpriseOpPatch[]) => {
