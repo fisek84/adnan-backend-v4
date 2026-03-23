@@ -663,6 +663,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
 
   // Track currently playing backend audio (autoplay / stop support).
   const backendAudioRef = useRef<HTMLAudioElement | null>(null);
+  const [backendAudioPlaying, setBackendAudioPlaying] = useState(false);
 
   const stopBackendAudio = useCallback(() => {
     const a = backendAudioRef.current;
@@ -673,6 +674,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       // ignore
     }
     backendAudioRef.current = null;
+    setBackendAudioPlaying(false);
   }, []);
 
   const tryAutoplayBackendAudioUrl = useCallback(
@@ -682,10 +684,25 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       try {
         const a = new Audio(url);
         a.preload = "auto";
+        a.onended = () => {
+          if (backendAudioRef.current === a) backendAudioRef.current = null;
+          setBackendAudioPlaying(false);
+        };
+        a.onpause = () => {
+          // Pause can also happen due to autoplay rejection flows.
+          if (backendAudioRef.current === a) backendAudioRef.current = null;
+          setBackendAudioPlaying(false);
+        };
+        a.onerror = () => {
+          if (backendAudioRef.current === a) backendAudioRef.current = null;
+          setBackendAudioPlaying(false);
+        };
         backendAudioRef.current = a;
         await a.play();
+        setBackendAudioPlaying(true);
         return true;
       } catch {
+        setBackendAudioPlaying(false);
         return false;
       }
     },
@@ -1301,6 +1318,61 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
   // If `onend` fires prematurely while the user is still speaking, we auto-restart.
   const voiceListeningDesiredRef = useRef<boolean>(false);
 
+  const pauseRecognitionIfRunning = useCallback(() => {
+    const rec = recognitionRef.current;
+    if (!rec) return;
+    if (!listening) return;
+    try {
+      rec.stop?.();
+    } catch {
+      // ignore
+    }
+    setListening(false);
+  }, [listening]);
+
+  const resumeRecognitionIfDesired = useCallback(() => {
+    if (!voiceEnabled) return;
+    if (!voiceSupported) return;
+    if (!voiceListeningDesiredRef.current) return;
+    if (listening) return;
+    if (busyRef.current !== "idle") return;
+    if (speaking) return;
+    if (backendAudioPlaying) return;
+    const rec = recognitionRef.current;
+    if (!rec) return;
+
+    try {
+      setListening(true);
+      rec.start?.();
+    } catch {
+      setListening(false);
+    }
+  }, [voiceEnabled, voiceSupported, listening, speaking, backendAudioPlaying]);
+
+  // Hands-free voice loop:
+  // - if user wants voice on, pause recognition while assistant is responding or speaking
+  // - auto-resume when idle and quiet
+  useEffect(() => {
+    if (!voiceEnabled) return;
+    if (!voiceListeningDesiredRef.current) return;
+
+    if (busy !== "idle" || speaking || backendAudioPlaying) {
+      pauseRecognitionIfRunning();
+      return;
+    }
+
+    const t = window.setTimeout(() => {
+      resumeRecognitionIfDesired();
+    }, 200);
+    return () => {
+      try {
+        window.clearTimeout(t);
+      } catch {
+        // ignore
+      }
+    };
+  }, [busy, speaking, backendAudioPlaying, voiceEnabled, pauseRecognitionIfRunning, resumeRecognitionIfDesired]);
+
   // iOS WebViews frequently present a Safari-like UA; we must NOT disable auto-send
   // purely by UA. We use this only to enable an additional behavior-based fallback.
   const isIosDevice = useCallback((): boolean => {
@@ -1401,7 +1473,6 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
           voiceLastTranscriptRef.current = "";
 
           // Ensure we stop listening before submitting.
-          voiceListeningDesiredRef.current = false;
           try {
             rec.stop?.();
           } catch {
@@ -1421,6 +1492,10 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       setListening(false);
 
       if (!autoSendOnVoiceFinalEnabled) return;
+
+      // If we are busy (submitting/streaming), do not auto-restart here.
+      // The hands-free effect above will resume listening when idle.
+      if (busyRef.current !== "idle") return;
 
       const sessionId = autoSendSessionRef.current;
       const now0 = Date.now();
@@ -1475,7 +1550,6 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         voiceLastFinalRef.current = "";
         voiceLastTranscriptRef.current = "";
 
-        voiceListeningDesiredRef.current = false;
         try {
           rec.stop?.();
         } catch {
