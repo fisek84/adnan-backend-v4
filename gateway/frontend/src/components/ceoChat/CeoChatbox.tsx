@@ -16,7 +16,11 @@ import {
   extractVoiceOutputFromResponse,
   safeRevokeObjectUrl,
 } from "../../utils/voiceOutputAudio";
-import { shouldFireVoiceAutoSendAfterGrace, VOICE_AUTO_SEND_GRACE_MS } from "../../utils/voiceAutoSendGuards";
+import {
+  BRIDGE_V1_GRACE_MS,
+  shouldFireVoiceAutoSendAfterGrace,
+  VOICE_AUTO_SEND_GRACE_MS,
+} from "../../utils/voiceAutoSendGuards";
 import { Header } from "../Header";
 import { CommandPreviewModal } from "./CommandPreviewModal";
 import "./CeoChatbox.css";
@@ -461,8 +465,6 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState<BusyState>("idle");
   const [lastError, setLastError] = useState<string | null>(null);
-
-  const BRIDGE_V1_GRACE_MS = 1500; // 1200–1800ms; stable for native STT final -> send
 
   // Keep current busy state accessible to bridge callbacks/timers.
   const busyRef = useRef<BusyState>("idle");

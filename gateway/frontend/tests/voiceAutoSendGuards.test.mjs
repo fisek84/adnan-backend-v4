@@ -3,11 +3,16 @@ import assert from "node:assert/strict";
 
 import {
   shouldFireVoiceAutoSendAfterGrace,
+  BRIDGE_V1_GRACE_MS,
   VOICE_AUTO_SEND_GRACE_MS,
 } from "../.node-test-dist-voice-autosend/voiceAutoSendGuards.js";
 
 test("VOICE_AUTO_SEND_GRACE_MS is 4000ms", () => {
   assert.equal(VOICE_AUTO_SEND_GRACE_MS, 4000);
+});
+
+test("BRIDGE_V1_GRACE_MS is 4000ms", () => {
+  assert.equal(BRIDGE_V1_GRACE_MS, 4000);
 });
 
 test("shouldFireVoiceAutoSendAfterGrace: happy path", () => {
