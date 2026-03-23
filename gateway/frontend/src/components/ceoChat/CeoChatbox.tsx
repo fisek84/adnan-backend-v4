@@ -1341,9 +1341,12 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       // Any new input during the grace period cancels auto-send.
       clearAutoSendGraceTimer();
 
+      // IMPORTANT: build transcript from ALL results.
+      // Some engines emit only the delta in `resultIndex`, which would otherwise
+      // overwrite the draft after a pause.
       let finalText = "";
       let interim = "";
-      for (let i = ev.resultIndex; i < ev.results.length; i++) {
+      for (let i = 0; i < ev.results.length; i++) {
         const r = ev.results[i];
         const t = String(r?.[0]?.transcript ?? "");
         if (r.isFinal) finalText += t;
