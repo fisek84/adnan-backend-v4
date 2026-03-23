@@ -57,3 +57,13 @@ def test_spoken_text_normalizes_slash_dates_bhs() -> None:
     assert "kosa crta" not in s
     # For BHS we normalize into a natural, slash-free date form.
     assert "20 03 2026" in s
+
+
+def test_spoken_text_normalizes_iso_date_bhs_2026_02_26() -> None:
+    # Runtime bug report: ISO dates were being verbalized as structured tokens ("crta").
+    t = "Rok je 2026-02-26."
+    out = build_spoken_text(text=t, output_lang="bs", max_chars=2000)
+    s = out.spoken_text
+    assert "crta" not in s
+    assert "2026-02-26" not in s
+    assert "26 02 2026" in s

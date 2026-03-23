@@ -364,7 +364,9 @@ def _normalize_dates_times(text: str, *, lang_group: str) -> tuple[str, bool]:
         yyyy, mm, dd = m.group(1), m.group(2), m.group(3)
         if lang_group == "en":
             return f"{yyyy} {mm} {dd}"
-        return f"{dd}.{mm}.{yyyy}"
+        # Use a space-delimited date to avoid being misread as a numbered list item
+        # later in the spoken-text pipeline (and to avoid speaking separators).
+        return f"{dd} {mm} {yyyy}"
 
     t2 = re.sub(r"\b(\d{4})-(\d{2})-(\d{2})\b", _repl_iso_date, t)
     t = t2
@@ -519,6 +521,9 @@ def build_spoken_text(
         def _repl_structured(m: re.Match[str]) -> str:
             raw = m.group(0)
             if "://" in raw:
+                return raw
+            # ISO dates must be normalized later; never verbalize '-' as "dash/crta" here.
+            if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw):
                 return raw
             # Avoid turning regular hyphenated words into "dash" speech.
             has_digit = any(ch.isdigit() for ch in raw)

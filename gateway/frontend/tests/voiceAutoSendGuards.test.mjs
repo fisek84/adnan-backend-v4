@@ -15,6 +15,38 @@ test("BRIDGE_V1_GRACE_MS is 4000ms", () => {
   assert.equal(BRIDGE_V1_GRACE_MS, 4000);
 });
 
+test("4000ms pause behavior: does not fire at 3999ms, fires at 4000ms", () => {
+  const anchorAtMs = 10_000;
+
+  assert.equal(
+    shouldFireVoiceAutoSendAfterGrace({
+      sessionId: 1,
+      currentSessionId: 1,
+      sentForSessionId: -1,
+      lastResultAtMs: anchorAtMs,
+      anchorAtMs,
+      nowMs: anchorAtMs + VOICE_AUTO_SEND_GRACE_MS - 1,
+      graceMs: VOICE_AUTO_SEND_GRACE_MS,
+      text: "hello",
+    }),
+    false
+  );
+
+  assert.equal(
+    shouldFireVoiceAutoSendAfterGrace({
+      sessionId: 1,
+      currentSessionId: 1,
+      sentForSessionId: -1,
+      lastResultAtMs: anchorAtMs,
+      anchorAtMs,
+      nowMs: anchorAtMs + VOICE_AUTO_SEND_GRACE_MS,
+      graceMs: VOICE_AUTO_SEND_GRACE_MS,
+      text: "hello",
+    }),
+    true
+  );
+});
+
 test("shouldFireVoiceAutoSendAfterGrace: happy path", () => {
   assert.equal(
     shouldFireVoiceAutoSendAfterGrace({
