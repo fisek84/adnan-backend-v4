@@ -1125,12 +1125,40 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
   // ------------------------------
   // VOICE INPUT (browser STT)
   // ------------------------------
+  const VOICE_AUTO_SEND_GRACE_MS = 1500; // 1200–1800ms per spec
   const [voiceSupported, setVoiceSupported] = useState(false);
   const [listening, setListening] = useState(false);
   const recognitionRef = useRef<any>(null);
 
-  // Natural auto-send: capture final text during recognition and submit on `onend`.
-  const pendingVoiceFinalRef = useRef<string>("");
+  // Natural auto-send:
+  // - do NOT trigger on first isFinal
+  // - arm a grace timer on `onend`
+  const voiceLastFinalRef = useRef<string>("");
+  const voiceLastResultAtMsRef = useRef<number>(0);
+  const autoSendGraceTimerRef = useRef<number | null>(null);
+  const autoSendSessionRef = useRef<number>(0);
+  const autoSendSentForSessionRef = useRef<number>(-1);
+
+  const isIosSafari = useCallback((): boolean => {
+    if (typeof navigator === "undefined") return false;
+    const ua = String(navigator.userAgent || "");
+    const isIOS = /iP(hone|ad|od)/.test(ua);
+    if (!isIOS) return false;
+    // Safari on iOS includes "Safari" but NOT these.
+    const isOtherBrowser = /(CriOS|FxiOS|EdgiOS|OPiOS|DuckDuckGo)/.test(ua);
+    const isSafari = /Safari/.test(ua) && !isOtherBrowser;
+    return isSafari;
+  }, []);
+
+  const clearAutoSendGraceTimer = useCallback(() => {
+    if (autoSendGraceTimerRef.current == null) return;
+    try {
+      window.clearTimeout(autoSendGraceTimerRef.current);
+    } catch {
+      // ignore
+    }
+    autoSendGraceTimerRef.current = null;
+  }, []);
 
   useEffect(() => {
     if (!voiceEnabled) return;
@@ -1150,6 +1178,9 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
     rec.continuous = false;
 
     rec.onresult = (ev: any) => {
+      // Any new input during the grace period cancels auto-send.
+      clearAutoSendGraceTimer();
+
       let finalText = "";
       let interim = "";
       for (let i = ev.resultIndex; i < ev.results.length; i++) {
@@ -1159,33 +1190,51 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         else interim += t;
       }
 
+      voiceLastResultAtMsRef.current = Date.now();
+      if (finalText.trim()) {
+        voiceLastFinalRef.current = finalText.trim();
+      }
+
       const combined = (finalText || interim || "").trim();
       if (combined) {
         lastDraftFromVoiceRef.current = true;
         setDraft(combined);
       }
-
-      // Auto-send behaves like ChatGPT voice: on final result,
-      // if the setting is enabled and there is some text, submit it after speech ends.
-      if (autoSendOnVoiceFinalEnabled && finalText.trim()) {
-        pendingVoiceFinalRef.current = finalText.trim();
-      }
     };
 
     rec.onerror = () => {
       setListening(false);
+      clearAutoSendGraceTimer();
     };
 
     rec.onend = () => {
       setListening(false);
 
-      if (autoSendOnVoiceFinalEnabled) {
-        const txt = (pendingVoiceFinalRef.current || "").trim();
-        pendingVoiceFinalRef.current = "";
-        if (txt) {
-          void sendChatFromText(txt, { origin: "voice" });
-        }
-      }
+      // iPhone/Safari fallback: keep draft but do NOT auto-send (unreliable onend / UX).
+      if (!autoSendOnVoiceFinalEnabled) return;
+      if (isIosSafari()) return;
+
+      const sessionId = autoSendSessionRef.current;
+      const endAt = Date.now();
+      const txt = (voiceLastFinalRef.current || "").trim();
+      if (!txt) return;
+
+      // Guard against double-send for the same voice session.
+      if (autoSendSentForSessionRef.current === sessionId) return;
+
+      clearAutoSendGraceTimer();
+      autoSendGraceTimerRef.current = window.setTimeout(() => {
+        // Cancel if a new voice session started.
+        if (autoSendSessionRef.current !== sessionId) return;
+        // Cancel if any new result arrived after onend (race / late events).
+        if (voiceLastResultAtMsRef.current > endAt) return;
+        // Prevent double-send.
+        if (autoSendSentForSessionRef.current === sessionId) return;
+
+        autoSendSentForSessionRef.current = sessionId;
+        voiceLastFinalRef.current = "";
+        void sendChatFromText(txt, { origin: "voice" });
+      }, VOICE_AUTO_SEND_GRACE_MS);
     };
 
     recognitionRef.current = rec;
@@ -1204,7 +1253,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
     // NOTE: submit is stable (useCallback) but declared later; we intentionally
     // avoid adding it to deps to keep TypeScript happy and rely on current closure.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [voiceEnabled, autoSendOnVoiceFinalEnabled, currentVoiceLang]);
+  }, [voiceEnabled, autoSendOnVoiceFinalEnabled, currentVoiceLang, clearAutoSendGraceTimer, isIosSafari]);
 
   const toggleVoice = useCallback(() => {
     if (!voiceEnabled) return;
@@ -1222,12 +1271,17 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
     }
 
     try {
+      // New voice session: cancel any pending auto-send.
+      clearAutoSendGraceTimer();
+      voiceLastFinalRef.current = "";
+      voiceLastResultAtMsRef.current = 0;
+      autoSendSessionRef.current += 1;
       setListening(true);
       rec.start();
     } catch {
       setListening(false);
     }
-  }, [voiceEnabled, listening]);
+  }, [voiceEnabled, listening, clearAutoSendGraceTimer]);
 
   const attachBackendAudioIfPresent = useCallback(
     (messageId: string, resp: NormalizedConsoleResponse) => {
