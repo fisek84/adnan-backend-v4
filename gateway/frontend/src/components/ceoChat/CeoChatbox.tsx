@@ -1291,10 +1291,15 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
   // - do NOT trigger on first isFinal
   // - arm a grace timer on `onend`
   const voiceLastFinalRef = useRef<string>("");
+  const voiceLastTranscriptRef = useRef<string>("");
   const voiceLastResultAtMsRef = useRef<number>(0);
   const autoSendGraceTimerRef = useRef<number | null>(null);
   const autoSendSessionRef = useRef<number>(0);
   const autoSendSentForSessionRef = useRef<number>(-1);
+
+  // Track whether the user explicitly wants the browser recognizer running.
+  // If `onend` fires prematurely while the user is still speaking, we auto-restart.
+  const voiceListeningDesiredRef = useRef<boolean>(false);
 
   // iOS WebViews frequently present a Safari-like UA; we must NOT disable auto-send
   // purely by UA. We use this only to enable an additional behavior-based fallback.
@@ -1329,7 +1334,8 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
     const sttLang = langLower.startsWith("bs") ? "hr-HR" : currentVoiceLang;
     rec.lang = sttLang;
     rec.interimResults = true;
-    rec.continuous = false;
+    // Keep listening across pauses; we'll decide when to auto-send.
+    rec.continuous = true;
 
     rec.onresult = (ev: any) => {
       // Any new input during the grace period cancels auto-send.
@@ -1351,23 +1357,22 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
 
       const combined = (finalText || interim || "").trim();
       if (combined) {
+        voiceLastTranscriptRef.current = combined;
         lastDraftFromVoiceRef.current = true;
         setDraft(combined);
       }
 
-      // iOS/WebView reliability fallback:
-      // If `onend` doesn't fire (or fires late), arm the same grace-based auto-send
-      // on a final transcript *without* sending immediately.
-      if (
-        autoSendOnVoiceFinalEnabled &&
-        isIosDevice() &&
-        finalText.trim() &&
-        autoSendSentForSessionRef.current !== autoSendSessionRef.current
-      ) {
+      // Silence-based auto-send:
+      // If no new recognition results arrive for `VOICE_AUTO_SEND_GRACE_MS`,
+      // send the latest transcript. This avoids premature sends when `onend`
+      // fires mid-speech and also covers cases where `onend` never fires.
+      if (autoSendOnVoiceFinalEnabled && combined) {
         const sessionId = autoSendSessionRef.current;
         const anchorAt = voiceLastResultAtMsRef.current;
-        const txt = (voiceLastFinalRef.current || "").trim();
-        if (!txt) return;
+        const txt = combined;
+
+        // Guard against double-send for the same voice session.
+        if (autoSendSentForSessionRef.current === sessionId) return;
 
         clearAutoSendGraceTimer();
         autoSendGraceTimerRef.current = window.setTimeout(() => {
@@ -1390,6 +1395,15 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
 
           autoSendSentForSessionRef.current = sessionId;
           voiceLastFinalRef.current = "";
+          voiceLastTranscriptRef.current = "";
+
+          // Ensure we stop listening before submitting.
+          voiceListeningDesiredRef.current = false;
+          try {
+            rec.stop?.();
+          } catch {
+            // ignore
+          }
           void sendChatFromText(txt, { origin: "voice" });
         }, VOICE_AUTO_SEND_GRACE_MS);
       }
@@ -1406,8 +1420,29 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       if (!autoSendOnVoiceFinalEnabled) return;
 
       const sessionId = autoSendSessionRef.current;
-      const endAt = Date.now();
-      const txt = (voiceLastFinalRef.current || "").trim();
+      const now0 = Date.now();
+      const lastAt = voiceLastResultAtMsRef.current || 0;
+      const sinceLastMs = lastAt > 0 ? now0 - lastAt : 999999;
+      const txt = (voiceLastTranscriptRef.current || voiceLastFinalRef.current || "").trim();
+
+      // If recognition ends while we are still within the silence window,
+      // treat it as a premature end and auto-restart instead of sending.
+      if (voiceListeningDesiredRef.current && sinceLastMs < VOICE_AUTO_SEND_GRACE_MS) {
+        try {
+          window.setTimeout(() => {
+            try {
+              setListening(true);
+              rec.start?.();
+            } catch {
+              setListening(false);
+            }
+          }, 150);
+        } catch {
+          // ignore
+        }
+        return;
+      }
+
       if (!txt) return;
 
       // Guard against double-send for the same voice session.
@@ -1424,7 +1459,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
             currentSessionId: autoSendSessionRef.current,
             sentForSessionId: autoSendSentForSessionRef.current,
             lastResultAtMs: voiceLastResultAtMsRef.current,
-            anchorAtMs: endAt,
+            anchorAtMs: lastAt || now0,
             nowMs,
             graceMs: VOICE_AUTO_SEND_GRACE_MS,
             text: txt,
@@ -1435,6 +1470,14 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
 
         autoSendSentForSessionRef.current = sessionId;
         voiceLastFinalRef.current = "";
+        voiceLastTranscriptRef.current = "";
+
+        voiceListeningDesiredRef.current = false;
+        try {
+          rec.stop?.();
+        } catch {
+          // ignore
+        }
         void sendChatFromText(txt, { origin: "voice" });
       }, VOICE_AUTO_SEND_GRACE_MS);
     };
@@ -1463,6 +1506,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
     if (!rec) return;
 
     if (listening) {
+      voiceListeningDesiredRef.current = false;
       try {
         rec.stop();
       } catch {
@@ -1476,11 +1520,14 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       // New voice session: cancel any pending auto-send.
       clearAutoSendGraceTimer();
       voiceLastFinalRef.current = "";
+      voiceLastTranscriptRef.current = "";
       voiceLastResultAtMsRef.current = 0;
       autoSendSessionRef.current += 1;
+      voiceListeningDesiredRef.current = true;
       setListening(true);
       rec.start();
     } catch {
+      voiceListeningDesiredRef.current = false;
       setListening(false);
     }
   }, [voiceEnabled, listening, clearAutoSendGraceTimer]);
