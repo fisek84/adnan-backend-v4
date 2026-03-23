@@ -99,6 +99,64 @@ _STRUCTURED_TOKEN_RE = re.compile(r"\b[0-9A-Za-z]+(?:[\/#@:%+_=\-][0-9A-Za-z]+)+
 _DECIMAL_RE = re.compile(r"\b(\d{1,6})([\.,])(\d{1,2})\b")
 
 
+def _normalize_slash_dates(text: str, *, lang_group: str) -> tuple[str, bool]:
+    """Normalize slash-delimited dates before structured-token verbalization.
+
+    Goal: prevent MM/DD/YYYY and DD/MM/YYYY from being read as "slash" tokens.
+    We keep this conservative:
+      - only 4-digit years
+      - requires plausible day/month ranges
+      - ambiguous cases default to DD/MM for bhs/de and MM/DD for en
+    """
+
+    t = text or ""
+    if "/" not in t:
+        return t, False
+
+    changed = False
+
+    pat = re.compile(r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b")
+
+    def _repl(m: re.Match[str]) -> str:
+        nonlocal changed
+        a = int(m.group(1))
+        b = int(m.group(2))
+        yyyy = m.group(3)
+
+        # Basic plausibility bounds.
+        if not (1 <= a <= 31 and 1 <= b <= 31):
+            return m.group(0)
+
+        # Determine which part is month/day.
+        # - If one side can't be a month, resolve deterministically.
+        if a > 12 and b <= 12:
+            dd, mm = a, b  # DD/MM
+        elif b > 12 and a <= 12:
+            mm, dd = a, b  # MM/DD
+        else:
+            # Ambiguous: choose locale-friendly default.
+            if lang_group == "en":
+                mm, dd = a, b
+            else:
+                dd, mm = a, b
+
+        if not (1 <= mm <= 12 and 1 <= dd <= 31):
+            return m.group(0)
+
+        changed = True
+
+        # For bhs/de: use a space-delimited date to avoid interaction with the
+        # numbered-list normalizer (which can misread dot-separated dates as list items).
+        if lang_group in {"bhs", "de"}:
+            return f"{dd:02d} {mm:02d} {yyyy}"
+
+        # For en: keep natural US ordering without slashes.
+        return f"{mm:02d} {dd:02d} {yyyy}"
+
+    t2 = pat.sub(_repl, t)
+    return t2, t2 != t
+
+
 def _normalize_arrows(text: str, *, lang_group: str) -> tuple[str, bool]:
     t = text or ""
     if "->" not in t:
@@ -448,6 +506,12 @@ def build_spoken_text(
 
         t2 = _EMAIL_RE.sub(_repl_email, spoken)
         if t2 != spoken:
+            normalized = True
+            spoken = t2
+
+        # Slash-delimited dates must be normalized BEFORE structured-token verbalization.
+        t2, ch_slash = _normalize_slash_dates(spoken, lang_group=lang_group)
+        if ch_slash:
             normalized = True
             spoken = t2
 

@@ -47,3 +47,13 @@ def test_spoken_text_normalizes_arrow_bhs() -> None:
     t = "A->B"
     out = build_spoken_text(text=t, output_lang="bs", max_chars=2000)
     assert "A na B" in out.spoken_text
+
+
+def test_spoken_text_normalizes_slash_dates_bhs() -> None:
+    # Regression: slash dates were previously treated as structured tokens and read as "kosa crta".
+    t = "Rok je 03/20/2026. Alternativno 20/03/2026."
+    out = build_spoken_text(text=t, output_lang="bs", max_chars=2000)
+    s = out.spoken_text
+    assert "kosa crta" not in s
+    # For BHS we normalize into a natural, slash-free date form.
+    assert "20 03 2026" in s

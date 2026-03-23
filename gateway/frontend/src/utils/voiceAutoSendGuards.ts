@@ -9,6 +9,10 @@ export type VoiceAutoSendGraceCheck = {
   text: string;
 };
 
+// Canonical grace delay used by browser SpeechRecognition auto-send.
+// Keep this exported so tests can assert the configured value.
+export const VOICE_AUTO_SEND_GRACE_MS = 4000;
+
 export function shouldFireVoiceAutoSendAfterGrace(c: VoiceAutoSendGraceCheck): boolean {
   if (c.currentSessionId !== c.sessionId) return false;
   if (c.sentForSessionId === c.sessionId) return false;

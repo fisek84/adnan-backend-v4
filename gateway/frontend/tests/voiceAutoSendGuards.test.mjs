@@ -1,7 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { shouldFireVoiceAutoSendAfterGrace } from "../.node-test-dist-voice-autosend/voiceAutoSendGuards.js";
+import {
+  shouldFireVoiceAutoSendAfterGrace,
+  VOICE_AUTO_SEND_GRACE_MS,
+} from "../.node-test-dist-voice-autosend/voiceAutoSendGuards.js";
+
+test("VOICE_AUTO_SEND_GRACE_MS is 4000ms", () => {
+  assert.equal(VOICE_AUTO_SEND_GRACE_MS, 4000);
+});
 
 test("shouldFireVoiceAutoSendAfterGrace: happy path", () => {
   assert.equal(

@@ -16,7 +16,7 @@ import {
   extractVoiceOutputFromResponse,
   safeRevokeObjectUrl,
 } from "../../utils/voiceOutputAudio";
-import { shouldFireVoiceAutoSendAfterGrace } from "../../utils/voiceAutoSendGuards";
+import { shouldFireVoiceAutoSendAfterGrace, VOICE_AUTO_SEND_GRACE_MS } from "../../utils/voiceAutoSendGuards";
 import { Header } from "../Header";
 import { CommandPreviewModal } from "./CommandPreviewModal";
 import "./CeoChatbox.css";
@@ -1281,7 +1281,6 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
   // ------------------------------
   // VOICE INPUT (browser STT)
   // ------------------------------
-  const VOICE_AUTO_SEND_GRACE_MS = 1500; // 1200–1800ms per spec
   const [voiceSupported, setVoiceSupported] = useState(false);
   const [listening, setListening] = useState(false);
   const recognitionRef = useRef<any>(null);

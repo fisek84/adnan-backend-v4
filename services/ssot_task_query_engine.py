@@ -68,7 +68,14 @@ def compute_task_stats(snapshot: Any) -> Dict[str, Any]:
     deterministically without listing task titles.
     """
 
-    tasks_raw = snapshot_tasks(snapshot)
+    # Stats must reflect the full task set when present.
+    # dashboard.tasks is frequently a top-N subset intended for UI display.
+    payload = extract_snapshot_payload(snapshot)
+    payload_tasks = payload.get("tasks") if isinstance(payload, dict) else None
+    if isinstance(payload_tasks, list) and len(payload_tasks) > 0:
+        tasks_raw = [t for t in payload_tasks if isinstance(t, dict)]
+    else:
+        tasks_raw = snapshot_tasks(snapshot)
     tasks_norm = normalize_tasks(tasks_raw)
 
     total_count = len(tasks_norm)
