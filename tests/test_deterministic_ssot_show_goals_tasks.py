@@ -910,6 +910,82 @@ def test_active_goal_context_contract_followups_are_goal_bound(monkeypatch):
     assert "aktivn" in txt5c.lower()
     assert "Unrelated task" not in txt5c
 
+def test_goal_ownership_followup_english_that_goal_works_without_goal_id(monkeypatch):
+    """If the top-goal view lacks a stable goal id, English follow-ups like 'that goal'
+    must still resolve via last_referenced_goal_title and not ask 'Za koji cilj?'."""
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
+    monkeypatch.setenv("NOTION_API_KEY", "test-notion-key")
+    monkeypatch.setenv("NOTION_GOALS_DB_ID", "test-goals-db")
+    monkeypatch.setenv("NOTION_TASKS_DB_ID", "test-tasks-db")
+    monkeypatch.setenv("NOTION_PROJECTS_DB_ID", "test-projects-db")
+    monkeypatch.setenv("CEO_NOTION_TARGETED_READS_ENABLED", "false")
+    monkeypatch.setenv("CEO_ADVISOR_FORCE_OFFLINE", "1")
+
+    app = _get_app()
+    client = TestClient(app)
+
+    # IMPORTANT: goals have no 'id' field, so deterministic top-goal will persist title
+    # but may not persist last_referenced_goal_id.
+    snap = {
+        "ready": True,
+        "status": "fresh",
+        "schema_version": "v1",
+        "payload": {
+            "goals": [
+                {
+                    "title": "Preseli se u EU za 30 dana",
+                    "fields": {
+                        "status": "Active",
+                        "due": {"start": "2026-04-03"},
+                        "owner": ["Adnan", "Snezana"],
+                    },
+                },
+                {
+                    "title": "Manje bitan cilj",
+                    "fields": {
+                        "status": "Not Started",
+                        "due": {"start": "2026-12-31"},
+                        "owner": ["Someone"],
+                    },
+                },
+            ],
+            "tasks": [],
+            "projects": [],
+        },
+    }
+
+    conv_id = "conv-active-goal-context-en-that"
+    sess_id = "sess-active-goal-context-en-that"
+
+    r1 = client.post(
+        "/api/chat",
+        json={
+            "message": "what is the most important goal",
+            "conversation_id": conv_id,
+            "session_id": sess_id,
+            "snapshot": snap,
+        },
+    )
+    assert r1.status_code == 200, r1.text
+    txt1 = r1.json().get("text") or ""
+    assert "Preseli se u EU za 30 dana" in txt1
+
+    r2 = client.post(
+        "/api/chat",
+        json={
+            "message": "who is responsible to work on that goal",
+            "conversation_id": conv_id,
+            "session_id": sess_id,
+            "snapshot": snap,
+        },
+    )
+    assert r2.status_code == 200, r2.text
+    txt2 = r2.json().get("text") or ""
+    assert "Za koji cilj?" not in txt2
+    assert "Adnan" in txt2
+    assert "Snezana" in txt2
+
 
 def test_active_goal_context_followups_compact_flow_no_fallback(monkeypatch):
     """Compact flow: top goal -> ownership -> active goal-scoped tasks via 'cilj o kojem pricamo'."""

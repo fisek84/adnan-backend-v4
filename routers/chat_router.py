@@ -81,10 +81,10 @@ _SHOW_GOALS_TASKS_RE = re.compile(
 _TOP_GOAL_RE = re.compile(
     r"(?i)(?:"
     # Order A: adjective/keyword before 'goal'
-    r"\b(?:najbitnij\w*|najvaznij\w*|najprioritetnij\w*|top|glavn\w*|main)\b.*\b(?:cilj\w*|goal\w*)\b"
+    r"\b(?:najbitnij\w*|najvaznij\w*|najprioritetnij\w*|top|glavn\w*|main|most\s+important|highest\s+priority|primary)\b.*\b(?:cilj\w*|goal\w*)\b"
     r"|"
     # Order B: 'goal' before adjective/keyword (e.g., 'Koji cilj je glavni?')
-    r"\b(?:cilj\w*|goal\w*)\b.*\b(?:najbitnij\w*|najvaznij\w*|najprioritetnij\w*|top|glavn\w*|main)\b"
+    r"\b(?:cilj\w*|goal\w*)\b.*\b(?:najbitnij\w*|najvaznij\w*|najprioritetnij\w*|top|glavn\w*|main|most\s+important|highest\s+priority|primary)\b"
     r")"
 )
 
@@ -4886,6 +4886,16 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                         return False
                     if re.search(
                         r"(?i)\b(o\s+kojem\s+pricamo|o\s+c(e|)mu\s+pricamo)\b", t
+                    ):
+                        return True
+                    # English follow-up references (voice users often mix EN/BHS):
+                    # - "that goal", "this goal", "the goal"
+                    # - "the goal we mentioned/discussed/talked about"
+                    if re.search(r"(?i)\b(this|that|the|same)\b\s+\bgoal\w*\b", t):
+                        return True
+                    if re.search(
+                        r"(?i)\bgoal\w*\b.*\b(we\s+(mentioned|discussed|talked\s+about)|from\s+before|earlier|above)\b",
+                        t,
                     ):
                         return True
                     if re.search(
