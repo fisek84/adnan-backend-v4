@@ -10,6 +10,7 @@
     "gen:pwa-icons": "node scripts/generate-pwa-icons.mjs",
     "test:pwa": "node scripts/pwa-smoke-test.mjs",
     "test:voice-output": "tsc -p tsconfig.voiceOutputTestBuild.json && node --test tests/voiceOutputAudio.test.mjs",
+    "test:voice-autosend": "tsc -p tsconfig.voiceAutoSendTestBuild.json && node --test tests/voiceAutoSendGuards.test.mjs",
     "test:chat-stream": "tsc -p tsconfig.chatStreamTestBuild.json && node scripts/rewrite-test-imports.mjs .node-test-dist-chat-stream && node --test tests/chatStreamNdjson.test.mjs",
     "test:voice-realtime-ws": "tsc -p tsconfig.chatStreamTestBuild.json && node scripts/rewrite-test-imports.mjs .node-test-dist-chat-stream && node --test tests/voiceRealtimeWsStream.test.mjs"
   },
