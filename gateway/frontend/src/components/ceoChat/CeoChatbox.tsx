@@ -1496,11 +1496,16 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         clearAutoSendGraceTimer();
 
         try {
+          // abort() is more reliable at fully stopping + discarding buffered results.
+          rec.abort?.();
           rec.stop?.();
         } catch {
           // ignore
         }
         recognitionActiveRef.current = false;
+        // Defensive: some engines won't reliably emit onend after stop/abort.
+        // Ensure hands-free resume can start a fresh session.
+        setListening(false);
         void sendChatFromText(txt, { origin: "voice" });
       };
 
