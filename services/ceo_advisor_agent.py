@@ -43,6 +43,7 @@ def build_ceo_instructions(
     conversation_state: Optional[str] = None,
     notion_ops: Optional[Dict[str, Any]] = None,
     *,
+    english_output: bool = False,
     kb_max_entries: int = 8,
     total_max_chars: int = 9000,
     section_max_chars: int = 2600,
@@ -185,6 +186,17 @@ def build_ceo_instructions(
         "NOTION_CONTEXT:\n" + notion_txt,
         "MEMORY_CONTEXT:\n" + memory_txt,
     ]
+
+    if english_output:
+        parts.insert(
+            2,
+            "LANGUAGE:\n- Respond in English (clear, concise, business tone). Do not mix languages unless the user explicitly asks.",
+        )
+    else:
+        parts.insert(
+            2,
+            "LANGUAGE:\n- Odgovaraj na bosanskom / hrvatskom jeziku (jasno, poslovno). Ne mijesaj jezike osim ako korisnik izricito ne trazi drugacije.",
+        )
 
     joined = "\n\n".join(parts).strip() + "\n"
     joined = _truncate(joined, max_chars=total_max_chars)
@@ -6296,6 +6308,7 @@ async def create_ceo_advisor_agent(
                 gp,
                 conversation_state=conv_state,
                 notion_ops=notion_ops_ctx,
+                english_output=english_output,
             )
             safe_context["instructions"] = instructions
 

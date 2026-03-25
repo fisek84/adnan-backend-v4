@@ -72,3 +72,9 @@ def test_build_ceo_instructions_handles_empty_grounding_pack():
     assert "KB_CONTEXT:" in instructions
     assert "NOTION_CONTEXT:" in instructions
     assert "MEMORY_CONTEXT:" in instructions
+
+
+def test_build_ceo_instructions_includes_bhs_language_clause_by_default():
+    instructions = build_ceo_instructions({}, total_max_chars=4000)
+    assert "LANGUAGE:" in instructions
+    assert "Odgovaraj na bosanskom / hrvatskom jeziku" in instructions
