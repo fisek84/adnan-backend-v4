@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useTheme } from '../contexts/ThemeContext';
 
 interface HeaderProps {
@@ -93,6 +93,32 @@ export const Header: React.FC<HeaderProps> = ({
 }) => {
   const { theme, toggleTheme } = useTheme();
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const settingsRootRef = useRef<HTMLDivElement | null>(null);
+
+  // Close on outside click + ESC (minimal, production-safe).
+  useEffect(() => {
+    if (!settingsOpen) return;
+    const onPointerDown = (ev: MouseEvent | TouchEvent) => {
+      const root = settingsRootRef.current;
+      if (!root) return;
+      const target = ev.target as Node | null;
+      if (!target) return;
+      if (root.contains(target)) return;
+      setSettingsOpen(false);
+    };
+    const onKeyDown = (ev: KeyboardEvent) => {
+      if (ev.key === 'Escape') setSettingsOpen(false);
+    };
+
+    document.addEventListener('mousedown', onPointerDown as any, true);
+    document.addEventListener('touchstart', onPointerDown as any, true);
+    document.addEventListener('keydown', onKeyDown, true);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown as any, true);
+      document.removeEventListener('touchstart', onPointerDown as any, true);
+      document.removeEventListener('keydown', onKeyDown, true);
+    };
+  }, [settingsOpen]);
 
   const showFallbackVoiceControls = !!(
     ttsVoices &&
@@ -173,7 +199,7 @@ export const Header: React.FC<HeaderProps> = ({
           {autoSendOnVoiceFinal && (
             <div
               className="ceoHeaderFullVoice"
-              title="Full voice mode: auto-send & auto-speak"
+              title="Full voice mode: auto-send after pause + auto-play replies"
             >
               <span className="ceoHeaderFullVoiceDot" />
               <span className="ceoHeaderFullVoiceText">Full voice</span>
@@ -182,7 +208,7 @@ export const Header: React.FC<HeaderProps> = ({
 
           {/* Discreet settings menu (language, voice) */}
           {(onLanguageChange || (ttsVoices && ttsVoices.length > 0 && onTtsVoiceChange)) && (
-            <div className="ceoHeaderSettingsContainer">
+            <div className="ceoHeaderSettingsContainer" ref={settingsRootRef}>
               <button
                 className="ceoHeaderButton"
                 type="button"
@@ -362,7 +388,7 @@ export const Header: React.FC<HeaderProps> = ({
                   )}
 
                   {showFallbackSliders && onSpeechRateChange && speechRate !== undefined && (
-                    <label className="ceoHeaderSettingsRow">
+                    <label className="ceoHeaderSettingsRow ceoHeaderSettingsRow-stack">
                       <span>Fallback speech rate</span>
                       <input
                         type="range"
@@ -376,7 +402,7 @@ export const Header: React.FC<HeaderProps> = ({
                   )}
 
                   {showFallbackSliders && onSpeechPitchChange && speechPitch !== undefined && (
-                    <label className="ceoHeaderSettingsRow">
+                    <label className="ceoHeaderSettingsRow ceoHeaderSettingsRow-stack">
                       <span>Fallback pitch</span>
                       <input
                         type="range"
