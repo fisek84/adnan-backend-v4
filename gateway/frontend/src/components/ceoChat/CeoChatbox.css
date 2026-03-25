@@ -130,6 +130,9 @@
   flex-direction: column;
   gap: 8px;
   z-index: 20;
+  max-height: calc(100vh - 140px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .ceoHeaderSettingsRow {
