@@ -9,9 +9,15 @@ export type VoiceAutoSendGraceCheck = {
   text: string;
 };
 
-// Canonical grace delay used by browser SpeechRecognition auto-send.
+// Voice endpointing thresholds.
+// Two-stage endpointing: thinking pause -> soft end (send) -> hard end (fallback send).
+export const VOICE_THINKING_PAUSE_MS = 1500;
+export const VOICE_SOFT_END_MS = 4000;
+export const VOICE_HARD_END_MS = 6000;
+
+// Back-compat alias: existing code/tests treat "grace" as the soft end.
 // Keep this exported so tests can assert the configured value.
-export const VOICE_AUTO_SEND_GRACE_MS = 4000;
+export const VOICE_AUTO_SEND_GRACE_MS = VOICE_SOFT_END_MS;
 
 // Canonical grace delay used by iOS WKWebView Bridge V1 final transcript auto-send.
 // Keep identical to browser STT grace to ensure consistent UX across runtimes.
@@ -30,4 +36,47 @@ export function shouldFireVoiceAutoSendAfterGrace(c: VoiceAutoSendGraceCheck): b
   if (c.lastResultAtMs > c.anchorAtMs) return false;
 
   return true;
+}
+
+function _capitalizeFirstLetter(s: string): string {
+  if (!s) return s;
+  // Find first Unicode letter and uppercase it.
+  const chars = Array.from(s);
+  for (let i = 0; i < chars.length; i++) {
+    const ch = chars[i];
+    if (/\p{L}/u.test(ch)) {
+      chars[i] = ch.toUpperCase();
+      return chars.join("");
+    }
+  }
+  return s;
+}
+
+function _looksLikeQuestion(s: string): boolean {
+  const t = s.trim().toLowerCase();
+  if (!t) return false;
+
+  // Minimal deterministic heuristic: common question openers (BHS + EN).
+  // Keep deliberately small to avoid changing typed text semantics.
+  const re = /^(koliko|kako|zasto|zašto|sta|šta|gdje|gde|kada|ko|da\s+li|jel|je\s+li|jesi\s+li|mogu\s+li|možeš\s+li|mozes\s+li|what|why|how|when|where|who|can|could|would|should|do|does|did|is|are|am|have|has|will)\b/u;
+  return re.test(t);
+}
+
+/**
+ * Minimal deterministic punctuation normalization for voice-dictated user text.
+ * - Capitalize first letter
+ * - Add '?' for obvious questions
+ * - Otherwise add '.' if missing terminal punctuation
+ */
+export function normalizeVoiceUserTextForSend(rawText: string): string {
+  const trimmed = String(rawText ?? "").trim();
+  if (!trimmed) return "";
+
+  const hasTerminalPunct = /[.!?…]$/.test(trimmed);
+  let out = trimmed;
+  if (!hasTerminalPunct) {
+    out = trimmed + (_looksLikeQuestion(trimmed) ? "?" : ".");
+  }
+
+  return _capitalizeFirstLetter(out);
 }

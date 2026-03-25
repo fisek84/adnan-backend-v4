@@ -4,18 +4,29 @@ import assert from "node:assert/strict";
 import {
   shouldFireVoiceAutoSendAfterGrace,
   BRIDGE_V1_GRACE_MS,
-  VOICE_AUTO_SEND_GRACE_MS,
+  VOICE_THINKING_PAUSE_MS,
+  VOICE_SOFT_END_MS,
+  VOICE_HARD_END_MS,
+  normalizeVoiceUserTextForSend,
 } from "../.node-test-dist-voice-autosend/voiceAutoSendGuards.js";
 
-test("VOICE_AUTO_SEND_GRACE_MS is 4000ms", () => {
-  assert.equal(VOICE_AUTO_SEND_GRACE_MS, 4000);
+test("VOICE_THINKING_PAUSE_MS is 1500ms", () => {
+  assert.equal(VOICE_THINKING_PAUSE_MS, 1500);
+});
+
+test("VOICE_SOFT_END_MS is 4000ms", () => {
+  assert.equal(VOICE_SOFT_END_MS, 4000);
+});
+
+test("VOICE_HARD_END_MS is 6000ms", () => {
+  assert.equal(VOICE_HARD_END_MS, 6000);
 });
 
 test("BRIDGE_V1_GRACE_MS is 4000ms", () => {
   assert.equal(BRIDGE_V1_GRACE_MS, 4000);
 });
 
-test("4000ms pause behavior: does not fire at 3999ms, fires at 4000ms", () => {
+test("2s pause = ne salje (soft end)", () => {
   const anchorAtMs = 10_000;
 
   assert.equal(
@@ -25,11 +36,29 @@ test("4000ms pause behavior: does not fire at 3999ms, fires at 4000ms", () => {
       sentForSessionId: -1,
       lastResultAtMs: anchorAtMs,
       anchorAtMs,
-      nowMs: anchorAtMs + VOICE_AUTO_SEND_GRACE_MS - 1,
-      graceMs: VOICE_AUTO_SEND_GRACE_MS,
+      nowMs: anchorAtMs + 2000,
+      graceMs: VOICE_SOFT_END_MS,
       text: "hello",
     }),
     false
+  );
+});
+
+test("4–6s silence = salje (soft at 4s; hard at 6s)", () => {
+  const anchorAtMs = 10_000;
+
+  assert.equal(
+    shouldFireVoiceAutoSendAfterGrace({
+      sessionId: 1,
+      currentSessionId: 1,
+      sentForSessionId: -1,
+      lastResultAtMs: anchorAtMs,
+      anchorAtMs,
+      nowMs: anchorAtMs + VOICE_SOFT_END_MS,
+      graceMs: VOICE_SOFT_END_MS,
+      text: "hello",
+    }),
+    true
   );
 
   assert.equal(
@@ -39,11 +68,33 @@ test("4000ms pause behavior: does not fire at 3999ms, fires at 4000ms", () => {
       sentForSessionId: -1,
       lastResultAtMs: anchorAtMs,
       anchorAtMs,
-      nowMs: anchorAtMs + VOICE_AUTO_SEND_GRACE_MS,
-      graceMs: VOICE_AUTO_SEND_GRACE_MS,
+      nowMs: anchorAtMs + VOICE_HARD_END_MS,
+      graceMs: VOICE_HARD_END_MS,
       text: "hello",
     }),
     true
+  );
+});
+
+test("partial → pause → partial = ne salje izmedju", () => {
+  // First partial at t=10000ms arms timers anchored at 10000.
+  // Second partial arrives at t=12000ms (2s pause) and must cancel the earlier send.
+  const anchorAtMs = 10_000;
+  const secondPartialAtMs = 12_000;
+  const softFireAtMs = anchorAtMs + VOICE_SOFT_END_MS;
+
+  assert.equal(
+    shouldFireVoiceAutoSendAfterGrace({
+      sessionId: 2,
+      currentSessionId: 2,
+      sentForSessionId: -1,
+      lastResultAtMs: secondPartialAtMs,
+      anchorAtMs,
+      nowMs: softFireAtMs,
+      graceMs: VOICE_SOFT_END_MS,
+      text: "hello",
+    }),
+    false
   );
 });
 
@@ -61,6 +112,10 @@ test("shouldFireVoiceAutoSendAfterGrace: happy path", () => {
     }),
     true
   );
+});
+
+test('"koliko imam zadataka" → "Koliko imam zadataka?"', () => {
+  assert.equal(normalizeVoiceUserTextForSend("koliko imam zadataka"), "Koliko imam zadataka?");
 });
 
 test("shouldFireVoiceAutoSendAfterGrace: blocks if new result arrives after anchor", () => {

@@ -17,9 +17,11 @@ import {
   safeRevokeObjectUrl,
 } from "../../utils/voiceOutputAudio";
 import {
-  BRIDGE_V1_GRACE_MS,
+  normalizeVoiceUserTextForSend,
   shouldFireVoiceAutoSendAfterGrace,
-  VOICE_AUTO_SEND_GRACE_MS,
+  VOICE_HARD_END_MS,
+  VOICE_SOFT_END_MS,
+  VOICE_THINKING_PAUSE_MS,
 } from "../../utils/voiceAutoSendGuards";
 import { Header } from "../Header";
 import { CommandPreviewModal } from "./CommandPreviewModal";
@@ -932,9 +934,13 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
   // Shared helper for sending a chat message from arbitrary text.
   // Used both by the manual composer (submit) and voice auto-send.
   const sendChatFromText = async (rawText: string, opts?: { origin?: "voice" | "text" }) => {
-    const trimmed = rawText.trim();
-    if (!trimmed) return;
+    const trimmed0 = rawText.trim();
+    if (!trimmed0) return;
     if (busy === "submitting" || busy === "streaming") return;
+
+    const wasVoiceInput = opts?.origin === "voice" || lastDraftFromVoiceRef.current;
+    const trimmed = wasVoiceInput ? normalizeVoiceUserTextForSend(trimmed0) : trimmed0;
+    if (!trimmed) return;
 
     setBusy("submitting");
     setLastError(null);
@@ -1108,15 +1114,17 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
 
   const bridgeReadyRef = useRef<boolean>(false);
   const bridgeSentUtterancesRef = useRef<Set<string>>(new Set());
-  const bridgeTimersByUtteranceRef = useRef<Map<string, number>>(new Map());
+  type BridgeTimersV1 = { thinking?: number; soft?: number; hard?: number };
+  const bridgeTimersByUtteranceRef = useRef<Map<string, BridgeTimersV1>>(new Map());
   const sendChatFromTextRef = useRef(sendChatFromText);
   sendChatFromTextRef.current = sendChatFromText;
 
   const clearBridgeTimerForUtterance = useCallback((utteranceId: string) => {
-    const t = bridgeTimersByUtteranceRef.current.get(utteranceId);
-    if (t == null) return;
+    const timers = bridgeTimersByUtteranceRef.current.get(utteranceId);
+    if (!timers) return;
+    const list = [timers.thinking, timers.soft, timers.hard].filter((x): x is number => x != null);
     try {
-      window.clearTimeout(t);
+      for (const t of list) window.clearTimeout(t);
     } catch {
       // ignore
     }
@@ -1149,9 +1157,18 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
           return { ok: false, reason: "duplicate_utterance" };
         }
 
-        // Re-arm grace timer for this utterance.
+        // Re-arm endpointing timers for this utterance.
         clearBridgeTimerForUtterance(utteranceId);
-        const timer = window.setTimeout(() => {
+
+        const timers: BridgeTimersV1 = {};
+
+        // Stage 1: thinking pause (no send).
+        timers.thinking = window.setTimeout(() => {
+          const cur = bridgeTimersByUtteranceRef.current.get(utteranceId);
+          if (cur) cur.thinking = undefined;
+        }, VOICE_THINKING_PAUSE_MS);
+
+        const fireSend = () => {
           bridgeTimersByUtteranceRef.current.delete(utteranceId);
 
           // Re-check busy at fire time; if busy, do not send and allow native to retry.
@@ -1161,12 +1178,14 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
           if (bridgeSentUtterancesRef.current.has(utteranceId)) return;
           bridgeSentUtterancesRef.current.add(utteranceId);
 
-          // Mark as voice-origin and send via canonical helper.
           lastDraftFromVoiceRef.current = true;
           void sendChatFromTextRef.current(text, { origin: "voice" });
-        }, BRIDGE_V1_GRACE_MS);
+        };
 
-        bridgeTimersByUtteranceRef.current.set(utteranceId, timer);
+        timers.soft = window.setTimeout(fireSend, VOICE_SOFT_END_MS);
+        timers.hard = window.setTimeout(fireSend, VOICE_HARD_END_MS);
+
+        bridgeTimersByUtteranceRef.current.set(utteranceId, timers);
         return { ok: true };
       },
 
@@ -1198,9 +1217,10 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
 
     return () => {
       // Cleanup timers and restore previous bridge if we replaced it.
-      for (const t of bridgeTimersByUtteranceRef.current.values()) {
+      for (const timers of bridgeTimersByUtteranceRef.current.values()) {
+        const list = [timers.thinking, timers.soft, timers.hard].filter((x): x is number => x != null);
         try {
-          window.clearTimeout(t);
+          for (const t of list) window.clearTimeout(t);
         } catch {
           // ignore
         }
@@ -1211,7 +1231,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         window.AdnanBridgeV1 = prev;
       }
     };
-  }, [BRIDGE_V1_GRACE_MS, clearBridgeTimerForUtterance, setDraft]);
+  }, [clearBridgeTimerForUtterance, setDraft]);
 
   const handlePreviewProposal = useCallback(
     async (proposal: ProposedCmd, label?: string, patchesOverride?: EnterpriseOpPatch[]) => {
@@ -1311,18 +1331,27 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
   const voiceLastFinalRef = useRef<string>("");
   const voiceLastTranscriptRef = useRef<string>("");
   const voiceLastResultAtMsRef = useRef<number>(0);
-  const autoSendGraceTimerRef = useRef<number | null>(null);
+  const autoSendThinkingTimerRef = useRef<number | null>(null);
+  const autoSendSoftTimerRef = useRef<number | null>(null);
+  const autoSendHardTimerRef = useRef<number | null>(null);
   const autoSendSessionRef = useRef<number>(0);
   const autoSendSentForSessionRef = useRef<number>(-1);
 
   const clearAutoSendGraceTimer = useCallback(() => {
-    if (autoSendGraceTimerRef.current == null) return;
+    const timers = [
+      autoSendThinkingTimerRef.current,
+      autoSendSoftTimerRef.current,
+      autoSendHardTimerRef.current,
+    ].filter((x): x is number => x != null);
+    if (timers.length === 0) return;
     try {
-      window.clearTimeout(autoSendGraceTimerRef.current);
+      for (const t of timers) window.clearTimeout(t);
     } catch {
       // ignore
     }
-    autoSendGraceTimerRef.current = null;
+    autoSendThinkingTimerRef.current = null;
+    autoSendSoftTimerRef.current = null;
+    autoSendHardTimerRef.current = null;
   }, []);
 
   // Track whether the user explicitly wants the browser recognizer running.
@@ -1430,6 +1459,62 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
     // Keep listening across pauses; we'll decide when to auto-send.
     rec.continuous = true;
 
+    const armVoiceAutoSendTimers = (args: { sessionId: number; anchorAt: number; txt: string }) => {
+      const { sessionId, anchorAt, txt } = args;
+
+      // Guard against double-send for the same voice session.
+      if (autoSendSentForSessionRef.current === sessionId) return;
+
+      // Each new input resets endpointing state and timers.
+      clearAutoSendGraceTimer();
+
+      // Stage 1: thinking pause (no send).
+      autoSendThinkingTimerRef.current = window.setTimeout(() => {
+        autoSendThinkingTimerRef.current = null;
+      }, VOICE_THINKING_PAUSE_MS);
+
+      const fireIfEligible = (graceMs: number) => {
+        const nowMs = Date.now();
+        if (
+          !shouldFireVoiceAutoSendAfterGrace({
+            sessionId,
+            currentSessionId: autoSendSessionRef.current,
+            sentForSessionId: autoSendSentForSessionRef.current,
+            lastResultAtMs: voiceLastResultAtMsRef.current,
+            anchorAtMs: anchorAt,
+            nowMs,
+            graceMs,
+            text: txt,
+          })
+        ) {
+          return;
+        }
+
+        autoSendSentForSessionRef.current = sessionId;
+        voiceLastFinalRef.current = "";
+        voiceLastTranscriptRef.current = "";
+        clearAutoSendGraceTimer();
+
+        try {
+          rec.stop?.();
+        } catch {
+          // ignore
+        }
+        recognitionActiveRef.current = false;
+        void sendChatFromText(txt, { origin: "voice" });
+      };
+
+      autoSendSoftTimerRef.current = window.setTimeout(() => {
+        autoSendSoftTimerRef.current = null;
+        fireIfEligible(VOICE_SOFT_END_MS);
+      }, VOICE_SOFT_END_MS);
+
+      autoSendHardTimerRef.current = window.setTimeout(() => {
+        autoSendHardTimerRef.current = null;
+        fireIfEligible(VOICE_HARD_END_MS);
+      }, VOICE_HARD_END_MS);
+    };
+
     rec.onresult = (ev: any) => {
       // Any new input during the grace period cancels auto-send.
       clearAutoSendGraceTimer();
@@ -1467,41 +1552,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         const anchorAt = voiceLastResultAtMsRef.current;
         const txt = combined;
 
-        // Guard against double-send for the same voice session.
-        if (autoSendSentForSessionRef.current === sessionId) return;
-
-        clearAutoSendGraceTimer();
-        autoSendGraceTimerRef.current = window.setTimeout(() => {
-          autoSendGraceTimerRef.current = null;
-          const nowMs = Date.now();
-          if (
-            !shouldFireVoiceAutoSendAfterGrace({
-              sessionId,
-              currentSessionId: autoSendSessionRef.current,
-              sentForSessionId: autoSendSentForSessionRef.current,
-              lastResultAtMs: voiceLastResultAtMsRef.current,
-              anchorAtMs: anchorAt,
-              nowMs,
-              graceMs: VOICE_AUTO_SEND_GRACE_MS,
-              text: txt,
-            })
-          ) {
-            return;
-          }
-
-          autoSendSentForSessionRef.current = sessionId;
-          voiceLastFinalRef.current = "";
-          voiceLastTranscriptRef.current = "";
-
-          // Ensure we stop listening before submitting.
-          try {
-            rec.stop?.();
-          } catch {
-            // ignore
-          }
-          recognitionActiveRef.current = false;
-          void sendChatFromText(txt, { origin: "voice" });
-        }, VOICE_AUTO_SEND_GRACE_MS);
+        armVoiceAutoSendTimers({ sessionId, anchorAt, txt });
       }
     };
 
@@ -1529,7 +1580,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
 
       // If recognition ends while we are still within the silence window,
       // treat it as a premature end and auto-restart instead of sending.
-      if (voiceListeningDesiredRef.current && sinceLastMs < VOICE_AUTO_SEND_GRACE_MS) {
+      if (voiceListeningDesiredRef.current && sinceLastMs < VOICE_SOFT_END_MS) {
         try {
           window.setTimeout(() => {
             try {
@@ -1552,38 +1603,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       // Guard against double-send for the same voice session.
       if (autoSendSentForSessionRef.current === sessionId) return;
 
-      clearAutoSendGraceTimer();
-      autoSendGraceTimerRef.current = window.setTimeout(() => {
-        autoSendGraceTimerRef.current = null;
-        // Cancel if a new voice session started.
-        const nowMs = Date.now();
-        if (
-          !shouldFireVoiceAutoSendAfterGrace({
-            sessionId,
-            currentSessionId: autoSendSessionRef.current,
-            sentForSessionId: autoSendSentForSessionRef.current,
-            lastResultAtMs: voiceLastResultAtMsRef.current,
-            anchorAtMs: lastAt || now0,
-            nowMs,
-            graceMs: VOICE_AUTO_SEND_GRACE_MS,
-            text: txt,
-          })
-        ) {
-          return;
-        }
-
-        autoSendSentForSessionRef.current = sessionId;
-        voiceLastFinalRef.current = "";
-        voiceLastTranscriptRef.current = "";
-
-        try {
-          rec.stop?.();
-        } catch {
-          // ignore
-        }
-        recognitionActiveRef.current = false;
-        void sendChatFromText(txt, { origin: "voice" });
-      }, VOICE_AUTO_SEND_GRACE_MS);
+      armVoiceAutoSendTimers({ sessionId, anchorAt: lastAt || now0, txt });
     };
 
     recognitionRef.current = rec;
