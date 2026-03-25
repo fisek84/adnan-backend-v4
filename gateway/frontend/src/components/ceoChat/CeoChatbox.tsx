@@ -18,6 +18,8 @@ import {
 } from "../../utils/voiceOutputAudio";
 import {
   normalizeVoiceUserTextForSend,
+  resolvePendingVoiceAutoSendOnIdle,
+  type PendingVoiceAutoSend,
   shouldFireVoiceAutoSendAfterGrace,
   VOICE_HARD_END_MS,
   VOICE_SOFT_END_MS,
@@ -1123,10 +1125,14 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
   const bridgeSentUtterancesRef = useRef<Set<string>>(new Set());
   type BridgeTimersV1 = { thinking?: number; soft?: number; hard?: number };
   const bridgeTimersByUtteranceRef = useRef<Map<string, BridgeTimersV1>>(new Map());
+  const bridgePendingFinalByUtteranceRef = useRef<Map<string, { text: string; readyAtMs: number }>>(
+    new Map()
+  );
   const sendChatFromTextRef = useRef(sendChatFromText);
   sendChatFromTextRef.current = sendChatFromText;
 
   const clearBridgeTimerForUtterance = useCallback((utteranceId: string) => {
+    bridgePendingFinalByUtteranceRef.current.delete(utteranceId);
     const timers = bridgeTimersByUtteranceRef.current.get(utteranceId);
     if (!timers) return;
     const list = [timers.thinking, timers.soft, timers.hard].filter((x): x is number => x != null);
@@ -1137,6 +1143,27 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
     }
     bridgeTimersByUtteranceRef.current.delete(utteranceId);
   }, []);
+
+  // If a bridge auto-send becomes eligible while the UI is busy, we keep it pending and
+  // flush as soon as we transition back to idle.
+  useEffect(() => {
+    if (busy !== "idle") return;
+    const nowMs = Date.now();
+    const pending = bridgePendingFinalByUtteranceRef.current;
+    if (pending.size === 0) return;
+
+    const entries = Array.from(pending.entries()).sort((a, b) => a[1].readyAtMs - b[1].readyAtMs);
+    for (const [utteranceId, rec] of entries) {
+      if (nowMs < rec.readyAtMs) continue;
+      pending.delete(utteranceId);
+
+      if (bridgeSentUtterancesRef.current.has(utteranceId)) continue;
+      bridgeSentUtterancesRef.current.add(utteranceId);
+
+      lastDraftFromVoiceRef.current = true;
+      void sendChatFromTextRef.current(rec.text, { origin: "voice" });
+    }
+  }, [busy]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -1157,9 +1184,6 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         const text = typeof payload.text === "string" ? payload.text.trim() : "";
         if (!utteranceId || !text) return { ok: false, reason: "invalid_payload" };
 
-        const b = busyRef.current;
-        if (b === "submitting" || b === "streaming") return { ok: false, reason: "busy" };
-
         if (bridgeSentUtterancesRef.current.has(utteranceId)) {
           return { ok: false, reason: "duplicate_utterance" };
         }
@@ -1175,12 +1199,16 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
           if (cur) cur.thinking = undefined;
         }, VOICE_THINKING_PAUSE_MS);
 
-        const fireSend = () => {
-          bridgeTimersByUtteranceRef.current.delete(utteranceId);
-
-          // Re-check busy at fire time; if busy, do not send and allow native to retry.
+        const fireSend = (readyAtMs: number) => {
+          // Re-check busy at fire time; if busy, queue retry-on-idle instead of dropping.
           const b2 = busyRef.current;
-          if (b2 === "submitting" || b2 === "streaming") return;
+          if (b2 === "submitting" || b2 === "streaming") {
+            bridgePendingFinalByUtteranceRef.current.set(utteranceId, { text, readyAtMs });
+            return;
+          }
+
+          bridgeTimersByUtteranceRef.current.delete(utteranceId);
+          bridgePendingFinalByUtteranceRef.current.delete(utteranceId);
 
           if (bridgeSentUtterancesRef.current.has(utteranceId)) return;
           bridgeSentUtterancesRef.current.add(utteranceId);
@@ -1189,8 +1217,10 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
           void sendChatFromTextRef.current(text, { origin: "voice" });
         };
 
-        timers.soft = window.setTimeout(fireSend, VOICE_SOFT_END_MS);
-        timers.hard = window.setTimeout(fireSend, VOICE_HARD_END_MS);
+        const softReadyAtMs = Date.now() + VOICE_SOFT_END_MS;
+        const hardReadyAtMs = Date.now() + VOICE_HARD_END_MS;
+        timers.soft = window.setTimeout(() => fireSend(softReadyAtMs), VOICE_SOFT_END_MS);
+        timers.hard = window.setTimeout(() => fireSend(hardReadyAtMs), VOICE_HARD_END_MS);
 
         bridgeTimersByUtteranceRef.current.set(utteranceId, timers);
         return { ok: true };
@@ -1233,6 +1263,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         }
       }
       bridgeTimersByUtteranceRef.current.clear();
+      bridgePendingFinalByUtteranceRef.current.clear();
 
       if (window.AdnanBridgeV1 === bridge) {
         window.AdnanBridgeV1 = prev;
@@ -1344,13 +1375,16 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
   const autoSendSessionRef = useRef<number>(0);
   const autoSendSentForSessionRef = useRef<number>(-1);
 
+  // When auto-send becomes eligible but UI is busy, we keep it here and flush on idle.
+  const pendingVoiceAutoSendRef = useRef<PendingVoiceAutoSend | null>(null);
+
   const clearAutoSendGraceTimer = useCallback(() => {
+    pendingVoiceAutoSendRef.current = null;
     const timers = [
       autoSendThinkingTimerRef.current,
       autoSendSoftTimerRef.current,
       autoSendHardTimerRef.current,
     ].filter((x): x is number => x != null);
-    if (timers.length === 0) return;
     try {
       for (const t of timers) window.clearTimeout(t);
     } catch {
@@ -1474,6 +1508,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
 
       // Each new input resets endpointing state and timers.
       clearAutoSendGraceTimer();
+      pendingVoiceAutoSendRef.current = null;
 
       // Stage 1: thinking pause (no send).
       autoSendThinkingTimerRef.current = window.setTimeout(() => {
@@ -1494,6 +1529,12 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
             text: txt,
           })
         ) {
+          return;
+        }
+
+        const b = busyRef.current;
+        if (b === "submitting" || b === "streaming") {
+          pendingVoiceAutoSendRef.current = { sessionId, anchorAtMs: anchorAt, graceMs, text: txt };
           return;
         }
 
@@ -1530,6 +1571,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
     rec.onresult = (ev: any) => {
       // Any new input during the grace period cancels auto-send.
       clearAutoSendGraceTimer();
+      pendingVoiceAutoSendRef.current = null;
 
       // IMPORTANT: build transcript from ALL results.
       // Some engines emit only the delta in `resultIndex`, which would otherwise
@@ -1572,6 +1614,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       setListening(false);
       recognitionActiveRef.current = false;
       clearAutoSendGraceTimer();
+      pendingVoiceAutoSendRef.current = null;
     };
 
     rec.onend = () => {
@@ -1635,6 +1678,47 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
     // avoid adding it to deps to keep TypeScript happy and rely on current closure.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [voiceEnabled, autoSendOnVoiceFinalEnabled, currentVoiceLang, clearAutoSendGraceTimer, isIosDevice]);
+
+  // Retry-on-idle for browser STT auto-send: if a timer fired while we were busy,
+  // flush the queued send as soon as we return to idle (if still eligible).
+  useEffect(() => {
+    if (busy !== "idle") return;
+    const pending = pendingVoiceAutoSendRef.current;
+    if (!pending) return;
+
+    const res = resolvePendingVoiceAutoSendOnIdle({
+      pending,
+      busy,
+      currentSessionId: autoSendSessionRef.current,
+      sentForSessionId: autoSendSentForSessionRef.current,
+      lastResultAtMs: voiceLastResultAtMsRef.current,
+      nowMs: Date.now(),
+    });
+
+    if (res.action !== "send") {
+      pendingVoiceAutoSendRef.current = res.pending;
+      return;
+    }
+
+    pendingVoiceAutoSendRef.current = null;
+    autoSendSentForSessionRef.current = res.sessionId;
+    voiceLastFinalRef.current = "";
+    voiceLastTranscriptRef.current = "";
+    clearAutoSendGraceTimer();
+
+    const rec = recognitionRef.current;
+    if (rec) {
+      try {
+        rec.abort?.();
+        rec.stop?.();
+      } catch {
+        // ignore
+      }
+    }
+    recognitionActiveRef.current = false;
+    setListening(false);
+    void sendChatFromText(res.text, { origin: "voice" });
+  }, [busy, clearAutoSendGraceTimer]);
 
   const toggleVoice = useCallback(() => {
     if (!voiceEnabled) return;

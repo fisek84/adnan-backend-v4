@@ -8,6 +8,7 @@ import {
   VOICE_SOFT_END_MS,
   VOICE_HARD_END_MS,
   normalizeVoiceUserTextForSend,
+  resolvePendingVoiceAutoSendOnIdle,
 } from "../.node-test-dist-voice-autosend/voiceAutoSendGuards.js";
 
 test("VOICE_THINKING_PAUSE_MS is 1500ms", () => {
@@ -205,4 +206,36 @@ test("shouldFireVoiceAutoSendAfterGrace: blocks empty text", () => {
     }),
     false
   );
+});
+
+test("retry-on-idle: busy keeps pending", () => {
+  const anchorAtMs = 10_000;
+  const pending = { sessionId: 7, anchorAtMs, graceMs: VOICE_SOFT_END_MS, text: "hello" };
+  const res = resolvePendingVoiceAutoSendOnIdle({
+    pending,
+    busy: "streaming",
+    currentSessionId: 7,
+    sentForSessionId: -1,
+    lastResultAtMs: anchorAtMs,
+    nowMs: anchorAtMs + VOICE_SOFT_END_MS,
+  });
+  assert.equal(res.action, "keep");
+  assert.deepEqual(res.pending, pending);
+});
+
+test("retry-on-idle: idle sends when eligible", () => {
+  const anchorAtMs = 10_000;
+  const pending = { sessionId: 8, anchorAtMs, graceMs: VOICE_SOFT_END_MS, text: "hello" };
+  const res = resolvePendingVoiceAutoSendOnIdle({
+    pending,
+    busy: "idle",
+    currentSessionId: 8,
+    sentForSessionId: -1,
+    lastResultAtMs: anchorAtMs,
+    nowMs: anchorAtMs + VOICE_SOFT_END_MS,
+  });
+  assert.equal(res.action, "send");
+  assert.equal(res.text, "hello");
+  assert.equal(res.sessionId, 8);
+  assert.equal(res.pending, null);
 });

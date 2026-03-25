@@ -9,6 +9,20 @@ export type VoiceAutoSendGraceCheck = {
   text: string;
 };
 
+export type VoiceSendBusyState = "idle" | "submitting" | "streaming" | "error";
+
+export type PendingVoiceAutoSend = {
+  sessionId: number;
+  anchorAtMs: number;
+  graceMs: number;
+  text: string;
+};
+
+export type ResolvePendingVoiceAutoSendResult =
+  | { action: "keep"; pending: PendingVoiceAutoSend }
+  | { action: "drop"; pending: null }
+  | { action: "send"; pending: null; text: string; sessionId: number };
+
 // Voice endpointing thresholds.
 // Two-stage endpointing: thinking pause -> soft end (send) -> hard end (fallback send).
 export const VOICE_THINKING_PAUSE_MS = 1500;
@@ -36,6 +50,41 @@ export function shouldFireVoiceAutoSendAfterGrace(c: VoiceAutoSendGraceCheck): b
   if (c.lastResultAtMs > c.anchorAtMs) return false;
 
   return true;
+}
+
+/**
+ * Minimal deterministic helper for retry-on-idle:
+ * - If UI is busy, keep the pending send.
+ * - When UI becomes idle, re-check eligibility and either send or drop.
+ */
+export function resolvePendingVoiceAutoSendOnIdle(args: {
+  pending: PendingVoiceAutoSend | null;
+  busy: VoiceSendBusyState;
+  currentSessionId: number;
+  sentForSessionId: number;
+  lastResultAtMs: number;
+  nowMs: number;
+}): ResolvePendingVoiceAutoSendResult {
+  const p = args.pending;
+  if (!p) return { action: "drop", pending: null };
+
+  if (args.busy === "submitting" || args.busy === "streaming") {
+    return { action: "keep", pending: p };
+  }
+
+  const ok = shouldFireVoiceAutoSendAfterGrace({
+    sessionId: p.sessionId,
+    currentSessionId: args.currentSessionId,
+    sentForSessionId: args.sentForSessionId,
+    lastResultAtMs: args.lastResultAtMs,
+    anchorAtMs: p.anchorAtMs,
+    nowMs: args.nowMs,
+    graceMs: p.graceMs,
+    text: p.text,
+  });
+
+  if (!ok) return { action: "drop", pending: null };
+  return { action: "send", pending: null, text: p.text, sessionId: p.sessionId };
 }
 
 function _capitalizeFirstLetter(s: string): string {
