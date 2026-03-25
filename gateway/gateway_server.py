@@ -1895,16 +1895,6 @@ def _unwrap_proposal_wrapper_or_raise(
                 wrapper_prompt = _sanitize_prompt_dates(raw_prompt)
                 norm_prompt = normalize_prompt_for_property_parse(raw_prompt)
                 title = strip_prefixes_for_title(norm_prompt)
-                # Fast-path safety: also cut off property clauses when they appear
-                # after sentence punctuation (e.g. "Title. Deadline 3.3.26").
-                m_title_cut = re.search(
-                    r"(?i)(?:[,;\.]|\s{2,})\s*(status|priority|deadline|due\s+date)\b",
-                    title or "",
-                )
-                if m_title_cut:
-                    title = (
-                        (title or "")[: m_title_cut.start()].strip().rstrip(",;:. -–—")
-                    )
                 title = _sanitize_prompt_dates(title)
                 if title:
                     # create_page uses property_specs, while create_* uses structured params.
@@ -1953,6 +1943,46 @@ def _unwrap_proposal_wrapper_or_raise(
                         )
                     except Exception:
                         props = {}
+
+                    # Fast-path safety: cut off property clauses from the title. Prefer
+                    # punctuation/2+spaces, but if we successfully extracted properties,
+                    # allow cutting on a single-space keyword boundary too.
+                    try:
+                        m_title_cut = re.search(
+                            r"(?i)(?:[,;\.]|\s{2,})\s*(status|priority|deadline|due\s+date)\b",
+                            title or "",
+                        )
+                        if not m_title_cut and isinstance(props, dict) and props:
+                            if any(
+                                props.get(k)
+                                for k in ("status", "priority", "deadline", "assignees")
+                            ):
+                                m_title_cut = re.search(
+                                    r"(?i)\b(status|priority|deadline|due\s+date)\b",
+                                    title or "",
+                                )
+                        if m_title_cut and m_title_cut.start() > 0:
+                            title = (
+                                (title or "")[: m_title_cut.start()]
+                                .strip()
+                                .rstrip(",;:. -–—")
+                            )
+
+                        # Propagate the cleaned title into the payload.
+                        if title:
+                            if hi == "create_page":
+                                ps0 = extra_params.get("property_specs")
+                                ps0 = ps0 if isinstance(ps0, dict) else {}
+                                name0 = ps0.get("Name")
+                                name0 = name0 if isinstance(name0, dict) else {}
+                                name0["type"] = "title"
+                                name0["text"] = title
+                                ps0["Name"] = name0
+                                extra_params["property_specs"] = ps0
+                            else:
+                                extra_params["title"] = title
+                    except Exception:
+                        pass
 
                     if isinstance(props, dict) and props:
                         # Map extracted properties into fast-path params.

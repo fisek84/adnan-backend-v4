@@ -238,13 +238,25 @@ class BranchRequestHandler:
         text_norm = re.sub(r"[\r\n]+", ", ", text).strip()
         text_lower = text_norm.lower()
 
+        stop_for_status = re.compile(
+            r"(?i)\b(priority|deadline|due\s+date|rok|assignee|assigned\s+to|owner|nositelj|nosilac|dodijeljen|dodijeljena|odgovoran|odgovorna|responsible|lead|zaduzen|zadu\u017eena)\b"
+        )
+        stop_for_priority = re.compile(
+            r"(?i)\b(status|deadline|due\s+date|rok|assignee|assigned\s+to|owner|nositelj|nosilac|dodijeljen|dodijeljena|odgovoran|odgovorna|responsible|lead|zaduzen|zadu\u017eena)\b"
+        )
+        stop_for_deadline = re.compile(
+            r"(?i)\b(status|priority|assignee|assigned\s+to|owner|nositelj|nosilac|dodijeljen|dodijeljena|odgovoran|odgovorna|responsible|lead|zaduzen|zadu\u017eena)\b"
+        )
+
         def _clean_token(v: str) -> str:
             s = (v or "").strip()
             s = re.sub(r"^[\s\-:]+", "", s)
             s = re.sub(r"[\s\.,;:]+$", "", s)
             return s.strip()
 
-        def _extract_kv(*, key_patterns: List[str]) -> Optional[str]:
+        def _extract_kv(
+            *, key_patterns: List[str], stop_re: Optional[re.Pattern[str]] = None
+        ) -> Optional[str]:
             # Match patterns like:
             #  - "Status: Active" / "STATUS - Active"
             #  - "Status Active"
@@ -254,7 +266,12 @@ class BranchRequestHandler:
                     text_norm,
                 )
                 if m:
-                    return _clean_token(m.group(1) or "")
+                    raw = _clean_token(m.group(1) or "")
+                    if raw and stop_re is not None:
+                        m_stop = stop_re.search(raw)
+                        if m_stop and m_stop.start() > 0:
+                            raw = raw[: m_stop.start()].strip()
+                    return raw
             return None
 
         # Priority patterns
@@ -274,7 +291,9 @@ class BranchRequestHandler:
 
         # Explicit priority segments: "Priority Low" / "Priority: Low" / "Prioritet nizak"
         if "priority" not in properties:
-            raw_prio = _extract_kv(key_patterns=["priority", "prioritet"])
+            raw_prio = _extract_kv(
+                key_patterns=["priority", "prioritet"], stop_re=stop_for_priority
+            )
             if raw_prio:
                 try:
                     from services.coo_translation_service import (  # noqa: PLC0415
@@ -303,7 +322,7 @@ class BranchRequestHandler:
 
         # Explicit status segments: "Status Active" / "Status: Active"
         if "status" not in properties:
-            raw_status = _extract_kv(key_patterns=["status"])
+            raw_status = _extract_kv(key_patterns=["status"], stop_re=stop_for_status)
             if raw_status:
                 properties["status"] = raw_status
 
@@ -312,7 +331,9 @@ class BranchRequestHandler:
         #  - ISO: 2026-01-22
         #  - Dotted: 22.01.2026
         #  - Keyword forms: "Deadline 22.01.2026" / "Deadline: 22.01.2026" / "Due Date 2026-01-22"
-        raw_deadline = _extract_kv(key_patterns=["deadline", "due\\s+date", "rok"])
+        raw_deadline = _extract_kv(
+            key_patterns=["deadline", "due\\s+date", "rok"], stop_re=stop_for_deadline
+        )
         if not raw_deadline:
             m_iso = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", text_norm)
             raw_deadline = m_iso.group(1) if m_iso else None

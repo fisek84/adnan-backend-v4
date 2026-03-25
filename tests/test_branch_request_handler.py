@@ -171,6 +171,12 @@ class TestPropertyExtraction:
 
         assert props.get("deadline") == "2025-12-31"
 
+    def test_extract_status_priority_without_commas(self):
+        text = "Create task Ronaldo x status active priority high."
+        props = BranchRequestHandler._extract_properties(text)
+        assert str(props.get("status") or "").strip().lower() == "active"
+        assert props.get("priority") == "High"
+
 
 class TestOperationBuilding:
     """Test building operations from parsed branch requests."""

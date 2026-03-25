@@ -90,3 +90,16 @@ def test_fast_path_invalid_deadline_is_omitted_and_never_raw() -> None:
 
     assert "deadline" not in params
     _assert_no_raw_substring(body, "31.02.2026")
+
+
+def test_fast_path_create_task_parses_status_priority_without_commas() -> None:
+    prompt = "Create task Ronaldo x status active priority high."
+    body = _post_execute_raw_fast_path(prompt, intent_hint="create_task")
+
+    cmd = body["command"]
+    params = cmd.get("params") or {}
+    assert isinstance(params, dict)
+
+    assert params.get("title") == "Ronaldo x"
+    assert str(params.get("status") or "").strip().lower() == "active"
+    assert params.get("priority") == "High"
