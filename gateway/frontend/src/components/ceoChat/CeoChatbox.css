@@ -141,7 +141,8 @@
 
 .ceoHeaderSettingsRow {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  /* Keep label readable even when select has long text */
+  grid-template-columns: minmax(160px, 1fr) minmax(140px, 180px);
   align-items: center;
   gap: 10px;
   font-size: 12px;
@@ -150,12 +151,22 @@
 
 .ceoHeaderSettingsRow > span {
   min-width: 0;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
+  word-break: normal;
 }
 
 .ceoHeaderSettingsRow input,
 .ceoHeaderSettingsRow select {
   max-width: 100%;
+}
+
+.ceoHeaderSettingsRow select.ceoHeaderSelect {
+  width: 100%;
+  min-width: 0;
+}
+
+.ceoHeaderSettingsRow input[type="checkbox"] {
+  justify-self: end;
 }
 
 .ceoHeaderSettingsRow-stack {
