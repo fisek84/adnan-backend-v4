@@ -118,6 +118,15 @@ test('"koliko imam zadataka" → "Koliko imam zadataka?"', () => {
   assert.equal(normalizeVoiceUserTextForSend("koliko imam zadataka"), "Koliko imam zadataka?");
 });
 
+test("english paragraph with question intent gets '?' and capitalized", () => {
+  const input =
+    "hello we are going to talk about AI development and my AI operating system I want to know who are you how are you helping me and what is your role in the system";
+  assert.equal(
+    normalizeVoiceUserTextForSend(input),
+    "Hello we are going to talk about AI development and my AI operating system I want to know who are you how are you helping me and what is your role in the system?"
+  );
+});
+
 test("shouldFireVoiceAutoSendAfterGrace: blocks if new result arrives after anchor", () => {
   assert.equal(
     shouldFireVoiceAutoSendAfterGrace({

@@ -938,8 +938,15 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
     if (!trimmed0) return;
     if (busy === "submitting" || busy === "streaming") return;
 
-    const wasVoiceInput = opts?.origin === "voice" || lastDraftFromVoiceRef.current;
-    const trimmed = wasVoiceInput ? normalizeVoiceUserTextForSend(trimmed0) : trimmed0;
+    const lower = trimmed0.toLowerCase();
+    const isKnownCommand =
+      lower === NOTION_OPS_ACTIVATE_CMD ||
+      lower === NOTION_OPS_DEACTIVATE_CMD;
+
+    const shouldNormalizePunctuation = !isKnownCommand;
+    const trimmed = shouldNormalizePunctuation
+      ? normalizeVoiceUserTextForSend(trimmed0)
+      : trimmed0;
     if (!trimmed) return;
 
     setBusy("submitting");

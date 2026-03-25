@@ -56,10 +56,19 @@ function _looksLikeQuestion(s: string): boolean {
   const t = s.trim().toLowerCase();
   if (!t) return false;
 
-  // Minimal deterministic heuristic: common question openers (BHS + EN).
-  // Keep deliberately small to avoid changing typed text semantics.
-  const re = /^(koliko|kako|zasto|zašto|sta|šta|gdje|gde|kada|ko|da\s+li|jel|je\s+li|jesi\s+li|mogu\s+li|možeš\s+li|mozes\s+li|what|why|how|when|where|who|can|could|would|should|do|does|did|is|are|am|have|has|will)\b/u;
-  return re.test(t);
+  // Minimal deterministic heuristic for "obvious" questions.
+  // 1) Question openers (BHS + EN)
+  const opener = /^(koliko|kako|zasto|zašto|sta|šta|gdje|gde|kada|ko|da\s+li|jel|je\s+li|jesi\s+li|mogu\s+li|možeš\s+li|mozes\s+li|what|why|how|when|where|who|can|could|would|should|do|does|did|is|are|am|have|has|will)\b/u;
+  if (opener.test(t)) return true;
+
+  // 2) Common embedded question phrases (kept small + explicit)
+  const embedded = /\b(who\s+are\s+you|what\s+is\s+your\s+role|how\s+are\s+you|how\s+do\s+you)\b/u;
+  if (embedded.test(t)) return true;
+
+  // 3) Any explicit question word in the sentence (English only)
+  // Helps cases like: "I want to know who you are ..."
+  const anyQ = /\b(who|what|why|how|when|where)\b/u;
+  return anyQ.test(t);
 }
 
 /**
