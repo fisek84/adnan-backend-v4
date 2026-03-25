@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import os
+import re
 import threading
 import time
 import uuid
@@ -316,6 +317,57 @@ def _chunk_text(text: str, *, max_chars: int = 240) -> list[str]:
     return out
 
 
+_VOICE_DUE_DATE_SPACED_RE = re.compile(
+    r"(?i)\b(?P<key>due\s*date|deadline|rok|due)\b"
+    r"(?P<sep>\s*(?::|=)?\s*)"
+    r"(?P<dd>\d{1,2})\s+(?P<mm>\d{1,2})\s+(?P<yyyy>\d{4})\b"
+)
+
+
+def _normalize_voice_transcript_for_task_create(text: str) -> str:
+    """Minimal normalization to keep voice dictation compatible with task/goal property parsing.
+
+    Root-cause: voice STT often yields spaced dates ("29 03 2026") which break
+    clause boundary detection in COOTranslationService. We normalize only the
+    due/deadline clause form into a single token date ("29.03.2026").
+
+    This is intentionally conservative and voice-only (applied in voice adapters).
+    """
+
+    t = (text or "").strip()
+    if not t:
+        return t
+
+    # Fast-path: only touch strings that contain a due/deadline keyword
+    # and at least some task-ish intent hints.
+    if not re.search(r"(?i)\b(due\s*date|deadline|rok|due)\b", t):
+        return t
+    if not re.search(
+        r"(?i)\b(task|zadatak|todo|to-do|priority|prioritet|status|create|kreiraj|napravi|dodaj)\b",
+        t,
+    ):
+        return t
+
+    def _repl(m: re.Match[str]) -> str:
+        key = (m.group("key") or "").strip()
+        sep = m.group("sep") or " "
+        try:
+            dd = int(m.group("dd"))
+            mm = int(m.group("mm"))
+            yyyy = int(m.group("yyyy"))
+        except Exception:
+            return m.group(0)
+
+        # Basic sanity bounds; avoid rewriting weird numbers.
+        if not (1 <= dd <= 31 and 1 <= mm <= 12 and 1900 <= yyyy <= 2100):
+            return m.group(0)
+
+        # Keep keyword as-is; normalize date to dd.mm.yyyy (single token).
+        return f"{key}{sep}{dd:02d}.{mm:02d}.{yyyy:04d}"
+
+    return _VOICE_DUE_DATE_SPACED_RE.sub(_repl, t)
+
+
 def _ceo_token_enforcement_enabled() -> bool:
     # Mirrors gateway behaviour but kept local to avoid import cycles.
     return _env_true("CEO_TOKEN_ENFORCEMENT", "false")
@@ -614,8 +666,9 @@ async def voice_exec_text(payload: VoiceText, request: Request):
         "context_hint": payload.context_hint,
         "metadata": payload.metadata,
     }
+    forward_text = _normalize_voice_transcript_for_task_create(payload.text)
     resp = await _forward_to_canonical_chat(
-        request, message=payload.text, extra_payload=extra
+        request, message=forward_text, extra_payload=extra
     )
 
     try:
@@ -663,6 +716,7 @@ async def voice_exec(
     try:
         # 1. Transcribe voice → text
         text = await voice_service.transcribe(audio)
+        forward_text = _normalize_voice_transcript_for_task_create(text)
 
         # Optional context (form fields). These are additive and allow callers
         # to keep session/conversation/identity continuity across channels.
@@ -697,7 +751,7 @@ async def voice_exec(
             "output_lang": output_lang,
         }
         resp = await _forward_to_canonical_chat(
-            request, message=text, extra_payload=extra2
+            request, message=forward_text, extra_payload=extra2
         )
 
         try:
@@ -1105,6 +1159,8 @@ async def voice_realtime_ws(websocket: WebSocket):
                         request_id=uuid.uuid4().hex,
                     )
                     continue
+
+                text_in = _normalize_voice_transcript_for_task_create(text_in)
 
                 active_cancelled = False
                 active_request_id = uuid.uuid4().hex
