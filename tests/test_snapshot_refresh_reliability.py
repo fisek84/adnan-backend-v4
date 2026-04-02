@@ -4,6 +4,8 @@ from pathlib import Path
 import yaml
 from fastapi.testclient import TestClient
 
+from tests.auth_utils import auth_headers
+
 
 def _get_app():
     from gateway.gateway_server import app  # noqa: PLC0415
@@ -46,7 +48,10 @@ def test_ceo_console_snapshot_never_empty_kb():
     app = _get_app()
     client = TestClient(app)
 
-    r = client.get("/api/ceo/console/snapshot")
+    r = client.get(
+        "/api/ceo/console/snapshot",
+        headers=auth_headers(sub="snapshot-reliability-user-1"),
+    )
     assert r.status_code == 200
 
     body = r.json()
@@ -110,6 +115,12 @@ def test_refresh_snapshot_execute_raw_never_null_result():
 
     r = client.post(
         "/api/execute/raw",
+        headers=auth_headers(
+            sub="snapshot-reliability-user-2",
+            roles=["ceo"],
+            scopes=["raw_execute"],
+            extra={"X-Initiator": "ceo_chat"},
+        ),
         json={
             "intent": "refresh_snapshot",
             "command": "refresh_snapshot",

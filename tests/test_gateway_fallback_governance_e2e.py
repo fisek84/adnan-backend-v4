@@ -4,6 +4,8 @@ from typing import Any, Dict, Optional
 
 from fastapi.testclient import TestClient
 
+from tests.auth_utils import auth_headers
+
 
 def _mk_ctx_bridge(*, kb_ids: list[str] | None = None) -> Dict[str, Any]:
     kb_ids = kb_ids or ["KB-789"]
@@ -45,6 +47,15 @@ def _mk_ctx_bridge(*, kb_ids: list[str] | None = None) -> Dict[str, Any]:
             ]
         },
     }
+
+
+def _ceo_headers() -> dict[str, str]:
+    return auth_headers(
+        None,
+        sub="gateway-fallback-governance-user",
+        roles=["ceo"],
+        extra={"X-Initiator": "ceo_dashboard"},
+    )
 
 
 def test_gateway_fallback_bridge_injects_context_and_trace_contract(monkeypatch):
@@ -106,7 +117,7 @@ def test_gateway_fallback_bridge_injects_context_and_trace_contract(monkeypatch)
     client = TestClient(gw.app)
     r = client.post(
         "/api/ceo/command",
-        headers={"X-Initiator": "ceo_dashboard"},
+        headers=_ceo_headers(),
         json={"text": "Daj mi kratko stanje.", "data": {"session_id": "conv-e2e-001"}},
     )
 
@@ -205,6 +216,7 @@ def test_gateway_fallback_bridge_allows_notion_write_when_armed(monkeypatch):
     client = TestClient(gw.app)
     r = client.post(
         "/api/ceo/command",
+        headers=_ceo_headers(),
         json={
             "text": "Daj mi kratko stanje.",
             "data": {"session_id": "conv-e2e-armed-001"},

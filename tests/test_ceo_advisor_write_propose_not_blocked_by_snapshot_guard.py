@@ -10,13 +10,14 @@ def test_write_create_goal_not_blocked_by_fact_sensitive_missing_snapshot_guard(
     os.environ.pop("OPENAI_API_KEY", None)
 
     session_id = "test_write_goal_no_snapshot_not_blocked"
-    asyncio.run(set_armed(session_id, True, prompt="arm for test"))
+    principal_sub = "test-principal-write-goal"
+    asyncio.run(set_armed(principal_sub, True, prompt="arm for test"))
 
     agent_input = AgentInput(
         message="Kreiraj cilj: Mjesecni prihod od 5500 BAM, Status active, Priority high",
-        identity_pack={"payload": {"role": "ceo"}},
+        identity_pack={"payload": {"role": "ceo", "sub": principal_sub}},
         snapshot={},
-        metadata={"session_id": session_id},
+        metadata={"session_id": session_id, "principal_sub": principal_sub},
     )
 
     out = asyncio.run(create_ceo_advisor_agent(agent_input, ctx={"memory": {"x": 1}}))
@@ -33,13 +34,14 @@ def test_fact_status_query_without_snapshot_still_hits_fact_sensitive_fallback()
     os.environ.pop("OPENAI_API_KEY", None)
 
     session_id = "test_fact_query_no_snapshot_still_blocked"
-    asyncio.run(set_armed(session_id, True, prompt="arm for test"))
+    principal_sub = "test-principal-fact-query"
+    asyncio.run(set_armed(principal_sub, True, prompt="arm for test"))
 
     agent_input = AgentInput(
         message="Koji je status mojih ciljeva?",
-        identity_pack={"payload": {"role": "ceo"}},
+        identity_pack={"payload": {"role": "ceo", "sub": principal_sub}},
         snapshot={},
-        metadata={"session_id": session_id},
+        metadata={"session_id": session_id, "principal_sub": principal_sub},
     )
 
     out = asyncio.run(create_ceo_advisor_agent(agent_input, ctx={"memory": {"x": 1}}))

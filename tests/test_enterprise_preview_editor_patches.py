@@ -2,11 +2,32 @@ import os
 
 from fastapi.testclient import TestClient
 
+from tests.auth_utils import auth_headers
+
 
 def _get_app():
     from gateway.gateway_server import app  # noqa: PLC0415
 
     return app
+
+
+def _preview_headers() -> dict[str, str]:
+    return auth_headers(
+        None,
+        sub="enterprise-preview-editor-user",
+        roles=["ceo"],
+        extra={"X-Initiator": "ceo_chat"},
+    )
+
+
+def _raw_headers() -> dict[str, str]:
+    return auth_headers(
+        None,
+        sub="enterprise-preview-editor-raw-user",
+        roles=["ceo"],
+        scopes=["raw_execute"],
+        extra={"X-Initiator": "ceo_chat"},
+    )
 
 
 def test_enterprise_preview_editor_flag_off_ignores_patches_in_preview():
@@ -39,7 +60,7 @@ def test_enterprise_preview_editor_flag_off_ignores_patches_in_preview():
 
     r = client.post(
         "/api/execute/preview",
-        headers={"X-Initiator": "ceo_chat"},
+        headers=_preview_headers(),
         json=payload,
     )
     assert r.status_code == 200, r.text
@@ -89,7 +110,7 @@ def test_enterprise_preview_editor_patches_return_canonical_ops_in_preview():
 
     r = client.post(
         "/api/execute/preview",
-        headers={"X-Initiator": "ceo_chat"},
+        headers=_preview_headers(),
         json=payload,
     )
     assert r.status_code == 200, r.text
@@ -133,7 +154,6 @@ def test_enterprise_raw_rejects_read_only_patch_fail_closed():
     payload = {
         "command": "notion_write",
         "intent": "batch_request",
-        "initiator": "ceo_chat",
         "params": {
             "operations": [
                 {
@@ -154,7 +174,7 @@ def test_enterprise_raw_rejects_read_only_patch_fail_closed():
 
     r = client.post(
         "/api/execute/raw",
-        headers={"X-Initiator": "ceo_chat"},
+        headers=_raw_headers(),
         json=payload,
     )
     assert r.status_code == 400, r.text
@@ -204,7 +224,7 @@ def test_enterprise_preview_returns_structured_validation_for_invalid_patch():
 
     r = client.post(
         "/api/execute/preview",
-        headers={"X-Initiator": "ceo_chat"},
+        headers=_preview_headers(),
         json=payload,
     )
     assert r.status_code == 200, r.text
@@ -266,14 +286,13 @@ def test_enterprise_raw_registers_exact_preview_canonical_operations_snapshot():
                 },
             ]
         },
-        "initiator": "ceo_chat",
     }
     patches = [{"op_id": "goal_1", "changes": {"Deadline": "2030-02-03"}}]
 
     # 1) Preview with patches -> capture canonical operations
     preview_r = client.post(
         "/api/execute/preview",
-        headers={"X-Initiator": "ceo_chat"},
+        headers=_preview_headers(),
         json={**proposal, "patches": patches},
     )
     assert preview_r.status_code == 200, preview_r.text
@@ -286,7 +305,7 @@ def test_enterprise_raw_registers_exact_preview_canonical_operations_snapshot():
     # 2) Raw with SAME proposal + patches -> must register the exact same operations
     raw_r = client.post(
         "/api/execute/raw",
-        headers={"X-Initiator": "ceo_chat"},
+        headers=_raw_headers(),
         json={**proposal, "patches": patches},
     )
     assert raw_r.status_code == 200, raw_r.text

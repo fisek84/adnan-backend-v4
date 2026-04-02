@@ -5,6 +5,17 @@ from typing import Any, Dict
 
 from fastapi.testclient import TestClient
 
+from tests.auth_utils import auth_headers
+
+
+def _ceo_headers() -> dict[str, str]:
+    return auth_headers(
+        None,
+        sub="gateway-fallback-user",
+        roles=["ceo"],
+        extra={"X-Initiator": "ceo_dashboard"},
+    )
+
 
 def test_gateway_fallback_context_bridge_uses_context_and_llm(monkeypatch):
     import gateway.gateway_server as gw
@@ -111,7 +122,7 @@ def test_gateway_fallback_context_bridge_uses_context_and_llm(monkeypatch):
 
     r = client.post(
         "/api/ceo/command",
-        headers={"X-Initiator": "ceo_dashboard"},
+        headers=_ceo_headers(),
         json={
             "text": "Daj mi kratko stanje.",
             "data": {"session_id": "conv-bridge-001"},
@@ -228,6 +239,7 @@ def test_gateway_fallback_disarmed_strips_notion_only(monkeypatch):
     client = TestClient(gw.app)
     r = client.post(
         "/api/ceo/command",
+        headers=_ceo_headers(),
         json={"text": "Daj mi kratko stanje.", "data": {"session_id": "conv-gate-001"}},
     )
     assert r.status_code == 200
@@ -310,6 +322,7 @@ def test_gateway_fallback_trace_contract(monkeypatch):
     client = TestClient(gw.app)
     r = client.post(
         "/api/ceo/command",
+        headers=_ceo_headers(),
         json={
             "text": "Daj mi kratko stanje.",
             "data": {"session_id": "conv-trace-001"},
@@ -397,6 +410,7 @@ def test_gateway_fallback_missing_grounding_blocks(monkeypatch):
     client = TestClient(gw.app)
     r = client.post(
         "/api/ceo/command",
+        headers=_ceo_headers(),
         json={"text": "Daj mi kratko stanje.", "data": {"session_id": "conv-mg-001"}},
     )
     assert r.status_code == 200

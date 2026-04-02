@@ -1,5 +1,7 @@
 from fastapi.testclient import TestClient
 
+from tests.auth_utils import auth_headers
+
 
 def _get_app():
     """
@@ -15,7 +17,7 @@ def test_health_is_liveness_and_always_200():
     app = _get_app()
     client = TestClient(app)
 
-    r = client.get("/health")
+    r = client.get("/health", headers=auth_headers(sub="canon-health-user"))
     assert r.status_code == 200
 
     # Forensic: deterministic runtime fingerprint header + body keys are additive.
@@ -34,7 +36,7 @@ def test_api_health_alias_is_available_and_matches_contract():
     app = _get_app()
     client = TestClient(app)
 
-    r = client.get("/api/health")
+    r = client.get("/api/health", headers=auth_headers(sub="canon-health-user"))
     assert r.status_code == 200
 
     assert isinstance(r.headers.get("X-Runtime-Fingerprint"), str)
@@ -49,7 +51,7 @@ def test_ready_is_readiness_and_can_be_503_when_not_ready():
     app = _get_app()
     client = TestClient(app)
 
-    r = client.get("/ready")
+    r = client.get("/ready", headers=auth_headers(sub="canon-health-user"))
     assert r.status_code in (200, 503)
 
     if r.status_code == 200:
@@ -66,7 +68,9 @@ def test_ceo_console_status_read_only_contract():
     app = _get_app()
     client = TestClient(app)
 
-    r = client.get("/api/ceo-console/status")
+    r = client.get(
+        "/api/ceo-console/status", headers=auth_headers(sub="canon-status-user")
+    )
     assert r.status_code == 200
 
     body = r.json()
@@ -123,6 +127,7 @@ def test_ceo_command_legacy_wrapper_is_read_only():
 
     r = client.post(
         "/api/ceo/command",
+        headers=auth_headers(sub="canon-ceo-user"),
         json={"input_text": "napravi cilj test cilj, prioritet High, status Active"},
     )
     assert r.status_code == 200
@@ -138,7 +143,9 @@ def test_ceo_console_snapshot_contains_ssot_payload():
     app = _get_app()
     client = TestClient(app)
 
-    r = client.get("/api/ceo/console/snapshot")
+    r = client.get(
+        "/api/ceo/console/snapshot", headers=auth_headers(sub="canon-snapshot-user")
+    )
     assert r.status_code == 200
 
     body = r.json()
@@ -162,7 +169,11 @@ def test_ceo_command_includes_confidence_risk_block():
     app = _get_app()
     client = TestClient(app)
 
-    r = client.post("/api/ceo/command", json={"input_text": "prikazi stanje"})
+    r = client.post(
+        "/api/ceo/command",
+        headers=auth_headers(sub="canon-ceo-user"),
+        json={"input_text": "prikazi stanje"},
+    )
     assert r.status_code == 200
 
     body = r.json()

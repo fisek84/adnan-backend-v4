@@ -15,6 +15,9 @@ import unittest
 
 from fastapi.testclient import TestClient
 
+from services import notion_armed_store
+from tests.auth_utils import auth_headers
+
 
 # Helper to load the app
 def _load_app():
@@ -69,7 +72,12 @@ class TestCEONotionOpsActivation(unittest.TestCase):
 
         payload = {"session_id": self.test_session_id, "armed": True}
 
-        headers = {"X-CEO-Token": "test_secret_123", "X-Initiator": "ceo_chat"}
+        headers = auth_headers(
+            None,
+            sub="ceo-toggle-user-1",
+            roles=["ceo"],
+            extra={"X-CEO-Token": "test_secret_123", "X-Initiator": "ceo_chat"},
+        )
 
         # Activate
         response = self.client.post(
@@ -80,7 +88,7 @@ class TestCEONotionOpsActivation(unittest.TestCase):
         data = response.json()
         assert data["ok"] is True
         assert data["armed"] is True
-        assert data["session_id"] == self.test_session_id
+        assert data["principal_sub"] == "ceo-toggle-user-1"
 
         # Deactivate
         payload["armed"] = False
@@ -103,14 +111,21 @@ class TestCEONotionOpsActivation(unittest.TestCase):
 
         # No token or wrong token
         response = self.client.post("/api/notion-ops/toggle", json=payload)
-        assert response.status_code == 403, "Should reject request without CEO token"
+        assert response.status_code == 401, "Should reject request without auth"
 
         # Wrong token
-        headers = {"X-CEO-Token": "wrong_token"}
+        headers = auth_headers(
+            None,
+            sub="ceo-toggle-user-2",
+            roles=["ceo"],
+            extra={"X-CEO-Token": "wrong_token"},
+        )
         response = self.client.post(
             "/api/notion-ops/toggle", json=payload, headers=headers
         )
-        assert response.status_code == 403, "Should reject request with wrong CEO token"
+        assert (
+            response.status_code == 200
+        ), "JWT-authenticated CEO principal should still be allowed"
 
     def test_toggle_api_without_enforcement(self):
         """Test that CEO can toggle without enforcement when X-Initiator is set."""
@@ -121,7 +136,12 @@ class TestCEONotionOpsActivation(unittest.TestCase):
         payload = {"session_id": self.test_session_id, "armed": True}
 
         # Should work with CEO indicator header
-        headers = {"X-Initiator": "ceo_chat"}
+        headers = auth_headers(
+            None,
+            sub="ceo-toggle-user-3",
+            roles=["ceo"],
+            extra={"X-Initiator": "ceo_chat"},
+        )
         response = self.client.post(
             "/api/notion-ops/toggle", json=payload, headers=headers
         )
@@ -172,7 +192,12 @@ class TestCEONotionOpsActivation(unittest.TestCase):
         # CEO should be able to toggle even with safe mode on
         payload = {"session_id": self.test_session_id, "armed": True}
 
-        headers = {"X-Initiator": "ceo_chat"}
+        headers = auth_headers(
+            None,
+            sub="ceo-toggle-user-4",
+            roles=["ceo"],
+            extra={"X-Initiator": "ceo_chat"},
+        )
         response = self.client.post(
             "/api/notion-ops/toggle", json=payload, headers=headers
         )
@@ -189,13 +214,25 @@ class TestCEONotionOpsActivation(unittest.TestCase):
         os.environ["CEO_TOKEN_ENFORCEMENT"] = "true"
         os.environ["CEO_APPROVAL_TOKEN"] = "test_secret_123"
 
-        headers = {"X-CEO-Token": "test_secret_123", "X-Initiator": "ceo_chat"}
+        toggle_headers = auth_headers(
+            None,
+            sub="ceo-toggle-user-5",
+            roles=["ceo"],
+            extra={"X-CEO-Token": "test_secret_123", "X-Initiator": "ceo_chat"},
+        )
+
+        toggle_response = self.client.post(
+            "/api/notion-ops/toggle",
+            json={"session_id": self.test_session_id, "armed": True},
+            headers=toggle_headers,
+        )
+        assert toggle_response.status_code == 200, toggle_response.text
 
         # Test bulk create (should bypass safe mode for CEO)
         payload = {"items": [{"type": "task", "title": "Test CEO task"}]}
 
         response = self.client.post(
-            "/api/notion-ops/bulk/create", json=payload, headers=headers
+            "/api/notion-ops/bulk/create", json=payload, headers=toggle_headers
         )
         # Should succeed for CEO even with safe mode
         assert response.status_code in [
@@ -210,10 +247,26 @@ class TestCEONotionOpsActivation(unittest.TestCase):
         os.environ["OPS_SAFE_MODE"] = "true"
         os.environ["CEO_TOKEN_ENFORCEMENT"] = "false"
 
-        # Non-CEO user (no X-Initiator header)
+        notion_armed_store.set(
+            "non-ceo-safe-mode-user",
+            {
+                "armed": True,
+                "status": "armed",
+                "armed_by_sub": "non-ceo-safe-mode-user",
+            },
+        )
+
         payload = {"items": [{"type": "task", "title": "Test task"}]}
 
-        response = self.client.post("/api/notion-ops/bulk/create", json=payload)
+        response = self.client.post(
+            "/api/notion-ops/bulk/create",
+            json=payload,
+            headers=auth_headers(
+                None,
+                sub="non-ceo-safe-mode-user",
+                roles=["user"],
+            ),
+        )
         assert response.status_code == 403, "Non-CEO should be blocked by safe mode"
         assert "OPS_SAFE_MODE" in response.text
 
@@ -225,7 +278,12 @@ class TestCEONotionOpsActivation(unittest.TestCase):
         # Force offline mode to keep it deterministic and avoid network IO.
         os.environ.pop("OPENAI_API_KEY", None)
 
-        headers = {"X-Initiator": "ceo_chat"}
+        headers = auth_headers(
+            None,
+            sub="ceo-toggle-user-6",
+            roles=["ceo"],
+            extra={"X-Initiator": "ceo_chat"},
+        )
 
         # Activate via toggle API
         toggle_payload = {"session_id": self.test_session_id, "armed": True}
@@ -234,7 +292,7 @@ class TestCEONotionOpsActivation(unittest.TestCase):
         )
         assert response.status_code == 200
 
-        # Check state via chat
+        # Chat remains public and should stay stable even though persistent ARM is principal-based.
         chat_payload = {
             "message": "status check",
             "session_id": self.test_session_id,
@@ -244,9 +302,9 @@ class TestCEONotionOpsActivation(unittest.TestCase):
         assert response.status_code == 200
 
         data = response.json()
-        # State should be armed
+        assert data.get("read_only") is True
         if "notion_ops" in data:
-            assert data["notion_ops"]["armed"] is True
+            assert isinstance(data["notion_ops"], dict)
 
     def test_shared_state_module(self):
         """Test that the shared state module works correctly."""

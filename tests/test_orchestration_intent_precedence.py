@@ -291,10 +291,10 @@ def test_execution_dispatch_requires_armed_and_approved(monkeypatch):
     # Approval is required by governance for notion_write.
     monkeypatch.setattr(orch.approvals, "is_fully_approved", lambda _aid: True)
 
-    session_id = "session_test_exec_notion"
+    principal_sub = "principal_test_exec_notion"
 
     # 1) DISARMED -> must not dispatch.
-    asyncio.run(set_armed(session_id, False, prompt="test"))
+    asyncio.run(set_armed(principal_sub, False, prompt="test"))
 
     cmd = AICommand(
         command="notion_write",
@@ -302,7 +302,10 @@ def test_execution_dispatch_requires_armed_and_approved(monkeypatch):
         params={"db_key": "goals", "property_specs": {}},
         initiator="ceo_chat",
         approval_id="approval_test_1",
-        metadata={"session_id": session_id},
+        metadata={
+            "session_id": "session_test_exec_notion",
+            "principal_sub": principal_sub,
+        },
     )
 
     res1 = asyncio.run(orch.execute(cmd))
@@ -311,7 +314,7 @@ def test_execution_dispatch_requires_armed_and_approved(monkeypatch):
     assert called["count"] == 0
 
     # 2) ARMED + approved -> must dispatch.
-    asyncio.run(set_armed(session_id, True, prompt="test"))
+    asyncio.run(set_armed(principal_sub, True, prompt="test"))
 
     cmd2 = AICommand(
         command="notion_write",
@@ -319,7 +322,10 @@ def test_execution_dispatch_requires_armed_and_approved(monkeypatch):
         params={"db_key": "goals", "property_specs": {}},
         initiator="ceo_chat",
         approval_id="approval_test_2",
-        metadata={"session_id": session_id},
+        metadata={
+            "session_id": "session_test_exec_notion",
+            "principal_sub": principal_sub,
+        },
     )
 
     res2 = asyncio.run(orch.execute(cmd2))

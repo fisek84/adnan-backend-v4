@@ -1,5 +1,7 @@
 from fastapi.testclient import TestClient
 
+from tests.auth_utils import auth_headers
+
 
 # Pokušaj najčešćih entrypoint-a za app
 def _load_app():
@@ -13,6 +15,15 @@ def _load_app():
         return app
 
 
+def _preview_headers() -> dict[str, str]:
+    return auth_headers(
+        None,
+        sub="execute-preview-kv-user",
+        roles=["ceo"],
+        extra={"X-Initiator": "ceo_chat"},
+    )
+
+
 def test_execute_preview_wrapper_applies_prompt_kv_patch_and_title_cutoff():
     app = _load_app()
     client = TestClient(app)
@@ -20,7 +31,6 @@ def test_execute_preview_wrapper_applies_prompt_kv_patch_and_title_cutoff():
     payload = {
         "command": "ceo.command.propose",
         "intent": "ceo.command.propose",
-        "initiator": "ceo_chat",
         "params": {
             "intent_hint": "create_goal",
             "prompt": (
@@ -36,7 +46,7 @@ def test_execute_preview_wrapper_applies_prompt_kv_patch_and_title_cutoff():
     r = client.post(
         "/api/execute/preview",
         json=payload,
-        headers={"X-Initiator": "ceo_chat"},
+        headers=_preview_headers(),
     )
     assert r.status_code == 200, r.text
 
@@ -87,7 +97,6 @@ def test_execute_preview_wrapper_create_page_tasks_title_does_not_include_proper
     payload = {
         "command": "ceo.command.propose",
         "intent": "ceo.command.propose",
-        "initiator": "ceo_chat",
         "params": {
             "intent_hint": "create_page",
             "db_key": "tasks",
@@ -101,7 +110,7 @@ def test_execute_preview_wrapper_create_page_tasks_title_does_not_include_proper
     r = client.post(
         "/api/execute/preview",
         json=payload,
-        headers={"X-Initiator": "ceo_chat"},
+        headers=_preview_headers(),
     )
     assert r.status_code == 200, r.text
 

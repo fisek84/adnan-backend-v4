@@ -6,6 +6,8 @@ from typing import Any, Dict
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.auth_utils import auth_headers
+
 
 # Keep boot deterministic in unit tests.
 os.environ.setdefault("GATEWAY_SKIP_KNOWLEDGE_SYNC", "1")
@@ -115,7 +117,10 @@ def test_ceo_console_snapshot_adds_world_state_snapshot_without_notion_calls(
     # Act
     app = _get_app()
     client = TestClient(app)
-    r = client.get("/api/ceo/console/snapshot")
+    r = client.get(
+        "/api/ceo/console/snapshot",
+        headers=auth_headers(monkeypatch, sub="ceo-world-state-user"),
+    )
 
     # Assert
     assert r.status_code == 200

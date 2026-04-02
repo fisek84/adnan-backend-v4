@@ -1,10 +1,21 @@
 from fastapi.testclient import TestClient
 
+from tests.auth_utils import auth_headers
+
 
 def _get_app():
     from gateway.gateway_server import app  # noqa: PLC0415
 
     return app
+
+
+def _preview_headers() -> dict[str, str]:
+    return auth_headers(
+        None,
+        sub="execute-preview-prompt-user",
+        roles=["ceo"],
+        extra={"X-Initiator": "ceo_chat"},
+    )
 
 
 def _name_text_from_preview(props_preview: dict) -> str:
@@ -38,7 +49,7 @@ def test_execute_preview_notion_write_create_goal_prompt_parses_status_priority(
 
     r = client.post(
         "/api/execute/preview",
-        headers={"X-Initiator": "ceo_chat"},
+        headers=_preview_headers(),
         json=payload,
     )
     assert r.status_code == 200, r.text
@@ -99,7 +110,7 @@ def test_execute_preview_notion_write_prompt_readonly_ignored():
 
     r = client.post(
         "/api/execute/preview",
-        headers={"X-Initiator": "ceo_chat"},
+        headers=_preview_headers(),
         json=payload,
     )
     assert r.status_code == 200, r.text
@@ -136,7 +147,7 @@ def test_execute_preview_notion_write_legacy_title_only_no_prompt_no_parsing():
 
     r = client.post(
         "/api/execute/preview",
-        headers={"X-Initiator": "ceo_chat"},
+        headers=_preview_headers(),
         json=payload,
     )
     assert r.status_code == 200, r.text

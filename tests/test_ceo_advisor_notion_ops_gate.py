@@ -10,11 +10,12 @@ def test_ceo_advisor_strips_write_proposals_when_notion_ops_disarmed():
     os.environ.pop("OPENAI_API_KEY", None)
 
     session_id = "test_session_notion_ops_disarmed"
-    asyncio.run(set_armed(session_id, False, prompt="test"))
+    principal_sub = "test-principal-notion-ops-disarmed"
+    asyncio.run(set_armed(principal_sub, False, prompt="test"))
 
     agent_input = AgentInput(
         message="napravi sedmicni plan prioriteta",
-        identity_pack={"payload": {"role": "ceo"}},
+        identity_pack={"payload": {"role": "ceo", "sub": principal_sub}},
         snapshot={
             "payload": {
                 "tasks": [],
@@ -22,7 +23,7 @@ def test_ceo_advisor_strips_write_proposals_when_notion_ops_disarmed():
                 "projects": [],
             }
         },
-        metadata={"session_id": session_id},
+        metadata={"session_id": session_id, "principal_sub": principal_sub},
     )
 
     out = asyncio.run(create_ceo_advisor_agent(agent_input, ctx={"memory": {"x": 1}}))
@@ -37,11 +38,12 @@ def test_ceo_advisor_allows_write_proposals_when_notion_ops_armed():
     os.environ.pop("OPENAI_API_KEY", None)
 
     session_id = "test_session_notion_ops_armed"
-    asyncio.run(set_armed(session_id, True, prompt="test"))
+    principal_sub = "test-principal-notion-ops-armed"
+    asyncio.run(set_armed(principal_sub, True, prompt="test"))
 
     agent_input = AgentInput(
         message="napravi sedmicni plan prioriteta",
-        identity_pack={"payload": {"role": "ceo"}},
+        identity_pack={"payload": {"role": "ceo", "sub": principal_sub}},
         snapshot={
             "payload": {
                 "tasks": [],
@@ -49,7 +51,7 @@ def test_ceo_advisor_allows_write_proposals_when_notion_ops_armed():
                 "projects": [],
             }
         },
-        metadata={"session_id": session_id},
+        metadata={"session_id": session_id, "principal_sub": principal_sub},
     )
 
     out = asyncio.run(create_ceo_advisor_agent(agent_input, ctx={"memory": {"x": 1}}))

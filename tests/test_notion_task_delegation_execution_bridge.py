@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
+from tests.auth_utils import auth_headers
+
 
 def _load_app():
     try:
@@ -109,8 +111,19 @@ def test_execute_raw_approve_runs_existing_delegate_path_and_no_notion_write(
         agent_id="agent_x",
         initiator="ceo_chat",
     )
+    payload.pop("initiator", None)
 
-    exec_r = client.post("/api/execute/raw", json=payload)
+    exec_r = client.post(
+        "/api/execute/raw",
+        headers=auth_headers(
+            None,
+            sub="notion-task-delegation-user",
+            roles=["ceo"],
+            scopes=["raw_execute"],
+            extra={"X-Initiator": "ceo_chat"},
+        ),
+        json=payload,
+    )
     assert exec_r.status_code == 200, exec_r.text
     exec_body = exec_r.json()
     assert exec_body.get("execution_state") == "BLOCKED"
@@ -119,7 +132,12 @@ def test_execute_raw_approve_runs_existing_delegate_path_and_no_notion_write(
 
     approve_r = client.post(
         "/api/ai-ops/approval/approve",
-        headers={"X-Initiator": "ceo_chat"},
+        headers=auth_headers(
+            None,
+            sub="notion-task-delegation-approver",
+            roles=["ops_approver"],
+            extra={"X-Initiator": "ceo_chat"},
+        ),
         json={"approval_id": approval_id, "approved_by": "test"},
     )
     assert approve_r.status_code == 200, approve_r.text

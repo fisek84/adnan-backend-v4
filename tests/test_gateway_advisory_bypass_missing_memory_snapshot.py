@@ -5,6 +5,8 @@ from typing import Any, Dict
 
 from fastapi.testclient import TestClient
 
+from tests.auth_utils import auth_headers
+
 
 class _FakeAgentOut:
     def __init__(self, payload: Dict[str, Any]):
@@ -53,6 +55,15 @@ def _ctx_bridge_missing_memory_snapshot() -> Dict[str, Any]:
     }
 
 
+def _ceo_headers() -> dict[str, str]:
+    return auth_headers(
+        None,
+        sub="gateway-advisory-user",
+        roles=["ceo"],
+        extra={"X-Initiator": "ceo_dashboard"},
+    )
+
+
 def test_gateway_advisory_bypass_missing_memory_snapshot_a(monkeypatch):
     gw = _force_gateway_fallback_router(monkeypatch)
 
@@ -84,7 +95,7 @@ def test_gateway_advisory_bypass_missing_memory_snapshot_a(monkeypatch):
     client = TestClient(gw.app)
     r = client.post(
         "/api/ceo/command",
-        headers={"X-Initiator": "ceo_dashboard"},
+        headers=_ceo_headers(),
         json={
             "text": "Kako da upravljam mislima i napravim bolji plan",
             "data": {"session_id": "gw-adv-1"},
@@ -139,7 +150,7 @@ def test_gateway_advisory_bypass_missing_memory_snapshot_b(monkeypatch):
     client = TestClient(gw.app)
     r = client.post(
         "/api/ceo/command",
-        headers={"X-Initiator": "ceo_dashboard"},
+        headers=_ceo_headers(),
         json={
             "text": "Kako da poboljšam fokus i donesem bolju odluku",
             "data": {"session_id": "gw-adv-2"},
@@ -183,7 +194,7 @@ def test_gateway_fact_lookup_missing_memory_snapshot_still_returns_canonical_no_
     client = TestClient(gw.app)
     r = client.post(
         "/api/ceo/command",
-        headers={"X-Initiator": "ceo_dashboard"},
+        headers=_ceo_headers(),
         json={
             "text": "Koji je glavni grad Francuske?",
             "data": {"session_id": "gw-fact-1"},

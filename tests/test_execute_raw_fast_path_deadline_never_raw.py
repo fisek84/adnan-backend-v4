@@ -5,6 +5,7 @@ import json
 from fastapi.testclient import TestClient
 
 from models.canon import PROPOSAL_WRAPPER_INTENT
+from tests.auth_utils import auth_headers
 
 
 def _get_app():
@@ -19,10 +20,16 @@ def _post_execute_raw_fast_path(prompt: str, *, intent_hint: str) -> dict:
 
     r = client.post(
         "/api/execute/raw",
+        headers=auth_headers(
+            None,
+            sub="execute-raw-fast-path-user",
+            roles=["ceo"],
+            scopes=["raw_execute"],
+            extra={"X-Initiator": "ceo_chat"},
+        ),
         json={
             "command": PROPOSAL_WRAPPER_INTENT,
             "intent": PROPOSAL_WRAPPER_INTENT,
-            "initiator": "ceo_chat",
             "params": {
                 "prompt": prompt,
                 "intent_hint": intent_hint,

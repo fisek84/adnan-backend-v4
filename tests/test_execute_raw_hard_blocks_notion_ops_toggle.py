@@ -1,5 +1,7 @@
 from fastapi.testclient import TestClient
 
+from tests.auth_utils import auth_headers
+
 
 def _load_app():
     try:
@@ -18,11 +20,17 @@ def test_execute_raw_hard_blocks_notion_ops_toggle_creating_approval():
 
     r = client.post(
         "/api/execute/raw",
+        headers=auth_headers(
+            None,
+            sub="execute-raw-toggle-user",
+            roles=["ceo"],
+            scopes=["raw_execute"],
+            extra={"X-Initiator": "ceo_chat"},
+        ),
         json={
             "command": "notion_ops_toggle",
             "intent": "notion_ops_toggle",
             "params": {"session_id": "s1", "armed": True},
-            "initiator": "ceo_chat",
         },
     )
     assert r.status_code == 200, r.text

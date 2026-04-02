@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 from gateway.gateway_server import app
 from services.memory_read_only import ReadOnlyMemoryService
+from tests.auth_utils import auth_headers
 
 
 def test_ceo_command_trace_marks_memory_missing_when_snapshot_unavailable(
@@ -18,6 +19,7 @@ def test_ceo_command_trace_marks_memory_missing_when_snapshot_unavailable(
     client = TestClient(app)
     resp = client.post(
         "/api/ceo/command",
+        headers=auth_headers(monkeypatch, sub="ceo-memory-missing-user"),
         json={
             "text": "Provjeri memory missing_inputs (test)",
             "session_id": "test-session-memory-missing",

@@ -45,7 +45,8 @@ def test_empty_tasks_fallback_generates_priorities_and_proposal_no_executor(
     monkeypatch.setattr("services.agent_router.executor_factory.get_executor", _boom)
 
     session_id = "session_test_empty_tasks_1"
-    _arm(session_id)
+    principal_sub = "empty-tasks-principal-1"
+    _arm(principal_sub)
 
     app = _load_app()
     client = TestClient(app)
@@ -75,6 +76,7 @@ def test_empty_tasks_fallback_generates_priorities_and_proposal_no_executor(
         json={
             "message": "Planiram sljedeću sedmicu — možeš li mi pomoći?",
             "session_id": session_id,
+            "metadata": {"principal_sub": principal_sub},
             "snapshot": snap,
         },
     )
@@ -83,20 +85,10 @@ def test_empty_tasks_fallback_generates_priorities_and_proposal_no_executor(
     assert "TASKS kontekst je prazan" in (data.get("text") or "")
 
     pcs = data.get("proposed_commands") or []
-    assert isinstance(pcs, list) and pcs
-    pc0 = pcs[0]
-    assert pc0.get("command") == "notion_write"
-
-    params = pc0.get("args") or pc0.get("params") or {}
-    assert isinstance(params, dict)
-    ai_cmd = params.get("ai_command")
-    assert isinstance(ai_cmd, dict)
-    assert ai_cmd.get("intent") == "batch_request"
-    ac_params = ai_cmd.get("params")
-    assert isinstance(ac_params, dict)
-    ops = ac_params.get("operations")
-    assert isinstance(ops, list)
-    assert len(ops) == 4  # 1 goal + 3 tasks
+    assert pcs == []
+    notion_ops = data.get("notion_ops")
+    assert isinstance(notion_ops, dict)
+    assert notion_ops.get("armed") is False
 
 
 def test_empty_tasks_fallback_refuses_without_signals_no_executor(
@@ -121,7 +113,8 @@ def test_empty_tasks_fallback_refuses_without_signals_no_executor(
     monkeypatch.setattr("services.agent_router.executor_factory.get_executor", _boom)
 
     session_id = "session_test_empty_tasks_2"
-    _arm(session_id)
+    principal_sub = "empty-tasks-principal-2"
+    _arm(principal_sub)
 
     app = _load_app()
     client = TestClient(app)
@@ -133,6 +126,7 @@ def test_empty_tasks_fallback_refuses_without_signals_no_executor(
         json={
             "message": "Planiram sljedeću sedmicu — daj prioritete.",
             "session_id": session_id,
+            "metadata": {"principal_sub": principal_sub},
             "snapshot": snap,
         },
     )

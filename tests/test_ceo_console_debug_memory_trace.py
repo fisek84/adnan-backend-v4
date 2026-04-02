@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from gateway.gateway_server import app
+from tests.auth_utils import auth_headers
 
 
 def test_ceo_console_command_debug_includes_memory_trace_fields() -> None:
@@ -10,6 +11,7 @@ def test_ceo_console_command_debug_includes_memory_trace_fields() -> None:
 
     resp = client.post(
         "/api/ceo-console/command",
+        headers=auth_headers(sub="ceo-debug-memory-user"),
         json={
             "text": "Debug memory trace fields (test)",
             "session_id": "test-ceo-console-debug-memory-trace",

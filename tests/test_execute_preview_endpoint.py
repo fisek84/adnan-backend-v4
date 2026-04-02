@@ -1,5 +1,7 @@
 from fastapi.testclient import TestClient
 
+from tests.auth_utils import auth_headers
+
 
 def _title_text_from_props_preview(props_preview: dict) -> str:
     name = props_preview.get("Name") or props_preview.get("Project Name") or {}
@@ -31,6 +33,15 @@ def _get_app():
     return app
 
 
+def _preview_headers() -> dict[str, str]:
+    return auth_headers(
+        None,
+        sub="execute-preview-user",
+        roles=["ceo"],
+        extra={"X-Initiator": "ceo_chat"},
+    )
+
+
 def test_execute_preview_requires_ceo_header():
     app = _get_app()
     client = TestClient(app)
@@ -39,7 +50,7 @@ def test_execute_preview_requires_ceo_header():
         "/api/execute/preview",
         json={"command": "notion_write", "intent": "create_page", "params": {}},
     )
-    assert r.status_code == 403
+    assert r.status_code == 401
 
 
 def test_execute_preview_notion_write_shape():
@@ -63,7 +74,7 @@ def test_execute_preview_notion_write_shape():
 
     r = client.post(
         "/api/execute/preview",
-        headers={"X-Initiator": "ceo_chat"},
+        headers=_preview_headers(),
         json=payload,
     )
     assert r.status_code == 200
@@ -119,7 +130,7 @@ def test_execute_preview_unwraps_ai_command_envelope():
 
     r = client.post(
         "/api/execute/preview",
-        headers={"X-Initiator": "ceo_chat"},
+        headers=_preview_headers(),
         json=payload,
     )
     assert r.status_code == 200
@@ -170,7 +181,7 @@ def test_execute_preview_batch_request_rows():
 
     r = client.post(
         "/api/execute/preview",
-        headers={"X-Initiator": "ceo_chat"},
+        headers=_preview_headers(),
         json=payload,
     )
     assert r.status_code == 200
@@ -249,7 +260,7 @@ def test_execute_preview_wrapper_multi_task_blocks_batch_request_clean_fields():
 
     r = client.post(
         "/api/execute/preview",
-        headers={"X-Initiator": "ceo_chat"},
+        headers=_preview_headers(),
         json=payload,
     )
     assert r.status_code == 200, r.text
@@ -303,7 +314,7 @@ def test_execute_preview_wrapper_single_task_still_single_create_task():
 
     r = client.post(
         "/api/execute/preview",
-        headers={"X-Initiator": "ceo_chat"},
+        headers=_preview_headers(),
         json=payload,
     )
     assert r.status_code == 200, r.text
@@ -336,7 +347,7 @@ def test_execute_preview_wrapper_multi_task_blocks_splits_task_9_and_10():
 
     r = client.post(
         "/api/execute/preview",
-        headers={"X-Initiator": "ceo_chat"},
+        headers=_preview_headers(),
         json=payload,
     )
     assert r.status_code == 200, r.text
@@ -370,7 +381,7 @@ def test_execute_preview_wrapper_autodetect_intent_builds_table():
 
     r = client.post(
         "/api/execute/preview",
-        headers={"X-Initiator": "ceo_chat"},
+        headers=_preview_headers(),
         json=payload,
     )
     assert r.status_code == 200
@@ -404,7 +415,7 @@ def test_execute_preview_wrapper_goal_with_explicit_task_list_builds_batch_rows(
 
     r = client.post(
         "/api/execute/preview",
-        headers={"X-Initiator": "ceo_chat"},
+        headers=_preview_headers(),
         json=payload,
     )
     assert r.status_code == 200
@@ -454,7 +465,7 @@ def test_execute_preview_wrapper_goal_with_task_colon_list_builds_batch_rows():
 
     r = client.post(
         "/api/execute/preview",
-        headers={"X-Initiator": "ceo_chat"},
+        headers=_preview_headers(),
         json=payload,
     )
     assert r.status_code == 200
@@ -495,7 +506,7 @@ def test_execute_preview_wrapper_goal_with_single_task_segment_builds_batch_rows
 
     r = client.post(
         "/api/execute/preview",
-        headers={"X-Initiator": "ceo_chat"},
+        headers=_preview_headers(),
         json=payload,
     )
     assert r.status_code == 200
@@ -534,7 +545,7 @@ def test_execute_preview_wrapper_kreiraj_cilj_i_task_lezi_batch_rows():
 
     r = client.post(
         "/api/execute/preview",
-        headers={"X-Initiator": "ceo_chat"},
+        headers=_preview_headers(),
         json=payload,
     )
     assert r.status_code == 200
@@ -576,7 +587,7 @@ def test_execute_preview_wrapper_goal_with_task_assignee_builds_people_spec():
 
     r = client.post(
         "/api/execute/preview",
-        headers={"X-Initiator": "ceo_chat"},
+        headers=_preview_headers(),
         json=payload,
     )
     assert r.status_code == 200
@@ -647,7 +658,7 @@ def test_execute_preview_wrapper_multiline_goal_properties_are_extracted():
 
     r = client.post(
         "/api/execute/preview",
-        headers={"X-Initiator": "ceo_chat"},
+        headers=_preview_headers(),
         json=payload,
     )
     assert r.status_code == 200
@@ -691,7 +702,7 @@ def test_execute_preview_wrapper_singleline_goal_properties_are_extracted():
 
     r = client.post(
         "/api/execute/preview",
-        headers={"X-Initiator": "ceo_chat"},
+        headers=_preview_headers(),
         json=payload,
     )
     assert r.status_code == 200
@@ -722,7 +733,7 @@ def test_execute_preview_wrapper_multiline_task_properties_are_extracted():
 
     r = client.post(
         "/api/execute/preview",
-        headers={"X-Initiator": "ceo_chat"},
+        headers=_preview_headers(),
         json=payload,
     )
     assert r.status_code == 200
@@ -766,7 +777,7 @@ def test_execute_preview_wrapper_singleline_task_properties_are_extracted():
 
     r = client.post(
         "/api/execute/preview",
-        headers={"X-Initiator": "ceo_chat"},
+        headers=_preview_headers(),
         json=payload,
     )
     assert r.status_code == 200

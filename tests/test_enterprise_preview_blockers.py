@@ -1,6 +1,8 @@
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.auth_utils import auth_headers
+
 
 @pytest.fixture(autouse=True)
 def _enable_enterprise_preview_editor(monkeypatch):
@@ -21,6 +23,15 @@ def _find_issue_for_op(issues, *, op_id: str, field: str, code: str):
             continue
         return it
     return None
+
+
+def _preview_headers() -> dict[str, str]:
+    return auth_headers(
+        None,
+        sub="enterprise-preview-blockers-user",
+        roles=["ceo"],
+        extra={"X-Initiator": "ceo_chat"},
+    )
 
 
 def test_preview_has_blockers_and_can_approve_false_for_invalid_level():
@@ -57,7 +68,9 @@ def test_preview_has_blockers_and_can_approve_false_for_invalid_level():
     }
 
     r = client.post(
-        "/api/execute/preview", json=payload, headers={"X-Initiator": "ceo_chat"}
+        "/api/execute/preview",
+        json=payload,
+        headers=_preview_headers(),
     )
     assert r.status_code == 200
     data = r.json()
@@ -118,7 +131,7 @@ def test_preview_patches_fix_invalid_level_clears_blockers():
     r0 = client.post(
         "/api/execute/preview",
         json={**base, "patches": []},
-        headers={"X-Initiator": "ceo_chat"},
+        headers=_preview_headers(),
     )
     assert r0.status_code == 200
     notion0 = r0.json().get("notion")
@@ -132,7 +145,7 @@ def test_preview_patches_fix_invalid_level_clears_blockers():
             **base,
             "patches": [{"op_id": "g1", "changes": {"Level": "Goal"}}],
         },
-        headers={"X-Initiator": "ceo_chat"},
+        headers=_preview_headers(),
     )
     assert r1.status_code == 200
     notion1 = r1.json().get("notion")

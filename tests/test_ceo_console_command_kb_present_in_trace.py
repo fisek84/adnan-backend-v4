@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from gateway.gateway_server import app
+from tests.auth_utils import auth_headers
 
 
 def test_ceo_command_trace_marks_kb_present() -> None:
@@ -10,6 +11,7 @@ def test_ceo_command_trace_marks_kb_present() -> None:
 
     resp = client.post(
         "/api/ceo/command",
+        headers=auth_headers(sub="ceo-kb-present-user"),
         json={
             "text": "Daj kratak pregled statusa. (test)",
             "session_id": "test-session-kb-present",

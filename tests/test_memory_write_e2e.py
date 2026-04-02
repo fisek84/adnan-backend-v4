@@ -1,6 +1,7 @@
 from fastapi.testclient import TestClient
 
 from models.canon import PROPOSAL_WRAPPER_INTENT
+from tests.auth_utils import auth_headers
 
 
 def _load_app():
@@ -74,12 +75,18 @@ def test_memory_write_end_to_end_chat_to_approve_to_execute_updates_snapshot():
     # Create approval via /api/execute/raw
     exec_r = client.post(
         "/api/execute/raw",
+        headers=auth_headers(
+            None,
+            sub="memory-write-user",
+            roles=["ceo"],
+            scopes=["raw_execute"],
+            extra={"X-Initiator": "ceo_chat"},
+        ),
         json={
             "command": pc.get("command"),
             "intent": pc.get("intent"),
             "params": args,
             "payload_summary": pc.get("payload_summary") or {},
-            "initiator": "ceo_chat",
         },
     )
     assert exec_r.status_code == 200, exec_r.text
@@ -91,7 +98,12 @@ def test_memory_write_end_to_end_chat_to_approve_to_execute_updates_snapshot():
     # Approve (triggers execution)
     approve_r = client.post(
         "/api/ai-ops/approval/approve",
-        headers={"X-Initiator": "ceo_chat"},
+        headers=auth_headers(
+            None,
+            sub="memory-write-approver",
+            roles=["ops_approver"],
+            extra={"X-Initiator": "ceo_chat"},
+        ),
         json={"approval_id": approval_id, "approved_by": "test"},
     )
     assert approve_r.status_code == 200, approve_r.text
@@ -123,6 +135,13 @@ def test_memory_write_invalid_payload_is_fail_soft_with_diagnostics():
     # Create approval directly for memory_write with invalid grounded_on.
     exec_r = client.post(
         "/api/execute/raw",
+        headers=auth_headers(
+            None,
+            sub="memory-write-invalid-user",
+            roles=["ceo"],
+            scopes=["raw_execute"],
+            extra={"X-Initiator": "ceo_chat"},
+        ),
         json={
             "command": "memory_write",
             "intent": "memory_write",
@@ -139,7 +158,6 @@ def test_memory_write_invalid_payload_is_fail_soft_with_diagnostics():
                 },
             },
             "payload_summary": {"identity_id": "test_identity"},
-            "initiator": "ceo_chat",
         },
     )
     assert exec_r.status_code == 200, exec_r.text
@@ -148,7 +166,12 @@ def test_memory_write_invalid_payload_is_fail_soft_with_diagnostics():
 
     approve_r = client.post(
         "/api/ai-ops/approval/approve",
-        headers={"X-Initiator": "ceo_chat"},
+        headers=auth_headers(
+            None,
+            sub="memory-write-invalid-approver",
+            roles=["ops_approver"],
+            extra={"X-Initiator": "ceo_chat"},
+        ),
         json={"approval_id": approval_id, "approved_by": "test"},
     )
     assert approve_r.status_code == 200, approve_r.text

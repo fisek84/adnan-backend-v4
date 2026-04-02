@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
+from tests.auth_utils import auth_headers
+
 
 def _load_app():
     try:
@@ -71,12 +73,18 @@ def test_agent_result_without_notion_write(monkeypatch):
 
     exec_r = client.post(
         "/api/execute/raw",
+        headers=auth_headers(
+            monkeypatch,
+            sub="agent-result-user-1",
+            roles=["ceo"],
+            scopes=["raw_execute"],
+            extra={"X-Initiator": "ceo_chat"},
+        ),
         json={
             "command": "delegate_agent_task",
             "intent": "delegate_agent_task",
             "params": {"agent_id": "agent_x", "task_text": "Say hello"},
             "payload_summary": {},
-            "initiator": "ceo_chat",
         },
     )
     assert exec_r.status_code == 200, exec_r.text
@@ -87,7 +95,12 @@ def test_agent_result_without_notion_write(monkeypatch):
 
     approve_r = client.post(
         "/api/ai-ops/approval/approve",
-        headers={"X-Initiator": "ceo_chat"},
+        headers=auth_headers(
+            monkeypatch,
+            sub="agent-result-approver-1",
+            roles=["ops_approver"],
+            extra={"X-Initiator": "ceo_chat"},
+        ),
         json={"approval_id": approval_id, "approved_by": "test"},
     )
     assert approve_r.status_code == 200, approve_r.text
@@ -168,6 +181,13 @@ def test_agent_result_with_notion_write_returns_pending_next_action(monkeypatch)
 
     exec_r = client.post(
         "/api/execute/raw",
+        headers=auth_headers(
+            monkeypatch,
+            sub="agent-result-user-2",
+            roles=["ceo"],
+            scopes=["raw_execute"],
+            extra={"X-Initiator": "ceo_chat"},
+        ),
         json={
             "command": "delegate_agent_task",
             "intent": "delegate_agent_task",
@@ -177,7 +197,6 @@ def test_agent_result_with_notion_write_returns_pending_next_action(monkeypatch)
             },
             "metadata": {"explicit_notion_write_request": True},
             "payload_summary": {},
-            "initiator": "ceo_chat",
         },
     )
     assert exec_r.status_code == 200, exec_r.text
@@ -188,7 +207,12 @@ def test_agent_result_with_notion_write_returns_pending_next_action(monkeypatch)
 
     approve_r = client.post(
         "/api/ai-ops/approval/approve",
-        headers={"X-Initiator": "ceo_chat"},
+        headers=auth_headers(
+            monkeypatch,
+            sub="agent-result-approver-2",
+            roles=["ops_approver"],
+            extra={"X-Initiator": "ceo_chat"},
+        ),
         json={"approval_id": approval_id, "approved_by": "test"},
     )
     assert approve_r.status_code == 200, approve_r.text
@@ -267,6 +291,13 @@ def test_agent_result_with_notion_write_is_stripped_without_explicit_request(
 
     exec_r = client.post(
         "/api/execute/raw",
+        headers=auth_headers(
+            monkeypatch,
+            sub="agent-result-user-3",
+            roles=["ceo"],
+            scopes=["raw_execute"],
+            extra={"X-Initiator": "ceo_chat"},
+        ),
         json={
             "command": "delegate_agent_task",
             "intent": "delegate_agent_task",
@@ -275,7 +306,6 @@ def test_agent_result_with_notion_write_is_stripped_without_explicit_request(
                 "task_text": "Just answer; do NOT write to Notion",
             },
             "payload_summary": {},
-            "initiator": "ceo_chat",
         },
     )
     assert exec_r.status_code == 200, exec_r.text
@@ -284,7 +314,12 @@ def test_agent_result_with_notion_write_is_stripped_without_explicit_request(
 
     approve_r = client.post(
         "/api/ai-ops/approval/approve",
-        headers={"X-Initiator": "ceo_chat"},
+        headers=auth_headers(
+            monkeypatch,
+            sub="agent-result-approver-3",
+            roles=["ops_approver"],
+            extra={"X-Initiator": "ceo_chat"},
+        ),
         json={"approval_id": approval_id, "approved_by": "test"},
     )
     assert approve_r.status_code == 200, approve_r.text

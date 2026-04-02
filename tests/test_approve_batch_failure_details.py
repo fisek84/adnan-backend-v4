@@ -5,6 +5,8 @@ from unittest.mock import AsyncMock
 
 from fastapi.testclient import TestClient
 
+from tests.auth_utils import auth_headers
+
 
 def _load_app():
     try:
@@ -62,9 +64,10 @@ def test_approve_batch_failure_returns_op_id_and_reason(monkeypatch):
     )
 
     session_id = "test-session-approve-batch-failure-1"
+    principal_sub = "approve-batch-user-1"
     from services.notion_ops_state import set_armed  # noqa: PLC0415
 
-    asyncio.run(set_armed(session_id, True, prompt="test"))
+    asyncio.run(set_armed(principal_sub, True, prompt="test"))
 
     with TestClient(app) as client:
         from services.notion_service import get_notion_service  # noqa: PLC0415
@@ -86,14 +89,23 @@ def test_approve_batch_failure_returns_op_id_and_reason(monkeypatch):
         # Create approval via execute/raw
         exec_r = client.post(
             "/api/execute/raw",
+            headers=auth_headers(
+                monkeypatch,
+                sub=principal_sub,
+                roles=["ceo"],
+                scopes=["raw_execute"],
+                extra={"X-Initiator": "ceo_chat"},
+            ),
             json={
                 "command": "ceo.command.propose",
                 "intent": "ceo.command.propose",
                 "params": {"prompt": prompt, "supports_bilingual": True},
                 "session_id": session_id,
-                "metadata": {"session_id": session_id},
+                "metadata": {
+                    "session_id": session_id,
+                    "principal_sub": principal_sub,
+                },
                 "payload_summary": {},
-                "initiator": "ceo_chat",
             },
         )
         assert exec_r.status_code == 200, exec_r.text
@@ -103,7 +115,12 @@ def test_approve_batch_failure_returns_op_id_and_reason(monkeypatch):
 
         approve_r = client.post(
             "/api/ai-ops/approval/approve",
-            headers={"X-Initiator": "ceo_chat"},
+            headers=auth_headers(
+                monkeypatch,
+                sub="approve-batch-approver-1",
+                roles=["ops_approver"],
+                extra={"X-Initiator": "ceo_chat"},
+            ),
             json={"approval_id": approval_id, "approved_by": "test"},
         )
 

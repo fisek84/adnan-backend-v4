@@ -5,6 +5,8 @@ from typing import Any, Dict, List, Optional
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.auth_utils import auth_headers
+
 
 def _ensure_test_env(monkeypatch: pytest.MonkeyPatch) -> None:
     # Force gateway into test mode and skip boot-time network sync.
@@ -149,6 +151,13 @@ def test_refresh_snapshot_empty_dbs_multi_db(monkeypatch: pytest.MonkeyPatch):
 
     r = client.post(
         "/api/execute/raw",
+        headers=auth_headers(
+            monkeypatch,
+            sub="refresh-multi-db-user-1",
+            roles=["ceo"],
+            scopes=["raw_execute"],
+            extra={"X-Initiator": "ceo_chat"},
+        ),
         json={
             "intent": "refresh_snapshot",
             "command": "refresh_snapshot",
@@ -229,6 +238,13 @@ def test_refresh_snapshot_partial_failure_reports_failure(
 
     r = client.post(
         "/api/execute/raw",
+        headers=auth_headers(
+            monkeypatch,
+            sub="refresh-multi-db-user-2",
+            roles=["ceo"],
+            scopes=["raw_execute"],
+            extra={"X-Initiator": "ceo_chat"},
+        ),
         json={
             "intent": "refresh_snapshot",
             "command": "refresh_snapshot",
@@ -296,6 +312,13 @@ def test_refresh_snapshot_overwrites_previous_snapshot(monkeypatch: pytest.Monke
     stub.set_next_payload(by_key={"goals": [{"id": "g1"}]})
     r1 = client.post(
         "/api/execute/raw",
+        headers=auth_headers(
+            monkeypatch,
+            sub="refresh-multi-db-user-3",
+            roles=["ceo"],
+            scopes=["raw_execute"],
+            extra={"X-Initiator": "ceo_chat"},
+        ),
         json={
             "intent": "refresh_snapshot",
             "command": "refresh_snapshot",
@@ -314,6 +337,13 @@ def test_refresh_snapshot_overwrites_previous_snapshot(monkeypatch: pytest.Monke
     stub.set_next_payload(by_key={"goals": []})
     r2 = client.post(
         "/api/execute/raw",
+        headers=auth_headers(
+            monkeypatch,
+            sub="refresh-multi-db-user-3",
+            roles=["ceo"],
+            scopes=["raw_execute"],
+            extra={"X-Initiator": "ceo_chat"},
+        ),
         json={
             "intent": "refresh_snapshot",
             "command": "refresh_snapshot",

@@ -5,6 +5,17 @@ from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
+from tests.auth_utils import auth_headers
+
+
+def _ceo_headers() -> dict[str, str]:
+    return auth_headers(
+        None,
+        sub="gateway-zapamti-user",
+        roles=["ceo"],
+        extra={"X-Initiator": "ceo_dashboard"},
+    )
+
 
 def test_gateway_fallback_zapamti_prisjeti_two_turn(monkeypatch):
     import gateway.gateway_server as gw
@@ -26,6 +37,7 @@ def test_gateway_fallback_zapamti_prisjeti_two_turn(monkeypatch):
     # Turn 1: store focus
     r1 = client.post(
         "/api/ceo/command",
+        headers=_ceo_headers(),
         json={
             "text": "Zapamti: ove sedmice fokus je FLP landing + 10 leadova.",
             "data": {"session_id": session_id},
@@ -48,6 +60,7 @@ def test_gateway_fallback_zapamti_prisjeti_two_turn(monkeypatch):
     # Turn 2: recall focus
     r2 = client.post(
         "/api/ceo/command",
+        headers=_ceo_headers(),
         json={
             "text": "Koji fokus sedmice sam ti rekao u prethodnoj poruci?",
             "data": {"session_id": session_id},

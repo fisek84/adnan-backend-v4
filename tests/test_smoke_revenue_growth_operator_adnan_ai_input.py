@@ -94,8 +94,10 @@ def test_smoke_revenue_growth_operator_via_existing_adnan_ai_input_endpoint(
 ):
     # Keep this smoke test fully read-only and deterministic.
     monkeypatch.setenv("TESTING", "1")
-    monkeypatch.delenv("NOTION_API_KEY", raising=False)
-    monkeypatch.delenv("NOTION_TOKEN", raising=False)
+    monkeypatch.setenv("NOTION_API_KEY", "test-notion-key")
+    monkeypatch.setenv("NOTION_GOALS_DB_ID", "test-goals-db")
+    monkeypatch.setenv("NOTION_TASKS_DB_ID", "test-tasks-db")
+    monkeypatch.setenv("NOTION_PROJECTS_DB_ID", "test-projects-db")
     monkeypatch.setenv("OPENAI_API_MODE", mode)
 
     # Avoid real OpenAI calls while still exercising the existing HTTP endpoint.

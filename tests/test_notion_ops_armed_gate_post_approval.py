@@ -4,6 +4,8 @@ from typing import Any, Dict
 
 from fastapi.testclient import TestClient
 
+from tests.auth_utils import auth_headers
+
 
 def _load_app():
     try:
@@ -31,16 +33,26 @@ def test_post_approval_blocks_notion_write_when_disarmed(monkeypatch):
     monkeypatch.setattr(eo, "notion_ops_is_armed", _fake_is_armed, raising=True)
 
     app = _load_app()
+    principal_sub = "notion-post-approval-user-1"
 
     with TestClient(app) as client:
         exec_r = client.post(
             "/api/execute/raw",
+            headers=auth_headers(
+                None,
+                sub=principal_sub,
+                roles=["ceo"],
+                scopes=["raw_execute"],
+                extra={"X-Initiator": "ceo_chat"},
+            ),
             json={
                 "command": "create_task",
                 "intent": "create_task",
                 "params": {"title": "T"},
-                "metadata": {"session_id": "session-disarmed-1"},
-                "initiator": "ceo_chat",
+                "metadata": {
+                    "session_id": "session-disarmed-1",
+                    "principal_sub": principal_sub,
+                },
             },
         )
         assert exec_r.status_code == 200, exec_r.text
@@ -51,7 +63,12 @@ def test_post_approval_blocks_notion_write_when_disarmed(monkeypatch):
 
         approve_r = client.post(
             "/api/ai-ops/approval/approve",
-            headers={"X-Initiator": "ceo_chat"},
+            headers=auth_headers(
+                None,
+                sub="notion-post-approval-approver-1",
+                roles=["ops_approver"],
+                extra={"X-Initiator": "ceo_chat"},
+            ),
             json={"approval_id": approval_id, "approved_by": "test"},
         )
         assert approve_r.status_code == 200, approve_r.text
@@ -62,28 +79,46 @@ def test_post_approval_blocks_notion_write_when_disarmed(monkeypatch):
     assert approve_body.get("read_only") is True, approve_body
 
 
-def test_missing_session_id_blocks_notion_write(monkeypatch):
-    """Regression: Notion write must be fail-closed when session_id is missing."""
+def test_principal_sub_allows_notion_write_without_session_id(monkeypatch):
+    """Regression: principal-based ARMED state should not require session_id."""
 
     import services.execution_orchestrator as eo
+
+    class _FakeNotion:
+        async def execute(self, command):  # noqa: ANN001
+            return {
+                "ok": True,
+                "success": True,
+                "command": getattr(command, "command", None),
+                "intent": getattr(command, "intent", None),
+                "result": {"url": "https://notion.so/fake-task-no-session"},
+            }
 
     async def _fake_is_armed(_sid: str) -> bool:  # noqa: ANN001
         return True
 
     monkeypatch.setattr(eo, "notion_ops_is_armed", _fake_is_armed, raising=True)
+    monkeypatch.setattr(eo, "get_notion_service", lambda: _FakeNotion(), raising=True)
 
     app = _load_app()
+    principal_sub = "notion-post-approval-user-2"
 
     with TestClient(app) as client:
         exec_r = client.post(
             "/api/execute/raw",
+            headers=auth_headers(
+                None,
+                sub=principal_sub,
+                roles=["ceo"],
+                scopes=["raw_execute"],
+                extra={"X-Initiator": "ceo_chat"},
+            ),
             json={
                 "command": "create_task",
                 "intent": "create_task",
                 "params": {"title": "T"},
-                # metadata intentionally missing session_id
-                "metadata": {},
-                "initiator": "ceo_chat",
+                # session_id intentionally omitted; principal_sub is the gate key
+                "metadata": {"principal_sub": principal_sub},
             },
         )
         assert exec_r.status_code == 200, exec_r.text
@@ -94,14 +129,19 @@ def test_missing_session_id_blocks_notion_write(monkeypatch):
 
         approve_r = client.post(
             "/api/ai-ops/approval/approve",
-            headers={"X-Initiator": "ceo_chat"},
+            headers=auth_headers(
+                None,
+                sub="notion-post-approval-approver-2",
+                roles=["ops_approver"],
+                extra={"X-Initiator": "ceo_chat"},
+            ),
             json={"approval_id": approval_id, "approved_by": "test"},
         )
         assert approve_r.status_code == 200, approve_r.text
         approve_body: Dict[str, Any] = approve_r.json()
 
-    assert approve_body.get("execution_state") == "BLOCKED", approve_body
-    assert approve_body.get("reason") == "notion_ops_session_missing", approve_body
+    assert approve_body.get("execution_state") == "COMPLETED", approve_body
+    assert approve_body.get("read_only") is False, approve_body
 
 
 def test_approve_returns_read_only_true_when_blocked(monkeypatch):
@@ -115,16 +155,26 @@ def test_approve_returns_read_only_true_when_blocked(monkeypatch):
     monkeypatch.setattr(eo, "notion_ops_is_armed", _fake_is_armed, raising=True)
 
     app = _load_app()
+    principal_sub = "notion-post-approval-user-3"
 
     with TestClient(app) as client:
         exec_r = client.post(
             "/api/execute/raw",
+            headers=auth_headers(
+                None,
+                sub=principal_sub,
+                roles=["ceo"],
+                scopes=["raw_execute"],
+                extra={"X-Initiator": "ceo_chat"},
+            ),
             json={
                 "command": "create_task",
                 "intent": "create_task",
                 "params": {"title": "T"},
-                "metadata": {"session_id": "session-disarmed-2"},
-                "initiator": "ceo_chat",
+                "metadata": {
+                    "session_id": "session-disarmed-2",
+                    "principal_sub": principal_sub,
+                },
             },
         )
         assert exec_r.status_code == 200, exec_r.text
@@ -135,7 +185,12 @@ def test_approve_returns_read_only_true_when_blocked(monkeypatch):
 
         approve_r = client.post(
             "/api/ai-ops/approval/approve",
-            headers={"X-Initiator": "ceo_chat"},
+            headers=auth_headers(
+                None,
+                sub="notion-post-approval-approver-3",
+                roles=["ops_approver"],
+                extra={"X-Initiator": "ceo_chat"},
+            ),
             json={"approval_id": approval_id, "approved_by": "test"},
         )
         assert approve_r.status_code == 200, approve_r.text
@@ -156,6 +211,7 @@ def test_post_approval_allows_notion_write_when_armed_and_session_id_present(
     """
 
     app = _load_app()
+    principal_sub = "notion-post-approval-user-4"
 
     import routers.ai_ops_router as aor
     import services.execution_orchestrator as eo
@@ -205,12 +261,21 @@ def test_post_approval_allows_notion_write_when_armed_and_session_id_present(
 
         exec_r = client.post(
             "/api/execute/raw",
+            headers=auth_headers(
+                None,
+                sub=principal_sub,
+                roles=["ceo"],
+                scopes=["raw_execute"],
+                extra={"X-Initiator": "ceo_chat"},
+            ),
             json={
                 "command": "create_task",
                 "intent": "create_task",
                 "params": {"title": "T"},
-                "metadata": {"session_id": "session-armed-1"},
-                "initiator": "ceo_chat",
+                "metadata": {
+                    "session_id": "session-armed-1",
+                    "principal_sub": principal_sub,
+                },
             },
         )
         assert exec_r.status_code == 200, exec_r.text
@@ -221,7 +286,12 @@ def test_post_approval_allows_notion_write_when_armed_and_session_id_present(
 
         approve_r = client.post(
             "/api/ai-ops/approval/approve",
-            headers={"X-Initiator": "ceo_chat"},
+            headers=auth_headers(
+                None,
+                sub="notion-post-approval-approver-4",
+                roles=["ops_approver"],
+                extra={"X-Initiator": "ceo_chat"},
+            ),
             json={"approval_id": approval_id, "approved_by": "test"},
         )
         assert approve_r.status_code == 200, approve_r.text

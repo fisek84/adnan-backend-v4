@@ -6,24 +6,47 @@ import pytest
 import sqlalchemy as sa
 
 from main import app
+from services import notion_armed_store
+from tests.auth_utils import auth_headers, set_auth_env
 
 
 @pytest.fixture
-async def client():
+async def client(monkeypatch: pytest.MonkeyPatch, tmp_path):
+    set_auth_env(monkeypatch)
+    monkeypatch.setenv(
+        "NOTION_ARMED_STORE_PATH", str(tmp_path / "notion_armed_store.json")
+    )
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
 
 
+def _arm_principal(principal_sub: str) -> None:
+    notion_armed_store.set(
+        principal_sub,
+        {
+            "armed": True,
+            "status": "armed",
+            "armed_by_sub": principal_sub,
+        },
+    )
+
+
 @pytest.mark.anyio
 async def test_bulk_create_minimal(client):
+    principal_sub = "bulk-user-1"
+    _arm_principal(principal_sub)
     payload = {
         "items": [
             {"type": "goal", "title": "Test Goal A"},
             {"type": "task", "title": "Test Task A", "goal_id": None},
         ]
     }
-    r = await client.post("/notion-ops/bulk/create", json=payload)
+    r = await client.post(
+        "/notion-ops/bulk/create",
+        headers=auth_headers(None, sub=principal_sub, roles=["admin"]),
+        json=payload,
+    )
     assert r.status_code == 200
     data = r.json()
     assert "created" in data
@@ -32,8 +55,14 @@ async def test_bulk_create_minimal(client):
 
 @pytest.mark.anyio
 async def test_bulk_update_empty(client):
+    principal_sub = "bulk-user-2"
+    _arm_principal(principal_sub)
     payload = {"updates": []}
-    r = await client.post("/notion-ops/bulk/update", json=payload)
+    r = await client.post(
+        "/notion-ops/bulk/update",
+        headers=auth_headers(None, sub=principal_sub, roles=["admin"]),
+        json=payload,
+    )
     assert r.status_code == 200
     assert r.json() == {"updated": []}
 
@@ -41,15 +70,25 @@ async def test_bulk_update_empty(client):
 @pytest.mark.anyio
 async def test_bulk_query_empty(client):
     payload = {"queries": []}
-    r = await client.post("/notion-ops/bulk/query", json=payload)
+    r = await client.post(
+        "/notion-ops/bulk/query",
+        headers=auth_headers(None, sub="bulk-user-3", roles=["admin"]),
+        json=payload,
+    )
     assert r.status_code == 200
     assert r.json() == {"results": []}
 
 
 @pytest.mark.anyio
 async def test_bulk_invalid_type(client):
+    principal_sub = "bulk-user-4"
+    _arm_principal(principal_sub)
     payload = {"items": [{"type": "invalid_test_type", "title": "Bad"}]}
-    r = await client.post("/notion-ops/bulk/create", json=payload)
+    r = await client.post(
+        "/notion-ops/bulk/create",
+        headers=auth_headers(None, sub=principal_sub, roles=["admin"]),
+        json=payload,
+    )
     assert r.status_code == 400
 
 

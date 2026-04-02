@@ -5,6 +5,8 @@ from typing import Any, Dict, List, Optional
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.auth_utils import auth_headers
+
 
 class _Pol:
     def __init__(self, *, needs_notion: bool, notion_db_keys: List[str]):
@@ -143,6 +145,13 @@ def test_refresh_snapshot_clears_session_targeted_reads_cache(
     # 3) refresh_snapshot -> clears session cache.
     rr = client.post(
         "/api/execute/raw",
+        headers=auth_headers(
+            monkeypatch,
+            sub="refresh-snapshot-user",
+            roles=["ceo"],
+            scopes=["raw_execute"],
+            extra={"X-Initiator": "ceo_chat"},
+        ),
         json={
             "intent": "refresh_snapshot",
             "command": "refresh_snapshot",

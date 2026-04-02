@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from models.canon import PROPOSAL_WRAPPER_INTENT
+from tests.auth_utils import auth_headers
 
 
 def _load_app():
@@ -57,12 +58,18 @@ def test_memory_snapshot_after_approved_write_is_non_empty():
     # 2) Create approval via /api/execute/raw
     exec_r = client.post(
         "/api/execute/raw",
+        headers=auth_headers(
+            None,
+            sub="memory-recall-user",
+            roles=["ceo"],
+            scopes=["raw_execute"],
+            extra={"X-Initiator": "ceo_chat"},
+        ),
         json={
             "command": pc.get("command"),
             "intent": pc.get("intent"),
             "params": args,
             "payload_summary": pc.get("payload_summary") or {},
-            "initiator": "ceo_chat",
         },
     )
     assert exec_r.status_code == 200, exec_r.text
@@ -72,7 +79,12 @@ def test_memory_snapshot_after_approved_write_is_non_empty():
     # 3) Approve (triggers execution)
     approve_r = client.post(
         "/api/ai-ops/approval/approve",
-        headers={"X-Initiator": "ceo_chat"},
+        headers=auth_headers(
+            None,
+            sub="memory-recall-approver",
+            roles=["ops_approver"],
+            extra={"X-Initiator": "ceo_chat"},
+        ),
         json={"approval_id": approval_id, "approved_by": "test"},
     )
     assert approve_r.status_code == 200, approve_r.text
