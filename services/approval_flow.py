@@ -21,6 +21,7 @@ class ApprovalStatus(str, Enum):
     PENDING = "pending"
     APPROVED = "approved"
     REJECTED = "rejected"
+    INVALID = "invalid"
     NOT_REQUIRED = "not_required"
 
 
@@ -52,7 +53,7 @@ def check_approval(
     """
     Pravila:
     1) Ako je eksplicitno read_only => NOT_REQUIRED.
-    2) Ako postoji approval_id => verifikuj preko approval_state_service.
+    2) Ako postoji approval_id => verifikuj status preko approval_state_service.
     3) Inače => PENDING.
     """
     _ = command_id  # command_id je dio API-ja; trenutno se ne koristi u logici.
@@ -69,9 +70,19 @@ def check_approval(
         from services.approval_state_service import get_approval_state
 
         approvals = get_approval_state()
-        if approvals.is_fully_approved(approval_id) is True:
+        try:
+            a = approvals.get(approval_id)
+        except Exception:
+            return ApprovalStatus.INVALID
+
+        status = _as_dict(a).get("status")
+        if status == "approved":
             return ApprovalStatus.APPROVED
-        return ApprovalStatus.PENDING
+        if status == "pending":
+            return ApprovalStatus.PENDING
+        if status in ("rejected", "expired"):
+            return ApprovalStatus.REJECTED
+        return ApprovalStatus.INVALID
 
     # 3) default: blokiraj dok se ne dobije approval_id (upstream)
     return ApprovalStatus.PENDING

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from typing import Any, Dict, Optional, Union
 
 from models.ai_command import AICommand
@@ -16,6 +17,7 @@ from services.memory_ops_executor import MemoryOpsExecutor
 from services.notion_ops_state import is_armed as notion_ops_is_armed
 from services.agent_registry_service import AgentRegistryService
 from services.memory_service import MemoryService
+from services.audit_log_service import AuditEvent, get_audit_log_service
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -214,8 +216,8 @@ class ExecutionOrchestrator:
         """Fail-closed Notion Ops gate.
 
         Returns a BLOCKED payload when the command is a Notion write and:
-        - metadata.session_id missing/blank -> notion_ops_session_missing
-        - notion_ops_is_armed(session_id) is False -> notion_ops_disarmed
+        - principal context missing -> notion_ops_principal_missing
+        - notion_ops_is_armed(principal_sub) is False -> notion_ops_disarmed
         - armed check raises -> notion_ops_gate_error
         """
 
@@ -223,9 +225,17 @@ class ExecutionOrchestrator:
             return None
 
         md = cmd.metadata if isinstance(getattr(cmd, "metadata", None), dict) else {}
-        session_id = md.get("session_id") if isinstance(md, dict) else None
-        if not (isinstance(session_id, str) and session_id.strip()):
-            reason = "notion_ops_session_missing"
+
+        principal_sub = None
+        if isinstance(md, dict):
+            for k in ("principal_sub", "sub", "actor_sub", "approved_by_sub"):
+                v = md.get(k)
+                if isinstance(v, str) and v.strip():
+                    principal_sub = v.strip()
+                    break
+
+        if not (isinstance(principal_sub, str) and principal_sub.strip()):
+            reason = "notion_ops_principal_missing"
             cmd.execution_state = "BLOCKED"
             decision = {
                 "allowed": False,
@@ -243,9 +253,8 @@ class ExecutionOrchestrator:
                 "reason": reason,
             }
 
-        sid = session_id.strip()
         try:
-            armed = await notion_ops_is_armed(sid)
+            armed = await notion_ops_is_armed(principal_sub.strip())
         except Exception:
             reason = "notion_ops_gate_error"
             cmd.execution_state = "BLOCKED"
@@ -359,6 +368,30 @@ class ExecutionOrchestrator:
                 "execution_state": "BLOCKED",
                 "approval_id": cmd.approval_id,
             }
+
+        # PLAT-502: audit execute resume (post-approval).
+        try:
+            md = cmd.metadata if isinstance(getattr(cmd, "metadata", None), dict) else {}
+            rid = md.get("request_id") if isinstance(md, dict) else None
+            rid = rid.strip() if isinstance(rid, str) and rid.strip() else str(uuid.uuid4())
+            get_audit_log_service().emit(
+                AuditEvent(
+                    event_type="execute_resume",
+                    request_id=rid,
+                    principal_sub=None,
+                    principal_roles=[],
+                    route=None,
+                    result="resuming",
+                    approval_id=str(cmd.approval_id) if cmd.approval_id else None,
+                    execution_id=str(cmd.execution_id) if cmd.execution_id else str(execution_id),
+                    data={
+                        "command": getattr(cmd, "command", None),
+                        "intent": getattr(cmd, "intent", None),
+                    },
+                )
+            )
+        except Exception:
+            pass
 
         return await self._execute_after_approval(cmd)
 

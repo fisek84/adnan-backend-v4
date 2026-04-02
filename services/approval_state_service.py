@@ -180,6 +180,9 @@ class ApprovalStateService:
         approval_id: str,
         *,
         approved_by: str = "unknown",
+        approved_by_sub: Optional[str] = None,
+        approved_by_roles: Optional[List[str]] = None,
+        request_id: Optional[str] = None,
         note: Optional[str] = None,
     ) -> Dict[str, Any]:
         with self._lock:
@@ -192,11 +195,38 @@ class ApprovalStateService:
             if approval.get("status") != "pending":
                 return dict(approval)
 
+            now = _utc_now_iso()
+
             approval["status"] = "approved"
             approval["approved_by"] = str(approved_by or "unknown")
+
+            sub = (
+                approved_by_sub.strip()
+                if isinstance(approved_by_sub, str) and approved_by_sub.strip()
+                else None
+            )
+            if sub is not None:
+                approval["approved_by_sub"] = sub
+
+            roles: List[str] = []
+            if isinstance(approved_by_roles, list):
+                roles = [str(r).strip() for r in approved_by_roles if str(r).strip()]
+            if roles:
+                approval["approved_by_roles"] = sorted(set(roles))
+
+            rid = (
+                request_id.strip()
+                if isinstance(request_id, str) and request_id.strip()
+                else None
+            )
+            if rid is not None:
+                approval["request_id"] = rid
+
             if isinstance(note, str) and note.strip():
                 approval["note"] = note.strip()
-            approval["decided_at"] = _utc_now_iso()
+
+            approval["approved_at"] = now
+            approval["decided_at"] = now
             self._persist_to_disk_locked()
             return dict(approval)
 

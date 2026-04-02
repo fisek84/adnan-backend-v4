@@ -7,6 +7,27 @@ router = APIRouter()
 agent_router = AgentRouter()
 
 
+def _is_test_mode() -> bool:
+    # NOTE: keep test runs stable even if RENDER=true is exported.
+    return (os.getenv("TESTING") or "").strip() == "1" or (
+        "PYTEST_CURRENT_TEST" in os.environ
+    )
+
+
+def _is_production_mode() -> bool:
+    if _is_test_mode():
+        return False
+    return (os.getenv("RENDER") or "").strip().lower() == "true"
+
+
+# SEC-601: /agents/* routes must never be available in production.
+# This import-time guard ensures the router cannot be mounted on the SSOT app.
+if _is_production_mode():
+    raise RuntimeError(
+        "SEC-601: ext.agents.router is forbidden in production; /agents/* routes must not be mounted"
+    )
+
+
 _WRITE_INTENTS = {
     "notion_write",
     "goal_write",

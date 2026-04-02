@@ -19,7 +19,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from fastapi import Body, FastAPI, HTTPException, Request, Response
+from fastapi import Body, Depends, FastAPI, HTTPException, Request, Response
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -34,6 +34,10 @@ JSONResponse.media_type = "application/json; charset=utf-8"
 from system_version import ARCH_LOCK, RELEASE_CHANNEL, SYSTEM_NAME, VERSION
 from models.canon import PROPOSAL_WRAPPER_INTENT
 from models.ceo_console_snapshot import CeoConsoleSnapshotResponse
+
+from services.auth.dependencies import require_principal, require_role, require_scope
+from services.auth.principal import Principal
+from services.audit_log_service import AuditEvent, get_audit_log_service
 
 
 # ================================================================
@@ -863,6 +867,30 @@ def _is_test_mode() -> bool:
     return (os.getenv("TESTING") or "").strip() == "1" or (
         "PYTEST_CURRENT_TEST" in os.environ
     )
+
+
+def _is_production_mode() -> bool:
+    if _is_test_mode():
+        return False
+    return (os.getenv("RENDER") or "").strip().lower() == "true"
+
+
+def _sec601_assert_no_agents_routes(app: FastAPI) -> None:
+    paths: List[str] = []
+    for r in getattr(app, "routes", []) or []:
+        p = getattr(r, "path", None)
+        if isinstance(p, str) and p.startswith("/agents/"):
+            paths.append(p)
+
+    if not paths:
+        return
+
+    # Fail deterministically only in production.
+    if _is_production_mode():
+        uniq = ",".join(sorted(set(paths)))
+        raise RuntimeError(
+            f"SEC-601: forbidden /agents/* route(s) mounted in production: {uniq}"
+        )
 
 
 def _extra_routers_enabled() -> bool:
@@ -2240,6 +2268,72 @@ async def _boot_once() -> None:
                 logger.critical("Boot aborted due to invalid env: %s", exc)
                 raise
 
+            # PLAT-302: persistent Notion ARM store reload on boot.
+            # Fail-closed is enforced at call sites (writes block on store failure).
+            try:
+                from services import notion_armed_store
+
+                notion_armed_store.load()
+                logger.info("Notion ARMED store loaded")
+            except Exception as exc:  # noqa: BLE001
+                _append_boot_error(
+                    f"notion_armed_store_load_failed:{type(exc).__name__}:{exc}"
+                )
+                logger.error("Notion ARMED store load failed: %s", exc)
+
+            # PLAT-104: production boot fail-fast for critical security config.
+            # Contract: service MUST NOT start in production without JWT auth config
+            # and a non-empty RBAC policy.
+            if _is_production_mode():
+                # --- JWT verification config ---
+                allowed_algs_raw = (os.getenv("AUTH_JWT_ALLOWED_ALGS") or "").strip()
+                issuer = (os.getenv("AUTH_JWT_ISSUER") or "").strip()
+                audience = (os.getenv("AUTH_JWT_AUDIENCE") or "").strip()
+
+                missing: List[str] = []
+                if not allowed_algs_raw:
+                    missing.append("AUTH_JWT_ALLOWED_ALGS")
+                if not issuer:
+                    missing.append("AUTH_JWT_ISSUER")
+                if not audience:
+                    missing.append("AUTH_JWT_AUDIENCE")
+
+                allowed_algs = {
+                    a.strip() for a in allowed_algs_raw.split(",") if a.strip()
+                }
+                if "HS256" in allowed_algs and not (
+                    (os.getenv("AUTH_JWT_SECRET") or "").strip()
+                ):
+                    missing.append("AUTH_JWT_SECRET")
+                if "RS256" in allowed_algs and not (
+                    (os.getenv("AUTH_JWT_PUBLIC_KEY_PEM") or "").strip()
+                ):
+                    missing.append("AUTH_JWT_PUBLIC_KEY_PEM")
+
+                if missing:
+                    msg = "PLAT-104: missing critical auth config: " + ",".join(missing)
+                    _append_boot_error(msg)
+                    logger.critical(msg)
+                    raise RuntimeError(msg)
+
+                # --- RBAC policy must exist and be non-empty ---
+                try:
+                    from services.rbac_service import RBACService
+
+                    rbac = RBACService()
+                    if not rbac.policy_configured():
+                        msg = "PLAT-104: RBAC policy missing or empty (role_actions required)"
+                        _append_boot_error(msg)
+                        logger.critical(msg)
+                        raise RuntimeError(msg)
+                except RuntimeError:
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    msg = f"PLAT-104: RBAC policy validation failed: {type(exc).__name__}: {exc}"
+                    _append_boot_error(msg)
+                    logger.critical(msg)
+                    raise RuntimeError(msg) from exc
+
             # Legacy domain DI (goals/tasks/projects/sync) uses dependencies.py globals.
             # Ensure they are initialized before routers are exercised in minimal uvicorn runs.
             try:
@@ -2637,7 +2731,12 @@ async def _shutdown_event() -> None:
 # ================================================================
 @app.middleware("http")
 async def request_trace_middleware(request: Request, call_next):
-    req_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+    existing = request.headers.get("X-Request-ID")
+    req_id = existing.strip() if isinstance(existing, str) and existing.strip() else None
+    if req_id is None:
+        req_id = str(uuid.uuid4())
+
+    # Canonical request correlation id for the full lifecycle.
     request.state.req_id = req_id
 
     await _ensure_boot_if_needed(request)
@@ -3107,7 +3206,6 @@ class ExecuteRawInput2(BaseModel):
     command: str
     intent: str
     params: Dict[str, Any] = Field(default_factory=dict)
-    initiator: str = "ceo"
     read_only: bool = False
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
@@ -3404,6 +3502,27 @@ def _normalize_execute_raw_payload_dict(body: Dict[str, Any]) -> ExecuteRawInput
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="Body must be an object")
 
+    # SEC-202: initiator is derived from authenticated principal (server-side).
+    # Reject any attempt to set it via the request payload (top-level or nested envelope).
+    if "initiator" in body:
+        raise HTTPException(
+            status_code=400,
+            detail="Field 'initiator' is not allowed; initiator is derived from auth",
+        )
+    if isinstance(body.get("params"), dict):
+        p0 = body.get("params")
+        if isinstance(p0, dict) and "initiator" in p0:
+            raise HTTPException(
+                status_code=400,
+                detail="Field 'params.initiator' is not allowed; initiator is derived from auth",
+            )
+        ac0 = p0.get("ai_command") if isinstance(p0, dict) else None
+        if isinstance(ac0, dict) and "initiator" in ac0:
+            raise HTTPException(
+                status_code=400,
+                detail="Field 'params.ai_command.initiator' is not allowed; initiator is derived from auth",
+            )
+
     cmd = (
         body.get("command")
         or body.get("name")
@@ -3491,12 +3610,6 @@ def _normalize_execute_raw_payload_dict(body: Dict[str, Any]) -> ExecuteRawInput
             if isinstance(prompt, str) and prompt.strip():
                 params["prompt"] = prompt.strip()
 
-    initiator = body.get("initiator")
-    if not isinstance(initiator, str) or not initiator.strip():
-        initiator = "ceo"
-    else:
-        initiator = initiator.strip()
-
     read_only = bool(body.get("read_only") or False)
 
     metadata = body.get("metadata")
@@ -3525,7 +3638,6 @@ def _normalize_execute_raw_payload_dict(body: Dict[str, Any]) -> ExecuteRawInput
         command=cmd,
         intent=intent,
         params=params,
-        initiator=initiator,
         read_only=read_only,
         metadata=metadata,
     )
@@ -3769,7 +3881,17 @@ def _notion_patch_validation_mode() -> str:
 # /api/execute — EXECUTION PATH (NL INPUT)
 # ================================================================
 @app.post("/api/execute")
-async def execute_command(payload: ExecuteInput):
+async def execute_command(
+    request: Request,
+    payload: ExecuteInput,
+    principal: Principal = Depends(require_role("admin", "ceo")),
+):
+    try:
+        request.state.principal_sub = principal.sub
+        request.state.principal_roles = sorted(principal.roles)
+    except Exception:
+        pass
+
     cleaned_text = _preprocess_ceo_nl_input(payload.text, smart_context=None)
 
     _, trans, _, registry, orchestrator = _require_boot_services()
@@ -3803,6 +3925,15 @@ async def execute_command(payload: ExecuteInput):
 
     execution_id = _ensure_execution_id(ai_command)
 
+    # PLAT-502: propagate request_id into command metadata for downstream audit.
+    try:
+        rid = getattr(getattr(request, "state", None), "req_id", None)
+        if isinstance(rid, str) and rid.strip():
+            if isinstance(getattr(ai_command, "metadata", None), dict):
+                ai_command.metadata.setdefault("request_id", rid.strip())
+    except Exception:
+        pass
+
     approval_state = get_approval_state()
     approval = approval_state.create(
         command=getattr(ai_command, "command", None) or "execute",
@@ -3816,6 +3947,29 @@ async def execute_command(payload: ExecuteInput):
         raise HTTPException(
             status_code=500, detail="Approval create failed: missing approval_id"
         )
+
+    # PLAT-502: audit execute start (after approval creation).
+    try:
+        rid = getattr(getattr(request, "state", None), "req_id", None)
+        rid = rid.strip() if isinstance(rid, str) and rid.strip() else str(uuid.uuid4())
+        get_audit_log_service().emit(
+            AuditEvent(
+                event_type="execute_start",
+                request_id=rid,
+                principal_sub=principal.sub,
+                principal_roles=sorted(principal.roles),
+                route="/api/execute",
+                result="started",
+                approval_id=str(approval_id),
+                execution_id=str(execution_id),
+                data={
+                    "command": getattr(ai_command, "command", None),
+                    "intent": getattr(ai_command, "intent", None),
+                },
+            )
+        )
+    except Exception:
+        pass
 
     _ensure_trace_on_command(ai_command, approval_id=approval_id)
 
@@ -3832,20 +3986,64 @@ async def execute_command(payload: ExecuteInput):
 
 
 @app.post("/api/execute/raw")
-async def execute_raw_command(payload: Dict[str, Any] = Body(...)):
+async def execute_raw_command(
+    request: Request,
+    payload: Dict[str, Any] = Body(...),
+    principal: Principal = Depends(require_role("admin", "ceo")),
+    _principal_scope: Principal = Depends(require_scope("raw_execute")),
+):
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Body must be an object")
+
+    try:
+        request.state.principal_sub = principal.sub
+        request.state.principal_roles = sorted(principal.roles)
+    except Exception:
+        pass
+
+    rid = getattr(getattr(request, "state", None), "req_id", None)
+    rid = rid.strip() if isinstance(rid, str) and rid.strip() else str(uuid.uuid4())
+
+    initiator = principal.sub
 
     enterprise_enabled = _enterprise_preview_editor_enabled()
     patches_in = payload.get("patches") if isinstance(payload, dict) else None
 
     normalized = _normalize_execute_raw_payload_dict(payload)
 
+    # PLAT-502: propagate request_id for downstream resume/audit.
+    try:
+        if isinstance(getattr(normalized, "metadata", None), dict):
+            normalized.metadata.setdefault("request_id", rid)
+    except Exception:
+        pass
+
     # Read-only directive: refresh_snapshot should execute immediately and return
     # deterministic meta so UI can refresh without going through approvals.
     if (normalized.intent == "refresh_snapshot") or (
         normalized.command == "refresh_snapshot"
     ):
+        # PLAT-502: audit execute start for refresh_snapshot path.
+        try:
+            get_audit_log_service().emit(
+                AuditEvent(
+                    event_type="execute_start",
+                    request_id=rid,
+                    principal_sub=principal.sub,
+                    principal_roles=sorted(principal.roles),
+                    route="/api/execute/raw",
+                    result="started",
+                    approval_id=None,
+                    execution_id=None,
+                    data={
+                        "command": normalized.command or "refresh_snapshot",
+                        "intent": normalized.intent or "refresh_snapshot",
+                        "read_only": True,
+                    },
+                )
+            )
+        except Exception:
+            pass
         try:
             _, _, _, registry, orchestrator = _require_boot_services()
         except HTTPException as exc:
@@ -3892,7 +4090,7 @@ async def execute_raw_command(payload: Dict[str, Any] = Body(...)):
             command=normalized.command or "refresh_snapshot",
             intent=normalized.intent or "refresh_snapshot",
             params=normalized.params if isinstance(normalized.params, dict) else {},
-            initiator=normalized.initiator,
+            initiator=initiator,
             read_only=True,
             metadata=normalized.metadata
             if isinstance(normalized.metadata, dict)
@@ -3993,7 +4191,7 @@ async def execute_raw_command(payload: Dict[str, Any] = Body(...)):
         command=normalized.command,
         intent=normalized.intent,
         params=normalized.params if isinstance(normalized.params, dict) else {},
-        initiator=normalized.initiator,
+        initiator=initiator,
         read_only=normalized.read_only,
         metadata=normalized.metadata if isinstance(normalized.metadata, dict) else {},
     )
@@ -4423,6 +4621,28 @@ async def execute_raw_command(payload: Dict[str, Any] = Body(...)):
             status_code=500, detail="Approval create failed: missing approval_id"
         )
 
+    # PLAT-502: audit execute start (raw path blocks on approval).
+    try:
+        get_audit_log_service().emit(
+            AuditEvent(
+                event_type="execute_start",
+                request_id=rid,
+                principal_sub=principal.sub,
+                principal_roles=sorted(principal.roles),
+                route="/api/execute/raw",
+                result="started",
+                approval_id=str(approval_id),
+                execution_id=str(execution_id),
+                data={
+                    "command": getattr(ai_command, "command", None),
+                    "intent": getattr(ai_command, "intent", None),
+                    "read_only": bool(getattr(ai_command, "read_only", False)),
+                },
+            )
+        )
+    except Exception:
+        pass
+
     _ensure_trace_on_command(ai_command, approval_id=approval_id)
 
     orchestrator.registry.register(ai_command)
@@ -4443,19 +4663,15 @@ async def execute_raw_command(payload: Dict[str, Any] = Body(...)):
 
 @app.post("/api/execute/preview")
 async def execute_preview_command(
-    request: Request, payload: Dict[str, Any] = Body(...)
+    request: Request,
+    payload: Dict[str, Any] = Body(...),
+    principal: Principal = Depends(require_role("admin", "ceo")),
 ):
     """Preview the *exact* command payload (no approvals, no execution).
 
     Intended for CEO Console UI so the user can confirm Notion mapping
     (property_specs -> properties) before hitting Approve.
     """
-    if not _is_ceo_request(request):
-        raise HTTPException(
-            status_code=403, detail="This endpoint is restricted to CEO users only"
-        )
-    _require_ceo_token_if_enforced(request)
-
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Body must be an object")
 
@@ -4463,6 +4679,8 @@ async def execute_preview_command(
     patches_in = payload.get("patches") if isinstance(payload, dict) else None
 
     normalized = _normalize_execute_raw_payload_dict(payload)
+
+    initiator = principal.sub
 
     # Hard read-only intents stay read-only.
     if (normalized.intent in _HARD_READ_ONLY_INTENTS) or (
@@ -4477,7 +4695,7 @@ async def execute_preview_command(
                 "params": normalized.params
                 if isinstance(normalized.params, dict)
                 else {},
-                "initiator": normalized.initiator,
+                "initiator": initiator,
                 "metadata": normalized.metadata
                 if isinstance(normalized.metadata, dict)
                 else {},
@@ -4502,7 +4720,7 @@ async def execute_preview_command(
                 "params": normalized.params
                 if isinstance(normalized.params, dict)
                 else {},
-                "initiator": normalized.initiator,
+                "initiator": initiator,
                 "metadata": normalized.metadata
                 if isinstance(normalized.metadata, dict)
                 else {},
@@ -4520,7 +4738,7 @@ async def execute_preview_command(
         command=normalized.command,
         intent=normalized.intent,
         params=normalized.params if isinstance(normalized.params, dict) else {},
-        initiator=normalized.initiator,
+        initiator=initiator,
         read_only=True,
         metadata=normalized.metadata if isinstance(normalized.metadata, dict) else {},
     )
@@ -6137,7 +6355,7 @@ async def execute_preview_command(
 # ================================================================
 # /api/proposals/execute
 # ================================================================
-@app.post("/api/proposals/execute")
+@app.post("/api/proposals/execute", dependencies=[Depends(require_principal)])
 async def execute_proposal(payload: ProposalExecuteInput):
     proposal = payload.proposal
     initiator = (payload.initiator or "ceo").strip() or "ceo"
@@ -6316,7 +6534,11 @@ async def execute_proposal(payload: ProposalExecuteInput):
 # ================================================================
 # NOTION READ — READ ONLY (NO APPROVAL / NO EXECUTION)
 # ================================================================
-@app.post("/api/notion/read", response_model=NotionReadResponse)
+@app.post(
+    "/api/notion/read",
+    response_model=NotionReadResponse,
+    dependencies=[Depends(require_principal)],
+)
 async def notion_read(payload: Any = Body(None)) -> Any:
     def _model_to_dict(m: NotionReadResponse) -> Dict[str, Any]:
         if hasattr(m, "model_dump"):
@@ -6412,8 +6634,8 @@ async def notion_read(payload: Any = Body(None)) -> Any:
 # ================================================================
 # NOTION OPS — LIST DATABASES (READ ONLY)
 # ================================================================
-@app.get("/api/notion-ops/databases")
-@app.get("/notion-ops/databases")
+@app.get("/api/notion-ops/databases", dependencies=[Depends(require_principal)])
+@app.get("/notion-ops/databases", dependencies=[Depends(require_principal)])
 async def notion_ops_list_databases():
     from services.notion_service import get_notion_service
 
@@ -6436,12 +6658,12 @@ async def notion_ops_list_databases():
     }
 
 
-@app.get("/databases")
+@app.get("/databases", dependencies=[Depends(require_principal)])
 async def databases_alias():
     return await notion_ops_list_databases()
 
 
-@app.get("/api/databases")
+@app.get("/api/databases", dependencies=[Depends(require_principal)])
 async def databases_alias_api():
     return await notion_ops_list_databases()
 
@@ -6487,9 +6709,26 @@ def _validate_bulk_items(items: Any) -> List[Dict[str, Any]]:
     return out
 
 
-@app.post("/api/notion-ops/bulk/create")
-@app.post("/notion-ops/bulk/create")
-async def notion_bulk_create(request: Request, payload: Dict[str, Any] = Body(...)):
+@app.post("/api/notion-ops/bulk/create", dependencies=[Depends(require_principal)])
+@app.post("/notion-ops/bulk/create", dependencies=[Depends(require_principal)])
+async def notion_bulk_create(
+    request: Request,
+    payload: Dict[str, Any] = Body(...),
+    principal: Principal = Depends(require_principal),
+):
+    from services import notion_armed_store
+
+    try:
+        st = notion_armed_store.get(principal.sub)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=503,
+            detail=f"notion_armed_store_unavailable:{type(exc).__name__}",
+        )
+
+    if st.get("armed") is not True:
+        raise HTTPException(status_code=403, detail="notion_ops_disarmed")
+
     _guard_write_bulk(request)
 
     items = _validate_bulk_items(payload.get("items"))
@@ -6509,9 +6748,26 @@ async def notion_bulk_create(request: Request, payload: Dict[str, Any] = Body(..
     return {"created": created}
 
 
-@app.post("/api/notion-ops/bulk/update")
-@app.post("/notion-ops/bulk/update")
-async def notion_bulk_update(request: Request, payload: Dict[str, Any] = Body(...)):
+@app.post("/api/notion-ops/bulk/update", dependencies=[Depends(require_principal)])
+@app.post("/notion-ops/bulk/update", dependencies=[Depends(require_principal)])
+async def notion_bulk_update(
+    request: Request,
+    payload: Dict[str, Any] = Body(...),
+    principal: Principal = Depends(require_principal),
+):
+    from services import notion_armed_store
+
+    try:
+        st = notion_armed_store.get(principal.sub)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=503,
+            detail=f"notion_armed_store_unavailable:{type(exc).__name__}",
+        )
+
+    if st.get("armed") is not True:
+        raise HTTPException(status_code=403, detail="notion_ops_disarmed")
+
     _guard_write_bulk(request)
 
     items = _validate_bulk_items(payload.get("items"))
@@ -6687,8 +6943,8 @@ async def _query_notion_database(db_key: str, query: Dict[str, Any]) -> Dict[str
     return res
 
 
-@app.post("/api/notion-ops/bulk/query")
-@app.post("/notion-ops/bulk/query")
+@app.post("/api/notion-ops/bulk/query", dependencies=[Depends(require_principal)])
+@app.post("/notion-ops/bulk/query", dependencies=[Depends(require_principal)])
 async def notion_bulk_query(payload: Any = Body(None)):
     if payload is None:
         return {"results": []}
@@ -7274,42 +7530,48 @@ async def _ceo_command_core(
     return JSONResponse(content=result, media_type="application/json; charset=utf-8")
 
 
-@app.post("/api/ceo/command")
+@app.post("/api/ceo/command", dependencies=[Depends(require_principal)])
 async def ceo_dashboard_command_api(
     request: Request, payload: Dict[str, Any] = Body(...)
 ):
     return await _ceo_command_core(payload, request)
 
 
-@app.post("/api/ceo-console/command")
+@app.post("/api/ceo-console/command", dependencies=[Depends(require_principal)])
 async def ceo_console_command_api(
     request: Request, payload: Dict[str, Any] = Body(...)
 ):
     return await _ceo_command_core(payload, request)
 
 
-@app.post("/api/ceo-console/command/internal")
+@app.post(
+    "/api/ceo-console/command/internal",
+    dependencies=[Depends(require_principal)],
+)
 async def ceo_console_command_api_internal(
     request: Request, payload: Dict[str, Any] = Body(...)
 ):
     return await _ceo_command_core(payload, request)
 
 
-@app.post("/ceo/command")
+@app.post("/ceo/command", dependencies=[Depends(require_principal)])
 async def ceo_dashboard_command_public(
     request: Request, payload: Dict[str, Any] = Body(...)
 ):
     return await _ceo_command_core(payload, request)
 
 
-@app.post("/ceo-console/command")
+@app.post("/ceo-console/command", dependencies=[Depends(require_principal)])
 async def ceo_console_command_public(
     request: Request, payload: Dict[str, Any] = Body(...)
 ):
     return await _ceo_command_core(payload, request)
 
 
-@app.post("/ceo-console/command/internal")
+@app.post(
+    "/ceo-console/command/internal",
+    dependencies=[Depends(require_principal)],
+)
 async def ceo_console_command_public_internal(
     request: Request, payload: Dict[str, Any] = Body(...)
 ):
@@ -7319,7 +7581,7 @@ async def ceo_console_command_public_internal(
 # ================================================================
 # CEO CONSOLE STATUS
 # ================================================================
-@app.get("/api/ceo-console/status")
+@app.get("/api/ceo-console/status", dependencies=[Depends(require_principal)])
 async def ceo_console_status_api():
     ops_safe = _ops_safe_mode()
     return {
@@ -7339,7 +7601,7 @@ async def ceo_console_status_api():
     }
 
 
-@app.get("/ceo-console/status")
+@app.get("/ceo-console/status", dependencies=[Depends(require_principal)])
 async def ceo_console_status_public():
     return await ceo_console_status_api()
 
@@ -7347,7 +7609,7 @@ async def ceo_console_status_public():
 # ================================================================
 # CEO CONSOLE SNAPSHOT
 # ================================================================
-@app.get("/api/ceo/console/snapshot")
+@app.get("/api/ceo/console/snapshot", dependencies=[Depends(require_principal)])
 async def ceo_console_snapshot() -> CeoConsoleSnapshotResponse:
     approval_state = get_approval_state()
     approvals_map: Dict[str, Dict[str, Any]] = getattr(approval_state, "_approvals", {})
@@ -7454,18 +7716,24 @@ async def ceo_console_snapshot() -> CeoConsoleSnapshotResponse:
     return snapshot  # type: ignore[return-value]
 
 
-@app.get("/ceo/console/snapshot")
+@app.get("/ceo/console/snapshot", dependencies=[Depends(require_principal)])
 async def ceo_console_snapshot_public():
     return await ceo_console_snapshot()
 
 
-@app.get("/api/ceo/console/weekly-memory")
+@app.get(
+    "/api/ceo/console/weekly-memory",
+    dependencies=[Depends(require_principal)],
+)
 async def ceo_weekly_memory():
     wm_snapshot = get_weekly_memory_service().get_snapshot()
     return {"weekly_memory": _to_serializable(wm_snapshot)}
 
 
-@app.get("/ceo/weekly-priority-memory")
+@app.get(
+    "/ceo/weekly-priority-memory",
+    dependencies=[Depends(require_principal)],
+)
 async def ceo_weekly_priority_memory():
     try:
         items = get_ai_summary_service().get_this_week_priorities()
@@ -7481,7 +7749,7 @@ async def ceo_weekly_priority_memory():
 # ================================================================
 # HEALTH / READY
 # ================================================================
-@app.get("/health")
+@app.get("/health", dependencies=[Depends(require_principal)])
 async def health_check(response: Response):
     try:
         response.headers["X-Runtime-Fingerprint"] = _RUNTIME_FINGERPRINT
@@ -7498,12 +7766,12 @@ async def health_check(response: Response):
     }
 
 
-@app.get("/api/health")
+@app.get("/api/health", dependencies=[Depends(require_principal)])
 async def api_health_check(response: Response):
     return await health_check(response)
 
 
-@app.get("/health/services")
+@app.get("/health/services", dependencies=[Depends(require_principal)])
 async def health_services():
     from dependencies import services_status
 
@@ -7520,7 +7788,7 @@ async def health_services():
     }
 
 
-@app.get("/ready")
+@app.get("/ready", dependencies=[Depends(require_principal)])
 async def ready_check():
     if not _BOOT_READY:
         raise HTTPException(status_code=503, detail=_BOOT_ERROR or "System not ready")
@@ -7599,19 +7867,60 @@ else:
     logger.warning("chat_router is None — chat endpoints disabled")
 app.include_router(ceo_console_module.router, prefix="/api/internal")
 
+# SEC-601: boot-time assertion — /agents/* must not be present on SSOT app.
+_sec601_assert_no_agents_routes(app)
+
 
 # ================================================================
 # GLOBAL ERROR HANDLER
 # ================================================================
 @app.exception_handler(StarletteHTTPException)
-async def http_exception_handler(_: Request, exc: StarletteHTTPException):
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
     detail = getattr(exc, "detail", None)
 
     content: Dict[str, Any] = {"detail": detail}
     content["status"] = "error"
     content["message"] = detail
 
-    return JSONResponse(status_code=exc.status_code, content=content)
+    resp = JSONResponse(status_code=exc.status_code, content=content)
+
+    # PLAT-502: emit audit for auth denials/forbidden.
+    try:
+        sc = int(getattr(exc, "status_code", 0) or 0)
+        if sc in (401, 403):
+            rid = getattr(getattr(request, "state", None), "req_id", None)
+            rid = (
+                rid.strip()
+                if isinstance(rid, str) and rid.strip()
+                else str(uuid.uuid4())
+            )
+            sub = getattr(getattr(request, "state", None), "principal_sub", None)
+            roles = getattr(getattr(request, "state", None), "principal_roles", None)
+            sub = sub.strip() if isinstance(sub, str) and sub.strip() else None
+            role_list: List[str] = []
+            if isinstance(roles, list):
+                role_list = [str(r).strip() for r in roles if str(r).strip()]
+
+            get_audit_log_service().emit(
+                AuditEvent(
+                    event_type="auth_denied" if sc == 401 else "auth_forbidden",
+                    request_id=rid,
+                    principal_sub=sub,
+                    principal_roles=sorted(set(role_list)) if role_list else [],
+                    route=getattr(getattr(request, "url", None), "path", None),
+                    result="denied" if sc == 401 else "forbidden",
+                    data={"detail": detail},
+                )
+            )
+    except Exception:
+        pass
+    try:
+        req_id = getattr(getattr(request, "state", None), "req_id", None)
+        if isinstance(req_id, str) and req_id.strip():
+            resp.headers["X-Request-ID"] = req_id.strip()
+    except Exception:
+        pass
+    return resp
 
 
 @app.exception_handler(Exception)
@@ -7626,10 +7935,16 @@ async def global_exception_handler(request: Request, exc: Exception):
     )
     logger.error("TRACEBACK err_id=%s\n%s", err_id, traceback.format_exc())
 
-    return JSONResponse(
+    resp = JSONResponse(
         status_code=500,
         content={"ok": False, "error": "internal_error", "error_id": err_id},
     )
+    try:
+        if isinstance(req_id, str) and req_id.strip():
+            resp.headers["X-Request-ID"] = req_id.strip()
+    except Exception:
+        pass
+    return resp
 
 
 # ================================================================

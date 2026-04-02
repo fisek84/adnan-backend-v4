@@ -5,10 +5,11 @@ from __future__ import annotations
 import json
 import logging
 import os
+import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Body, HTTPException, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from models.canon import PROPOSAL_WRAPPER_INTENT
@@ -19,6 +20,9 @@ from services.cron_service import CronService
 from services.decision_outcome_registry import get_decision_outcome_registry
 from services.execution_orchestrator import ExecutionOrchestrator
 from services.metrics_persistence_service import MetricsPersistenceService
+from services.auth.dependencies import require_principal, require_role
+from services.auth.principal import Principal
+from services.audit_log_service import AuditEvent, get_audit_log_service
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -524,7 +528,12 @@ def list_pending() -> Dict[str, Any]:
 
 
 @router.post("/approval/approve")
-async def approve(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+async def approve(
+    request: Request,
+    body: Dict[str, Any] = Body(...),
+    principal: Principal = Depends(require_principal),
+    _role_guard: Principal = Depends(require_role("ops_approver", "admin")),
+) -> Dict[str, Any]:
     _guard_write(request)
 
     approval_id = body.get("approval_id")
@@ -539,8 +548,18 @@ async def approve(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[st
         )
         return cached
 
-    approved_by = body.get("approved_by", "unknown")
     note = body.get("note")
+
+    # Verified attribution (ignore any client-provided actor fields).
+    approved_by_sub = principal.sub
+    approved_by_roles = sorted(principal.roles)
+
+    request_id = getattr(getattr(request, "state", None), "req_id", None)
+    if not (isinstance(request_id, str) and request_id.strip()):
+        request_id = request.headers.get("X-Request-ID") or request.headers.get(
+            "X-Request-Id"
+        )
+    request_id = request_id.strip() if isinstance(request_id, str) else None
 
     approval_state = _get_approval_state()
 
@@ -597,9 +616,42 @@ async def approve(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[st
     try:
         approval = approval_state.approve(
             approval_id,
-            approved_by=approved_by if isinstance(approved_by, str) else "unknown",
+            approved_by=approved_by_sub,
+            approved_by_sub=approved_by_sub,
+            approved_by_roles=approved_by_roles,
+            request_id=request_id,
             note=note if isinstance(note, str) else None,
         )
+
+        # PLAT-502: audit approval approved.
+        try:
+            rid = request_id
+            rid = rid.strip() if isinstance(rid, str) and rid.strip() else None
+            if rid is None:
+                rid0 = getattr(getattr(request, "state", None), "req_id", None)
+                rid0 = rid0.strip() if isinstance(rid0, str) and rid0.strip() else None
+                rid = rid0
+            if rid is None:
+                rid = str(uuid.uuid4())
+
+            ex_id = approval.get("execution_id") if isinstance(approval, dict) else None
+            ex_id = ex_id.strip() if isinstance(ex_id, str) and ex_id.strip() else None
+
+            get_audit_log_service().emit(
+                AuditEvent(
+                    event_type="approval_approved",
+                    request_id=rid,
+                    principal_sub=approved_by_sub,
+                    principal_roles=approved_by_roles,
+                    route=getattr(getattr(request, "url", None), "path", None),
+                    result="approved",
+                    approval_id=approval_id,
+                    execution_id=ex_id,
+                    data={"note_present": bool(isinstance(note, str) and note.strip())},
+                )
+            )
+        except Exception:
+            pass
 
         # DecisionOutcomeRegistry: create decision record at approval-time (best-effort)
         try:
@@ -626,7 +678,7 @@ async def approve(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[st
                 cmd_snapshot=cmd_snapshot if isinstance(cmd_snapshot, dict) else {},
                 behaviour_mode=md.get("behaviour_mode"),
                 alignment_snapshot_hash=md.get("alignment_snapshot_hash"),
-                owner=approved_by if isinstance(approved_by, str) else "unknown",
+                owner=approved_by_sub,
                 accepted=True,
             )
 

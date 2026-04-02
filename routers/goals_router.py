@@ -28,11 +28,16 @@ from models.goal_create import GoalCreate
 from models.goal_update import GoalUpdate
 from models.base_model import GoalModel
 from dependencies import get_goals_service, get_notion_service
+from services.auth.dependencies import require_principal
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-router = APIRouter(prefix="/goals", tags=["Goals"])
+router = APIRouter(
+    prefix="/goals",
+    tags=["Goals"],
+    dependencies=[Depends(require_principal)],
+)
 
 
 # ------------------------------------------------------------

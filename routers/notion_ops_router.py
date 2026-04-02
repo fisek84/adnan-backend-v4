@@ -4,17 +4,24 @@ from __future__ import annotations
 import os
 import json
 import logging
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 from typing import Any, Dict, List, Optional
 
 import httpx
-from fastapi import APIRouter, HTTPException, Request, Body
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from services.approval_flow import require_approval_or_block
+from services.auth.dependencies import require_principal, require_role
+from services.auth.principal import Principal
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/notion-ops", tags=["Notion Bulk Ops"])
+router = APIRouter(
+    prefix="/notion-ops",
+    tags=["Notion Bulk Ops"],
+    dependencies=[Depends(require_principal)],
+)
 
 NOTION_API_URL = (
     os.getenv("NOTION_API_URL", "https://api.notion.com/v1") or ""
@@ -275,7 +282,8 @@ class BulkQueryPayload(BaseModel):
 class NotionOpsTogglePayload(BaseModel):
     """Payload for toggling Notion Ops armed state."""
 
-    session_id: str = Field(..., min_length=1)
+    # BE-301: retained for backward compatibility, but NOT used for keying.
+    session_id: Optional[str] = None
     armed: bool
 
 
@@ -284,25 +292,33 @@ class NotionOpsTogglePayload(BaseModel):
 # -------------------------------
 @router.post("/toggle")
 async def toggle_notion_ops(
-    request: Request, payload: NotionOpsTogglePayload
+    request: Request,
+    payload: NotionOpsTogglePayload,
+    principal: Principal = Depends(require_role("admin", "ceo")),
 ) -> Dict[str, Any]:
     """
-    Toggle Notion Ops ARMED/DISARMED state for a session.
+    Toggle Notion Ops ARMED/DISARMED state for the authenticated principal.
 
-    This endpoint is CEO-only and bypasses all write guards.
-    CEO users can directly control the Notion Ops state without requiring approvals.
+    BE-301:
+    - Requires authenticated principal.
+    - Requires role admin OR ceo.
+    - State is keyed by principal.sub (principal-based), not session_id.
     """
-    # CEO-only endpoint - validate CEO credentials
-    if not _is_ceo_request(request):
-        raise HTTPException(
-            status_code=403, detail="This endpoint is restricted to CEO users only"
-        )
+    from services import notion_armed_store
 
-    # Validate token if enforcement is enabled
-    _require_ceo_token_if_enforced(request)
+    def _utcnow() -> datetime:
+        return datetime.now(timezone.utc)
 
-    # Import state management
-    from services.notion_ops_state import set_armed
+    def _now_iso() -> str:
+        return _utcnow().isoformat()
+
+    def _arm_ttl_seconds() -> int:
+        raw = (os.getenv("NOTION_OPS_ARM_TTL_SECONDS", "3600") or "").strip()
+        try:
+            v = int(raw)
+        except Exception:
+            v = 3600
+        return v if v > 0 else 3600
 
     # Enterprise safety (optional): when arming, validate Notion is configured and reachable.
     # Default is OFF to preserve local/dev ergonomics and existing tests.
@@ -331,16 +347,41 @@ async def toggle_notion_ops(
             )
 
     # Toggle the state
-    session_id = payload.session_id.strip()
+    principal_sub = principal.sub.strip()
     armed = bool(payload.armed)
 
-    result = await set_armed(session_id, armed, prompt=f"CEO toggle via API: {armed}")
+    now_iso = _now_iso()
+    ttl_seconds = _arm_ttl_seconds()
+    expires_at = (
+        (_utcnow() + timedelta(seconds=ttl_seconds)).isoformat() if armed else None
+    )
+
+    state: Dict[str, Any] = {
+        "principal_sub": principal_sub,
+        "armed": armed,
+        "armed_at": now_iso if armed else None,
+        "expires_at": expires_at,
+        "armed_by_sub": principal_sub,
+        "status": "armed" if armed else "disarmed",
+        "revoked_at": None if armed else now_iso,
+        "last_toggled_at": now_iso,
+        "last_prompt": f"Notion ops toggle via API (principal={principal_sub}): {armed}",
+    }
+
+    try:
+        result = notion_armed_store.set(principal_sub, state)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=503,
+            detail=f"notion_armed_store_unavailable:{type(exc).__name__}",
+        )
 
     return {
         "ok": True,
-        "session_id": session_id,
+        "principal_sub": principal_sub,
         "armed": result.get("armed"),
         "armed_at": result.get("armed_at"),
+        "expires_at": result.get("expires_at"),
         "last_toggled_at": result.get("last_toggled_at"),
     }
 
@@ -356,7 +397,24 @@ def list_databases() -> Dict[str, Any]:
 
 
 @router.post("/bulk/create")
-async def bulk_create(request: Request, payload: BulkCreatePayload) -> Dict[str, Any]:
+async def bulk_create(
+    request: Request,
+    payload: BulkCreatePayload,
+    principal: Principal = Depends(require_principal),
+) -> Dict[str, Any]:
+    from services import notion_armed_store
+
+    try:
+        st = notion_armed_store.get(principal.sub)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=503,
+            detail=f"notion_armed_store_unavailable:{type(exc).__name__}",
+        )
+
+    if st.get("armed") is not True:
+        raise HTTPException(status_code=403, detail="notion_ops_disarmed")
+
     _guard_write(request, command_type="create_task")
 
     if not payload.items:
@@ -383,7 +441,24 @@ async def bulk_create(request: Request, payload: BulkCreatePayload) -> Dict[str,
 
 
 @router.post("/bulk/update")
-async def bulk_update(request: Request, payload: BulkUpdatePayload) -> Dict[str, Any]:
+async def bulk_update(
+    request: Request,
+    payload: BulkUpdatePayload,
+    principal: Principal = Depends(require_principal),
+) -> Dict[str, Any]:
+    from services import notion_armed_store
+
+    try:
+        st = notion_armed_store.get(principal.sub)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=503,
+            detail=f"notion_armed_store_unavailable:{type(exc).__name__}",
+        )
+
+    if st.get("armed") is not True:
+        raise HTTPException(status_code=403, detail="notion_ops_disarmed")
+
     _guard_write(request, command_type="update_task")
     # Stub (ako želiš, kasnije spajamo na Notion update)
     return {"updated": payload.updates}

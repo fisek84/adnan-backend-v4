@@ -8,6 +8,8 @@ from typing import Any, Awaitable, Callable, Dict, Optional, Literal
 
 from services.execution_governance_service import ExecutionGovernanceService
 from services.memory_service import MemoryService
+from services.audit_log_service import AuditEvent, get_audit_log_service
+from services.approval_state_service import get_approval_state
 
 
 WriteStatus = Literal[
@@ -104,6 +106,34 @@ class InMemoryIdempotencyStore:
 HandlerFn = Callable[[WriteEnvelope], Awaitable[Dict[str, Any]]]
 
 
+async def _default_approval_creator(env: WriteEnvelope, payload: Dict[str, Any]) -> str:
+    if not isinstance(getattr(env, "execution_id", None), str) or not env.execution_id:
+        raise ValueError("execution_id is required for approval creation")
+
+    payload_summary = payload if isinstance(payload, dict) else {}
+    scope = "write_gateway"
+    if isinstance(env.scope, dict):
+        t = env.scope.get("type")
+        if isinstance(t, str) and t.strip():
+            scope = t.strip()
+    risk_level = "standard"
+    rl = payload_summary.get("risk_level") if isinstance(payload_summary, dict) else None
+    if isinstance(rl, str) and rl.strip():
+        risk_level = rl.strip()
+
+    approval = get_approval_state().create(
+        command=env.command,
+        payload_summary=payload_summary,
+        scope=scope,
+        risk_level=risk_level,
+        execution_id=env.execution_id,
+    )
+    approval_id = approval.get("approval_id") if isinstance(approval, dict) else None
+    if not isinstance(approval_id, str) or not approval_id.strip():
+        raise RuntimeError("approval_creator returned empty approval_id")
+    return approval_id.strip()
+
+
 class WriteGateway:
     """
     SSOT write execution layer (KANON-FIX-003).
@@ -124,9 +154,7 @@ class WriteGateway:
         audit_emitter: Optional[
             Callable[[str, WriteEnvelope, Dict[str, Any]], Awaitable[Optional[str]]]
         ] = None,
-        approval_creator: Optional[
-            Callable[[WriteEnvelope, Dict[str, Any]], Awaitable[Optional[str]]]
-        ] = None,
+        approval_creator: Callable[[WriteEnvelope, Dict[str, Any]], Awaitable[str]] = _default_approval_creator,
         governance_service: Optional[ExecutionGovernanceService] = None,
         memory_service: Optional[MemoryService] = None,
     ) -> None:
@@ -135,6 +163,8 @@ class WriteGateway:
 
         self._policy_evaluator = policy_evaluator
         self._audit_emitter = audit_emitter
+        if approval_creator is None:
+            raise ValueError("approval_creator is required")
         self._approval_creator = approval_creator
 
         self._governance = governance_service or ExecutionGovernanceService()
@@ -156,6 +186,25 @@ class WriteGateway:
         env.write_id = env.write_id or str(uuid.uuid4())
         env.created_at_unix = env.created_at_unix or time.time()
 
+        def _audit_request_id() -> str:
+            try:
+                md = env.metadata if isinstance(env.metadata, dict) else {}
+                rid = md.get("request_id") if isinstance(md, dict) else None
+                rid = rid.strip() if isinstance(rid, str) and rid.strip() else None
+                return rid or str(uuid.uuid4())
+            except Exception:
+                return str(uuid.uuid4())
+
+        def _audit_roles() -> list[str]:
+            try:
+                md = env.metadata if isinstance(env.metadata, dict) else {}
+                roles = md.get("principal_roles") if isinstance(md, dict) else None
+                if isinstance(roles, list):
+                    return [str(r).strip() for r in roles if str(r).strip()]
+            except Exception:
+                pass
+            return []
+
         # KANON: execution_id required
         if not env.execution_id:
             audit_id = await self._emit_audit(
@@ -164,6 +213,24 @@ class WriteGateway:
             await self._emit_audit(
                 "WRITE_REJECTED", env, {"reason": "missing_execution_id"}
             )
+
+            # PLAT-502: central audit write blocked.
+            try:
+                get_audit_log_service().emit(
+                    AuditEvent(
+                        event_type="write_blocked",
+                        request_id=_audit_request_id(),
+                        principal_sub=env.actor_id or None,
+                        principal_roles=sorted(set(_audit_roles())),
+                        route="write_gateway.request_write",
+                        result="rejected",
+                        approval_id=None,
+                        execution_id=None,
+                        data={"reason": "missing_execution_id", "command": env.command},
+                    )
+                )
+            except Exception:
+                pass
             return WriteResult(
                 success=False,
                 status="rejected",
@@ -195,6 +262,28 @@ class WriteGateway:
 
         if decision.decision == "deny":
             await self._emit_audit("WRITE_REJECTED", env, {"reason": decision.reason})
+
+            # PLAT-502: central audit write blocked.
+            try:
+                get_audit_log_service().emit(
+                    AuditEvent(
+                        event_type="write_blocked",
+                        request_id=_audit_request_id(),
+                        principal_sub=env.actor_id or None,
+                        principal_roles=sorted(set(_audit_roles())),
+                        route="write_gateway.request_write",
+                        result="rejected",
+                        approval_id=None,
+                        execution_id=env.execution_id,
+                        data={
+                            "reason": decision.reason or "policy_denied",
+                            "command": env.command,
+                            "resource": env.resource,
+                        },
+                    )
+                )
+            except Exception:
+                pass
             return WriteResult(
                 success=False,
                 status="rejected",
@@ -207,16 +296,85 @@ class WriteGateway:
             ).__dict__
 
         if decision.decision == "requires_approval":
-            approval_id = decision.approval_id
-            if approval_id is None and self._approval_creator is not None:
-                approval_id = await self._approval_creator(
-                    env, decision.approval_payload or {}
+            approval_id = decision.approval_id or env.approval_id
+            if approval_id is None:
+                try:
+                    approval_id = await self._approval_creator(
+                        env, decision.approval_payload or {}
+                    )
+                except Exception as e:
+                    await self._emit_audit(
+                        "WRITE_APPROVAL_REQUIRED",
+                        env,
+                        {
+                            "reason": decision.reason,
+                            "approval_id": None,
+                            "error": f"approval_create_failed:{type(e).__name__}:{str(e)}",
+                        },
+                    )
+                    return WriteResult(
+                        success=False,
+                        status="failed",
+                        write_id=env.write_id,
+                        reason="approval_create_failed",
+                        idempotency_key=env.idempotency_key,
+                        task_id=env.task_id,
+                        execution_id=env.execution_id,
+                        audit_id=audit_id,
+                        approval_id=None,
+                    ).__dict__
+
+            if not isinstance(approval_id, str) or not approval_id.strip():
+                await self._emit_audit(
+                    "WRITE_APPROVAL_REQUIRED",
+                    env,
+                    {
+                        "reason": decision.reason,
+                        "approval_id": None,
+                        "error": "approval_id_missing_after_create",
+                    },
                 )
+                return WriteResult(
+                    success=False,
+                    status="failed",
+                    write_id=env.write_id,
+                    reason="approval_id_missing",
+                    idempotency_key=env.idempotency_key,
+                    task_id=env.task_id,
+                    execution_id=env.execution_id,
+                    audit_id=audit_id,
+                    approval_id=None,
+                ).__dict__
+
+            approval_id = approval_id.strip()
+            env.approval_id = approval_id
             await self._emit_audit(
                 "WRITE_APPROVAL_REQUIRED",
                 env,
                 {"reason": decision.reason, "approval_id": approval_id},
             )
+
+            # PLAT-502: central audit write blocked.
+            try:
+                get_audit_log_service().emit(
+                    AuditEvent(
+                        event_type="write_blocked",
+                        request_id=_audit_request_id(),
+                        principal_sub=env.actor_id or None,
+                        principal_roles=sorted(set(_audit_roles())),
+                        route="write_gateway.request_write",
+                        result="requires_approval",
+                        approval_id=str(approval_id) if approval_id else None,
+                        execution_id=env.execution_id,
+                        data={
+                            "reason": decision.reason or "approval_required",
+                            "command": env.command,
+                            "resource": env.resource,
+                        },
+                    )
+                )
+            except Exception:
+                pass
             return WriteResult(
                 success=False,
                 status="requires_approval",
@@ -259,6 +417,52 @@ class WriteGateway:
         assert env.write_id is not None
         assert env.execution_id is not None
         assert env.idempotency_key is not None
+
+        # BE-402: approval state must be APPROVED before any side-effect dispatch.
+        if isinstance(env.approval_id, str) and env.approval_id.strip():
+            from services.approval_flow import ApprovalStatus, check_approval
+
+            st = check_approval(
+                command_id=env.execution_id,
+                command_type=env.command,
+                context={"approval_id": env.approval_id},
+            )
+
+            if st == ApprovalStatus.APPROVED:
+                pass
+            elif st == ApprovalStatus.PENDING:
+                return WriteResult(
+                    success=False,
+                    status="requires_approval",
+                    write_id=env.write_id,
+                    reason="approval_pending",
+                    idempotency_key=env.idempotency_key,
+                    task_id=env.task_id,
+                    execution_id=env.execution_id,
+                    approval_id=env.approval_id,
+                ).__dict__
+            elif st in (ApprovalStatus.REJECTED, ApprovalStatus.INVALID):
+                return WriteResult(
+                    success=False,
+                    status="rejected",
+                    write_id=env.write_id,
+                    reason=f"approval_not_approved:{st.value}",
+                    idempotency_key=env.idempotency_key,
+                    task_id=env.task_id,
+                    execution_id=env.execution_id,
+                    approval_id=env.approval_id,
+                ).__dict__
+            else:
+                return WriteResult(
+                    success=False,
+                    status="rejected",
+                    write_id=env.write_id,
+                    reason="approval_not_approved",
+                    idempotency_key=env.idempotency_key,
+                    task_id=env.task_id,
+                    execution_id=env.execution_id,
+                    approval_id=env.approval_id,
+                ).__dict__
 
         # Idempotency check
         existing = await self._idempotency.get(env.idempotency_key)

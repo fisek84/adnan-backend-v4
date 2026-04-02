@@ -219,7 +219,33 @@ def init_services() -> None:
         # ----------------------------------------
         # 3) WriteGateway (Phase 5 SSOT)
         # ----------------------------------------
-        _write_gateway = WriteGateway()
+        async def _approval_creator(env, payload):
+            from services.approval_state_service import get_approval_state
+
+            if not isinstance(getattr(env, "execution_id", None), str) or not env.execution_id:
+                raise ValueError("execution_id is required")
+
+            payload_summary = payload if isinstance(payload, dict) else {}
+
+            scope = "write_gateway"
+            if isinstance(getattr(env, "scope", None), dict):
+                t = env.scope.get("type")
+                if isinstance(t, str) and t.strip():
+                    scope = t.strip()
+
+            approval = get_approval_state().create(
+                command=str(getattr(env, "command", "") or "").strip() or "write",
+                payload_summary=payload_summary,
+                scope=scope,
+                risk_level="standard",
+                execution_id=env.execution_id,
+            )
+            approval_id = approval.get("approval_id") if isinstance(approval, dict) else None
+            if not isinstance(approval_id, str) or not approval_id.strip():
+                raise RuntimeError("approval_id missing")
+            return approval_id.strip()
+
+        _write_gateway = WriteGateway(approval_creator=_approval_creator)
         logger.info("✍️ WriteGateway initialized.")
 
         # ----------------------------------------

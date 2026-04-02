@@ -31,7 +31,7 @@ class AICommand(BaseModel):
     # ========================================================
     # ROLES (CANON)
     # ========================================================
-    initiator: str = "ceo"
+    initiator: str = "unknown"
     owner: str = "system"
     executor: Optional[str] = None
 

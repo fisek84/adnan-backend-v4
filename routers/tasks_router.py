@@ -13,11 +13,16 @@ from models.task_update import TaskUpdate
 from models.task_model import TaskModel
 from services.tasks_service import TasksService
 from dependencies import get_tasks_service, get_notion_service
+from services.auth.dependencies import require_principal
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-router = APIRouter(prefix="/tasks", tags=["Tasks"])
+router = APIRouter(
+    prefix="/tasks",
+    tags=["Tasks"],
+    dependencies=[Depends(require_principal)],
+)
 
 
 # ============================================================

@@ -204,24 +204,47 @@ async def notion_ops_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> Agen
         }
     )
 
-    # Check session state before proceeding with the action
-    session_id = getattr(agent_input, "session_id", None)
-    if session_id:
-        state = await get_state(session_id)
-        armed = state.get("armed", False)
+    # Check principal-bound state before proceeding with the action (BE-301)
+    principal_sub = None
+    try:
+        md = getattr(agent_input, "metadata", None)
+        if isinstance(md, dict):
+            v = md.get("principal_sub")
+            if isinstance(v, str) and v.strip():
+                principal_sub = v.strip()
+    except Exception:
+        principal_sub = None
 
-        if not armed:
-            # Disarmed: enforce non-executable wrapper contract for E2E.
-            trace["notion_ops_armed"] = False
-            _force_disarmed_wrapper_contract(proposed)
+    if not principal_sub:
+        try:
+            ip0 = getattr(agent_input, "identity_pack", None)
+            ip = ip0 if isinstance(ip0, dict) else {}
+            payload = ip.get("payload") if isinstance(ip.get("payload"), dict) else {}
+            v = payload.get("sub") if isinstance(payload, dict) else None
+            if not (isinstance(v, str) and v.strip()):
+                v = ip.get("sub")
+            if isinstance(v, str) and v.strip():
+                principal_sub = v.strip()
+        except Exception:
+            principal_sub = None
 
-            return AgentOutput(
-                text="Notion Ops nije aktivan. Želiš aktivirati? (napiši: 'notion ops aktiviraj' / 'notion ops uključi') / Notion Ops is not armed. Want to activate? (write: 'notion ops activate' / 'notion ops enable')",
-                proposed_commands=proposed,
-                agent_id="notion_ops",
-                read_only=read_only,
-                trace=trace,
-            )
+    armed = False
+    if isinstance(principal_sub, str) and principal_sub.strip():
+        state = await get_state(principal_sub)
+        armed = bool(state.get("armed", False))
+
+    if not armed:
+        # Disarmed: enforce non-executable wrapper contract for E2E.
+        trace["notion_ops_armed"] = False
+        _force_disarmed_wrapper_contract(proposed)
+
+        return AgentOutput(
+            text="Notion Ops nije aktivan. Želiš aktivirati? (napiši: 'notion ops aktiviraj' / 'notion ops uključi') / Notion Ops is not armed. Want to activate? (write: 'notion ops activate' / 'notion ops enable')",
+            proposed_commands=proposed,
+            agent_id="notion_ops",
+            read_only=read_only,
+            trace=trace,
+        )
 
     return AgentOutput(
         text=text,

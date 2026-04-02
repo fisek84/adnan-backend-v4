@@ -3746,12 +3746,34 @@ async def create_ceo_advisor_agent(
     if not session_id and isinstance(conv_id, str) and conv_id.strip():
         session_id = conv_id.strip()
 
+    principal_sub = None
+    try:
+        if isinstance(meta, dict):
+            v = meta.get("principal_sub")
+            if isinstance(v, str) and v.strip():
+                principal_sub = v.strip()
+    except Exception:
+        principal_sub = None
+
+    if not principal_sub:
+        try:
+            ip0 = getattr(agent_input, "identity_pack", None)
+            ip = ip0 if isinstance(ip0, dict) else {}
+            payload = ip.get("payload") if isinstance(ip.get("payload"), dict) else {}
+            v = payload.get("sub") if isinstance(payload, dict) else None
+            if not (isinstance(v, str) and v.strip()):
+                v = ip.get("sub")
+            if isinstance(v, str) and v.strip():
+                principal_sub = v.strip()
+        except Exception:
+            principal_sub = None
+
     notion_ops_state: Dict[str, Any] = {"armed": False, "armed_at": None}
     notion_ops_armed = False
-    if isinstance(session_id, str) and session_id.strip():
+    if isinstance(principal_sub, str) and principal_sub.strip():
         try:
-            notion_ops_state = await get_notion_ops_state(session_id)
-            notion_ops_armed = await notion_ops_is_armed(session_id)
+            notion_ops_state = await get_notion_ops_state(principal_sub)
+            notion_ops_armed = await notion_ops_is_armed(principal_sub)
         except Exception:
             notion_ops_state = {"armed": False, "armed_at": None}
             notion_ops_armed = False

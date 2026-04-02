@@ -43,10 +43,38 @@ class RBACService:
         "health",
     }
 
+    # Privileged actions must be explicitly allowed by RBAC policy.
+    # Without an explicit allow rule -> DENY (deny-by-default).
+    _PRIVILEGED_ACTIONS = {
+        # Notion writes (SSOT set mirrors ExecutionOrchestrator notion_write intents)
+        "notion_write",
+        "create_page",
+        "create_goal",
+        "create_task",
+        "create_project",
+        "update_page",
+        "batch_request",
+        "batch",
+        "branch_request",
+        "delete_page",
+        # Other privileged intents
+        "memory_write",
+        "tool_call",
+    }
+
     def __init__(self) -> None:
         self._map: Dict[str, str] = {}
         self._role_actions: Dict[str, Any] = {}
+        self._policy_configured: bool = False
         self._load()
+
+    def policy_configured(self) -> bool:
+        """True when an explicit RBAC policy is present and non-empty.
+
+        Contract (PLAT-104): production boot must fail if this is False.
+        """
+
+        return bool(self._policy_configured is True)
 
     # ------------------------------------------------------------
     # ROLE RESOLUTION
@@ -137,6 +165,10 @@ class RBACService:
         if role_norm == "guest":
             return False
 
+        # PLAT-104: privileged actions are deny-by-default unless explicitly allowed.
+        if action_norm in self._PRIVILEGED_ACTIONS:
+            return self._is_privileged_explicitly_allowed(role_norm, action_norm)
+
         # If config provides role_actions, honor it
         if self._role_actions:
             return self._is_allowed_by_role_actions(role_norm, action_norm)
@@ -144,6 +176,7 @@ class RBACService:
         # Default user policy (conservative baseline)
         if role_norm == "user":
             # allow safe actions; approval gate still enforces writes via governance
+            # NOTE: privileged actions are handled above and default-deny.
             return action_norm in self._DEFAULT_USER_ALLOW
 
         return False
@@ -185,6 +218,7 @@ class RBACService:
             parsed = self._safe_parse_json(env_json)
             if isinstance(parsed, dict):
                 self._apply_config(parsed)
+                self._policy_configured = bool(self._role_actions)
                 logger.info("RBACService loaded config from RBAC_CONFIG_JSON env")
                 return
 
@@ -195,6 +229,7 @@ class RBACService:
                 parsed = self._safe_parse_json(raw)
                 if isinstance(parsed, dict):
                     self._apply_config(parsed)
+                    self._policy_configured = bool(self._role_actions)
                     logger.info("RBACService loaded config from %s", str(cfg_path))
                     return
         except Exception as e:
@@ -203,7 +238,29 @@ class RBACService:
         # defaults
         self._map = {}
         self._role_actions = {}
+        self._policy_configured = False
         logger.info("RBACService using default role resolution/authz (no config found)")
+
+    def _is_privileged_explicitly_allowed(self, role: str, action: str) -> bool:
+        """Privileged action allow rules are explicit-only.
+
+        - Missing/empty role_actions -> DENY
+        - Missing role entry -> DENY
+        - role_actions[role] == "*" -> ALLOW
+        - role_actions[role] is list -> ALLOW iff action in list
+        """
+
+        if not self._role_actions or not isinstance(self._role_actions, dict):
+            return False
+
+        rules = self._role_actions.get(role)
+        if rules is None:
+            return False
+        if rules == "*":
+            return True
+        if isinstance(rules, list):
+            return action in {str(x) for x in rules}
+        return False
 
     def _apply_config(self, cfg: Dict[str, Any]) -> None:
         # extended format
