@@ -112,16 +112,6 @@ class ExecutionGovernanceService:
                 approval_id=approval_id_norm,
             )
 
-        if not self.policy.is_action_allowed_for_role(initiator_norm, directive_norm):
-            return self._block(
-                reason="action_not_allowed",
-                ts=ts,
-                execution_id=execution_id_norm,
-                context_type=context_type_norm,
-                directive=directive_norm,
-                approval_id=approval_id_norm,
-            )
-
         if directive_norm in self._READ_ONLY_DIRECTIVES:
             return {
                 "allowed": True,
@@ -134,6 +124,16 @@ class ExecutionGovernanceService:
                 "timestamp": ts,
                 "policy": {"initiator": initiator_norm},
             }
+
+        if not self.policy.is_action_allowed_for_role(initiator_norm, directive_norm):
+            return self._block(
+                reason="action_not_allowed",
+                ts=ts,
+                execution_id=execution_id_norm,
+                context_type=context_type_norm,
+                directive=directive_norm,
+                approval_id=approval_id_norm,
+            )
 
         if not approval_id_norm:
             return self._block(
