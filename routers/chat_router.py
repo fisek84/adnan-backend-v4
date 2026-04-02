@@ -1327,7 +1327,9 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         ):
             return True
 
-        return has_structure_target and (has_preview_word or has_no_execute)
+        return has_structure_target and has_prepare_word and (
+            has_preview_word or has_no_execute
+        )
 
     def _looks_like_write_intent(text: str) -> bool:
         t = (text or "").strip().lower()
