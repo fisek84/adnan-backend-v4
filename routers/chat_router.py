@@ -11,6 +11,7 @@ import time
 import uuid
 
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 from typing import Any, Callable, Dict, List, Optional
 
@@ -1272,6 +1273,62 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
 
         return out
 
+    def _looks_like_preview_request(text: str) -> bool:
+        t = (text or "").strip().lower()
+        if not t:
+            return False
+
+        notion_markers = (
+            "notion",
+            "notion ops",
+            "notion upis",
+            "notion write",
+        )
+        preview_markers = (
+            "preview",
+            "pregled",
+            "prikaz",
+            "show preview",
+            "show payload",
+            "samo preview",
+        )
+        no_execute_markers = (
+            "nemoj izvršiti",
+            "nemoj izvrsiti",
+            "bez izvršenja",
+            "bez izvrsenja",
+            "no execute",
+            "do not execute",
+            "don't execute",
+        )
+        prepare_markers = (
+            "pripremi",
+            "prepare",
+            "pretvori",
+            "transform",
+            "convert",
+        )
+        structure_markers = (
+            "goal",
+            "cilj",
+            "task",
+            "zadat",
+            "zadac",
+        )
+
+        has_notion_target = any(k in t for k in notion_markers)
+        has_structure_target = any(k in t for k in structure_markers)
+        has_preview_word = any(k in t for k in preview_markers)
+        has_no_execute = any(k in t for k in no_execute_markers)
+        has_prepare_word = any(k in t for k in prepare_markers)
+
+        if has_notion_target and (
+            has_preview_word or has_no_execute or has_prepare_word
+        ):
+            return True
+
+        return has_structure_target and (has_preview_word or has_no_execute)
+
     def _looks_like_write_intent(text: str) -> bool:
         t = (text or "").strip().lower()
         if not t:
@@ -1285,6 +1342,15 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             "create",
             "kreiraj",
             "napravi",
+            "pretvori",
+            "transform",
+            "convert",
+            "pripremi",
+            "prepare",
+            "povezi",
+            "poveži",
+            "link",
+            "linkaj",
             "dodaj",
             "update",
             "azuriraj",
@@ -1310,6 +1376,9 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         )
 
         if any(k in t for k in explicit_targeting):
+            return True
+
+        if _looks_like_preview_request(t):
             return True
 
         # Avoid hijacking generic phrasing like "napravi email"; for Notion gating,
@@ -1365,6 +1434,83 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             },
         )
         return pc
+
+    def _preview_initiator(payload: AgentInput, session_id: Optional[str]) -> str:
+        md = getattr(payload, "metadata", None)
+        if isinstance(md, dict):
+            for key in ("principal_sub", "initiator", "session_id"):
+                value = md.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+
+        identity_pack = getattr(payload, "identity_pack", None)
+        if isinstance(identity_pack, dict):
+            identity_payload = identity_pack.get("payload")
+            if isinstance(identity_payload, dict):
+                sub = identity_payload.get("sub")
+                if isinstance(sub, str) and sub.strip():
+                    return sub.strip()
+
+        if isinstance(session_id, str) and session_id.strip():
+            return session_id.strip()
+
+        return "ceo_chat"
+
+    async def _attach_preview_if_requested(
+        content: Dict[str, Any],
+        *,
+        prompt: str,
+        request: Request,
+        payload: AgentInput,
+        session_id: Optional[str],
+    ) -> Dict[str, Any]:
+        if not _looks_like_preview_request(prompt):
+            return content
+
+        raw_pcs = content.get("proposed_commands")
+        pcs = raw_pcs if isinstance(raw_pcs, list) else []
+        candidate = next(
+            (
+                pc
+                for pc in pcs
+                if isinstance(pc, dict)
+                and isinstance(pc.get("command"), str)
+                and pc.get("command", "").strip()
+            ),
+            None,
+        )
+        if not isinstance(candidate, dict):
+            return content
+
+        try:
+            from gateway.gateway_server import execute_preview_command  # noqa: PLC0415
+
+            preview = await execute_preview_command(
+                request=request,
+                payload=dict(candidate),
+                principal=SimpleNamespace(sub=_preview_initiator(payload, session_id)),
+            )
+        except Exception:
+            return content
+
+        if not isinstance(preview, dict) or preview.get("ok") is not True:
+            return content
+
+        content["text"] = "Structured preview je spreman. Nema izvršenja."
+        content["command"] = preview.get("command")
+        content["review"] = preview.get("review")
+        content["notion"] = preview.get("notion")
+
+        trace0 = content.get("trace")
+        trace0 = dict(trace0) if isinstance(trace0, dict) else {}
+        trace0["chat_preview_bridge"] = {
+            "enabled": True,
+            "canon": "api_chat_to_execute_preview",
+            "source_command": candidate.get("command"),
+            "source_intent": candidate.get("intent") or candidate.get("command"),
+        }
+        content["trace"] = trace0
+        return content
 
     def _pc_to_dict(pc: ProposedCommand, *, prompt: str) -> Dict[str, Any]:
         d = (
@@ -3285,6 +3431,14 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                     minimal_trace = _minimal_trace_intent(tr0)
                     if minimal_trace:
                         content["trace"] = minimal_trace
+
+                content = await _attach_preview_if_requested(
+                    content,
+                    prompt=prompt,
+                    request=request,
+                    payload=payload,
+                    session_id=session_id,
+                )
 
                 content = _attach_and_log_audit(
                     content,

@@ -1,5 +1,6 @@
 from fastapi.testclient import TestClient
 
+from models.agent_contract import AgentOutput, ProposedCommand
 from services.approval_state_service import get_approval_state
 
 
@@ -134,3 +135,98 @@ def test_chat_show_goals_hydrates_snapshot_when_missing(monkeypatch):
     assert "GOALS (top 3)" in (body.get("text") or "")
     assert "Goal A" in (body.get("text") or "")
     assert "Vidim da je stanje prazno" not in (body.get("text") or "")
+
+
+def test_api_chat_preview_request_returns_structured_notion_preview(monkeypatch):
+    app = _load_app()
+    client = TestClient(app)
+
+    from services.grounding_pack_service import GroundingPackService
+
+    monkeypatch.setattr(
+        GroundingPackService, "build", lambda **kwargs: {"enabled": False}
+    )
+
+    wrapper_prompt = (
+        "Kreiraj cilj: Sedmodnevni plan prodaje, Status Active, Priority Medium\n"
+        "Task 1: Audit funnel, Status Active, Priority Medium, Description: Pregled postojećeg funnel-a\n"
+        "Task 2: Definiši ponudu, Status Active, Priority Medium, Description: Finalizuj strukturu ponude"
+    )
+
+    async def _fake_notion_ops_agent(_payload, ctx):  # noqa: ANN001
+        return AgentOutput(
+            text="stub notion proposal",
+            proposed_commands=[
+                ProposedCommand(
+                    command="ceo.command.propose",
+                    params={"prompt": wrapper_prompt},
+                    reason="Preview-only proposal",
+                    dry_run=True,
+                    requires_approval=True,
+                    risk="LOW",
+                    scope="api_execute_raw",
+                )
+            ],
+            agent_id="notion_ops",
+            read_only=True,
+            trace={"stub": True},
+        )
+
+    monkeypatch.setattr(
+        "services.notion_ops_agent.notion_ops_agent",
+        _fake_notion_ops_agent,
+        raising=True,
+    )
+
+    payload = {
+        "message": (
+            "Pretvori ovaj sedmodnevni plan u jedan goal i više taskova, "
+            "poveži taskove sa goalom, status Active, priority Medium, "
+            "daj mi preview za Notion upis, nemoj izvršiti"
+        ),
+        "session_id": "chat-preview-session-1",
+        "metadata": {"principal_sub": "chat-preview-user-1"},
+        "snapshot": {"payload": {"tasks": [], "goals": [], "projects": []}},
+    }
+
+    r = client.post("/api/chat", json=payload)
+    assert r.status_code == 200, r.text
+
+    body = r.json()
+    assert body["read_only"] is True
+    assert body.get("text") == "Structured preview je spreman. Nema izvršenja."
+
+    pcs = body.get("proposed_commands") or []
+    assert isinstance(pcs, list) and len(pcs) == 1
+    assert pcs[0].get("command") == "ceo.command.propose"
+
+    cmd = body.get("command") or {}
+    assert cmd.get("command") == "notion_write"
+    assert cmd.get("intent") == "batch_request"
+
+    notion = body.get("notion") or {}
+    assert notion.get("type") == "batch_preview"
+    rows = notion.get("rows") or []
+    assert isinstance(rows, list) and len(rows) == 3
+
+    goal_rows = [r0 for r0 in rows if r0.get("intent") == "create_goal"]
+    task_rows = [r0 for r0 in rows if r0.get("intent") == "create_task"]
+    assert len(goal_rows) == 1
+    assert len(task_rows) == 2
+
+    for row in task_rows:
+        assert str(row.get("Goal Ref") or "").startswith("ref:")
+        props = row.get("properties_preview") or {}
+        assert isinstance(props, dict)
+        status_preview = props.get("Status") or {}
+        assert isinstance(status_preview, dict)
+        status_name = None
+        if isinstance(status_preview.get("status"), dict):
+            status_name = status_preview.get("status", {}).get("name")
+        elif isinstance(status_preview.get("select"), dict):
+            status_name = status_preview.get("select", {}).get("name")
+        assert str(status_name or "").strip().lower() == "active"
+
+    trace = body.get("trace") or {}
+    assert isinstance(trace, dict)
+    assert trace.get("chat_preview_bridge", {}).get("enabled") is True
