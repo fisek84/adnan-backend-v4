@@ -222,7 +222,10 @@ def init_services() -> None:
         async def _approval_creator(env, payload):
             from services.approval_state_service import get_approval_state
 
-            if not isinstance(getattr(env, "execution_id", None), str) or not env.execution_id:
+            if (
+                not isinstance(getattr(env, "execution_id", None), str)
+                or not env.execution_id
+            ):
                 raise ValueError("execution_id is required")
 
             payload_summary = payload if isinstance(payload, dict) else {}
@@ -240,7 +243,9 @@ def init_services() -> None:
                 risk_level="standard",
                 execution_id=env.execution_id,
             )
-            approval_id = approval.get("approval_id") if isinstance(approval, dict) else None
+            approval_id = (
+                approval.get("approval_id") if isinstance(approval, dict) else None
+            )
             if not isinstance(approval_id, str) or not approval_id.strip():
                 raise RuntimeError("approval_id missing")
             return approval_id.strip()

@@ -117,7 +117,9 @@ async def _default_approval_creator(env: WriteEnvelope, payload: Dict[str, Any])
         if isinstance(t, str) and t.strip():
             scope = t.strip()
     risk_level = "standard"
-    rl = payload_summary.get("risk_level") if isinstance(payload_summary, dict) else None
+    rl = (
+        payload_summary.get("risk_level") if isinstance(payload_summary, dict) else None
+    )
     if isinstance(rl, str) and rl.strip():
         risk_level = rl.strip()
 
@@ -154,7 +156,9 @@ class WriteGateway:
         audit_emitter: Optional[
             Callable[[str, WriteEnvelope, Dict[str, Any]], Awaitable[Optional[str]]]
         ] = None,
-        approval_creator: Callable[[WriteEnvelope, Dict[str, Any]], Awaitable[str]] = _default_approval_creator,
+        approval_creator: Callable[
+            [WriteEnvelope, Dict[str, Any]], Awaitable[str]
+        ] = _default_approval_creator,
         governance_service: Optional[ExecutionGovernanceService] = None,
         memory_service: Optional[MemoryService] = None,
     ) -> None:

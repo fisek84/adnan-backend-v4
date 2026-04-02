@@ -2732,7 +2732,9 @@ async def _shutdown_event() -> None:
 @app.middleware("http")
 async def request_trace_middleware(request: Request, call_next):
     existing = request.headers.get("X-Request-ID")
-    req_id = existing.strip() if isinstance(existing, str) and existing.strip() else None
+    req_id = (
+        existing.strip() if isinstance(existing, str) and existing.strip() else None
+    )
     if req_id is None:
         req_id = str(uuid.uuid4())
 

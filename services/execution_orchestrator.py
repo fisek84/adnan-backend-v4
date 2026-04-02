@@ -371,9 +371,15 @@ class ExecutionOrchestrator:
 
         # PLAT-502: audit execute resume (post-approval).
         try:
-            md = cmd.metadata if isinstance(getattr(cmd, "metadata", None), dict) else {}
+            md = (
+                cmd.metadata if isinstance(getattr(cmd, "metadata", None), dict) else {}
+            )
             rid = md.get("request_id") if isinstance(md, dict) else None
-            rid = rid.strip() if isinstance(rid, str) and rid.strip() else str(uuid.uuid4())
+            rid = (
+                rid.strip()
+                if isinstance(rid, str) and rid.strip()
+                else str(uuid.uuid4())
+            )
             get_audit_log_service().emit(
                 AuditEvent(
                     event_type="execute_resume",
@@ -383,7 +389,9 @@ class ExecutionOrchestrator:
                     route=None,
                     result="resuming",
                     approval_id=str(cmd.approval_id) if cmd.approval_id else None,
-                    execution_id=str(cmd.execution_id) if cmd.execution_id else str(execution_id),
+                    execution_id=str(cmd.execution_id)
+                    if cmd.execution_id
+                    else str(execution_id),
                     data={
                         "command": getattr(cmd, "command", None),
                         "intent": getattr(cmd, "intent", None),
