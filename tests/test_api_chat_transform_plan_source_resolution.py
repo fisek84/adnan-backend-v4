@@ -228,7 +228,9 @@ def test_api_chat_transform_this_plan_without_previous_plan_fails_clearly(
 
     async def _unexpected_notion_ops_agent(_payload, ctx=None):  # noqa: ANN001
         called["value"] = True
-        raise AssertionError("notion_ops_agent should not run without a valid plan source")
+        raise AssertionError(
+            "notion_ops_agent should not run without a valid plan source"
+        )
 
     monkeypatch.setattr(
         "services.notion_ops_agent.notion_ops_agent",
