@@ -9,7 +9,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Request
+from fastapi import APIRouter, Body, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from models.canon import PROPOSAL_WRAPPER_INTENT
