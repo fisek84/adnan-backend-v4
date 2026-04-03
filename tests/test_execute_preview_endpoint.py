@@ -358,8 +358,12 @@ def test_execute_preview_wrapper_transform_plan_goal_tasks_uses_batch_request_cl
     rows = notion.get("rows") or []
     assert isinstance(rows, list)
 
-    goal_rows = [x for x in rows if isinstance(x, dict) and x.get("intent") == "create_goal"]
-    task_rows = [x for x in rows if isinstance(x, dict) and x.get("intent") == "create_task"]
+    goal_rows = [
+        x for x in rows if isinstance(x, dict) and x.get("intent") == "create_goal"
+    ]
+    task_rows = [
+        x for x in rows if isinstance(x, dict) and x.get("intent") == "create_task"
+    ]
     assert len(goal_rows) == 1
     assert len(task_rows) == 7
 

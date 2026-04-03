@@ -17,9 +17,7 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger(__name__)
 
 
-_COUNT_WORD_PATTERN = (
-    r"(?:\\d+|jedan|one|dva|two|tri|three|cetiri|four|pet|five|sest|six|sedam|seven|osam|eight|devet|nine|deset|ten)"
-)
+_COUNT_WORD_PATTERN = r"(?:\\d+|jedan|one|dva|two|tri|three|cetiri|four|pet|five|sest|six|sedam|seven|osam|eight|devet|nine|deset|ten)"
 
 
 class NotionKeywordMapper:
