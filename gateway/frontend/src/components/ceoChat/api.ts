@@ -477,23 +477,40 @@ function extractProposedCommands(raw: any): ProposedCommand[] {
 function extractStructuredPreviewPayload(raw: any): StructuredPreviewPayload | null {
   if (!raw || typeof raw !== "object") return null;
 
-  const command = raw.command;
-  const review = raw.review;
-  const notion = raw.notion;
+  const candidates = [
+    raw,
+    raw?.result,
+    raw?.data,
+    raw?.response,
+    raw?.result?.response,
+    raw?.data?.response,
+  ];
 
-  if (
-    (!command || typeof command !== "object" || Array.isArray(command)) &&
-    (!review || typeof review !== "object" || Array.isArray(review)) &&
-    (!notion || typeof notion !== "object" || Array.isArray(notion))
-  ) {
-    return null;
+  for (const candidate of candidates) {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+      continue;
+    }
+
+    const command = candidate.command;
+    const review = candidate.review;
+    const notion = candidate.notion;
+
+    if (
+      (!command || typeof command !== "object" || Array.isArray(command)) &&
+      (!review || typeof review !== "object" || Array.isArray(review)) &&
+      (!notion || typeof notion !== "object" || Array.isArray(notion))
+    ) {
+      continue;
+    }
+
+    return {
+      ...(command && typeof command === "object" && !Array.isArray(command) ? { command } : {}),
+      ...(review && typeof review === "object" && !Array.isArray(review) ? { review } : {}),
+      ...(notion && typeof notion === "object" && !Array.isArray(notion) ? { notion } : {}),
+    };
   }
 
-  return {
-    ...(command && typeof command === "object" && !Array.isArray(command) ? { command } : {}),
-    ...(review && typeof review === "object" && !Array.isArray(review) ? { review } : {}),
-    ...(notion && typeof notion === "object" && !Array.isArray(notion) ? { notion } : {}),
-  };
+  return null;
 }
 
 export function attachStructuredPreviewToCommands<T extends ProposedCommand>(

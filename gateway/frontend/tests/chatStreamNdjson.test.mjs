@@ -152,6 +152,56 @@ test("createCeoConsoleApi.sendCommand: attaches structured preview payload to pr
   }
 });
 
+test("createCeoConsoleApi.sendCommand: attaches structured preview payload from wrapped chat response", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async (url, _opts) => {
+      if (
+        String(url).includes("/api/chat/stream") ||
+        String(url).endsWith("/chat/stream")
+      ) {
+        return new Response(
+          JSON.stringify({ error: "chat_streaming_disabled" }),
+          {
+            status: 404,
+            headers: { "content-type": "application/json" },
+          }
+        );
+      }
+
+      return new Response(
+        JSON.stringify({
+          result: {
+            text: "Structured preview je spreman. Nema izvrsenja.",
+            command: { intent: "batch_request" },
+            review: { missing_fields: [] },
+            notion: { type: "batch_preview" },
+            proposed_commands: [
+              { command: "ceo.command.propose", params: { prompt: "x" } },
+            ],
+          },
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }
+      );
+    };
+
+    const api = createCeoConsoleApi({ ceoCommandUrl: "/api/chat" });
+    const resp = await api.sendCommand({ text: "hi" });
+
+    assert.equal(resp.proposed_commands?.length, 1);
+    assert.deepEqual(getAttachedPreviewPayload(resp.proposed_commands?.[0]), {
+      command: { intent: "batch_request" },
+      review: { missing_fields: [] },
+      notion: { type: "batch_preview" },
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("createCeoConsoleApi.sendCommand: returns stream when NDJSON content-type", async () => {
   const originalFetch = globalThis.fetch;
   try {
