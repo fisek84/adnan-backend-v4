@@ -190,6 +190,52 @@ class ConversationStateStore:
         )
 
     @staticmethod
+    def get_recent_turns(
+        *,
+        conversation_id: str,
+        max_turns: int = _DEFAULT_MAX_TURNS,
+    ) -> List[Dict[str, Any]]:
+        cid = (conversation_id or "").strip()
+        if not cid:
+            return []
+
+        pg = _pg_backend_required()
+        if pg is not None:
+            pairs = pg.get_conversation_turns(
+                conversation_id=cid,
+                max_turns=int(max_turns),
+            )
+            pairs = [t for t in pairs if isinstance(t, dict)]
+        else:
+            with _LOCK:
+                db = _load_db()
+                st = db.get(cid)
+                st = st if isinstance(st, dict) else {}
+                turns = st.get("turns")
+                turns = turns if isinstance(turns, list) else []
+
+            pairs = [t for t in turns if isinstance(t, dict)]
+
+        if max_turns <= 0:
+            pairs = []
+        else:
+            pairs = pairs[-int(max_turns) :]
+
+        out: List[Dict[str, Any]] = []
+        for it in pairs:
+            user_text = it.get("user")
+            assistant_text = it.get("assistant")
+            turn: Dict[str, Any] = {
+                "user": user_text if isinstance(user_text, str) else "",
+                "assistant": assistant_text if isinstance(assistant_text, str) else "",
+            }
+            t_unix = it.get("t")
+            if isinstance(t_unix, (int, float)):
+                turn["t"] = float(t_unix)
+            out.append(turn)
+        return out
+
+    @staticmethod
     def append_turn(
         *,
         conversation_id: str,

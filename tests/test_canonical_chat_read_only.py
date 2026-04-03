@@ -182,7 +182,8 @@ def test_api_chat_preview_request_returns_structured_notion_preview(monkeypatch)
         "message": (
             "Pretvori ovaj sedmodnevni plan u jedan goal i više taskova, "
             "poveži taskove sa goalom, status Active, priority Medium, "
-            "daj mi preview za Notion upis, nemoj izvršiti"
+            "daj mi preview za Notion upis, nemoj izvršiti:\n"
+            f"{wrapper_prompt}"
         ),
         "session_id": "chat-preview-session-1",
         "metadata": {"principal_sub": "chat-preview-user-1"},

@@ -1611,6 +1611,209 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         except Exception:
             pass
 
+    def _is_transform_this_plan_request(text: str) -> bool:
+        t = _norm_bhs_ascii(text)
+        if not t:
+            return False
+        has_transform = bool(
+            re.search(r"\b(pretvori|transform|convert|pripremi|prepare)\b", t)
+        )
+        has_plan_ref = bool(
+            re.search(r"\b(ovaj|taj|this|that)\s+(?:sedmodnevni\s+)?plan\b", t)
+        )
+        has_structure = bool(re.search(r"\b(goal|cilj|task|taskov|zadat|zadac)\b", t))
+        return bool(has_transform and has_plan_ref and has_structure)
+
+    def _looks_like_snapshot_dump_text(text: str) -> bool:
+        s = (text or "").strip()
+        if not s:
+            return False
+        if re.search(
+            r'(?i)("|\b)(knowledge_snapshot|world_state_snapshot|ceo_dashboard_snapshot|payload|goals|tasks|projects)("|\b)\s*:',
+            s,
+        ):
+            return True
+        if s.startswith("{") and re.search(
+            r'(?i)"(goals|tasks|projects|payload)"\s*:', s
+        ):
+            return True
+        return False
+
+    def _looks_like_plan_source_text(text: str) -> bool:
+        s = (text or "").strip()
+        if len(s) < 40:
+            return False
+
+        t = _norm_bhs_ascii(s)
+        if not t:
+            return False
+
+        if _looks_like_snapshot_dump_text(s):
+            return False
+        if _is_transform_this_plan_request(s):
+            return False
+        if re.search(
+            r"\b(structured\s+preview\s+je\s+spreman|imam\s+prijedlog\s+na\s+cekanju|notion\s+ops\s+nije\s+aktivan|missing\s+conversation\s+id)\b",
+            t,
+        ):
+            return False
+
+        day_hits = len(re.findall(r"\b(dan|day)\s*[1-9]\b", t))
+        bullet_hits = len(re.findall(r"(?m)^\s*(?:[-*]|\d+[.)])\s+\S+", s))
+        plan_hits = 0
+        for pat in (
+            r"\b(sedmodnevni|7\s*dnevni|7\s*day|weekly\s+plan|dnevni\s+plan|akcioni\s+plan|action\s+plan|plan)\b",
+            r"\b(centralni\s+cilj|main\s+goal|podcilj|subgoal|goal)\b",
+            r"\b(task|zadatak|zadaci|taskovi|priority|prioritet|due\s+date|rok|status)\b",
+        ):
+            if re.search(pat, t):
+                plan_hits += 1
+
+        if day_hits >= 2 or bullet_hits >= 3:
+            return True
+        if plan_hits >= 2 and len(s) >= 80:
+            return True
+        if len(s.splitlines()) >= 4 and len(s) >= 120 and plan_hits >= 1:
+            return True
+        return False
+
+    def _extract_embedded_plan_source(text: str) -> str:
+        s = (text or "").strip()
+        if not s:
+            return ""
+
+        patterns = [
+            r"(?is)\b(?:nemoj\s+izvrsiti|nemoj\s+izvr\w+|bez\s+izvrsenja|bez\s+izvr\w+|no\s+execute|do\s+not\s+execute|don't\s+execute)\b\s*[:\-]?\s*(.+)$",
+            r"(?is)\b(?:pretvori|transform|convert|pripremi|prepare)\b.*?:\s*(.+)$",
+        ]
+        for pat in patterns:
+            m = re.search(pat, s)
+            if not m:
+                continue
+            cand = (m.group(1) or "").strip()
+            if _looks_like_plan_source_text(cand):
+                return cand
+
+        if "\n" in s:
+            tail = s.split("\n", 1)[1].strip()
+            if _looks_like_plan_source_text(tail):
+                return tail
+
+        parts = re.split(r"\n{2,}", s, maxsplit=1)
+        if len(parts) == 2:
+            tail = (parts[1] or "").strip()
+            if _looks_like_plan_source_text(tail):
+                return tail
+
+        return ""
+
+    def _strip_embedded_plan_source(text: str) -> str:
+        s = (text or "").strip()
+        if not s:
+            return ""
+        if _is_transform_this_plan_request(s):
+            if "\n" in s:
+                return s.split("\n", 1)[0].rstrip(" \t\r\n:-")
+            if ":" in s:
+                return s.split(":", 1)[0].rstrip(" \t\r\n:-")
+        embedded = _extract_embedded_plan_source(s)
+        if not embedded:
+            return s
+        idx = s.find(embedded)
+        if idx < 0:
+            return s
+        base = s[:idx].rstrip(" \t\r\n:-")
+        return base or s
+
+    def _load_last_relevant_plan_source(*, conversation_id: Optional[str]) -> str:
+        if not (isinstance(conversation_id, str) and conversation_id.strip()):
+            return ""
+        try:
+            from services.ceo_conversation_state_store import (  # noqa: PLC0415
+                ConversationStateStore,
+            )
+
+            turns = ConversationStateStore.get_recent_turns(
+                conversation_id=conversation_id.strip(),
+                max_turns=10,
+            )
+        except Exception:
+            return ""
+
+        for turn in reversed(turns):
+            assistant_text = turn.get("assistant") if isinstance(turn, dict) else None
+            if isinstance(assistant_text, str) and _looks_like_plan_source_text(
+                assistant_text
+            ):
+                return assistant_text.strip()
+
+        for turn in reversed(turns):
+            user_text = turn.get("user") if isinstance(turn, dict) else None
+            if isinstance(user_text, str) and _looks_like_plan_source_text(user_text):
+                return user_text.strip()
+
+        return ""
+
+    def _resolve_transform_this_plan_prompt(
+        text: str, *, conversation_id: Optional[str]
+    ) -> Dict[str, Any]:
+        prompt0 = (text or "").strip()
+        if not _is_transform_this_plan_request(prompt0):
+            return {
+                "ok": True,
+                "prompt": prompt0,
+                "applied": False,
+                "trace": {"matched": False},
+            }
+
+        session_source = _load_last_relevant_plan_source(
+            conversation_id=conversation_id,
+        )
+        embedded_source = _extract_embedded_plan_source(prompt0)
+
+        chosen_source = session_source or embedded_source
+        if not chosen_source:
+            return {
+                "ok": False,
+                "prompt": prompt0,
+                "applied": False,
+                "error": (
+                    'Ne mogu pouzdano pretvoriti "ovaj plan" jer u ovoj sesiji nemam '
+                    "prethodni plan/advisory sadržaj. Pošalji plan u istoj poruci ili prvo napravi plan pa ponovi."
+                ),
+                "trace": {
+                    "matched": True,
+                    "source": None,
+                    "conversation_id_present": bool(
+                        isinstance(conversation_id, str) and conversation_id.strip()
+                    ),
+                    "session_source_found": False,
+                    "embedded_source_found": bool(embedded_source),
+                    "snapshot_ignored": True,
+                },
+            }
+
+        base = _strip_embedded_plan_source(prompt0).rstrip(" \t\r\n:")
+        resolved_prompt = f"{base}:\n{chosen_source.strip()}"
+        source_kind = "session_last_relevant" if session_source else "embedded_prompt"
+
+        return {
+            "ok": True,
+            "prompt": resolved_prompt,
+            "applied": True,
+            "trace": {
+                "matched": True,
+                "source": source_kind,
+                "conversation_id_present": bool(
+                    isinstance(conversation_id, str) and conversation_id.strip()
+                ),
+                "session_source_found": bool(session_source),
+                "embedded_source_found": bool(embedded_source),
+                "resolved_chars": len(chosen_source.strip()),
+                "snapshot_ignored": True,
+            },
+        }
+
     def _blocked_response(
         *,
         out: Any,
@@ -3333,6 +3536,58 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         write_intent = bool(write_intent_kw or _looks_like_write_intent(prompt))
 
         if write_intent:
+            transform_plan_resolution = _resolve_transform_this_plan_prompt(
+                prompt or "",
+                conversation_id=conversation_id,
+            )
+            transform_plan_trace = transform_plan_resolution.get("trace")
+            transform_plan_trace = (
+                transform_plan_trace if isinstance(transform_plan_trace, dict) else {}
+            )
+
+            if transform_plan_resolution.get("ok") is not True:
+                content = {
+                    "text": transform_plan_resolution.get("error")
+                    or "Nedostaje izvorni plan za transformaciju.",
+                    "proposed_commands": [],
+                    "agent_id": "ceo_advisor",
+                    "read_only": True,
+                    "notion_ops": {
+                        "armed": bool(armed),
+                        "armed_at": st.get("armed_at") if armed else None,
+                        "session_id": session_id,
+                        "armed_state": st,
+                    },
+                    "trace": {
+                        "intent": "transform_plan_missing_source",
+                        "canon": "api_chat_transform_this_plan_source_resolution",
+                        "plan_transform_source": transform_plan_trace,
+                    },
+                }
+                if debug_on:
+                    content.update(kb)
+                content = _attach_and_log_audit(
+                    content,
+                    session_id=session_id,
+                    conversation_id=conversation_id,
+                    agent_id=content.get("agent_id"),
+                    snapshot=getattr(payload, "snapshot", None),
+                    trace=content.get("trace"),
+                    grounding={},
+                    debug_on=bool(debug_on),
+                    exit_path="ceo_chat.write_intent.transform_plan_missing_source",
+                    targeted_reads=targeted_reads_info,
+                )
+                return JSONResponse(content=_attach_session_id(content, session_id))
+
+            resolved_prompt = transform_plan_resolution.get("prompt")
+            if isinstance(resolved_prompt, str) and resolved_prompt.strip():
+                prompt = resolved_prompt.strip()
+                try:
+                    payload.message = prompt  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+
             try:
                 from services.notion_ops_agent import notion_ops_agent  # noqa: PLC0415
 
@@ -3402,6 +3657,8 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                     "canon": "write_intent_routes_to_notion_ops",
                     "detected_intent": detected_intent,
                 }
+                if transform_plan_trace.get("matched"):
+                    tr0["plan_transform_source"] = transform_plan_trace
 
                 content: Dict[str, Any] = {
                     "text": getattr(out, "text", "") or "",
