@@ -1962,7 +1962,7 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         const res = await fetch(appUrl, {
           method: "POST",
           headers: mergedHeaders,
-          body: JSON.stringify({ approval_id: approvalId }),
+          body: JSON.stringify({ approval_id: approvalId, session_id: sessionId }),
           signal: controller.signal,
         });
         const txt = await res.text();
@@ -2122,7 +2122,11 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
         }
 
         const appUrl = resolveEndpoint(effectiveApproveUrl, "/api/ai-ops/approval/approve");
-        const approveJson = await postJson(appUrl, { approval_id: approvalId }, controller.signal);
+        const approveJson = await postJson(
+          appUrl,
+          { approval_id: approvalId, session_id: sessionId },
+          controller.signal,
+        );
 
         const msg =
           _pickText(approveJson) ||

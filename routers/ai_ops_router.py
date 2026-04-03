@@ -106,6 +106,40 @@ def _guard_write(request: Request) -> None:
     _require_ceo_token_if_enforced(request)
 
 
+def _resolve_approve_principal(
+    request: Request, body: Optional[Dict[str, Any]] = None
+) -> Principal:
+    auth = (request.headers.get("Authorization") or "").strip()
+    if auth:
+        principal = require_principal(authorization=auth)
+        principal = require_role("ops_approver", "admin")(principal)
+        return principal
+
+    if not _is_ceo_request(request):
+        raise HTTPException(status_code=401, detail="missing_authorization")
+
+    _guard_write(request)
+
+    session_id = None
+    if isinstance(body, dict):
+        raw = body.get("session_id")
+        if isinstance(raw, str) and raw.strip():
+            session_id = raw.strip()
+    if not session_id:
+        raw_hdr = request.headers.get("X-Session-Id") or ""
+        if raw_hdr.strip():
+            session_id = raw_hdr.strip()
+
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id is required")
+
+    return Principal(
+        sub=session_id,
+        roles={"ceo"},
+        raw_claims={"auth_mode": "ceo_browser_session"},
+    )
+
+
 # ------------------------------------------------------------
 # APPROVAL STATE (optional injection to avoid singleton mismatch)
 # ------------------------------------------------------------
@@ -531,10 +565,14 @@ def list_pending() -> Dict[str, Any]:
 async def approve(
     request: Request,
     body: Dict[str, Any] = Body(...),
-    principal: Principal = Depends(require_principal),
-    _role_guard: Principal = Depends(require_role("ops_approver", "admin")),
 ) -> Dict[str, Any]:
-    _guard_write(request)
+    principal = _resolve_approve_principal(request, body)
+
+    try:
+        request.state.principal_sub = principal.sub
+        request.state.principal_roles = sorted(principal.roles)
+    except Exception:
+        pass
 
     approval_id = body.get("approval_id")
     if not isinstance(approval_id, str) or not approval_id.strip():

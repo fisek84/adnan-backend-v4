@@ -256,6 +256,10 @@ def test_execute_endpoints_require_auth_and_privileged_role(
             "/api/execute/preview",
             {"command": "refresh_snapshot", "intent": "refresh_snapshot", "params": {}},
         ),
+        (
+            "/api/execute/raw",
+            {"command": "refresh_snapshot", "intent": "refresh_snapshot", "params": {}},
+        ),
     ):
         r1 = client.post(path, json=body)
         assert r1.status_code == 401

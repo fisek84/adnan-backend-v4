@@ -246,3 +246,114 @@ def test_execute_raw_kreiraj_task_blocks_resolves_goal_once_and_creates_tasks(
     for call in mock_update.await_args_list:
         kwargs = call.kwargs
         assert kwargs.get("goal_id") == goal_page_id
+
+
+def test_execute_raw_ceo_browser_session_flow_executes_without_authorization(
+    monkeypatch,
+):
+    app = _load_app()
+
+    monkeypatch.setenv("NOTION_API_KEY", "test-notion-key")
+    monkeypatch.setenv("NOTION_GOALS_DB_ID", "test-goals-db")
+    monkeypatch.setenv("NOTION_TASKS_DB_ID", "test-tasks-db")
+    monkeypatch.setenv("NOTION_PROJECTS_DB_ID", "test-projects-db")
+
+    goal_title = "Baza Blok 1 – Adaptacija na trčanje (18.02–02.03)"
+    goal_page_id = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+
+    captured_page_create_payloads: List[Dict[str, Any]] = []
+
+    async def fake_safe_request(method: str, url: str, payload=None, params=None):
+        if method == "GET" and "/databases/" in url:
+            return {"properties": {}}
+
+        if method == "POST" and "/databases/" in url and url.endswith("/query"):
+            return {
+                "results": [
+                    {
+                        "id": goal_page_id,
+                        "properties": {"Name": {"title": [{"plain_text": goal_title}]}},
+                    }
+                ]
+            }
+
+        if method == "POST" and url.endswith("/pages"):
+            captured_page_create_payloads.append(payload or {})
+            n = len(captured_page_create_payloads)
+            return {
+                "id": f"browser-task-page-id-{n}",
+                "url": f"https://notion.so/browser-task-page-id-{n}",
+            }
+
+        return {}
+
+    prompt = (
+        "BATCH: create_task x1 u Tasks DB.\n"
+        "Prije kreiranja taskova uradi lookup u Goals DB:\n"
+        f'- pronađi page gdje Name == "{goal_title}"\n\n'
+        "Kreiraj Task:\n"
+        "Name: Trebević hiking – Zona 3\n"
+        f"Goal: {goal_title}\n"
+        "Due Date: 2026-02-19\n"
+        "Priority: high\n"
+        "Description: 2–3h hiking, 135–150 bpm, kontrolisano nizbrdo\n"
+    )
+
+    session_id = "test-session-browser-execute-1"
+    from services.notion_ops_state import set_armed  # noqa: PLC0415
+
+    asyncio.run(set_armed(session_id, True, prompt="test"))
+
+    with TestClient(app) as client:
+        from services.notion_service import get_notion_service  # noqa: PLC0415
+
+        notion = get_notion_service()
+        monkeypatch.setattr(
+            notion,
+            "_safe_request",
+            AsyncMock(side_effect=fake_safe_request),
+            raising=True,
+        )
+        mock_update = AsyncMock(return_value=None)
+        monkeypatch.setattr(notion, "_update_page_relations", mock_update, raising=True)
+
+        exec_r = client.post(
+            "/api/execute/raw",
+            headers={"X-Initiator": "ceo_chat"},
+            json={
+                "command": "ceo.command.propose",
+                "intent": "ceo.command.propose",
+                "params": {"prompt": prompt, "supports_bilingual": True},
+                "session_id": session_id,
+                "metadata": {
+                    "session_id": session_id,
+                },
+                "payload_summary": {},
+            },
+        )
+        assert exec_r.status_code == 200, exec_r.text
+        approval_id = exec_r.json().get("approval_id")
+        assert isinstance(approval_id, str) and approval_id.strip()
+
+        approve_r = client.post(
+            "/api/ai-ops/approval/approve",
+            headers={"X-Initiator": "ceo_chat"},
+            json={"approval_id": approval_id, "session_id": session_id},
+        )
+        assert approve_r.status_code == 200, approve_r.text
+        approve_body = approve_r.json()
+
+    assert approve_body.get("execution_state") == "COMPLETED", approve_body
+
+    result = approve_body.get("result")
+    assert isinstance(result, dict)
+    assert result.get("ok") is True
+
+    inner = result.get("result")
+    assert isinstance(inner, dict)
+    assert inner.get("intent") == "batch_request"
+
+    ops = inner.get("operations")
+    assert isinstance(ops, list)
+    assert len(ops) == 1
+    assert len(captured_page_create_payloads) == 1

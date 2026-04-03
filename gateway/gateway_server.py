@@ -976,6 +976,51 @@ def _guard_write_bulk(request: Request) -> None:
     _require_ceo_token_if_enforced(request)
 
 
+def _extract_browser_session_actor(
+    request: Request, payload: Optional[Dict[str, Any]] = None
+) -> Optional[str]:
+    candidates: list[Any] = [request.headers.get("X-Session-Id")]
+
+    if isinstance(payload, dict):
+        candidates.append(payload.get("session_id"))
+        md = payload.get("metadata")
+        if isinstance(md, dict):
+            candidates.append(md.get("session_id"))
+
+    for candidate in candidates:
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+
+    return None
+
+
+def _resolve_execute_raw_principal(
+    request: Request, payload: Optional[Dict[str, Any]] = None
+) -> Principal:
+    auth = (request.headers.get("Authorization") or "").strip()
+    if auth:
+        principal = require_principal(authorization=auth)
+        principal = require_role("admin", "ceo")(principal)
+        principal = require_scope("raw_execute")(principal)
+        return principal
+
+    if not _is_ceo_request(request):
+        raise HTTPException(status_code=401, detail="missing_authorization")
+
+    _guard_write_bulk(request)
+
+    session_actor = _extract_browser_session_actor(request, payload)
+    if not session_actor:
+        raise HTTPException(status_code=400, detail="session_id is required")
+
+    return Principal(
+        sub=session_actor,
+        roles={"ceo"},
+        scopes={"raw_execute"},
+        raw_claims={"auth_mode": "ceo_browser_session"},
+    )
+
+
 OS_ENABLED = _env_true("OS_ENABLED", "true")
 
 _BOOT_READY = False
@@ -4034,11 +4079,11 @@ async def execute_command(
 async def execute_raw_command(
     request: Request,
     payload: Dict[str, Any] = Body(...),
-    principal: Principal = Depends(require_role("admin", "ceo")),
-    _principal_scope: Principal = Depends(require_scope("raw_execute")),
 ):
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Body must be an object")
+
+    principal = _resolve_execute_raw_principal(request, payload)
 
     try:
         request.state.principal_sub = principal.sub
@@ -4258,6 +4303,10 @@ async def execute_raw_command(
         if isinstance(sid, str) and sid.strip():
             if isinstance(getattr(ai_command, "metadata", None), dict):
                 ai_command.metadata.setdefault("session_id", sid.strip())
+
+        if isinstance(getattr(ai_command, "metadata", None), dict):
+            ai_command.metadata.setdefault("principal_sub", principal.sub)
+            ai_command.metadata.setdefault("principal_roles", sorted(principal.roles))
     except Exception:
         pass
 
