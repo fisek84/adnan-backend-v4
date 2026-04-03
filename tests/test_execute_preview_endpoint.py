@@ -325,6 +325,70 @@ def test_execute_preview_wrapper_single_task_still_single_create_task():
     assert notion.get("db_key") == "tasks"
 
 
+def test_execute_preview_wrapper_transform_plan_goal_tasks_uses_batch_request_clean_fields():
+    app = _get_app()
+    client = TestClient(app)
+
+    prompt = (
+        "Pretvori ovaj plan u jedan goal i sedam taskova, "
+        "poveži taskove sa goalom, status Active, priority Medium, "
+        "daj mi preview za Notion upis, nemoj izvršiti"
+    )
+
+    payload = {
+        "command": "ceo.command.propose",
+        "intent": "ceo.command.propose",
+        "params": {"prompt": prompt},
+    }
+
+    r = client.post(
+        "/api/execute/preview",
+        headers=_preview_headers(),
+        json=payload,
+    )
+    assert r.status_code == 200, r.text
+
+    body = r.json()
+    cmd = body.get("command") or {}
+    assert cmd.get("command") == "notion_write"
+    assert cmd.get("intent") == "batch_request"
+
+    notion = body.get("notion") or {}
+    assert notion.get("type") == "batch_preview"
+    rows = notion.get("rows") or []
+    assert isinstance(rows, list)
+
+    goal_rows = [x for x in rows if isinstance(x, dict) and x.get("intent") == "create_goal"]
+    task_rows = [x for x in rows if isinstance(x, dict) and x.get("intent") == "create_task"]
+    assert len(goal_rows) == 1
+    assert len(task_rows) == 7
+
+    def _selectish_name(props: dict, key: str) -> str:
+        value = props.get(key) or {}
+        if not isinstance(value, dict):
+            return ""
+        select0 = value.get("select")
+        status0 = value.get("status")
+        if isinstance(select0, dict):
+            return str(select0.get("name") or "")
+        if isinstance(status0, dict):
+            return str(status0.get("name") or "")
+        return ""
+
+    goal_props = goal_rows[0].get("properties_preview") or {}
+    assert _selectish_name(goal_props, "Status").strip().lower() == "active"
+    assert _selectish_name(goal_props, "Priority").strip().lower() == "medium"
+
+    for row in task_rows:
+        assert str(row.get("Goal Ref") or "").startswith("ref:")
+        props = row.get("properties_preview") or {}
+        assert _selectish_name(props, "Status").strip().lower() == "active"
+        priority_name = _selectish_name(props, "Priority").strip().lower()
+        assert priority_name == "medium"
+        assert "preview" not in priority_name
+        assert "izvr" not in priority_name
+
+
 def test_execute_preview_wrapper_multi_task_blocks_splits_task_9_and_10():
     app = _get_app()
     client = TestClient(app)

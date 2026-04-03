@@ -50,6 +50,38 @@ TITLE_COUNT_PATTERN = (
     r"(task|taskova|tasks|zadatak|zadataka)?\s*"  # Optional task keyword
 )
 
+_COUNT_WORDS = {
+    "jedan": 1,
+    "one": 1,
+    "dva": 2,
+    "two": 2,
+    "tri": 3,
+    "three": 3,
+    "cetiri": 4,
+    "four": 4,
+    "pet": 5,
+    "five": 5,
+    "sest": 6,
+    "six": 6,
+    "sedam": 7,
+    "seven": 7,
+    "osam": 8,
+    "eight": 8,
+    "devet": 9,
+    "nine": 9,
+    "deset": 10,
+    "ten": 10,
+}
+
+
+def _count_token_to_int(token: str) -> Optional[int]:
+    raw = (token or "").strip().lower()
+    if not raw:
+        return None
+    if raw.isdigit():
+        return int(raw)
+    return _COUNT_WORDS.get(raw)
+
 
 class BranchRequestHandler:
     """
@@ -163,35 +195,32 @@ class BranchRequestHandler:
         counts = {}
         text_lower = text.lower()
 
+        count_token = r"(\d+|jedan|one|dva|two|tri|three|cetiri|four|pet|five|sest|six|sedam|seven|osam|eight|devet|nine|deset|ten)"
+
         # Goal patterns
         goal_patterns = [
-            r"(\d+)\s*(cilj|ciljeva|goal|goals)",
-            r"(jedan|one|1)\s*cilj",
+            rf"{count_token}\s*(cilj|ciljeva|goal|goals)",
         ]
 
         for pattern in goal_patterns:
             match = re.search(pattern, text_lower)
             if match:
-                count_str = match.group(1)
-                count = 1 if count_str in ("jedan", "one") else int(count_str)
-                counts["goals"] = count
+                count = _count_token_to_int(match.group(1) or "")
+                if count is not None:
+                    counts["goals"] = count
                 break
 
         # Task patterns
         task_patterns = [
-            r"(\d+)\s*(task|taskova|tasks|zadatak|zadatka)",
-            r"(pet|five|5)\s*(task|zadatak)",
+            rf"{count_token}\s*(task|taskova|tasks|zadatak|zadatka|zadataka)",
         ]
 
         for pattern in task_patterns:
             match = re.search(pattern, text_lower)
             if match:
-                count_str = match.group(1)
-                if count_str in ("pet", "five"):
-                    count = 5
-                else:
-                    count = int(count_str)
-                counts["tasks"] = count
+                count = _count_token_to_int(match.group(1) or "")
+                if count is not None:
+                    counts["tasks"] = count
                 break
 
         # Child goal patterns
@@ -207,24 +236,28 @@ class BranchRequestHandler:
 
         # Project patterns
         project_patterns = [
-            r"(\d+)\s*(projekt|projekat|project)",
+            rf"{count_token}\s*(projekt|projekat|project)",
         ]
 
         for pattern in project_patterns:
             match = re.search(pattern, text_lower)
             if match:
-                counts["projects"] = int(match.group(1))
+                count = _count_token_to_int(match.group(1) or "")
+                if count is not None:
+                    counts["projects"] = count
                 break
 
         # KPI patterns
         kpi_patterns = [
-            r"(\d+)\s*kpi",
+            rf"{count_token}\s*kpi",
         ]
 
         for pattern in kpi_patterns:
             match = re.search(pattern, text_lower)
             if match:
-                counts["kpis"] = int(match.group(1))
+                count = _count_token_to_int(match.group(1) or "")
+                if count is not None:
+                    counts["kpis"] = count
                 break
 
         return counts

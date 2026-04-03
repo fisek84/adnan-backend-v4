@@ -17,6 +17,11 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger(__name__)
 
 
+_COUNT_WORD_PATTERN = (
+    r"(?:\\d+|jedan|one|dva|two|tri|three|cetiri|four|pet|five|sest|six|sedam|seven|osam|eight|devet|nine|deset|ten)"
+)
+
+
 class NotionKeywordMapper:
     """
     Canonical bilingual keyword mapper for Notion properties.
@@ -192,6 +197,7 @@ class NotionKeywordMapper:
             "napravi grupu",
             # Also detect patterns with counts
             r"\d+\s*(cilj|ciljeva|goal|goals).*\d+\s*(task|taskova|zadatak|zadataka)",
+            rf"{_COUNT_WORD_PATTERN}\s*(cilj|ciljeva|goal|goals).*{_COUNT_WORD_PATTERN}\s*(task|taskova|tasks|zadatak|zadatka|zadataka)",
             r"cilj\s+sa\s+\d+",
             r"goal\s+with\s+\d+",
             r"\btask\s*\d+\s*[:\.)-]",
@@ -355,6 +361,13 @@ class NotionKeywordMapper:
             task_headings = re.findall(r"(?mi)^\s*Task\s+\d+\s*$", text)
             if len(task_headings) >= 2:
                 return _maybe_debug("batch_request")
+
+        goal_count_pattern = rf"\b{_COUNT_WORD_PATTERN}\s*(?:cilj|ciljeva|goal|goals)\b"
+        task_count_pattern = rf"\b{_COUNT_WORD_PATTERN}\s*(?:task|taskova|tasks|zadatak|zadatka|zadataka)\b"
+        if re.search(goal_count_pattern, text_lower) and re.search(
+            task_count_pattern, text_lower
+        ):
+            return _maybe_debug("batch_request")
 
         # Hard override: batch/branch ako se u istom inputu traži i kreiranje CILJA i kreiranje ZADATKA
         # (mora imati "goal/cilj" + indikator task segmenta; ne smije okinuti na "novi zadatak za cilj")

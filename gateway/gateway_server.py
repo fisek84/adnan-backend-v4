@@ -1858,6 +1858,49 @@ def _unwrap_proposal_wrapper_or_raise(
     except Exception:
         pass
 
+    try:
+        if isinstance(hint_intent, str) and hint_intent.strip().lower() in {
+            "batch_request",
+            "batch",
+            "branch_request",
+        }:
+            from services.branch_request_handler import BranchRequestHandler  # noqa: PLC0415
+
+            br = BranchRequestHandler.process_branch_request(prompt.strip())
+            ops = br.get("operations") if isinstance(br, dict) else None
+            if isinstance(ops, list) and ops:
+                ai_command = AICommand(
+                    command="notion_write",
+                    intent="batch_request",
+                    read_only=False,
+                    params={
+                        "operations": ops,
+                        "source_prompt": prompt.strip(),
+                        "wrapper_patch": dict(wrapper_patch) if wrapper_patch else None,
+                    },
+                    initiator=initiator,
+                    validated=True,
+                    metadata={
+                        **(metadata if isinstance(metadata, dict) else {}),
+                        "canon": "execute_raw_unwrap_batch_autodetect",
+                        "endpoint": "/api/execute/raw",
+                        "wrapper": {
+                            "prompt": prompt.strip(),
+                            "wrapper_patch": wrapper_patch,
+                        },
+                    },
+                )
+
+                try:
+                    if isinstance(ai_command.params, dict) and wrapper_patch:
+                        ai_command.params["wrapper_patch"] = dict(wrapper_patch)
+                except Exception:
+                    pass
+
+                return ai_command
+    except Exception:
+        pass
+
     # Create intents with explicit/detected hint: build minimal executable without LLM translation.
     try:
         if isinstance(hint_intent, str) and hint_intent.strip():
