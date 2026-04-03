@@ -393,6 +393,75 @@ def test_execute_preview_wrapper_transform_plan_goal_tasks_uses_batch_request_cl
         assert "izvr" not in priority_name
 
 
+def test_execute_preview_wrapper_transform_plan_goal_tasks_extracts_meaningful_titles():
+    app = _get_app()
+    client = TestClient(app)
+
+    prompt = (
+        "Pretvori ovaj plan u jedan goal i sedam taskova, "
+        "poveži taskove sa goalom, status Active, priority Medium, "
+        "daj mi preview za Notion upis, nemoj izvršiti:\n"
+        'Kreiraj centralni cilj "Implementirati KPI OS" sa due date 15.06.2025, '
+        "prioritet Visok, status Aktivan. "
+        "Kreiraj tri podcilja: KPI dizajn (prioritet Visok), KPI dashboard (prioritet Visok), KPI reporting (prioritet Srednji). "
+        "Kreiraj 7-dnevni plan taskova: "
+        "Dan 1: KPI plan (Visok) "
+        "Dan 2: Mapirati metrike (Visok) "
+        "Dan 3: Postaviti dashboard (Visok) "
+        "Dan 4: Povezati podatke (Srednji) "
+        "Dan 5: Testirati izvještaje (Srednji) "
+        "Dan 6: Refinirati KPI (Visok) "
+        "Dan 7: Finalna provjera (Visok)"
+    )
+
+    payload = {
+        "command": "ceo.command.propose",
+        "intent": "ceo.command.propose",
+        "params": {"prompt": prompt},
+    }
+
+    r = client.post(
+        "/api/execute/preview",
+        headers=_preview_headers(),
+        json=payload,
+    )
+    assert r.status_code == 200, r.text
+
+    body = r.json()
+    notion = body.get("notion") or {}
+    assert notion.get("type") == "batch_preview"
+
+    rows = notion.get("rows") or []
+    goal_rows = [
+        x for x in rows if isinstance(x, dict) and x.get("intent") == "create_goal"
+    ]
+    task_rows = [
+        x for x in rows if isinstance(x, dict) and x.get("intent") == "create_task"
+    ]
+    assert len(goal_rows) == 1
+    assert len(task_rows) == 7
+
+    goal_title = _title_text_from_props_preview(
+        goal_rows[0].get("properties_preview") or {}
+    )
+    assert goal_title == "Implementirati KPI OS"
+    assert goal_title != "Untitled"
+
+    task_titles = [
+        _title_text_from_props_preview(row.get("properties_preview") or {})
+        for row in task_rows
+    ]
+    assert task_titles == [
+        "KPI plan",
+        "Mapirati metrike",
+        "Postaviti dashboard",
+        "Povezati podatke",
+        "Testirati izvještaje",
+        "Refinirati KPI",
+        "Finalna provjera",
+    ]
+
+
 def test_execute_preview_wrapper_multi_task_blocks_splits_task_9_and_10():
     app = _get_app()
     client = TestClient(app)

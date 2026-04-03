@@ -407,7 +407,19 @@ def parse_goal_with_explicit_tasks(text: str) -> Optional[ParsedGoalTaskBatch]:
     # Heuristic fallback (covers "Kreiraj cilj: ADNAN X, I TASK LEZI")
     if not tasks:
         low = t.lower()
-        if ("cilj" in low or "goal" in low) and ("task" in low or "zadatak" in low):
+        has_day_plan = bool(re.search(r"(?i)\bDan\s*\d+\s*:", t))
+        has_multi_task_count = bool(
+            re.search(
+                r"(?i)\b(?:2|3|4|5|6|7|8|9|\d{2,}|dva|two|tri|three|cetiri|four|pet|five|sest|six|sedam|seven|osam|eight|devet|nine|deset|ten)\s*(?:task|tasks|taskova|zadatak|zadataka|zadatci)\b",
+                t,
+            )
+        )
+        if (
+            not has_day_plan
+            and not has_multi_task_count
+            and ("cilj" in low or "goal" in low)
+            and ("task" in low or "zadatak" in low)
+        ):
             idx_task = low.rfind("task")
             idx_zad = low.rfind("zadatak")
             idx = max(idx_task, idx_zad)

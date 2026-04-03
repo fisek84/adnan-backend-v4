@@ -79,6 +79,40 @@ class TestBranchRequestParsing:
         assert result is not None
         assert "Projekat sa navodnicima" in result["main_title"]
 
+    def test_parse_transform_plan_reuses_existing_goal_and_day_titles(self):
+        prompt = (
+            "Pretvori ovaj plan u jedan goal i sedam taskova, "
+            "poveži taskove sa goalom, status Active, priority Medium, "
+            "daj mi preview za Notion upis, nemoj izvršiti:\n"
+            'Kreiraj centralni cilj "Implementirati KPI OS" sa due date 15.06.2025, '
+            "prioritet Visok, status Aktivan. "
+            "Kreiraj tri podcilja: KPI dizajn (prioritet Visok), KPI dashboard (prioritet Visok), KPI reporting (prioritet Srednji). "
+            "Kreiraj 7-dnevni plan taskova: "
+            "Dan 1: KPI plan (Visok) "
+            "Dan 2: Mapirati metrike (Visok) "
+            "Dan 3: Postaviti dashboard (Visok) "
+            "Dan 4: Povezati podatke (Srednji) "
+            "Dan 5: Testirati izvještaje (Srednji) "
+            "Dan 6: Refinirati KPI (Visok) "
+            "Dan 7: Finalna provjera (Visok)"
+        )
+
+        result = BranchRequestHandler.parse_branch_request(prompt)
+
+        assert result is not None
+        assert result["main_title"] == "Implementirati KPI OS"
+        assert result["counts"]["goals"] == 1
+        assert result["counts"]["tasks"] == 7
+        assert result["task_titles"] == [
+            "KPI plan",
+            "Mapirati metrike",
+            "Postaviti dashboard",
+            "Povezati podatke",
+            "Testirati izvještaje",
+            "Refinirati KPI",
+            "Finalna provjera",
+        ]
+
     def test_parse_non_branch_request(self):
         """Test that non-branch requests return None."""
         prompts = ["Kreiraj običan cilj", "Napravi zadatak", "Create simple task"]
@@ -246,6 +280,21 @@ class TestOperationBuilding:
         # Tasks should reference the goal
         assert f"${goal_op_id}" in operations[1]["payload"]["goal_id"]
         assert f"${goal_op_id}" in operations[2]["payload"]["goal_id"]
+
+    def test_build_operations_prefers_extracted_task_titles(self):
+        branch_request = {
+            "main_title": "Implementirati KPI OS",
+            "counts": {"goals": 1, "tasks": 2},
+            "properties": {"priority": "Medium"},
+            "task_titles": ["KPI plan", "Mapirati metrike"],
+        }
+
+        operations = BranchRequestHandler.build_branch_operations(branch_request)
+
+        task_ops = [op for op in operations if op["intent"] == "create_task"]
+        assert len(task_ops) == 2
+        assert task_ops[0]["payload"]["title"] == "KPI plan"
+        assert task_ops[1]["payload"]["title"] == "Mapirati metrike"
 
     def test_build_operations_with_project(self):
         """Test building operations with project."""

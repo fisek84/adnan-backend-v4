@@ -134,8 +134,17 @@ class BranchRequestHandler:
 
         logger.info(f"Parsing branch request: {text[:100]}...")
 
-        # Extract the main goal/project title
-        main_title = BranchRequestHandler._extract_main_title(text)
+        # Preserve direct quoted titles, then reuse existing structured extractors,
+        # then fall back to generic title parsing.
+        quoted_match = re.search(r"['\"]([^'\"]+)['\"]", text)
+        quoted_title = quoted_match.group(1).strip() if quoted_match else None
+        extracted_titles = BranchRequestHandler._extract_existing_titles(text)
+        main_title = (
+            quoted_title
+            or extracted_titles.get("main_title")
+            or BranchRequestHandler._extract_main_title(text)
+        )
+        task_titles = extracted_titles.get("task_titles") or []
 
         # Extract counts for different entity types
         counts = BranchRequestHandler._extract_entity_counts(text)
@@ -152,6 +161,96 @@ class BranchRequestHandler:
             "main_title": main_title or "Untitled",
             "counts": counts,
             "properties": properties,
+            "task_titles": task_titles,
+        }
+
+    @staticmethod
+    def _extract_existing_titles(text: str) -> Dict[str, Any]:
+        """Best-effort reuse of existing goal/task extraction helpers."""
+        main_title: Optional[str] = None
+        task_titles: List[str] = []
+
+        try:
+            from services.goal_nl_parser import parse_ceo_goal_plan  # noqa: PLC0415
+
+            parsed_plan = parse_ceo_goal_plan(text)
+            central_goal = parsed_plan.get("central_goal") or {}
+            central_name = str(central_goal.get("name") or "").strip()
+            if central_name:
+                main_title = central_name
+
+            raw_tasks = parsed_plan.get("tasks") or []
+            extracted = [
+                str(task.get("name") or "").strip()
+                for task in raw_tasks
+                if isinstance(task, dict) and str(task.get("name") or "").strip()
+            ]
+            if extracted:
+                task_titles = extracted
+        except Exception:
+            pass
+
+        try:
+            from services.coo_translation_service import (  # noqa: PLC0415
+                COOTranslationService,
+            )
+
+            coo = COOTranslationService()
+
+            coo_goal_title = coo._extract_goal_title(text)
+            if (
+                isinstance(coo_goal_title, str)
+                and coo_goal_title.strip()
+                and not main_title
+            ):
+                main_title = coo_goal_title.strip()
+
+            if not task_titles:
+                day_tasks = coo._extract_day_plan_tasks(text)
+                extracted = [
+                    title.strip() for title, _ in day_tasks if title and title.strip()
+                ]
+                if extracted:
+                    task_titles = extracted
+
+            if not task_titles:
+                _, fallback_task_titles = coo._split_goal_and_tasks(text)
+                extracted = [
+                    title.strip()
+                    for title in fallback_task_titles
+                    if title and title.strip()
+                ]
+                if extracted:
+                    task_titles = extracted
+        except Exception:
+            pass
+
+        try:
+            from services.goal_task_batch_parser import (  # noqa: PLC0415
+                parse_goal_with_explicit_tasks,
+            )
+
+            parsed_batch = parse_goal_with_explicit_tasks(text)
+            if parsed_batch is not None:
+                batch_goal_title = str(parsed_batch.goal_title or "").strip()
+                if batch_goal_title and not main_title:
+                    main_title = batch_goal_title
+
+                if not task_titles:
+                    extracted = [
+                        str(task.get("title") or "").strip()
+                        for task in parsed_batch.tasks
+                        if isinstance(task, dict)
+                        and str(task.get("title") or "").strip()
+                    ]
+                    if extracted:
+                        task_titles = extracted
+        except Exception:
+            pass
+
+        return {
+            "main_title": main_title,
+            "task_titles": task_titles,
         }
 
     @staticmethod
@@ -462,6 +561,10 @@ class BranchRequestHandler:
         main_title = branch_request.get("main_title", "Untitled")
         counts = branch_request.get("counts", {})
         properties = branch_request.get("properties", {})
+        raw_task_titles = branch_request.get("task_titles") or []
+        task_titles = [
+            str(title).strip() for title in raw_task_titles if str(title).strip()
+        ]
 
         # Extract any shared assignees from properties; use them to build people specs
         shared_assignees = []
@@ -601,8 +704,14 @@ class BranchRequestHandler:
             for i in range(num_tasks):
                 op_id = f"task_{uuid4().hex[:8]}"
 
+                task_title = (
+                    task_titles[i]
+                    if i < len(task_titles) and task_titles[i]
+                    else f"{BranchRequestHandler._get_label('task_prefix', lang)} {i+1}: {main_title}"
+                )
+
                 task_payload = {
-                    "title": f"{BranchRequestHandler._get_label('task_prefix', lang)} {i+1}: {main_title}",
+                    "title": task_title,
                     **properties,
                 }
 
