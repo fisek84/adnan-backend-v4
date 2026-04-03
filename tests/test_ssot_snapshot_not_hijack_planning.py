@@ -123,6 +123,38 @@ def test_explicit_snapshot_request_still_returns_structured_snapshot(monkeypatch
     assert "TASKS (top 5)" in (body.get("text") or "")
 
 
+def test_overview_request_for_goals_and_tasks_returns_both_blocks():
+    """Regression: overview phrasing must not fall through to task-only SSOT output."""
+
+    app = _load_app()
+    client = TestClient(app)
+
+    snapshot = {
+        "ready": True,
+        "status": "fresh",
+        "payload": {
+            "goals": [{"title": "Goal A", "status": "Active", "priority": "High"}],
+            "tasks": [{"title": "Task 1", "status": "To Do", "priority": "High"}],
+            "projects": [],
+        },
+    }
+
+    resp = client.post(
+        "/api/chat",
+        json={
+            "message": "Daj mi pregled svih ciljeva i taskova",
+            "session_id": "session_goals_tasks_overview_1",
+            "snapshot": snapshot,
+            "metadata": {"include_debug": True},
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    txt = body.get("text") or ""
+    assert "GOALS (top 3)" in txt
+    assert "TASKS (top 5)" in txt
+
+
 def test_notio_ops_activation_path_unchanged(tmp_path, monkeypatch):
     """Regression: Notion Ops activation via chat keywords remains unchanged."""
 

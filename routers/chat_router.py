@@ -66,11 +66,11 @@ _DEACTIVATE_KEYWORDS = (
 _SHOW_GOALS_TASKS_RE = re.compile(
     r"(?i)"
     r"(?:"
-    r"\b(?:pokazi|poka\u017ei|prikazi|prika\u017ei|izlistaj|navedi|lista)\b"
+    r"\b(?:pokazi|poka\u017ei|prikazi|prika\u017ei|izlistaj|navedi|lista|pregled|overview)\b"
     r".*\b(?:cilj\w*|goal\w*|task\w*|zadac\w*|zadat\w*)"
     r"|"
     r"\b(?:cilj\w*|goal\w*|task\w*|zadac\w*|zadat\w*)\b"
-    r".*\b(?:pokazi|poka\u017ei|prikazi|prika\u017ei|izlistaj|navedi|lista)\b"
+    r".*\b(?:pokazi|poka\u017ei|prikazi|prika\u017ei|izlistaj|navedi|lista|pregled|overview)\b"
     r"|"
     # Natural question forms (Bosnian): "Kakve imamo ciljeve?", "Koje ciljeve imamo?"
     r"\b(?:kakv\w*|koje|koji|sta|\u0161ta)\b\s+\b(?:imamo|su)\b"

@@ -1323,6 +1323,7 @@ def test_is_show_goals_tasks_intent_matches():
         "pokazi taskovi",
         "lista ciljevi",
         "navedi zadaci",
+        "Daj mi pregled svih ciljeva i taskova",
     ]
     for t in positives:
         assert _is_show_goals_tasks_intent(t), f"Expected True for {t!r}"
