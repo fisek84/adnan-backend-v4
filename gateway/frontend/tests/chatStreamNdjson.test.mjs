@@ -234,3 +234,44 @@ test("createCeoConsoleApi.sendCommand: returns stream when NDJSON content-type",
     globalThis.fetch = originalFetch;
   }
 });
+
+test("createCeoConsoleApi.toggleNotionOpsArmed: uses /api/chat activation path and returns armed state", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    const calls = [];
+    globalThis.fetch = async (url, opts) => {
+      calls.push({ url: String(url), opts });
+
+      return new Response(
+        JSON.stringify({
+          text: "NOTION OPS: ARMED",
+          notion_ops: {
+            armed: true,
+            session_id: "sid-123",
+          },
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      );
+    };
+
+    const api = createCeoConsoleApi({ ceoCommandUrl: "/api/chat" });
+    const resp = await api.toggleNotionOpsArmed("sid-123", true);
+
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, "/api/chat");
+    assert.equal(calls[0].opts?.method, "POST");
+
+    const payload = JSON.parse(String(calls[0].opts?.body || "{}"));
+    assert.equal(payload.message, "notion ops aktiviraj");
+    assert.equal(payload.session_id, "sid-123");
+    assert.equal(payload.metadata?.initiator, "ceo_chat");
+
+    assert.equal(resp.systemText, "NOTION OPS: ARMED");
+    assert.equal(resp.raw?.notion_ops?.armed, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

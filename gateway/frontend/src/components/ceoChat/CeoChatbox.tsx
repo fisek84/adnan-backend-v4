@@ -2875,30 +2875,17 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
                 setLastError(null);
                 
                 const newArmedState = !notionOpsArmed;
-                const toggleUrl = resolveEndpoint(undefined, "/api/notion-ops/toggle");
-                
-                const res = await fetch(toggleUrl, {
-                  method: "POST",
-                  headers: mergedHeaders,
-                  body: JSON.stringify({
-                    session_id: sessionId,
-                    armed: newArmedState,
-                  }),
-                });
-                
-                if (!res.ok) {
-                  const errorText = await res.text().catch(() => "");
-                  throw new Error(`Toggle failed (${res.status}): ${errorText || res.statusText}`);
-                }
-                
-                const result = await res.json().catch(() => ({}));
+                const result = await api.toggleNotionOpsArmed(sessionId, newArmedState);
+                const notionOps = (result as any)?.raw?.notion_ops || (result as any)?.notion_ops || {};
+                const effectiveArmed =
+                  typeof notionOps.armed === "boolean" ? notionOps.armed : newArmedState;
                 
                 // Update local state
-                setNotionOpsArmed(result.armed ?? newArmedState);
+                setNotionOpsArmed(effectiveArmed);
                 
                 // Store in sessionStorage
                 if (typeof sessionStorage !== 'undefined') {
-                  sessionStorage.setItem('notion_ops_armed', result.armed ? 'true' : 'false');
+                  sessionStorage.setItem('notion_ops_armed', effectiveArmed ? 'true' : 'false');
                 }
                 
                 // Add confirmation message to chat
@@ -2906,7 +2893,12 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
                   id: uid(),
                   kind: "message",
                   role: "system",
-                  content: result.armed ? "✓ NOTION OPS: ARMED" : "✓ NOTION OPS: DISARMED",
+                  content:
+                    (typeof result?.systemText === "string" && result.systemText.trim())
+                      ? result.systemText.trim()
+                      : effectiveArmed
+                        ? "NOTION OPS: ARMED"
+                        : "NOTION OPS: DISARMED",
                   status: "final",
                   createdAt: now(),
                 });

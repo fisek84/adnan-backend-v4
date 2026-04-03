@@ -125,6 +125,12 @@ export type CeoConsoleApi = {
     opts?: { forceNonStreaming?: boolean }
   ) => Promise<NormalizedConsoleResponse>;
 
+  toggleNotionOpsArmed: (
+    sessionId: string | null | undefined,
+    armed: boolean,
+    signal?: AbortSignal,
+  ) => Promise<NormalizedConsoleResponse>;
+
   // Voice adapter endpoint (STT optional on client; TTS optional on server).
   // This remains additive: text flow stays on /api/chat.
   sendVoiceExecText: (
@@ -848,6 +854,27 @@ export function createCeoConsoleApi(opts: {
       // ne pokušavamo nikakav fallback. Samo vraćamo response.
       // (Chatbox UI odlučuje šta i kako prikazati.)
       return resp;
+    },
+
+    toggleNotionOpsArmed: async (
+      sessionId: string | null | undefined,
+      armed: boolean,
+      signal?: AbortSignal,
+    ): Promise<NormalizedConsoleResponse> => {
+      return await (createCeoConsoleApi as any)({
+        ceoCommandUrl,
+        approveUrl,
+        headers,
+      }).sendCommand(
+        {
+          text: armed ? "notion ops aktiviraj" : "notion ops ugasi",
+          initiator: "ceo_chat",
+          session_id: sessionId ?? null,
+        },
+        signal,
+        undefined,
+        { forceNonStreaming: true },
+      );
     },
 
     sendVoiceExecText: async (
