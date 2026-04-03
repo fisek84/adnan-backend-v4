@@ -7,7 +7,11 @@ import type {
   NormalizedConsoleResponse,
   UiStrings,
 } from "./types";
-import { createCeoConsoleApi } from "./api";
+import {
+  attachStructuredPreviewToCommands,
+  createCeoConsoleApi,
+  getAttachedPreviewPayload,
+} from "./api";
 import { defaultStrings } from "./strings";
 import { useAutoScroll } from "./hooks";
 import { useSpeechSynthesis } from "../../hooks/useSpeechSynthesis";
@@ -138,7 +142,10 @@ const _extractProposedCommands = (resp: any): ProposedCmd[] => {
       if (!x || typeof x !== "object" || Array.isArray(x)) continue;
       out.push(x as ProposedCmd);
     }
-    return out;
+    return attachStructuredPreviewToCommands(
+      out,
+      resp?.raw ?? resp,
+    );
   }
 
   return [];
@@ -1285,6 +1292,23 @@ export const CeoChatbox: React.FC<CeoChatboxProps> = ({
       setPreviewProposalLabel(label);
       const key = getProposalKey(proposal, label);
       setPreviewProposalKey(key);
+
+      const attachedPreview = getAttachedPreviewPayload(proposal);
+      const proposalPatch = proposalPatches[key];
+      const hasProposalPatch = Boolean(
+        proposalPatch && Object.keys(proposalPatch).length > 0,
+      );
+      const enterprisePatches = proposalEnterprisePatches[key] || [];
+      if (
+        attachedPreview &&
+        !patchesOverride &&
+        !hasProposalPatch &&
+        enterprisePatches.length === 0
+      ) {
+        setPreviewData(attachedPreview);
+        setPreviewLoading(false);
+        return;
+      }
 
       const controller = new AbortController();
       previewAbortRef.current = controller;

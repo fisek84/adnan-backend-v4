@@ -2,7 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { streamTextFromResponse } from "../.node-test-dist-chat-stream/components/ceoChat/normalize.js";
-import { createCeoConsoleApi } from "../.node-test-dist-chat-stream/components/ceoChat/api.js";
+import {
+  createCeoConsoleApi,
+  getAttachedPreviewPayload,
+} from "../.node-test-dist-chat-stream/components/ceoChat/api.js";
 
 function ndjsonResponseFromLines(lines, { status = 200, headers = {} } = {}) {
   const text = lines.join("\n") + "\n";
@@ -92,6 +95,58 @@ test("createCeoConsoleApi.sendCommand: falls back to /api/chat when stream is 40
     assert.equal(resp.systemText, "ok");
     assert.equal(Array.isArray(resp.proposed_commands), true);
     assert.equal(resp.proposed_commands.length, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("createCeoConsoleApi.sendCommand: attaches structured preview payload to proposals without mutating payload shape", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async (url, _opts) => {
+      if (
+        String(url).includes("/api/chat/stream") ||
+        String(url).endsWith("/chat/stream")
+      ) {
+        return new Response(
+          JSON.stringify({ error: "chat_streaming_disabled" }),
+          {
+            status: 404,
+            headers: { "content-type": "application/json" },
+          }
+        );
+      }
+
+      return new Response(
+        JSON.stringify({
+          text: "Structured preview je spreman. Nema izvrsenja.",
+          command: { intent: "batch_request" },
+          review: { missing_fields: [] },
+          notion: { type: "batch_preview" },
+          proposed_commands: [
+            { command: "ceo.command.propose", params: { prompt: "x" } },
+          ],
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }
+      );
+    };
+
+    const api = createCeoConsoleApi({ ceoCommandUrl: "/api/chat" });
+    const resp = await api.sendCommand({ text: "hi" });
+
+    assert.equal(resp.proposed_commands?.length, 1);
+    assert.deepEqual(getAttachedPreviewPayload(resp.proposed_commands?.[0]), {
+      command: { intent: "batch_request" },
+      review: { missing_fields: [] },
+      notion: { type: "batch_preview" },
+    });
+    assert.equal(
+      JSON.stringify(resp.proposed_commands?.[0]).includes("__attachedPreview"),
+      false,
+    );
   } finally {
     globalThis.fetch = originalFetch;
   }

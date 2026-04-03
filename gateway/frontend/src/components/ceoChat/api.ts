@@ -29,6 +29,12 @@ export type ProposedCommand = {
   [k: string]: any;
 };
 
+type StructuredPreviewPayload = {
+  command?: Record<string, any>;
+  review?: Record<string, any>;
+  notion?: Record<string, any>;
+};
+
 export type GovernanceCard = {
   state: "BLOCKED" | "APPROVED" | "EXECUTED" | string;
   title: string;
@@ -458,9 +464,71 @@ function extractProposedCommands(raw: any): ProposedCommand[] {
   ];
 
   for (const c of candidates) {
-    if (Array.isArray(c)) return c as ProposedCommand[];
+    if (Array.isArray(c)) {
+      return attachStructuredPreviewToCommands(
+        c as ProposedCommand[],
+        raw,
+      );
+    }
   }
   return [];
+}
+
+function extractStructuredPreviewPayload(raw: any): StructuredPreviewPayload | null {
+  if (!raw || typeof raw !== "object") return null;
+
+  const command = raw.command;
+  const review = raw.review;
+  const notion = raw.notion;
+
+  if (
+    (!command || typeof command !== "object" || Array.isArray(command)) &&
+    (!review || typeof review !== "object" || Array.isArray(review)) &&
+    (!notion || typeof notion !== "object" || Array.isArray(notion))
+  ) {
+    return null;
+  }
+
+  return {
+    ...(command && typeof command === "object" && !Array.isArray(command) ? { command } : {}),
+    ...(review && typeof review === "object" && !Array.isArray(review) ? { review } : {}),
+    ...(notion && typeof notion === "object" && !Array.isArray(notion) ? { notion } : {}),
+  };
+}
+
+export function attachStructuredPreviewToCommands<T extends ProposedCommand>(
+  commands: T[],
+  raw: any
+): T[] {
+  const attachedPreview = extractStructuredPreviewPayload(raw);
+  if (!attachedPreview || !Array.isArray(commands) || commands.length === 0) {
+    return commands;
+  }
+
+  return commands.map((command) => {
+    if (!command || typeof command !== "object" || Array.isArray(command)) {
+      return command;
+    }
+    const next = { ...command };
+    Object.defineProperty(next, "__attachedPreview", {
+      value: attachedPreview,
+      enumerable: false,
+      configurable: true,
+    });
+    return next as T;
+  });
+}
+
+export function getAttachedPreviewPayload(command: any): StructuredPreviewPayload | null {
+  const attachedPreview = command?.__attachedPreview;
+  if (
+    !attachedPreview ||
+    typeof attachedPreview !== "object" ||
+    Array.isArray(attachedPreview)
+  ) {
+    return null;
+  }
+  return attachedPreview as StructuredPreviewPayload;
 }
 
 function extractApprovalId(raw: any): string | undefined {
