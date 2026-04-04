@@ -2668,7 +2668,13 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         # CANON RESTORE: pending proposal replay / cancel / intent switch
         # ------------------------------------------------------------
         pending_declined = False
-        pending = _load_pending_proposal(proposal_key)
+        # Allow CEO Console Notion Ops toggle commands to work even while a
+        # proposal is pending; the UI keeps using the already-attached proposal.
+        pending = (
+            []
+            if (session_id and (_is_activate(prompt) or _is_deactivate(prompt)))
+            else _load_pending_proposal(proposal_key)
+        )
         if pending:
             cls = _classify_pending_response(prompt)
 
