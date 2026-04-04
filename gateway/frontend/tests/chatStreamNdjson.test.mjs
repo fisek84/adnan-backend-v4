@@ -202,7 +202,7 @@ test("createCeoConsoleApi.sendCommand: attaches structured preview payload from 
   }
 });
 
-test("createCeoConsoleApi.sendCommand: single-create attached preview survives proposal cloning", async () => {
+test("createCeoConsoleApi.sendCommand: single-create preview stays attached on governance card proposal branch", async () => {
   const originalFetch = globalThis.fetch;
   try {
     globalThis.fetch = async (url, _opts) => {
@@ -246,8 +246,12 @@ test("createCeoConsoleApi.sendCommand: single-create attached preview survives p
 
     assert.equal(resp.proposed_commands?.length, 1);
 
-    const clonedProposal = { ...(resp.proposed_commands?.[0] || {}) };
-    assert.deepEqual(getAttachedPreviewPayload(clonedProposal), {
+    const governanceItem = {
+      proposedCommands: resp.proposed_commands,
+    };
+
+    const clickedProposal = governanceItem.proposedCommands?.[0];
+    assert.deepEqual(getAttachedPreviewPayload(clickedProposal), {
       command: { command: "notion_write", intent: "create_task" },
       review: { missing_fields: [] },
       notion: { db_key: "tasks", property_count: 3 },
