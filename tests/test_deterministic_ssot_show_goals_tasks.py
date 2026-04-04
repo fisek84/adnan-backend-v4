@@ -159,6 +159,41 @@ def test_show_goals_tasks_bosnian_variants_deterministic(monkeypatch):
         ), f"phrase={phrase!r} leaked 'Nemam SSOT snapshot'"
 
 
+def test_show_all_tasks_and_goals_prefers_combined_summary_over_task_only_mode(
+    monkeypatch,
+):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
+    monkeypatch.setenv("NOTION_API_KEY", "test-notion-key")
+    monkeypatch.setenv("NOTION_GOALS_DB_ID", "test-goals-db")
+    monkeypatch.setenv("NOTION_TASKS_DB_ID", "test-tasks-db")
+    monkeypatch.setenv("NOTION_PROJECTS_DB_ID", "test-projects-db")
+    monkeypatch.setenv("CEO_NOTION_TARGETED_READS_ENABLED", "false")
+    monkeypatch.setenv("CEO_ADVISOR_FORCE_OFFLINE", "1")
+
+    app = _get_app()
+    client = TestClient(app)
+
+    snap = _ready_snapshot()
+
+    r = client.post(
+        "/api/chat",
+        json={
+            "message": "Imam zahtev a taj zahtev je da mi pokažeš sve taskove i ciljeve koje imamo u sistemu.",
+            "snapshot": snap,
+        },
+    )
+    assert r.status_code == 200, r.text
+
+    body = r.json()
+    txt = body.get("text") or ""
+
+    assert "GOALS (top 3)" in txt
+    assert "TASKS (top 5)" in txt
+    assert "Rast prihoda Q1" in txt
+    assert "Istraživanje tržišta" in txt
+    assert "TASKS (all)" not in txt
+
+
 def test_ceo_view_goal_ranking_deterministic():
     """CEO_VIEW goals_top3 must be deterministically ranked (not first 3 in payload order)."""
     from routers.chat_router import _compute_ceo_view
@@ -1315,6 +1350,7 @@ def test_is_show_goals_tasks_intent_matches():
     positives = [
         "Pokazi mi ciljeve i taskove",
         "Pokaži ciljeve",
+        "Treba da mi pokažeš sve taskove i ciljeve koje imamo u sistemu",
         "Prikazi taskove",
         "Izlistaj ciljeve",
         "Navedi taskove",

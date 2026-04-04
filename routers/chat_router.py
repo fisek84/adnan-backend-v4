@@ -66,11 +66,11 @@ _DEACTIVATE_KEYWORDS = (
 _SHOW_GOALS_TASKS_RE = re.compile(
     r"(?i)"
     r"(?:"
-    r"\b(?:pokazi|poka\u017ei|prikazi|prika\u017ei|izlistaj|navedi|lista|pregled|overview)\b"
+    r"\b(?:poka(?:z|\u017e)\w*|prika(?:z|\u017e)\w*|izlistaj|navedi|lista|pregled|overview)\b"
     r".*\b(?:cilj\w*|goal\w*|task\w*|zadac\w*|zadat\w*)"
     r"|"
     r"\b(?:cilj\w*|goal\w*|task\w*|zadac\w*|zadat\w*)\b"
-    r".*\b(?:pokazi|poka\u017ei|prikazi|prika\u017ei|izlistaj|navedi|lista|pregled|overview)\b"
+    r".*\b(?:poka(?:z|\u017e)\w*|prika(?:z|\u017e)\w*|izlistaj|navedi|lista|pregled|overview)\b"
     r"|"
     # Natural question forms (Bosnian): "Kakve imamo ciljeve?", "Koje ciljeve imamo?"
     r"\b(?:kakv\w*|koje|koji|sta|\u0161ta)\b\s+\b(?:imamo|su)\b"
@@ -105,16 +105,45 @@ def _is_show_goals_tasks_intent(text: str) -> bool:
     t = (text or "").strip()
     if not t:
         return False
+
+    def _norm_bhs_ascii(text: str) -> str:
+        s = (text or "").strip().lower()
+        return (
+            s.replace("č", "c")
+            .replace("ć", "c")
+            .replace("š", "s")
+            .replace("đ", "dj")
+            .replace("ž", "z")
+        )
+
     # Guard: do NOT treat goal-scoped task follow-ups as a global "show goals+tasks" intent.
     # Examples:
     #   - "Koji su zadaci povezani sa ovim ciljem?"
     #   - "Imamo li aktivne zadatke za taj cilj?"
-    if re.search(r"(?i)\b(task|taskovi|zadat|zadac)\w*\b", t) and re.search(
-        r"(?i)\b(ovaj|ovom|ovog|ovome|ovo|taj|tom|tog|tome|ovim)\b.*\b(cilj|goal)\w*\b",
-        t,
+    t0 = _norm_bhs_ascii(t)
+    if re.search(r"(?i)\b(task\w*|zadat\w*|zadac\w*)\b", t0) and re.search(
+        r"(?i)\b(ovaj|ovom|ovog|ovome|ovo|taj|tom|tog|tome|ovim)\b(?:\W+\w+){0,3}\W+\b(cilj\w*|goal\w*)\b",
+        t0,
     ):
         return False
-    return bool(_SHOW_GOALS_TASKS_RE.search(t))
+
+    if _SHOW_GOALS_TASKS_RE.search(t):
+        return True
+
+    has_show_cue = bool(
+        re.search(
+            r"(?i)\b(pokaz\w*|prikaz\w*|izlistaj|navedi|lista|pregled|overview)\b",
+            t0,
+        )
+    )
+    has_subject = bool(
+        re.search(r"(?i)\b(cilj\w*|goal\w*|task\w*|zadat\w*|zadac\w*)\b", t0)
+    )
+    has_have_question = bool(
+        re.search(r"(?i)\b(kakv\w*|koje|koji|sta|shta)\b\s+\b(imamo|su)\b", t0)
+    )
+
+    return bool((has_show_cue and has_subject) or (has_have_question and has_subject))
 
 
 def _compute_ceo_view(snapshot: Any) -> Dict[str, Any]:
@@ -3748,12 +3777,11 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                     )
 
                 t0 = _norm_bhs_ascii(prompt)
-                has_task = bool(
-                    re.search(r"(?i)\b(task|taskovi|zadat|zadaci|zadatke)\b", t0)
-                )
+                has_task = bool(re.search(r"(?i)\b(task\w*|zadat\w*|zadac\w*)\b", t0))
+                has_goal = bool(re.search(r"(?i)\b(goal\w*|cilj\w*)\b", t0))
                 wants_full = bool(
                     re.search(
-                        r"(?i)\b(pokazi\s+sve|prikazi\s+sve|izlistaj\s+sve|kompletno|all)\b",
+                        r"(?i)\b((pokaz\w*|prikaz\w*|izlistaj)\s+sve|kompletno|all|sve)\b",
                         t0,
                     )
                 )
@@ -3764,7 +3792,9 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                     )
                 )
 
-                bypass_for_task_mode = bool(has_task and (wants_full or wants_upcoming))
+                bypass_for_task_mode = bool(
+                    has_task and not has_goal and (wants_full or wants_upcoming)
+                )
 
                 if not bypass_for_task_mode:
                     _snap_det = ks_for_gp if isinstance(ks_for_gp, dict) else {}
@@ -4739,7 +4769,7 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                     )
                     is_followup_goal = bool(
                         re.search(
-                            r"(?i)\b(ovaj|ovom|ovog|ovome|ovo|taj|tom|tog|tome|ovim)\b.*\b(cilj|goal)\w*\b",
+                            r"(?i)\b(ovaj|ovom|ovog|ovome|ovo|taj|tom|tog|tome|ovim)\b(?:\W+\w+){0,3}\W+\b(cilj|goal)\w*\b",
                             t0_goal_tasks,
                         )
                     )
@@ -5155,7 +5185,10 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 try:
                     t0_guard = _norm_bhs_ascii(prompt)
                     has_task_token = bool(
-                        re.search(r"(?i)\b(task|taskovi|zadat|zadac)\w*\b", t0_guard)
+                        re.search(r"(?i)\b(task\w*|zadat\w*|zadac\w*)\b", t0_guard)
+                    )
+                    has_goal_token = bool(
+                        re.search(r"(?i)\b(goal\w*|cilj\w*)\b", t0_guard)
                     )
                     has_query_cue = bool(
                         re.search(
@@ -5174,6 +5207,11 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                         and (qtype == "tomorrow")
                         and not (has_task_token or has_query_cue)
                     ):
+                        qtype = "none"
+
+                    # Combined "goals and tasks" requests belong to the deterministic
+                    # snapshot summary path above, not the task-only query engine.
+                    if has_task_token and has_goal_token:
                         qtype = "none"
                 except Exception:
                     pass
