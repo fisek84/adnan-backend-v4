@@ -3820,7 +3820,11 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                             and isinstance(_tasks_det, list)
                             and (_goals_det or _tasks_det)
                         ):
-                            _det_text = _render_snapshot_summary(_goals_det, _tasks_det)
+                            _det_text = _render_snapshot_summary(
+                                _goals_det,
+                                _tasks_det,
+                                include_all=bool(wants_full and has_task and has_goal),
+                            )
                         _det_tr = {
                             "intent": "show_goals_tasks",
                             "exit_path": "deterministic_ssot",

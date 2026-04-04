@@ -73,6 +73,81 @@ def _ready_snapshot():
     }
 
 
+def _ready_snapshot_with_full_lists():
+    return {
+        "ready": True,
+        "status": "fresh",
+        "schema_version": "v1",
+        "payload": {
+            "goals": [
+                {
+                    "id": "g1",
+                    "title": "Rast prihoda Q1",
+                    "status": "In Progress",
+                    "due": "2026-03-31",
+                },
+                {
+                    "id": "g2",
+                    "title": "Lansiranje novog proizvoda",
+                    "status": "Not Started",
+                    "due": "2026-06-30",
+                },
+                {
+                    "id": "g3",
+                    "title": "Optimizacija troskova",
+                    "status": "In Progress",
+                    "due": "2026-04-15",
+                },
+                {
+                    "id": "g4",
+                    "title": "Regionalna partnerstva",
+                    "status": "Not Started",
+                    "due": "2026-07-10",
+                },
+            ],
+            "tasks": [
+                {
+                    "id": "t1",
+                    "title": "Istraživanje tržišta",
+                    "status": "In Progress",
+                    "due": "2026-02-28",
+                },
+                {
+                    "id": "t2",
+                    "title": "Priprema prezentacije",
+                    "status": "Not Started",
+                    "due": "2026-03-05",
+                },
+                {
+                    "id": "t3",
+                    "title": "Analiza konkurencije",
+                    "status": "In Progress",
+                    "due": "2026-03-11",
+                },
+                {
+                    "id": "t4",
+                    "title": "Definisanje ponude",
+                    "status": "Not Started",
+                    "due": "2026-03-18",
+                },
+                {
+                    "id": "t5",
+                    "title": "Sastanak sa partnerom",
+                    "status": "Not Started",
+                    "due": "2026-03-22",
+                },
+                {
+                    "id": "t6",
+                    "title": "Finalna revizija budzeta",
+                    "status": "Not Started",
+                    "due": "2026-03-29",
+                },
+            ],
+            "projects": [],
+        },
+    }
+
+
 def _get_app():
     from gateway.gateway_server import app  # noqa: PLC0415
 
@@ -173,7 +248,7 @@ def test_show_all_tasks_and_goals_prefers_combined_summary_over_task_only_mode(
     app = _get_app()
     client = TestClient(app)
 
-    snap = _ready_snapshot()
+    snap = _ready_snapshot_with_full_lists()
 
     r = client.post(
         "/api/chat",
@@ -187,11 +262,14 @@ def test_show_all_tasks_and_goals_prefers_combined_summary_over_task_only_mode(
     body = r.json()
     txt = body.get("text") or ""
 
-    assert "GOALS (top 3)" in txt
-    assert "TASKS (top 5)" in txt
+    assert "GOALS (all)" in txt
+    assert "TASKS (all)" in txt
+    assert "GOALS (top 3)" not in txt
+    assert "TASKS (top 5)" not in txt
     assert "Rast prihoda Q1" in txt
     assert "Istraživanje tržišta" in txt
-    assert "TASKS (all)" not in txt
+    assert "Regionalna partnerstva" in txt
+    assert "Finalna revizija budzeta" in txt
 
 
 def test_ceo_view_goal_ranking_deterministic():

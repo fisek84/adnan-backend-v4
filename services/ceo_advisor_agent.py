@@ -2264,7 +2264,9 @@ def _extract_goals_tasks_with_meta(
     return goals, tasks, meta
 
 
-def _render_snapshot_summary(goals: Any, tasks: Any) -> str:
+def _render_snapshot_summary(
+    goals: Any, tasks: Any, *, include_all: bool = False
+) -> str:
     def _pick_str(v: Any, default: str = "-") -> str:
         if v is None:
             return default
@@ -2402,26 +2404,29 @@ def _render_snapshot_summary(goals: Any, tasks: Any) -> str:
         ),
     )
 
+    goal_items = g_sorted if include_all else g_sorted[:3]
+    task_items = t_sorted if include_all else t_sorted[:5]
+    goal_heading = "GOALS (all)" if include_all else "GOALS (top 3)"
+    task_heading = "TASKS (all)" if include_all else "TASKS (top 5)"
+    goal_placeholder_count = 1 if include_all else 3
+    task_placeholder_count = 1 if include_all else 5
+
     lines: List[str] = []
-    lines.append("GOALS (top 3)")
-    if not g_sorted:
-        lines.append("1) - | - | -")
-        lines.append("2) - | - | -")
-        lines.append("3) - | - | -")
+    lines.append(goal_heading)
+    if not goal_items:
+        for i in range(1, goal_placeholder_count + 1):
+            lines.append(f"{i}) - | - | -")
     else:
-        for i, it in enumerate(g_sorted[:3], start=1):
+        for i, it in enumerate(goal_items, start=1):
             ng = _normalize_goal(it)
             lines.append(f"{i}) {ng['title']} | {ng['status']} | {ng['due']}")
 
-    lines.append("TASKS (top 5)")
-    if not t_sorted:
-        lines.append("1) - | - | -")
-        lines.append("2) - | - | -")
-        lines.append("3) - | - | -")
-        lines.append("4) - | - | -")
-        lines.append("5) - | - | -")
+    lines.append(task_heading)
+    if not task_items:
+        for i in range(1, task_placeholder_count + 1):
+            lines.append(f"{i}) - | - | -")
     else:
-        for i, it in enumerate(t_sorted[:5], start=1):
+        for i, it in enumerate(task_items, start=1):
             nt = _normalize_task(it)
             lines.append(f"{i}) {nt['title']} | {nt['status']} | {nt['due']}")
 
