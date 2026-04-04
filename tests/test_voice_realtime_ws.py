@@ -140,6 +140,115 @@ def test_voice_realtime_ws_happy_path_event_order_and_parity(monkeypatch):
         assert resp.get("read_only") is True
 
 
+def test_voice_realtime_ws_single_create_preview_request_attaches_structured_preview(
+    monkeypatch,
+):
+    monkeypatch.setenv("VOICE_REALTIME_WS_ENABLED", "true")
+
+    async def _fake_notion_ops_agent(_payload, ctx):  # noqa: ANN001
+        return AgentOutput(
+            text="Notion Ops: vraćam prijedlog komande za approval. Podržavam Bosanski i Engleski jezik. / Notion Ops: returning command proposal for approval. Supporting Bosnian and English.",
+            proposed_commands=[
+                {
+                    "command": "ceo.command.propose",
+                    "args": {
+                        "prompt": "Kreiraj task Test single create sanity, status Active, priority Low. Daj mi preview, nemoj izvršiti.",
+                        "intent": "create_task",
+                        "supports_bilingual": True,
+                    },
+                    "reason": "Notion write/workflow mora ići kroz approval/execution pipeline. Detected intent: create_task",
+                    "dry_run": True,
+                    "requires_approval": True,
+                    "risk": "HIGH",
+                    "scope": None,
+                    "payload_summary": {
+                        "confidence_score": 0.5,
+                        "assumption_count": 0,
+                        "recommendation_type": "OPERATIONAL",
+                    },
+                }
+            ],
+            agent_id="notion_ops",
+            read_only=True,
+            trace={"stub": True},
+        )
+
+    monkeypatch.setattr(
+        "services.notion_ops_agent.notion_ops_agent",
+        _fake_notion_ops_agent,
+        raising=True,
+    )
+
+    app = _load_app()
+    client = TestClient(app)
+
+    with client.websocket_connect("/api/voice/realtime/ws") as ws:
+        ws.send_text(
+            json.dumps(
+                {
+                    "type": "session.start",
+                    "data": {
+                        "session_id": "ws_preview_rt",
+                        "conversation_id": "ws_preview_rt",
+                    },
+                }
+            )
+        )
+        started = _recv_json(ws)
+        assert started.get("type") == "session.started"
+
+        ws.send_text(
+            json.dumps(
+                {
+                    "type": "input.final",
+                    "data": {
+                        "text": "notion ops aktiviraj",
+                        "metadata": {
+                            "session_id": "ws_preview_rt",
+                            "initiator": "ceo_chat",
+                        },
+                    },
+                }
+            )
+        )
+        _ = _drain_until_done(ws)
+
+        ws.send_text(
+            json.dumps(
+                {
+                    "type": "input.final",
+                    "data": {
+                        "text": "Kreiraj task Test single create sanity, status Active, priority Low. Daj mi preview, nemoj izvršiti.",
+                        "preferred_agent_id": "notion_ops",
+                        "metadata": {
+                            "session_id": "ws_preview_rt",
+                            "initiator": "ceo_chat",
+                            "source": "voice",
+                        },
+                    },
+                }
+            )
+        )
+
+        evts = _drain_until_done(ws)
+        final = next(e for e in evts if e.get("type") == "assistant.final")
+        resp = (final.get("data") or {}).get("response") or {}
+
+        assert resp.get("text") == "Structured preview je spreman. Nema izvršenja."
+        cmd = resp.get("command") or {}
+        assert cmd.get("command") == "notion_write"
+        assert cmd.get("intent") == "create_task"
+
+        notion = resp.get("notion") or {}
+        assert notion.get("db_key") == "tasks"
+        review = resp.get("review") or {}
+        assert isinstance(review.get("missing_fields"), list)
+
+        pcs = resp.get("proposed_commands") or []
+        assert isinstance(pcs, list) and len(pcs) == 1
+        assert pcs[0].get("command") == "ceo.command.propose"
+
+
 def test_voice_realtime_ws_cancel_stops_turn(monkeypatch):
     monkeypatch.setenv("VOICE_REALTIME_WS_ENABLED", "true")
 

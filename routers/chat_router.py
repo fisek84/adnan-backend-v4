@@ -1307,6 +1307,9 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             "pretvori",
             "transform",
             "convert",
+            "kreiraj",
+            "create",
+            "napravi",
         )
         structure_markers = (
             "goal",
