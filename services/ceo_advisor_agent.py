@@ -18,6 +18,7 @@ from services.intent_precedence import classify_intent
 # PHASE 6: Import shared Notion Ops state management
 from services.notion_ops_state import get_state as get_notion_ops_state
 from services.notion_ops_state import is_armed as notion_ops_is_armed
+from services.notion_ops_state import resolve_state_subject
 
 
 _CEO_INSTRUCTIONS_PREFIX = "CEO ADVISOR — RESPONSES SYSTEM INSTRUCTIONS (READ-ONLY)"
@@ -3748,25 +3749,13 @@ async def create_ceo_advisor_agent(
 
     principal_sub = None
     try:
-        if isinstance(meta, dict):
-            v = meta.get("principal_sub")
-            if isinstance(v, str) and v.strip():
-                principal_sub = v.strip()
+        principal_sub = resolve_state_subject(
+            session_id=getattr(agent_input, "session_id", None),
+            metadata=meta,
+            identity_pack=getattr(agent_input, "identity_pack", None),
+        )
     except Exception:
         principal_sub = None
-
-    if not principal_sub:
-        try:
-            ip0 = getattr(agent_input, "identity_pack", None)
-            ip = ip0 if isinstance(ip0, dict) else {}
-            payload = ip.get("payload") if isinstance(ip.get("payload"), dict) else {}
-            v = payload.get("sub") if isinstance(payload, dict) else None
-            if not (isinstance(v, str) and v.strip()):
-                v = ip.get("sub")
-            if isinstance(v, str) and v.strip():
-                principal_sub = v.strip()
-        except Exception:
-            principal_sub = None
 
     notion_ops_state: Dict[str, Any] = {"armed": False, "armed_at": None}
     notion_ops_armed = False

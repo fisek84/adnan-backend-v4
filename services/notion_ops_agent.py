@@ -10,7 +10,7 @@ from models.agent_contract import AgentInput, AgentOutput, ProposedCommand
 from services.notion_service import NotionService, get_notion_service
 
 # PHASE 6: Import shared Notion Ops state management
-from services.notion_ops_state import get_state
+from services.notion_ops_state import get_state, resolve_state_subject
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -205,28 +205,14 @@ async def notion_ops_agent(agent_input: AgentInput, ctx: Dict[str, Any]) -> Agen
     )
 
     # Check principal-bound state before proceeding with the action (BE-301)
-    principal_sub = None
     try:
-        md = getattr(agent_input, "metadata", None)
-        if isinstance(md, dict):
-            v = md.get("principal_sub")
-            if isinstance(v, str) and v.strip():
-                principal_sub = v.strip()
+        principal_sub = resolve_state_subject(
+            session_id=getattr(agent_input, "session_id", None),
+            metadata=getattr(agent_input, "metadata", None),
+            identity_pack=getattr(agent_input, "identity_pack", None),
+        )
     except Exception:
         principal_sub = None
-
-    if not principal_sub:
-        try:
-            ip0 = getattr(agent_input, "identity_pack", None)
-            ip = ip0 if isinstance(ip0, dict) else {}
-            payload = ip.get("payload") if isinstance(ip.get("payload"), dict) else {}
-            v = payload.get("sub") if isinstance(payload, dict) else None
-            if not (isinstance(v, str) and v.strip()):
-                v = ip.get("sub")
-            if isinstance(v, str) and v.strip():
-                principal_sub = v.strip()
-        except Exception:
-            principal_sub = None
 
     armed = False
     if isinstance(principal_sub, str) and principal_sub.strip():

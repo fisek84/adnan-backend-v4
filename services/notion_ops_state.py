@@ -27,6 +27,51 @@ _NOTION_OPS_PRINCIPALS: Dict[str, Dict[str, Any]] = {}
 _NOTION_OPS_LOCK = asyncio.Lock()
 
 
+def resolve_state_subject(
+    *,
+    session_id: Any = None,
+    metadata: Any = None,
+    identity_pack: Any = None,
+) -> str | None:
+    """Resolve the canonical Notion Ops state key for request-time checks.
+
+    Preference order:
+    1. verified/explicit principal-like fields in metadata
+    2. identity pack subject
+    3. browser-session session_id fallback
+
+    This mirrors runtime behavior where authenticated flows use principal.sub,
+    while browser-session CEO Console flows use session_id as the actor key.
+    """
+
+    if isinstance(metadata, dict):
+        for key in ("principal_sub", "sub", "actor_sub", "approved_by_sub"):
+            value = metadata.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+
+    if isinstance(identity_pack, dict):
+        payload = (
+            identity_pack.get("payload")
+            if isinstance(identity_pack.get("payload"), dict)
+            else {}
+        )
+        for value in (payload.get("sub"), identity_pack.get("sub")):
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+
+    if isinstance(session_id, str) and session_id.strip():
+        return session_id.strip()
+
+    if isinstance(metadata, dict):
+        for key in ("session_id", "sessionId"):
+            value = metadata.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+
+    return None
+
+
 def _arm_ttl_seconds() -> int:
     raw = (os.getenv("NOTION_OPS_ARM_TTL_SECONDS", "3600") or "").strip()
     try:
