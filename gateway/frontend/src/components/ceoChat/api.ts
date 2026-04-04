@@ -35,6 +35,51 @@ type StructuredPreviewPayload = {
   notion?: Record<string, any>;
 };
 
+const structuredPreviewCache = new Map<string, StructuredPreviewPayload>();
+
+function stablePreviewKey(value: any): string {
+  const seen = new WeakSet<object>();
+
+  const normalize = (input: any): any => {
+    if (input === null || input === undefined) return input;
+    if (typeof input !== "object") return input;
+    if (seen.has(input)) return "[Circular]";
+    seen.add(input);
+    if (Array.isArray(input)) return input.map(normalize);
+
+    const out: Record<string, any> = {};
+    for (const key of Object.keys(input).sort()) out[key] = normalize(input[key]);
+    return out;
+  };
+
+  try {
+    return JSON.stringify(normalize(value));
+  } catch {
+    return "";
+  }
+}
+
+function proposalPreviewCacheKey(command: any): string {
+  if (!command || typeof command !== "object" || Array.isArray(command)) return "";
+
+  return stablePreviewKey({
+    command: typeof command.command === "string" ? command.command : null,
+    intent: typeof command.intent === "string" ? command.intent : null,
+    params:
+      command.params && typeof command.params === "object" && !Array.isArray(command.params)
+        ? command.params
+        : null,
+    args:
+      command.args && typeof command.args === "object" && !Array.isArray(command.args)
+        ? command.args
+        : null,
+    payload:
+      command.payload && typeof command.payload === "object" && !Array.isArray(command.payload)
+        ? command.payload
+        : null,
+  });
+}
+
 export type GovernanceCard = {
   state: "BLOCKED" | "APPROVED" | "EXECUTED" | string;
   title: string;
@@ -533,6 +578,8 @@ export function attachStructuredPreviewToCommands<T extends ProposedCommand>(
       return command;
     }
     const next = { ...command };
+    const cacheKey = proposalPreviewCacheKey(next);
+    if (cacheKey) structuredPreviewCache.set(cacheKey, attachedPreview);
     Object.defineProperty(next, "__attachedPreview", {
       value: attachedPreview,
       enumerable: false,
@@ -545,13 +592,17 @@ export function attachStructuredPreviewToCommands<T extends ProposedCommand>(
 export function getAttachedPreviewPayload(command: any): StructuredPreviewPayload | null {
   const attachedPreview = command?.__attachedPreview;
   if (
-    !attachedPreview ||
-    typeof attachedPreview !== "object" ||
-    Array.isArray(attachedPreview)
+    attachedPreview &&
+    typeof attachedPreview === "object" &&
+    !Array.isArray(attachedPreview)
   ) {
-    return null;
+    return attachedPreview as StructuredPreviewPayload;
   }
-  return attachedPreview as StructuredPreviewPayload;
+
+  const cacheKey = proposalPreviewCacheKey(command);
+  if (!cacheKey) return null;
+
+  return structuredPreviewCache.get(cacheKey) ?? null;
 }
 
 function extractApprovalId(raw: any): string | undefined {

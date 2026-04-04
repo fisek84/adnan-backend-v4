@@ -202,6 +202,61 @@ test("createCeoConsoleApi.sendCommand: attaches structured preview payload from 
   }
 });
 
+test("createCeoConsoleApi.sendCommand: single-create attached preview survives proposal cloning", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async (url, _opts) => {
+      if (
+        String(url).includes("/api/chat/stream") ||
+        String(url).endsWith("/chat/stream")
+      ) {
+        return new Response(
+          JSON.stringify({ error: "chat_streaming_disabled" }),
+          {
+            status: 404,
+            headers: { "content-type": "application/json" },
+          }
+        );
+      }
+
+      return new Response(
+        JSON.stringify({
+          text: "Structured preview je spreman. Nema izvrsenja.",
+          command: { command: "notion_write", intent: "create_task" },
+          review: { missing_fields: [] },
+          notion: { db_key: "tasks", property_count: 3 },
+          proposed_commands: [
+            {
+              command: "ceo.command.propose",
+              params: { prompt: "Kreiraj task: Test single create sanity" },
+            },
+          ],
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }
+      );
+    };
+
+    const api = createCeoConsoleApi({ ceoCommandUrl: "/api/chat" });
+    const resp = await api.sendCommand({
+      text: "Kreiraj task Test single create sanity, status Active, priority Low. Daj mi preview, nemoj izvršiti.",
+    });
+
+    assert.equal(resp.proposed_commands?.length, 1);
+
+    const clonedProposal = { ...(resp.proposed_commands?.[0] || {}) };
+    assert.deepEqual(getAttachedPreviewPayload(clonedProposal), {
+      command: { command: "notion_write", intent: "create_task" },
+      review: { missing_fields: [] },
+      notion: { db_key: "tasks", property_count: 3 },
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("createCeoConsoleApi.sendCommand: returns stream when NDJSON content-type", async () => {
   const originalFetch = globalThis.fetch;
   try {
