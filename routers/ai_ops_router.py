@@ -77,12 +77,26 @@ def _is_ceo_request(request: Request) -> bool:
     1. Valid X-CEO-Token header (if CEO_TOKEN_ENFORCEMENT is enabled)
     2. X-Initiator == "ceo_chat" or similar CEO indicators
     """
-    # If enforcement is enabled, check for valid token
+    # IMPORTANT: In enforced mode, X-Initiator is NOT an auth boundary.
+    # Only a valid CEO token may qualify a request as CEO.
     if _ceo_token_enforcement_enabled():
         expected = (os.getenv("CEO_APPROVAL_TOKEN", "") or "").strip()
+        if not expected:
+            raise HTTPException(
+                status_code=500,
+                detail="CEO token enforcement enabled but CEO_APPROVAL_TOKEN is not set",
+            )
+
         provided = (request.headers.get("X-CEO-Token") or "").strip()
-        if expected and provided == expected:
-            return True
+        if not provided:
+            auth = (request.headers.get("Authorization") or "").strip()
+            if auth.lower().startswith("bearer "):
+                provided = auth[7:].strip()
+
+        if provided != expected:
+            raise HTTPException(status_code=403, detail="CEO token required")
+
+        return True
 
     # Check for CEO indicators in request (for non-enforced mode)
     initiator = (request.headers.get("X-Initiator") or "").strip().lower()
