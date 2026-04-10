@@ -8,7 +8,9 @@ from tests.auth_utils import auth_headers
 
 def _isolate_notion_armed_store(monkeypatch, tmp_path):
     # Avoid generating repo artifacts (data/notion_armed_store.json) during tests.
-    monkeypatch.setenv("NOTION_ARMED_STORE_PATH", str(tmp_path / "notion_armed_store.json"))
+    monkeypatch.setenv(
+        "NOTION_ARMED_STORE_PATH", str(tmp_path / "notion_armed_store.json")
+    )
 
 
 def _load_app():
@@ -33,7 +35,9 @@ def _refresh_snapshot_payload(*, session_id: str):
     }
 
 
-def test_enforced_browser_session_execute_raw_accepts_valid_token(monkeypatch, tmp_path):
+def test_enforced_browser_session_execute_raw_accepts_valid_token(
+    monkeypatch, tmp_path
+):
     _isolate_notion_armed_store(monkeypatch, tmp_path)
     app = _load_app()
 
@@ -56,7 +60,9 @@ def test_enforced_browser_session_execute_raw_accepts_valid_token(monkeypatch, t
     assert r.status_code == 200, r.text
 
 
-def test_enforced_browser_session_execute_raw_rejects_spoof_only_initiator(monkeypatch, tmp_path):
+def test_enforced_browser_session_execute_raw_rejects_spoof_only_initiator(
+    monkeypatch, tmp_path
+):
     _isolate_notion_armed_store(monkeypatch, tmp_path)
     app = _load_app()
 
@@ -78,7 +84,9 @@ def test_enforced_browser_session_execute_raw_rejects_spoof_only_initiator(monke
     assert r.status_code == 403, r.text
 
 
-def test_enforced_browser_session_execute_raw_rejects_wrong_token(monkeypatch, tmp_path):
+def test_enforced_browser_session_execute_raw_rejects_wrong_token(
+    monkeypatch, tmp_path
+):
     _isolate_notion_armed_store(monkeypatch, tmp_path)
     app = _load_app()
 
@@ -101,7 +109,9 @@ def test_enforced_browser_session_execute_raw_rejects_wrong_token(monkeypatch, t
     assert r.status_code == 403, r.text
 
 
-def test_enforced_browser_session_approve_rejects_spoof_only_initiator(monkeypatch, tmp_path):
+def test_enforced_browser_session_approve_rejects_spoof_only_initiator(
+    monkeypatch, tmp_path
+):
     _isolate_notion_armed_store(monkeypatch, tmp_path)
     app = _load_app()
 
