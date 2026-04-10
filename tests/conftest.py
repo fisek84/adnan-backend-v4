@@ -85,6 +85,13 @@ def _disable_external_network(monkeypatch: pytest.MonkeyPatch):
         root.mkdir(parents=True, exist_ok=True)
         os.environ["MEMORY_PATH"] = str(root)
 
+    # Test-safe Notion ARMED store persistence: keep it out of repo-tracked paths.
+    # (If NOTION_ARMED_STORE_PATH is already set by the caller, respect it.)
+    if not (os.getenv("NOTION_ARMED_STORE_PATH") or "").strip():
+        root = Path.cwd() / ".pytest_cache" / "notion"
+        root.mkdir(parents=True, exist_ok=True)
+        os.environ["NOTION_ARMED_STORE_PATH"] = str(root / "notion_armed_store.json")
+
     # Force offline LLM behaviour in tests, even if developer has tokens set.
     # NOTE: Do not unset Notion env vars here; gateway boot validation may require them.
     for k in ("OPENAI_API_KEY", "CEO_ADVISOR_ASSISTANT_ID"):

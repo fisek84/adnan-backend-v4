@@ -71,8 +71,21 @@ def test_refresh_snapshot_clears_session_targeted_reads_cache(
     monkeypatch.setenv("TESTING", "0")
     monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
 
+    # Some tests intentionally reset gateway boot state; when this test forces
+    # non-test mode, the bootstrap guard can otherwise trip and poison the app
+    # for the rest of the request.
+    import gateway.gateway_server as gateway_server
+    from services import app_bootstrap
+
+    gateway_server._BOOT_READY = False
+    gateway_server._BOOT_ERROR = None
+    app_bootstrap._BOOTSTRAPPED = False
+
     # Ensure refresh endpoint does not do boot-time IO.
     monkeypatch.setenv("GATEWAY_SKIP_KNOWLEDGE_SYNC", "1")
+
+    # Gateway boot validates env; set a dummy key for hermetic test runs.
+    monkeypatch.setenv("OPENAI_API_KEY", "test")
 
     # Targeted reads on.
     monkeypatch.setenv("CEO_NOTION_TARGETED_READS_ENABLED", "true")
