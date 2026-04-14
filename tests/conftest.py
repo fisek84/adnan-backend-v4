@@ -15,6 +15,26 @@ from pathlib import Path
 import pytest
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _isolate_notion_armed_store_path(tmp_path_factory: pytest.TempPathFactory):
+    """Isolate the persisted Notion ARM store per pytest run.
+
+    The Notion armed state SSOT is persisted to disk (services.notion_armed_store).
+    If tests reuse a stable file path across *separate* pytest invocations, state can
+    leak between runs and make the suite non-deterministic.
+
+    This fixture forces a unique store file per pytest session, so `pytest -q`
+    passes from both clean and previously-dirty working directories without any
+    manual cache deletion.
+    """
+
+    root = tmp_path_factory.mktemp("notion")
+    os.environ["NOTION_ARMED_STORE_PATH"] = str(root / "notion_armed_store.json")
+
+    # No teardown required; path is unique per run.
+    yield
+
+
 def _is_external_host(host: str | None) -> bool:
     h = (host or "").strip().lower()
     if not h:
