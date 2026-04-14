@@ -28,6 +28,8 @@ async def notion_ops_is_armed(principal_sub: str) -> bool:
 
     st = notion_armed_store.get((principal_sub or "").strip())
     return bool(isinstance(st, dict) and st.get("armed") is True)
+
+
 from services.agent_registry_service import AgentRegistryService
 from services.memory_service import MemoryService
 from services.audit_log_service import AuditEvent, get_audit_log_service
