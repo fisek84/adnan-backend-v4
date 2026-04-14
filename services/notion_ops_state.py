@@ -4,8 +4,9 @@
 NOTION OPS ARMED STATE - SINGLE SOURCE OF TRUTH (SSOT)
 
 BE-301:
-- Canonical key is authenticated principal.sub (principal-based), NOT session_id.
-- In-memory only (no persistence).
+- Canonical key is authenticated principal.sub (principal-based).
+- Some legacy flows still pass a session_id; treat the input as a generic subject key.
+- Persisted SSOT via services.notion_armed_store (no parallel in-memory truth).
 - Deterministic expiry/revoke semantics.
 """
 
@@ -16,15 +17,23 @@ import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict
 
+from services import notion_armed_store
 
-# ------------------------------
-# NOTION OPS SESSION STATE (SSOT)
-# ------------------------------
-# Per-principal, in-memory (no new deps).
-# Default armed=False.
-# Canonical key: principal.sub
-_NOTION_OPS_PRINCIPALS: Dict[str, Dict[str, Any]] = {}
-_NOTION_OPS_LOCK = asyncio.Lock()
+
+async def _to_thread(func, *args, **kwargs):
+    """Run blocking store IO without stalling the event loop."""
+
+    try:
+        to_thread = asyncio.to_thread  # py>=3.9
+    except AttributeError:  # pragma: no cover
+        loop = asyncio.get_running_loop()
+
+        def _call():
+            return func(*args, **kwargs)
+
+        return await loop.run_in_executor(None, _call)
+
+    return await to_thread(func, *args, **kwargs)
 
 
 def resolve_state_subject(
@@ -138,31 +147,32 @@ async def set_armed(
     if not principal_sub:
         raise ValueError("principal_sub must be a non-empty string")
 
-    async with _NOTION_OPS_LOCK:
-        st = _NOTION_OPS_PRINCIPALS.get(principal_sub) or {}
-        now_iso = _now_iso()
+    now_iso = _now_iso()
+    st: Dict[str, Any] = {}
 
-        if bool(armed) is True:
-            ttl = _arm_ttl_seconds()
-            st["armed"] = True
-            st["status"] = "armed"
-            st["armed_at"] = now_iso
-            st["expires_at"] = (_utcnow() + timedelta(seconds=ttl)).isoformat()
-            st["revoked_at"] = None
-            st["expired_at"] = None
-        else:
-            st["armed"] = False
-            st["status"] = "disarmed"
-            st["armed_at"] = None
-            st["expires_at"] = None
-            st["revoked_at"] = now_iso
-            st["expired_at"] = None
+    if bool(armed) is True:
+        ttl = _arm_ttl_seconds()
+        st["armed"] = True
+        st["status"] = "armed"
+        st["armed_at"] = now_iso
+        st["expires_at"] = (_utcnow() + timedelta(seconds=ttl)).isoformat()
+        st["revoked_at"] = None
+        st["expired_at"] = None
+    else:
+        st["armed"] = False
+        st["status"] = "disarmed"
+        st["armed_at"] = None
+        st["expires_at"] = None
+        st["revoked_at"] = now_iso
+        st["expired_at"] = None
 
-        st["last_prompt_id"] = None
-        st["last_prompt"] = (prompt or "").strip() or None
-        st["last_toggled_at"] = now_iso
-        _NOTION_OPS_PRINCIPALS[principal_sub] = st
-        return dict(st)
+    st["last_prompt_id"] = None
+    st["last_prompt"] = (prompt or "").strip() or None
+    st["last_toggled_at"] = now_iso
+
+    # Persist: single SSOT used by toggle endpoint and execution gating.
+    out = await _to_thread(notion_armed_store.set, principal_sub, st)
+    return dict(out)
 
 
 async def get_state(principal_sub: str) -> Dict[str, Any]:
@@ -180,26 +190,23 @@ async def get_state(principal_sub: str) -> Dict[str, Any]:
     if not principal_sub:
         raise ValueError("principal_sub must be a non-empty string")
 
-    async with _NOTION_OPS_LOCK:
-        st = _NOTION_OPS_PRINCIPALS.get(principal_sub) or {}
+    st = await _to_thread(notion_armed_store.get, principal_sub)
 
-        if "armed" not in st:
-            st["armed"] = False
-        if "status" not in st:
-            st["status"] = "disarmed" if st.get("armed") is not True else "armed"
-        if "armed_at" not in st:
-            st["armed_at"] = None
-        if "expires_at" not in st:
-            st["expires_at"] = None
-        if "revoked_at" not in st:
-            st["revoked_at"] = None
-        if "expired_at" not in st:
-            st["expired_at"] = None
+    # Normalize for legacy callers.
+    if "armed" not in st:
+        st["armed"] = False
+    if "status" not in st:
+        st["status"] = "disarmed" if st.get("armed") is not True else "armed"
+    if "armed_at" not in st:
+        st["armed_at"] = None
+    if "expires_at" not in st:
+        st["expires_at"] = None
+    if "revoked_at" not in st:
+        st["revoked_at"] = None
+    if "expired_at" not in st:
+        st["expired_at"] = None
 
-        _apply_expiry_in_place(st)
-
-        _NOTION_OPS_PRINCIPALS[principal_sub] = st
-        return dict(st)
+    return dict(st)
 
 
 async def is_armed(principal_sub: str) -> bool:

@@ -14,7 +14,20 @@ from services.execution_registry import get_execution_registry
 from services.notion_ops_agent import NotionOpsAgent
 from services.notion_service import get_notion_service
 from services.memory_ops_executor import MemoryOpsExecutor
-from services.notion_ops_state import is_armed as notion_ops_is_armed
+from services import notion_armed_store
+
+
+async def notion_ops_is_armed(principal_sub: str) -> bool:
+    """SSOT: Notion Ops ARMED state.
+
+    Canonical source is the persistent principal-bound store (services.notion_armed_store).
+
+    NOTE: Kept as an async function and a module-level symbol because existing
+    regression tests monkeypatch `services.execution_orchestrator.notion_ops_is_armed`.
+    """
+
+    st = notion_armed_store.get((principal_sub or "").strip())
+    return bool(isinstance(st, dict) and st.get("armed") is True)
 from services.agent_registry_service import AgentRegistryService
 from services.memory_service import MemoryService
 from services.audit_log_service import AuditEvent, get_audit_log_service
