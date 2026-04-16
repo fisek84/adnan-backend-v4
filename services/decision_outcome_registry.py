@@ -185,7 +185,18 @@ class DecisionOutcomeRegistry:
                 approval_status=status or None,
             )
 
+            # Provenance: bind this decision to the authenticated execution principal.
+            # Source of truth is cmd_snapshot.metadata.principal_sub (from /api/execute/raw).
+            md = _ensure_dict(cs.get("metadata"))
+            principal_sub = (
+                _ensure_str(md.get("principal_sub"))
+                or _ensure_str(cs.get("initiator"))
+                or ""
+            )
+
             rec_dict = rec.__dict__.copy()
+            rec_dict["principal_sub"] = principal_sub or None
+
             self._store[decision_id] = rec_dict
             self._by_approval_id[approval_id] = decision_id
             self._by_execution_id[execution_id] = decision_id
@@ -211,10 +222,15 @@ class DecisionOutcomeRegistry:
         state = _ensure_str(out.get("execution_state"))
 
         # Normalize outcome -> execution_result deterministically, no guessing.
+        executed = False
         if state == "FAILED":
             normalized = "fail"
+            executed = True
         elif state == "COMPLETED":
             normalized = "success"
+            executed = True
+        elif state == "BLOCKED":
+            normalized = "not_executed"
         elif state:
             normalized = "unknown"
         else:
@@ -228,7 +244,7 @@ class DecisionOutcomeRegistry:
             if not isinstance(rec, dict):
                 return None
 
-            rec["executed"] = True
+            rec["executed"] = executed
             rec["execution_result"] = normalized
 
             # Keep a small debug surface
