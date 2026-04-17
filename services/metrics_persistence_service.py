@@ -14,6 +14,17 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 
+# --------------------------------------------------
+# CONTRACT (explicit)
+# --------------------------------------------------
+# This write path is intentionally a SYSTEM operation and is NOT governed by the
+# per-principal Notion Ops ARMED gate enforced by ExecutionOrchestrator.
+NOTION_OPS_GATE_POLICY = "EXEMPT"
+
+# Stable provenance key for auditability.
+SYSTEM_METRICS_APPROVAL_ID = "system_metrics_write"
+
+
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -113,7 +124,7 @@ class MetricsPersistenceService:
                     {
                         "intent": "create_page",
                         "params": params,
-                        "approval_id": "system_metrics_write",
+                        "approval_id": SYSTEM_METRICS_APPROVAL_ID,
                     },
                 )()
             )
