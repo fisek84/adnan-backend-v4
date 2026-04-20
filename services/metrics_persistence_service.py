@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 import os
+import asyncio
+import inspect
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -128,6 +130,22 @@ class MetricsPersistenceService:
                     },
                 )()
             )
+
+            # NotionService.execute is async; this service is sync (called from a sync router).
+            # Run awaitables to completion to avoid 'coroutine was never awaited' warnings.
+            if inspect.isawaitable(result):
+                try:
+                    result = asyncio.run(result)
+                except RuntimeError:
+                    loop = asyncio.new_event_loop()
+                    try:
+                        asyncio.set_event_loop(loop)
+                        result = loop.run_until_complete(result)
+                    finally:
+                        try:
+                            loop.close()
+                        finally:
+                            asyncio.set_event_loop(None)
 
             if not isinstance(result, dict):
                 return {"ok": False, "error": "invalid_notion_response"}
