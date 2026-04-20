@@ -2,66 +2,76 @@
 
 This document describes how `/api/chat` behaves when there is a **pending proposal** (stored per `session_id`) and the user sends a new message.
 
+This contract is **Block 1**: Turn Interpretation Authority Gate is the authority for how a pending proposal interacts with the current message.
+
 Key implementation:
-- Classifier: [routers/chat_router.py](../routers/chat_router.py#L477)
-- Pending replay/cancel block: [routers/chat_router.py](../routers/chat_router.py#L1118-L1230)
+- Turn gate (deterministic): [services/turn_interpretation_authority_gate.py](../services/turn_interpretation_authority_gate.py)
+- Gate integration + pending replay/dismiss/clarify: [routers/chat_router.py](../routers/chat_router.py#L2440-L2665)
 
-## Behavior matrix
+## Block 1 behavior matrix (gate-driven)
 
-> **Zero-break for YES replay:** the **YES** path preserves the existing behavior (replays the last pending proposal unchanged) and returns `trace.intent = "approve_last_proposal_replay"`.
+### Principles
 
-| Class | What it means (when pending exists) | Expected behavior | Trace intent |
+- Pending proposal is **background** unless the user sends an explicit, allowlisted **confirm** or **dismiss**.
+- **Current-turn primacy:** when the current message is a normal question (or an anchored meta question), the request is handled as a new turn; pending must not “hijack” routing.
+- **Ambiguous turns** do **not** enter a legacy confirm-needed / unknown loop. They return a **clarify** response.
+
+### Categories when pending exists
+
+| Gate category | What it means (when pending exists) | Expected behavior | Trace intent |
 |---|---|---|---|
-| **YES** | User confirms they want to proceed/review the pending proposal | Replay the pending proposal; do not route as a new request | `approve_last_proposal_replay` |
-| **NO** | User declines the pending proposal | Cancel/clear the pending proposal; continue normal routing on this turn | (normal routing) |
-| **NEW_REQUEST** | User is changing direction / provides a new request while a pending proposal exists | Cancel/clear the pending proposal; continue routing with the new request (no replay) | (normal routing) |
-| **UNKNOWN** | Not clearly a yes/no/new-request | Ask **once** to confirm (keep pending). If the user responds UNKNOWN again, auto-cancel and continue routing | `pending_proposal_confirm_needed` (first unknown only) |
+| **PENDING_PROPOSAL_CONFIRM** | User explicitly confirms/replays pending proposal (strict allowlist) | Replay the pending proposal | `approve_last_proposal_replay` |
+| **PENDING_PROPOSAL_DISMISS** | User explicitly dismisses/cancels pending proposal (strict allowlist) | Clear pending proposal; continue normal routing on this turn | (normal routing) |
+| **AMBIGUOUS** | Turn is empty/too short/unclear (and not allowlisted) | Ask for clarification; keep pending visible (no replay, no confirm-needed loop) | `clarify` |
+| **NORMAL_QUESTION** | A normal request/question while pending exists | Handle as a normal new turn (current-turn primacy) | (normal routing) |
+| **META_ASSISTANT** | Meta question with an explicit anchor (e.g., memory/identity/governance) | Handle as meta; current-turn primacy | (meta routing) |
+| **CONTROL_TURN** | Control commands (e.g., Notion Ops toggle) | Execute control routing (independent of pending proposal) | (control routing) |
 
-## Examples (3–5 per class)
+## Examples (non-exhaustive)
 
-The classifier is heuristic and language-tolerant (BHS + English).
+These examples are intentionally minimal. The contract is enforced via the gate’s strict allowlists and deterministic ambiguity handling.
 
-### YES
+### PENDING_PROPOSAL_CONFIRM
 - "Da"
-- "OK"
-- "Slažem se"
-- "Uradi to"
-- "Yes"
+- "Ponovi prijedlog"
+- "Odobri"
 
-### NO
+### PENDING_PROPOSAL_DISMISS
 - "Ne"
-- "Nemoj"
 - "Otkaži"
 - "Stop"
-- "No thanks"
 
-### NEW_REQUEST (especially important)
-- "Umjesto delegacije, napravi plan i prioritete."
-- "Ne — želim samo plan (bez deliverable-a)."
-- "Preskoči to; daj mi strategiju za outreach."
-- "Instead, build a 7-day plan with priorities."
-- "Bez delegacije: napravi checklistu i timeline."
-
-### UNKNOWN
+### AMBIGUOUS
 - "hmm"
 - "?"
-- "Ne znam"
-- "Šta?"
 - "..." (empty/whitespace)
+
+### NORMAL_QUESTION
+- "Umjesto toga, napravi plan i prioritete."
+- "Objasni mi CAP theorem ukratko."
+
+## Replay invariants (important)
+
+When the pending proposal is replayed, the **canonical action must be the same**, but the replay is not required to be **byte-identical** in every human-facing text field.
+
+Examples of acceptable variance (non-normative):
+- A human-facing `reason` string can be shortened/normalized (while `command` and the canonical `args` fields remain the same).
+
+## Superseded (pre-Block 1) — obsolete behavior
+
+The legacy classifier documented an **UNKNOWN** state that would:
+- prompt once with `pending_proposal_confirm_needed`, then
+- auto-cancel pending on the next UNKNOWN.
+
+This UNKNOWN confirm-needed loop is **superseded** by Block 1 gate behavior. Ambiguous turns now return **clarify** and do not implement the legacy prompt/auto-cancel loop.
 
 ## Test coverage
 
-- **ACK discipline before delegation prompt** (unrelated to classifier, but part of the hardening contract):
-  - [tests/test_ceo_real_delegation_to_rgo.py](../tests/test_ceo_real_delegation_to_rgo.py#L120-L122)
+- Gate regression matrix (pins the 5-field decision contract):
+  - [tests/test_turn_interpretation_authority_gate_matrix.py](../tests/test_turn_interpretation_authority_gate_matrix.py)
 
-- **NEW_REQUEST cancels pending and routes**:
-  - [tests/test_ceo_real_delegation_to_rgo.py](../tests/test_ceo_real_delegation_to_rgo.py#L370-L414)
+- Pending + ambiguous → clarify; explicit confirm → replay:
+  - [tests/test_ceo_real_delegation_to_rgo.py](../tests/test_ceo_real_delegation_to_rgo.py#L480-L660)
 
-- **UNKNOWN twice prompts once then auto-cancels**:
-  - [tests/test_ceo_real_delegation_to_rgo.py](../tests/test_ceo_real_delegation_to_rgo.py#L430-L501)
-
-- **SSOT missing ⇒ no fabricated goal/task tables** (adjacent safety requirement):
-  - [tests/test_ceo_real_delegation_to_rgo.py](../tests/test_ceo_real_delegation_to_rgo.py#L503-L556)
-
-- **Decline deliverables + new request does not re-enter confirmation jail**:
-  - [tests/test_ceo_real_delegation_to_rgo.py](../tests/test_ceo_real_delegation_to_rgo.py#L559-L620)
+- Minimal trace includes `canon` + `turn_gate` keys:
+  - [tests/test_chat_debug_gating.py](../tests/test_chat_debug_gating.py)

@@ -126,7 +126,7 @@ def test_pending_proposal_dismiss_long_phrase_clears_pending(monkeypatch, tmp_pa
     pcs1 = resp1.json().get("proposed_commands") or []
     assert isinstance(pcs1, list) and len(pcs1) >= 1
 
-    # Step 2: long dismiss phrase must clear pending state (no confirm-needed loop)
+    # Step 2: non-allowlisted long phrase must NOT dismiss pending (no confirm-needed loop)
     resp2 = client.post(
         "/api/chat",
         json={
@@ -140,7 +140,7 @@ def test_pending_proposal_dismiss_long_phrase_clears_pending(monkeypatch, tmp_pa
     assert tr2.get("intent") != "approve_last_proposal_replay"
     assert tr2.get("intent") != "pending_proposal_confirm_needed"
 
-    # Step 3: short yes should NOT replay the old proposal anymore
+    # Step 3: explicit yes SHOULD still replay the old proposal
     resp3 = client.post(
         "/api/chat",
         json={
@@ -151,9 +151,14 @@ def test_pending_proposal_dismiss_long_phrase_clears_pending(monkeypatch, tmp_pa
     )
     assert resp3.status_code == 200
     tr3 = resp3.json().get("trace") or {}
-    assert tr3.get("intent") != "approve_last_proposal_replay"
+    assert tr3.get("intent") == "approve_last_proposal_replay"
     pcs3 = resp3.json().get("proposed_commands") or []
-    assert pcs3 != pcs1
+    assert isinstance(pcs3, list) and pcs3
+    assert isinstance(pcs3[0], dict)
+    assert pcs3[0].get("command") == pcs1[0].get("command")
+    assert (pcs3[0].get("args") or {}).get("task_text") == (
+        (pcs1[0].get("args") or {}).get("task_text")
+    )
 
 
 def test_pending_proposal_cancel_clears_pending(monkeypatch, tmp_path):

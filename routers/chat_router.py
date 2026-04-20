@@ -27,6 +27,10 @@ from services.ceo_advisor_agent import (
 )
 from dependencies import get_memory_read_only_service
 from services.ceo_conversation_state_store import ConversationStateStore
+from services.turn_interpretation_authority_gate import (
+    GateInput,
+    evaluate_turn_gate,
+)
 
 # Must match gateway_server.PROPOSAL_WRAPPER_INTENT
 from models.canon import PROPOSAL_WRAPPER_INTENT
@@ -744,257 +748,6 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             .replace("đ", "dj")
             .replace("ž", "z")
         )
-
-    def _is_short_confirmation(text: str) -> bool:
-        """True only for short, explicit confirmations.
-
-        IMPORTANT: must NOT match normal questions like "da li...".
-        """
-
-        raw = (text or "").strip()
-        if not raw:
-            return False
-
-        # Defensive: do not treat questions as confirmations.
-        if "?" in raw:
-            return False
-
-        t = _norm_bhs_ascii(raw)
-        t = re.sub(r"[^a-z0-9\s]", " ", t)
-        t = " ".join(t.split())
-
-        if not t:
-            return False
-        if t.startswith("da li ") or t.startswith("da l "):
-            return False
-
-        allowed = {
-            "da",
-            "yes",
-            "y",
-            "ok",
-            "okay",
-            "u redu",
-            "uredu",
-            "zelim",
-            "hocu",
-            "hoc u",
-            "moze",
-            "moze to",
-            "potvrdi",
-            "confirm",
-            "slazem se",
-            "uradi to",
-            "go ahead",
-            "proceed",
-        }
-        if t in allowed:
-            return True
-
-        # Also allow tiny variants like "da, zelim".
-        if len(t) <= 20 and re.fullmatch(
-            r"(da|zelim|ok|okay|potvrdi|confirm|yes|y)(\s+(da|zelim|ok|okay|yes|y))?",
-            t,
-        ):
-            return True
-
-        return False
-
-    def _is_short_decline(text: str) -> bool:
-        """True only for short, explicit declines.
-
-        Used to cancel/clear pending proposals so users don't get stuck in
-        confirmation loops.
-        """
-
-        raw = (text or "").strip()
-        if not raw:
-            return False
-
-        # Defensive: do not treat questions as declines.
-        if "?" in raw:
-            return False
-
-        t = _norm_bhs_ascii(raw)
-        t = re.sub(r"[^a-z0-9\s]", " ", t)
-        t = " ".join(t.split())
-
-        if not t:
-            return False
-        if t.startswith("da li ") or t.startswith("da l "):
-            return False
-
-        allowed = {
-            "ne",
-            "no",
-            "n",
-            "nemoj",
-            "nemam namjeru",
-            "samo pitanje",
-            "ne trazim",
-            "odustani",
-            "otkazi",
-            "dismiss",
-            "stop",
-            "cancel",
-            "ignore",
-            "not now",
-            "no thanks",
-            "ne hvala",
-            "ne zelim",
-            "necu",
-            "necu to",
-        }
-        if t in allowed:
-            return True
-
-        # Also allow tiny variants like "ne, hvala".
-        if len(t) <= 24 and re.fullmatch(
-            r"(ne|no|n|nemoj|cancel|stop)(\s+(hvala|thanks))?",
-            t,
-        ):
-            return True
-
-        return False
-
-    def _is_pending_proposal_dismiss(text: str) -> bool:
-        """Return True if the user is explicitly dismissing a pending proposal.
-
-        This is intentionally a broader match than _is_short_decline because users
-        often reply with longer clarifications like "samo pitanje".
-        """
-
-        raw = (text or "").strip()
-        if not raw:
-            return False
-
-        t = _norm_bhs_ascii(raw)
-        t = re.sub(r"[^a-z0-9\s]", " ", t)
-        t = " ".join(t.split())
-        if not t:
-            return False
-
-        # Exact single-token dismisses.
-        if t in {
-            "ne",
-            "no",
-            "n",
-            "nemoj",
-            "necu",
-            "ne zelim",
-            "otkazi",
-            "cancel",
-            "dismiss",
-            "stop",
-            "ignore",
-        }:
-            return True
-
-        # Phrase-based dismisses (BHS+EN) that should clear pending state.
-        for phrase in (
-            "nemam namjeru",
-            "samo pitanje",
-            "ne trazim",
-        ):
-            if re.search(r"\b" + re.escape(phrase) + r"\b", t):
-                return True
-
-        return False
-
-    def _pending_prompt_count(*, conversation_id: Optional[str]) -> int:
-        if not (isinstance(conversation_id, str) and conversation_id.strip()):
-            return 0
-        try:
-            meta = ConversationStateStore.get_meta(
-                conversation_id=conversation_id.strip()
-            )
-            if not isinstance(meta, dict):
-                return 0
-            v = meta.get("pending_proposal_confirm_prompt_count")
-            return int(v) if isinstance(v, (int, float)) else 0
-        except Exception:
-            return 0
-
-    def _pending_prompt_bump(*, conversation_id: Optional[str]) -> int:
-        if not (isinstance(conversation_id, str) and conversation_id.strip()):
-            return 0
-        try:
-            cur = _pending_prompt_count(conversation_id=conversation_id)
-            nxt = int(cur) + 1
-            ConversationStateStore.update_meta(
-                conversation_id=conversation_id.strip(),
-                updates={
-                    "pending_proposal_confirm_prompt_count": nxt,
-                    "pending_proposal_confirm_prompt_last_at": float(time.time()),
-                },
-            )
-            return nxt
-        except Exception:
-            return 0
-
-    def _pending_prompt_reset(*, conversation_id: Optional[str]) -> None:
-        if not (isinstance(conversation_id, str) and conversation_id.strip()):
-            return
-        try:
-            ConversationStateStore.update_meta(
-                conversation_id=conversation_id.strip(),
-                updates={"pending_proposal_confirm_prompt_count": 0},
-            )
-        except Exception:
-            return
-
-    def _classify_pending_response(text: str) -> str:
-        """Classify user reply when a pending proposal exists.
-
-        Returns: YES | NO | NEW_REQUEST | UNKNOWN
-        """
-        if _is_short_confirmation(text):
-            return "YES"
-
-        # Broad dismiss handling: clear pending proposals without looping.
-        if _is_pending_proposal_dismiss(text):
-            return "NO"
-        if _is_short_decline(text):
-            return "NO"
-
-        raw = (text or "").strip()
-        if not raw:
-            return "UNKNOWN"
-
-        t = _norm_bhs_ascii(raw)
-        t = re.sub(r"[^a-z0-9\s]", " ", t)
-        t = " ".join(t.split())
-        if not t:
-            return "UNKNOWN"
-        if t.startswith("da li ") or t.startswith("da l "):
-            return "UNKNOWN"
-
-        neg = bool(
-            re.search(
-                r"(?i)\b("
-                r"ne|nemoj|necu|ne\s+zelim|"
-                r"nemam\s+namjeru|samo\s+pitanje|ne\s+trazim|"
-                r"odustani|otkazi|dismiss|ignore|"
-                r"stop|cancel|preskoci|skip|umjesto|instead|bez"
-                r")\b",
-                t,
-            )
-        )
-        req = bool(
-            re.search(
-                r"(?i)\b(treba\s+mi|hoc\w*|uradi|napravi|pripremi|daj\s+mi|plan|prioritet\w*|strateg\w*|funnel|marketing|sales|prodaj\w*|kampanj\w*|sekvenc\w*|email\w*|poruk\w*)\b",
-                t,
-            )
-        )
-
-        if neg and req:
-            return "NEW_REQUEST"
-        if neg:
-            return "NO"
-        if req:
-            return "NEW_REQUEST"
-
-        return "UNKNOWN"
 
     def _load_pending_proposal(
         conversation_id: Optional[str],
@@ -1995,6 +1748,18 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             exit_path: str,
             targeted_reads: Optional[Dict[str, Any]] = None,
         ) -> Dict[str, Any]:
+            # Contract: always include trace.turn_gate with exactly five fields
+            # when the turn gate has been evaluated for this request.
+            try:
+                tg = turn_gate_trace  # type: ignore[name-defined]
+            except NameError:
+                tg = None
+            if isinstance(tg, dict) and tg:
+                tr_content = content.get("trace")
+                tr_content = tr_content if isinstance(tr_content, dict) else {}
+                tr_content["turn_gate"] = tg
+                content["trace"] = tr_content
+
             # Build audit (no raw Notion data; counts + reasons only).
             snap_counts = _snapshot_counts(snapshot)
             trace0 = trace if isinstance(trace, dict) else {}
@@ -2707,102 +2472,140 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             if (session_id and (_is_activate(prompt) or _is_deactivate(prompt)))
             else _load_pending_proposal(proposal_key)
         )
-        if pending:
-            cls = _classify_pending_response(prompt)
 
-            if cls == "YES":
-                _pending_prompt_reset(conversation_id=proposal_key)
-                st0 = (
-                    await _get_state(session_id)
-                    if session_id
-                    else {"armed": False, "armed_at": None}
+        def _read_prior_meta_marker(
+            *, conversation_id: Optional[str]
+        ) -> tuple[Optional[str], Optional[int]]:
+            if not (isinstance(conversation_id, str) and conversation_id.strip()):
+                return None, None
+            try:
+                meta = ConversationStateStore.get_meta(
+                    conversation_id=conversation_id.strip()
                 )
-                content = {
-                    "text": "Uredu — evo posljednjeg prijedloga ponovo. Pregledaj i odobri izvršenje.",
-                    "proposed_commands": pending,
-                    "agent_id": "ceo_advisor",
-                    "read_only": True,
-                    "notion_ops": {
-                        "armed": bool(st0.get("armed") is True),
-                        "armed_at": st0.get("armed_at"),
-                        "session_id": session_id,
-                        "armed_state": st0,
-                    },
-                    "trace": {
-                        "intent": "approve_last_proposal_replay",
-                        "canon": "api_chat_pending_proposal_replay",
-                    },
-                }
+            except Exception:
+                return None, None
+            if not isinstance(meta, dict):
+                return None, None
+            mi = meta.get("assistant_last_meta_intent")
+            if not (isinstance(mi, str) and mi.strip()):
+                return None, None
+            mi = mi.strip()
+            if mi not in {"assistant_identity", "assistant_memory"}:
+                return None, None
+            ts = meta.get("assistant_last_meta_intent_at")
+            if not isinstance(ts, (int, float)):
+                return mi, None
+            try:
+                age = max(0, int(time.time() - float(ts)))
+            except Exception:
+                age = None
+            return mi, age
 
-                if debug_on:
-                    kb0 = await _knowledge_bundle(request=request)
-                    content.update(kb0)
+        prior_meta_intent, prior_meta_intent_age_seconds = _read_prior_meta_marker(
+            conversation_id=proposal_key
+        )
+        gate_decision = evaluate_turn_gate(
+            GateInput(
+                current_message=prompt,
+                pending_present=bool(pending),
+                prior_meta_intent=prior_meta_intent,
+                prior_meta_intent_age_seconds=prior_meta_intent_age_seconds,
+            )
+        )
+        turn_gate_trace = {
+            "intent_category": gate_decision.intent_category,
+            "reason_code": gate_decision.reason_code,
+            "allowlist_hit": bool(gate_decision.allowlist_hit),
+            "ambiguous_flag": bool(gate_decision.ambiguous_flag),
+            "current_turn_wins": bool(gate_decision.current_turn_wins),
+        }
 
-                content = _attach_and_log_audit(
-                    content,
-                    session_id=session_id,
-                    conversation_id=conversation_id,
-                    agent_id=content.get("agent_id"),
-                    snapshot=getattr(payload, "snapshot", None),
-                    trace=content.get("trace"),
-                    grounding={},
-                    debug_on=bool(debug_on),
-                    exit_path="ceo_chat.pending_proposal.replay",
-                )
-                return JSONResponse(content=_attach_session_id(content, session_id))
+        # Gate is authoritative for pending proposal replay/dismiss.
+        if gate_decision.intent_category == "PENDING_PROPOSAL_CONFIRM" and pending:
+            st0 = (
+                await _get_state(session_id)
+                if session_id
+                else {"armed": False, "armed_at": None}
+            )
+            tr = {
+                "intent": "approve_last_proposal_replay",
+                "canon": "api_chat_pending_proposal_replay",
+            }
+            tr["turn_gate"] = turn_gate_trace
+            content = {
+                "text": "Uredu — evo posljednjeg prijedloga ponovo. Pregledaj i odobri izvršenje.",
+                "proposed_commands": pending,
+                "agent_id": "ceo_advisor",
+                "read_only": True,
+                "notion_ops": {
+                    "armed": bool(st0.get("armed") is True),
+                    "armed_at": st0.get("armed_at"),
+                    "session_id": session_id,
+                    "armed_state": st0,
+                },
+                "trace": tr,
+            }
 
-            if cls in {"NO", "NEW_REQUEST"}:
-                pending_declined = cls == "NO"
-                _persist_pending_proposal(proposal_key, [])
-                _pending_prompt_reset(conversation_id=proposal_key)
-            else:
-                # UNKNOWN: ask once, then auto-cancel on the next unknown.
-                cnt = _pending_prompt_count(conversation_id=proposal_key)
-                if cnt < 1:
-                    _pending_prompt_bump(conversation_id=proposal_key)
-                    st0 = (
-                        await _get_state(session_id)
-                        if session_id
-                        else {"armed": False, "armed_at": None}
-                    )
-                    content = {
-                        "text": (
-                            "Imam prijedlog na čekanju. Odgovori 'da' da ga ponovim, ili 'ne' da ga otkažem. "
-                            "Ako imaš novi zahtjev, napiši ga (npr. 'umjesto toga…')."
-                        ),
-                        "proposed_commands": pending,
-                        "agent_id": "ceo_advisor",
-                        "read_only": True,
-                        "notion_ops": {
-                            "armed": bool(st0.get("armed") is True),
-                            "armed_at": st0.get("armed_at"),
-                            "session_id": session_id,
-                            "armed_state": st0,
-                        },
-                        "trace": {
-                            "intent": "pending_proposal_confirm_needed",
-                            "canon": "api_chat_pending_proposal_confirm_needed",
-                        },
-                    }
-                    if debug_on:
-                        kb0 = await _knowledge_bundle(request=request)
-                        content.update(kb0)
-                    content = _attach_and_log_audit(
-                        content,
-                        session_id=session_id,
-                        conversation_id=conversation_id,
-                        agent_id=content.get("agent_id"),
-                        snapshot=getattr(payload, "snapshot", None),
-                        trace=content.get("trace"),
-                        grounding={},
-                        debug_on=bool(debug_on),
-                        exit_path="ceo_chat.pending_proposal.confirm_needed",
-                    )
-                    return JSONResponse(content=_attach_session_id(content, session_id))
+            if debug_on:
+                kb0 = await _knowledge_bundle(request=request)
+                content.update(kb0)
 
-                # Second unknown: auto-cancel and continue normal routing.
-                _persist_pending_proposal(proposal_key, [])
-                _pending_prompt_reset(conversation_id=proposal_key)
+            content = _attach_and_log_audit(
+                content,
+                session_id=session_id,
+                conversation_id=conversation_id,
+                agent_id=content.get("agent_id"),
+                snapshot=getattr(payload, "snapshot", None),
+                trace=content.get("trace"),
+                grounding={},
+                debug_on=bool(debug_on),
+                exit_path="ceo_chat.pending_proposal.replay",
+            )
+            return JSONResponse(content=_attach_session_id(content, session_id))
+
+        if gate_decision.intent_category == "PENDING_PROPOSAL_DISMISS" and pending:
+            pending_declined = True
+            _persist_pending_proposal(proposal_key, [])
+
+        if gate_decision.intent_category == "AMBIGUOUS":
+            st0 = (
+                await _get_state(session_id)
+                if session_id
+                else {"armed": False, "armed_at": None}
+            )
+            tr = {
+                "intent": "clarify",
+                "canon": "api_chat_clarify_ambiguous_turn",
+            }
+            tr["turn_gate"] = turn_gate_trace
+            content = {
+                "text": "Možeš li pojasniti šta tačno želiš da uradim? (jedna rečenica je dovoljna)",
+                "proposed_commands": pending or [],
+                "agent_id": "ceo_advisor",
+                "read_only": True,
+                "notion_ops": {
+                    "armed": bool(st0.get("armed") is True),
+                    "armed_at": st0.get("armed_at"),
+                    "session_id": session_id,
+                    "armed_state": st0,
+                },
+                "trace": tr,
+            }
+            if debug_on:
+                kb0 = await _knowledge_bundle(request=request)
+                content.update(kb0)
+            content = _attach_and_log_audit(
+                content,
+                session_id=session_id,
+                conversation_id=conversation_id,
+                agent_id=content.get("agent_id"),
+                snapshot=getattr(payload, "snapshot", None),
+                trace=content.get("trace"),
+                grounding={},
+                debug_on=bool(debug_on),
+                exit_path="ceo_chat.turn_gate.ambiguous",
+            )
+            return JSONResponse(content=_attach_session_id(content, session_id))
 
         conv_summary = None
         if isinstance(conversation_id, str) and conversation_id.strip():
@@ -3177,6 +2980,7 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             tr = {
                 "phase6_notion_ops_gate": {"event": "armed", "session_id": session_id}
             }
+            tr["turn_gate"] = turn_gate_trace
             grounding = _grounding_bundle(
                 prompt=prompt,
                 knowledge_snapshot=ks_for_gp,
@@ -3189,6 +2993,7 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 "proposed_commands": [],
                 "agent_id": None,
                 "read_only": True,
+                "trace": tr,
                 "notion_ops": {
                     "armed": True,
                     "armed_at": st.get("armed_at"),
@@ -3197,7 +3002,6 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 },
             }
             if debug_on:
-                content["trace"] = tr
                 content.update(kb)
                 content.update(grounding)
             content = _attach_and_log_audit(
@@ -3222,6 +3026,7 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                     "session_id": session_id,
                 }
             }
+            tr["turn_gate"] = turn_gate_trace
             grounding = _grounding_bundle(
                 prompt=prompt,
                 knowledge_snapshot=ks_for_gp,
@@ -3234,6 +3039,7 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 "proposed_commands": [],
                 "agent_id": None,
                 "read_only": True,
+                "trace": tr,
                 "notion_ops": {
                     "armed": False,
                     "armed_at": None,
@@ -3242,7 +3048,6 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                 },
             }
             if debug_on:
-                content["trace"] = tr
                 content.update(kb)
                 content.update(grounding)
             content = _attach_and_log_audit(

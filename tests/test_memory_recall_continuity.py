@@ -97,7 +97,7 @@ def test_memory_snapshot_after_approved_write_is_non_empty():
     r2 = client.post(
         "/api/chat",
         json={
-            "message": "Ok.",
+            "message": "U redu.",
             "identity_pack": {"user_id": "test"},
             "snapshot": {},
             "metadata": {"include_debug": True},

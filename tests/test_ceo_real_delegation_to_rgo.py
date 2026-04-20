@@ -484,7 +484,7 @@ def test_pending_new_request_cancels_and_routes(monkeypatch, tmp_path):
 
 
 def test_pending_unknown_twice_prompts_once_then_auto_cancels(monkeypatch, tmp_path):
-    """Pending + UNKNOWN => ask confirm once; second UNKNOWN auto-cancels and continues."""
+    """Pending + ambiguous => clarify; pending remains until explicit confirm/dismiss."""
 
     monkeypatch.setenv("OPENAI_API_MODE", "responses")
     monkeypatch.setenv("CEO_ADVISOR_ALLOW_GENERAL_KNOWLEDGE", "1")
@@ -523,7 +523,7 @@ def test_pending_unknown_twice_prompts_once_then_auto_cancels(monkeypatch, tmp_p
     pcs1 = resp1.json().get("proposed_commands") or []
     assert isinstance(pcs1, list) and pcs1
 
-    # First UNKNOWN -> router asks for confirm (no replay)
+    # First ambiguous -> clarify (no replay)
     resp2 = client.post(
         "/api/chat",
         json={
@@ -536,9 +536,11 @@ def test_pending_unknown_twice_prompts_once_then_auto_cancels(monkeypatch, tmp_p
     assert resp2.status_code == 200
     data2 = resp2.json()
     tr2 = data2.get("trace") or {}
-    assert tr2.get("intent") == "pending_proposal_confirm_needed"
+    assert tr2.get("intent") == "clarify"
+    pcs2 = data2.get("proposed_commands") or []
+    assert pcs2 == pcs1
 
-    # Second UNKNOWN -> auto-cancel; must not replay
+    # Second ambiguous -> still clarify; pending still visible
     resp3 = client.post(
         "/api/chat",
         json={
@@ -551,9 +553,26 @@ def test_pending_unknown_twice_prompts_once_then_auto_cancels(monkeypatch, tmp_p
     assert resp3.status_code == 200
     data3 = resp3.json()
     tr3 = data3.get("trace") or {}
-    assert tr3.get("intent") != "approve_last_proposal_replay"
+    assert tr3.get("intent") == "clarify"
     pcs3 = data3.get("proposed_commands") or []
-    assert pcs3 != pcs1
+    assert pcs3 == pcs1
+
+    # Explicit confirm still replays the pending proposal
+    resp4 = client.post(
+        "/api/chat",
+        json={
+            "message": "da",
+            "session_id": session_id,
+            "snapshot": snap,
+            "metadata": {"include_debug": True},
+        },
+    )
+    assert resp4.status_code == 200
+    data4 = resp4.json()
+    tr4 = data4.get("trace") or {}
+    assert tr4.get("intent") == "approve_last_proposal_replay"
+    pcs4 = data4.get("proposed_commands") or []
+    assert pcs4 == pcs1
 
 
 def test_pending_decline_then_advisory_cancels_pending_and_continues(

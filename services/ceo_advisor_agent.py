@@ -3326,8 +3326,8 @@ async def create_ceo_advisor_agent(
             except Exception:
                 at_f = 0.0
 
-            # 15 minutes TTL is plenty for short follow-ups.
-            if at_f and (time.time() - at_f) > (15.0 * 60.0):
+            # Meta anchor window: short follow-ups only (contract).
+            if at_f and (time.time() - at_f) > 60.0:
                 return None
             return v.strip() or None
         except Exception:
@@ -4413,6 +4413,9 @@ async def create_ceo_advisor_agent(
     # Identity/capabilities allowlist: these are meta questions about the assistant.
     # They must never fall into unknown-mode, even when general knowledge is disabled.
     if _is_assistant_role_or_capabilities_question(intent_text):
+        cid_meta = _conversation_id()
+        if isinstance(cid_meta, str) and cid_meta.strip():
+            _set_last_meta_intent(cid_meta.strip(), "assistant_identity")
         return _final(
             AgentOutput(
                 text=_assistant_identity_text(english_output=english_output),

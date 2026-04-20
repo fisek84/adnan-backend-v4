@@ -53,6 +53,7 @@ def test_chat_is_minimal_by_default(monkeypatch):
         assert isinstance(tr, dict)
         assert set(tr.keys()) <= {
             "intent",
+            "canon",
             "snapshot",
             "used_sources",
             # Minimal trace still includes KB debug/meta passthrough,
@@ -60,6 +61,7 @@ def test_chat_is_minimal_by_default(monkeypatch):
             "kb_meta",
             "kb_hits",
             "kb_used_entry_ids",
+            "turn_gate",
         }
         assert isinstance(tr.get("intent"), str)
 
