@@ -6525,6 +6525,33 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
         if not conversation_id:
             conversation_id = session_id
 
+        def _strip_internal_system_text_for_stream(
+            resp_obj: Dict[str, Any],
+        ) -> Dict[str, Any]:
+            if not isinstance(resp_obj, dict):
+                return {}
+            out = dict(resp_obj)
+            md0 = out.get("metadata")
+            if not isinstance(md0, dict):
+                return out
+            md = dict(md0)
+            dbg0 = md.get("debug")
+            if not isinstance(dbg0, dict):
+                out["metadata"] = md
+                return out
+            dbg = dict(dbg0)
+            if "internal_system_text" in dbg:
+                dbg.pop("internal_system_text", None)
+            if dbg:
+                md["debug"] = dbg
+            else:
+                md.pop("debug", None)
+            if md:
+                out["metadata"] = md
+            else:
+                out.pop("metadata", None)
+            return out
+
         async def _iter_ndjson():
             seq = 0
 
@@ -6572,33 +6599,19 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
 
                 # IMPORTANT: StreamingResponse bypasses the JSON-response middleware
                 # that enforces the "no internal template leak" contract.
-                # Apply the same sanitizer here to prevent CEO intro / memory
-                # boilerplate from ever appearing in stream payloads.
+                # Apply the same Block 2 response contract integrity layer here
+                # to guarantee parity between stream and non-stream.
                 try:
                     from gateway.gateway_server import (  # type: ignore
-                        sanitize_user_visible_answer,
+                        enforce_response_contract_integrity,
                     )
 
-                    sanitized = sanitize_user_visible_answer(
+                    body_obj = enforce_response_contract_integrity(
                         body_obj=body_obj,
                         prompt=str(getattr(payload, "message", "") or ""),
                         session_id=session_id or "",
                         conversation_id=conversation_id or "",
                     )
-                    if isinstance(sanitized, dict):
-                        body_obj = sanitized
-
-                        # Streaming payloads should not include the leaked internal
-                        # template anywhere (even in debug fields) because tests
-                        # and downstream clients may inspect raw NDJSON.
-                        md = body_obj.get("metadata")
-                        if isinstance(md, dict):
-                            dbg = md.get("debug")
-                            if isinstance(dbg, dict) and "internal_system_text" in dbg:
-                                dbg.pop("internal_system_text", None)
-                                if not dbg:
-                                    md.pop("debug", None)
-                                body_obj["metadata"] = md
                 except Exception:
                     # Fail-safe: if sanitizer import or logic fails, do not block streaming.
                     pass
@@ -6612,7 +6625,7 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
                     "assistant.final",
                     {
                         "text": text_out,
-                        "response": body_obj,
+                        "response": _strip_internal_system_text_for_stream(body_obj),
                     },
                 )
                 yield _emit("done", {"ok": True, "reason": "completed"})

@@ -2889,6 +2889,324 @@ _LEAK_GUARD_LOCK = threading.Lock()
 _LAST_INTERNAL_TEMPLATE_HASH_BY_SESSION: Dict[str, str] = {}
 
 
+# ================================================================
+# Block 2: Response Contract Integrity (Sanitizer Contract)
+# ================================================================
+
+_RS_VERSION = 1
+
+# Action enum (LOCKED by Block 2 mini-spec)
+_RS_ACTION_NO_ACTION = "NO_ACTION"
+_RS_ACTION_REDACT = "REDACT_LEAKED_SEGMENT"
+_RS_ACTION_REPLACE_CLARIFY = "REPLACE_WITH_CLARIFY"
+
+# reason_code enum (LOCKED by Block 2 mini-spec)
+_RS_REASON_NO_TRIGGER = "NO_TRIGGER"
+_RS_REASON_ALLOWLIST = "ALLOWLIST_EXPLICIT_META_QUESTION"
+_RS_REASON_LEAK_REDACTED = "LEAK_DETECTED_REDACTED"
+_RS_REASON_LEAK_REPLACED = "LEAK_DETECTED_REPLACED_WITH_CLARIFY"
+
+# marker_kind enum (LOCKED by Block 2 mini-spec)
+_RS_MARKER_NONE = "NONE"
+_RS_MARKER_MEMORY = "INTERNAL_MEMORY_TEMPLATE"
+_RS_MARKER_CEO_INTRO = "INTERNAL_CEO_INTRO_TEMPLATE"
+_RS_MARKER_OTHER = "OTHER_INTERNAL_TEMPLATE"
+
+
+def _rs_trace(
+    *,
+    triggered: bool,
+    action: str,
+    reason_code: str,
+    marker_kind: str,
+    allowlisted_this_turn: bool,
+    redaction_applied: bool,
+    replacement_applied: bool,
+    minimal_damage: bool,
+) -> Dict[str, Any]:
+    return {
+        "version": _RS_VERSION,
+        "triggered": bool(triggered),
+        "action": str(action),
+        "reason_code": str(reason_code),
+        "marker_kind": str(marker_kind),
+        "allowlisted_this_turn": bool(allowlisted_this_turn),
+        "redaction_applied": bool(redaction_applied),
+        "replacement_applied": bool(replacement_applied),
+        "minimal_damage": bool(minimal_damage),
+    }
+
+
+def _rs_extract_marker_kind(*, text: str) -> str:
+    if _looks_like_internal_memory_boilerplate(text):
+        return _RS_MARKER_MEMORY
+    if _looks_like_internal_ceo_intro_template(text):
+        return _RS_MARKER_CEO_INTRO
+    return _RS_MARKER_NONE
+
+
+def _rs_allowlisted_this_turn(*, prompt: str, marker_kind: str) -> bool:
+    if marker_kind == _RS_MARKER_MEMORY:
+        return _user_explicitly_asked_memory_or_snapshot(prompt)
+    if marker_kind == _RS_MARKER_CEO_INTRO:
+        return _user_explicitly_asked_identity_or_howto(prompt)
+    return False
+
+
+def _rs_is_usable_remainder(text: str) -> bool:
+    t = (text or "").strip()
+    if len(t) < 12:
+        return False
+    return bool(re.search(r"[A-Za-zČĆŠĐŽčćšđž0-9]", t))
+
+
+def _rs_redact_ceo_intro(text: str) -> str:
+    s = text or ""
+
+    # Primary: remove the known intro template block if present.
+    # We delete from the unique intro line through the end of the how-to section
+    # or to the end of string if no clear delimiter exists.
+    start = s.find(_INTERNAL_CEO_INTRO_TEMPLATE_MARKERS[0])
+    if start >= 0:
+        # Prefer cutting at the first double-newline after the how-to header.
+        howto = s.find(_INTERNAL_CEO_INTRO_TEMPLATE_MARKERS[2], start)
+        if howto >= 0:
+            tail = s.find("\n\n", howto)
+            end = tail if tail >= 0 else len(s)
+        else:
+            end = len(s)
+        s = s[:start] + s[end:]
+
+    # Secondary: if only headers exist, remove the header block.
+    # This is conservative to avoid deleting legitimate content.
+    if (
+        _INTERNAL_CEO_INTRO_TEMPLATE_MARKERS[1] in s
+        and _INTERNAL_CEO_INTRO_TEMPLATE_MARKERS[2] in s
+    ):
+        st = s.find(_INTERNAL_CEO_INTRO_TEMPLATE_MARKERS[1])
+        en_hdr = s.find(_INTERNAL_CEO_INTRO_TEMPLATE_MARKERS[2], st)
+        if st >= 0 and en_hdr >= 0:
+            tail2 = s.find("\n\n", en_hdr)
+            en = tail2 if tail2 >= 0 else len(s)
+            s = s[:st] + s[en:]
+
+    return "\n".join([ln.rstrip() for ln in s.splitlines()]).strip()
+
+
+def _rs_redact_memory_template(text: str) -> str:
+    s = text or ""
+
+    # Remove from the first known header through the end of the known policy line.
+    headers = [
+        "Vrste pamćenja koje koristim",
+        "Imam dvije vrste pamćenja",
+        "Memory types I use",
+        "I have two kinds of memory",
+    ]
+    start = -1
+    for h in headers:
+        idx = s.find(h)
+        if idx >= 0:
+            start = idx
+            break
+
+    if start >= 0:
+        # Prefer cutting after the known policy terminator.
+        term = "propose → approve → execute"
+        term_i = s.find(term, start)
+        if term_i >= 0:
+            end = term_i + len(term)
+            # Cut to end of the line containing the terminator.
+            nl = s.find("\n", end)
+            if nl >= 0:
+                end = nl
+        else:
+            end = len(s)
+
+        s = s[:start] + s[end:]
+
+    return "\n".join([ln.rstrip() for ln in s.splitlines()]).strip()
+
+
+def _rs_prompt_scoped_clarify(prompt: str) -> str:
+    # Deterministic clarify that anchors to the user's current prompt topic.
+    p = _bhs_normalize(prompt)
+    topic = ""
+    if re.search(r"\bagent\w*\b", p):
+        topic = "agenti"
+    elif re.search(r"\bplan\w*\b", p):
+        topic = "plan"
+    elif re.search(r"\bslabost\w*\b", p):
+        topic = "slabosti"
+
+    if topic:
+        return f"Možeš li pojasniti šta tačno želiš u vezi sa {topic}?"
+
+    # Fallback: still clarify, but reference the prompt explicitly to prevent topic swap.
+    p0 = (prompt or "").strip()
+    p0 = " ".join(p0.split())
+    if len(p0) > 80:
+        p0 = p0[:77] + "..."
+    if p0:
+        return f'Možeš li pojasniti šta tačno želiš na osnovu pitanja: "{p0}"?'
+    return "Možeš li pojasniti šta tačno želiš?"
+
+
+def _rs_attach_sanitizer_trace(
+    trace_obj: Dict[str, Any], response_sanitizer: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Attach sanitizer trace under trace.turn_gate to keep trace minimal."""
+
+    tr = dict(trace_obj) if isinstance(trace_obj, dict) else {}
+    tg0 = tr.get("turn_gate")
+    tg = dict(tg0) if isinstance(tg0, dict) else {}
+    tg["response_sanitizer"] = dict(response_sanitizer)
+    tr["turn_gate"] = tg
+    return tr
+
+
+def _rs_store_internal_system_text(out: Dict[str, Any], internal_text: str) -> None:
+    md0 = out.get("metadata")
+    md = dict(md0) if isinstance(md0, dict) else {}
+    dbg0 = md.get("debug")
+    dbg = dict(dbg0) if isinstance(dbg0, dict) else {}
+    if isinstance(internal_text, str) and internal_text.strip():
+        dbg.setdefault("internal_system_text", internal_text)
+    md["debug"] = dbg
+    out["metadata"] = md
+
+
+def enforce_response_contract_integrity(
+    *,
+    body_obj: Dict[str, Any],
+    prompt: str,
+    session_id: str,
+    conversation_id: str,
+) -> Dict[str, Any]:
+    """Canonical response sanitizer.
+
+    - Deterministic.
+    - Minimal-damage redaction before replacement.
+    - On trigger: stores original internal text in metadata.debug.internal_system_text
+      and clears sticky meta intent.
+    - Observability is attached under trace.turn_gate.response_sanitizer when a trace
+      dict already exists (keeps top-level trace minimal for API consumers).
+    """
+
+    out = dict(body_obj) if isinstance(body_obj, dict) else {}
+
+    tr0 = out.get("trace")
+    has_trace = isinstance(tr0, dict)
+
+    text = out.get("text")
+    if not isinstance(text, str) or not text.strip():
+        # Do not manufacture a trace dict if it wasn't already present.
+        if has_trace:
+            out["trace"] = _rs_attach_sanitizer_trace(
+                tr0,
+                _rs_trace(
+                    triggered=False,
+                    action=_RS_ACTION_NO_ACTION,
+                    reason_code=_RS_REASON_NO_TRIGGER,
+                    marker_kind=_RS_MARKER_NONE,
+                    allowlisted_this_turn=False,
+                    redaction_applied=False,
+                    replacement_applied=False,
+                    minimal_damage=True,
+                ),
+            )
+        return out
+
+    marker_kind = _rs_extract_marker_kind(text=text)
+    allowlisted = _rs_allowlisted_this_turn(prompt=prompt, marker_kind=marker_kind)
+
+    if marker_kind == _RS_MARKER_NONE:
+        if has_trace:
+            out["trace"] = _rs_attach_sanitizer_trace(
+                tr0,
+                _rs_trace(
+                    triggered=False,
+                    action=_RS_ACTION_NO_ACTION,
+                    reason_code=_RS_REASON_NO_TRIGGER,
+                    marker_kind=_RS_MARKER_NONE,
+                    allowlisted_this_turn=False,
+                    redaction_applied=False,
+                    replacement_applied=False,
+                    minimal_damage=True,
+                ),
+            )
+        return out
+
+    if allowlisted:
+        if has_trace:
+            out["trace"] = _rs_attach_sanitizer_trace(
+                tr0,
+                _rs_trace(
+                    triggered=False,
+                    action=_RS_ACTION_NO_ACTION,
+                    reason_code=_RS_REASON_ALLOWLIST,
+                    marker_kind=marker_kind,
+                    allowlisted_this_turn=True,
+                    redaction_applied=False,
+                    replacement_applied=False,
+                    minimal_damage=True,
+                ),
+            )
+        return out
+
+    # Leak detected (not allowlisted): store internal text for debugging + clear
+    # sticky meta intent, then apply minimal-damage.
+    _rs_store_internal_system_text(out, text)
+    _clear_sticky_meta_intent(conversation_id)
+
+    redacted = text
+    redaction_applied = False
+    if marker_kind == _RS_MARKER_MEMORY:
+        redacted = _rs_redact_memory_template(text)
+        redaction_applied = redacted != text
+    elif marker_kind == _RS_MARKER_CEO_INTRO:
+        redacted = _rs_redact_ceo_intro(text)
+        redaction_applied = redacted != text
+    else:
+        marker_kind = _RS_MARKER_OTHER
+
+    if _rs_is_usable_remainder(redacted):
+        out["text"] = redacted
+        if has_trace:
+            out["trace"] = _rs_attach_sanitizer_trace(
+                tr0,
+                _rs_trace(
+                    triggered=True,
+                    action=_RS_ACTION_REDACT,
+                    reason_code=_RS_REASON_LEAK_REDACTED,
+                    marker_kind=marker_kind,
+                    allowlisted_this_turn=False,
+                    redaction_applied=bool(redaction_applied),
+                    replacement_applied=False,
+                    minimal_damage=True,
+                ),
+            )
+        return out
+
+    # No usable remainder: deterministic prompt-scoped safe answer.
+    out["text"] = _safe_replacement_text_for_prompt(prompt)
+    if has_trace:
+        out["trace"] = _rs_attach_sanitizer_trace(
+            tr0,
+            _rs_trace(
+                triggered=True,
+                action=_RS_ACTION_REPLACE_CLARIFY,
+                reason_code=_RS_REASON_LEAK_REPLACED,
+                marker_kind=marker_kind,
+                allowlisted_this_turn=False,
+                redaction_applied=False,
+                replacement_applied=True,
+                minimal_damage=True,
+            ),
+        )
+    return out
+
+
 def _bhs_normalize(text: str) -> str:
     t0 = (text or "").strip().lower()
     return (
@@ -3016,122 +3334,152 @@ def sanitize_user_visible_answer(
     session_id: str,
     conversation_id: str,
 ) -> Optional[Dict[str, Any]]:
-    """Enforce enterprise response contract for user-visible assistant text.
+    """Legacy entrypoint for response sanitization.
 
-    - Sanitizes known internal templates from the outgoing `text` field.
-    - Allowlist decisions MUST be based only on the current user prompt.
-    - On sanitize: move leaked text to metadata.debug.internal_system_text,
-      replace `text` with deterministic read-only content, and clear sticky meta.
-
-    Returns a new dict if changes are applied, else None.
+    Returns a new dict only when a leak-triggered action changes `text`.
     """
 
     if not isinstance(body_obj, dict):
         return None
 
-    text = body_obj.get("text")
-    if not isinstance(text, str) or not text.strip():
-        return None
-
-    is_memory_tpl = _looks_like_internal_memory_boilerplate(text)
-    is_intro_tpl = _looks_like_internal_ceo_intro_template(text)
-    if not (is_memory_tpl or is_intro_tpl):
-        return None
-
-    # HOTFIX: If this is already the canonical CEO Advisor identity answer, do not
-    # sanitize it into a generic fallback.
-    if is_intro_tpl and _is_canonical_ceo_advisor_identity_response(body_obj=body_obj):
-        return None
-
-    # Allow meta explanations only when explicitly requested in THIS turn.
-    if is_memory_tpl and _user_explicitly_asked_memory_or_snapshot(prompt):
-        return None
-    if is_intro_tpl and _user_explicitly_asked_identity_or_howto(prompt):
-        return None
-
-    # Anti-loop bookkeeping: if we detect the same internal template repeatedly,
-    # treat as mode-lock and clear sticky meta intent.
-    tpl_hash = ""
+    # Preserve the canonical identity response (never sanitize it).
     try:
-        import hashlib
-
-        tpl_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+        text0 = body_obj.get("text")
+        if isinstance(text0, str) and _looks_like_internal_ceo_intro_template(text0):
+            if _is_canonical_ceo_advisor_identity_response(body_obj=body_obj):
+                return None
     except Exception:
-        tpl_hash = ""
+        pass
 
-    if session_id and tpl_hash:
-        with _LEAK_GUARD_LOCK:
-            prev = _LAST_INTERNAL_TEMPLATE_HASH_BY_SESSION.get(session_id)
-            _LAST_INTERNAL_TEMPLATE_HASH_BY_SESSION[session_id] = tpl_hash
-            if prev == tpl_hash and conversation_id:
-                _clear_sticky_meta_intent(conversation_id)
+    out = enforce_response_contract_integrity(
+        body_obj=body_obj,
+        prompt=prompt,
+        session_id=session_id,
+        conversation_id=conversation_id,
+    )
 
-    if conversation_id:
-        _clear_sticky_meta_intent(conversation_id)
-
-    out = dict(body_obj)
-
-    md = out.get("metadata")
-    md = md if isinstance(md, dict) else {}
-    dbg = md.get("debug")
-    dbg = dbg if isinstance(dbg, dict) else {}
-    dbg.setdefault("internal_system_text", text)
-    md["debug"] = dbg
-    out["metadata"] = md
-    out["text"] = _safe_replacement_text_for_prompt(prompt)
+    t0 = body_obj.get("text")
+    t1 = out.get("text")
+    if isinstance(t0, str) and isinstance(t1, str) and t0 == t1:
+        return None
     return out
 
 
 def _safe_replacement_text_for_prompt(prompt: str) -> str:
-    # Prefer a deterministic, domain-specific replacement when possible.
-    try:
-        from services.ceo_advisor_agent import (  # noqa: PLC0415
-            _is_agent_registry_question,
-            _render_agent_registry_text,
+    # Deterministic, prompt-scoped safe replacement.
+    # Must be contentful for common CEO prompts (plan review, weaknesses, agent registry),
+    # and must avoid generic boilerplate.
+
+    p_raw = (prompt or "").strip()
+    p = _bhs_normalize(p_raw)
+
+    def _is_agent_registry_question() -> bool:
+        if not re.search(r"\bagent\w*\b", p):
+            return False
+        return bool(
+            re.search(
+                r"\b(koje|koji|lista|spisak|popis|nabroj|dostupn|imamo|available|list|which|what)\b",
+                p,
+            )
         )
 
-        if _is_agent_registry_question(prompt):
-            return _render_agent_registry_text(english_output=False)
-    except Exception:
-        pass
-
-    # Deterministic plan-review fallback (read-only): provide actionable feedback
-    # without any system/snapshot boilerplate.
-    t = _bhs_normalize(prompt)
-    if t and (
-        ("plan" in t)
-        or ("procitaj" in t)
-        or ("reci mi sta mislis" in t)
-        or ("sta mislis" in t)
-        or ("feedback" in t)
-        or ("povratn" in t)
-        or ("slabost" in t)
-    ):
-        if re.search(r"(?i)\bslabost\w*\b", t):
-            return (
-                "Evo 3 moguće slabosti u planu (read-only feedback):\n"
-                "1) Nisu jasno definisani mjerljivi KPI-jevi / kriterij uspjeha.\n"
-                "2) Rizici i pretpostavke nisu eksplicitno navedeni (i bez plana mitigacije).\n"
-                "3) Naredni koraci nisu razbijeni na vlasnika, rok i prioritet.\n\n"
-                "Ako pošalješ konkretan dio plana (cilj, tržište, budžet, rok), mogu precizirati komentare."
+    def _render_agent_registry() -> str:
+        try:
+            from services.agent_registry_service import (  # noqa: PLC0415
+                AgentRegistryService,
             )
 
-        return (
-            "Evo brzog feedbacka na plan (read-only):\n\n"
-            "Snage:\n"
-            "- Imaš jasnu namjeru i strukturu (vidi se smjer).\n"
-            "- Postoji osnova za prioritetizaciju i izvedbu.\n\n"
-            "Poboljšanja (konkretno):\n"
-            "1) Dodaj 2–3 mjerljive metrike uspjeha (KPI) i pragove.\n"
-            "2) Eksplicitno napiši rizike + pretpostavke i kako ih mitigiraš.\n"
-            "3) Razbij naredne korake na: vlasnik → rok → ishod.\n"
+            reg = AgentRegistryService()
+            reg.load_from_agents_json("config/agents.json", clear=True)
+            agents = reg.list_agents(enabled_only=False)
+        except Exception as exc:
+            err = (
+                str(exc or "agents_registry_unavailable").strip()
+                or "agents_registry_unavailable"
+            )
+            return f"Agent registry nije dostupan u ovom okruženju. Detalj: {err}"
+
+        enabled = [a for a in agents if getattr(a, "enabled", False) is True]
+        disabled = [a for a in agents if getattr(a, "enabled", False) is False]
+
+        def _fmt(entries: List[Any]) -> List[str]:
+            out: List[str] = []
+            for a in entries:
+                aid = str(getattr(a, "id", "") or "").strip()
+                name = str(getattr(a, "name", "") or aid).strip() or aid
+                if not aid:
+                    continue
+                out.append(f"- {name} (agent_id: {aid})")
+            return out
+
+        lines: List[str] = []
+        lines.append("Aktivni agenti:")
+        lines.extend(_fmt(enabled) or ["(nema)"])
+        if disabled:
+            lines.append("")
+            lines.append("Onemogućeni agenti:")
+            lines.extend(_fmt(disabled))
+        lines.append("")
+        lines.append("Za delegaciju: 'Pošalji agentu <agent_id>: <zadatak>'.")
+        lines.append("Koji agent želiš da koristiš?")
+        return "\n".join(lines).strip()
+
+    def _is_plan_review_prompt() -> bool:
+        if not re.search(r"\bplan\w*\b", p):
+            return False
+        return bool(
+            re.search(
+                r"\b(procitaj\w*|procita\w*|analiz\w*|review\w*|pregled\w*|misl\w*)\b",
+                p,
+            )
         )
 
-    # Generic read-only safe guidance (no system/snapshot leakage).
-    return (
-        "Mogu pomoći u read-only modu. Reci mi cilj i kontekst (npr. šta pokušavaš postići, rok i ograničenja), "
-        "pa ću predložiti konkretne naredne korake."
-    )
+    def _is_weaknesses_prompt() -> bool:
+        return bool(re.search(r"\b(slabost\w*|weakness\w*)\b", p))
+
+    def _is_next_steps_prompt() -> bool:
+        return bool(re.search(r"\b(naredn\w*\s+korak\w*|next\s+step\w*)\b", p))
+
+    if _is_agent_registry_question():
+        return _render_agent_registry()
+
+    if _is_weaknesses_prompt():
+        return (
+            "3 slabosti u planu:\n"
+            "1) KPI nisu dovoljno konkretni (definiši metrike i pragove).\n"
+            "2) Nema jasnog owner-a i vremenskog plana (ko + kada).\n"
+            "3) Nisu navedeni rizici i mitigacije (šta može poći po zlu + plan B)."
+        )
+
+    if _is_plan_review_prompt():
+        channels: List[str] = []
+        if "seo" in p:
+            channels.append("SEO")
+        if "outbound" in p:
+            channels.append("outbound")
+        ch = (" + ".join(channels)) if channels else "kanali"
+        return (
+            "Snage:\n"
+            f"- Jasno je da želiš rast prihoda i imaš inicijalne kanale ({ch}).\n"
+            "- Rok/okvir je naznačen, što pomaže fokus i prioritizaciju.\n\n"
+            "Poboljšanja:\n"
+            "- Preciziraj ICP i ponudu (kome tačno prodajemo i zašto).\n"
+            "- Dodijeli owner-a po kanalu i napravi sedmični ritam (plan → izvršenje → mjerenje).\n\n"
+            "KPI:\n"
+            "- Leads/SQL po sedmici (po kanalu)\n"
+            "- Conversion rate (lead→call→deal)\n"
+            "- CAC i payback period"
+        )
+
+    if _is_next_steps_prompt():
+        return (
+            "Evo 3 naredna koraka:\n"
+            "1) Definiši cilj i 2–3 KPI (sa pragovima).\n"
+            "2) Odredi owner-a i timeline (sedmični plan).\n"
+            "3) Napravi prvi eksperiment po kanalu i izmjeri rezultat."
+        )
+
+    return _rs_prompt_scoped_clarify(prompt)
 
 
 def _clear_sticky_meta_intent(conversation_id: str) -> None:
@@ -3156,10 +3504,12 @@ def _clear_sticky_meta_intent(conversation_id: str) -> None:
 
 @app.middleware("http")
 async def prevent_internal_text_leak_middleware(request: Request, call_next):
-    # Apply contract enforcement globally for POST JSON responses.
-    # This covers all frontend chat entrypoints (including legacy wrappers),
-    # and avoids missing /api-less aliases.
+    # Block 2 contract: apply only to canonical chat endpoints.
     if (request.method or "").upper() != "POST":
+        return await call_next(request)
+
+    pth = getattr(request.url, "path", "") or ""
+    if not (pth.startswith("/api/chat") or pth == "/chat" or pth.startswith("/chat/")):
         return await call_next(request)
 
     # Best-effort extract prompt + ids from request JSON.
@@ -3241,17 +3591,15 @@ async def prevent_internal_text_leak_middleware(request: Request, call_next):
     if not isinstance(text, str) or not text.strip():
         return resp
 
-    sanitized = sanitize_user_visible_answer(
+    enforced = enforce_response_contract_integrity(
         body_obj=body_obj,
         prompt=prompt,
         session_id=session_id,
         conversation_id=conversation_id,
     )
-    if sanitized is None:
-        return resp
 
     # Rebuild JSON response, preserving headers/status.
-    new_resp = JSONResponse(content=sanitized, status_code=resp.status_code)
+    new_resp = JSONResponse(content=enforced, status_code=resp.status_code)
     for k, v in resp.headers.items():
         if k.lower() == "content-length":
             continue
