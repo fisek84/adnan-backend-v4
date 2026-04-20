@@ -32,7 +32,7 @@ _MEMORY_AUDIT_RE = re.compile(
 )
 
 _OPERATIONAL_RE = re.compile(
-    r"(?i)\b(aktivn\w*\s+(task\w*|zadat\w*)|moji\s+(task\w*|zadac\w*)|koji\s+su\s+mi\s+(task\w*|zadac\w*)|project\w*|projekat\w*|cilj\w*|goal\w*|okr\w*|kpi\w*|pipeline|backlog|sprint|\u0161ta\s+je\s+sljede\u0107\w*|sta\s+je\s+sljede\w*|next\s+step)\b"
+    r"(?i)\b(aktivn\w*\s+(task\w*|zadat\w*|zadac\w*)|moji\s+(task\w*|zadac\w*)|koji\s+su\s+mi\s+(task\w*|zadac\w*)|project\w*|projekat\w*|cilj\w*|goal\w*|okr\w*|kpi\w*|pipeline|backlog|sprint|\u0161ta\s+je\s+sljede\u0107\w*|sta\s+je\s+sljede\w*|next\s+step)\b"
 )
 
 _ASK_LIST_RE = re.compile(

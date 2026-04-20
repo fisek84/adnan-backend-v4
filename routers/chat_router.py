@@ -31,6 +31,10 @@ from services.turn_interpretation_authority_gate import (
     GateInput,
     evaluate_turn_gate,
 )
+from services.block3_shared_continuity_grounding import (
+    classify_question_class,
+    evaluate_grounding_gate,
+)
 
 # Must match gateway_server.PROPOSAL_WRAPPER_INTENT
 from models.canon import PROPOSAL_WRAPPER_INTENT
@@ -2519,6 +2523,140 @@ def build_chat_router(agent_router: Optional[Any] = None) -> APIRouter:
             "ambiguous_flag": bool(gate_decision.ambiguous_flag),
             "current_turn_wins": bool(gate_decision.current_turn_wins),
         }
+
+        # ------------------------------------------------------------
+        # BLOCK 3: grounding sufficiency (trace-only by default)
+        # ------------------------------------------------------------
+        ks_provider_status = "EMPTY"
+        ks0: Dict[str, Any] = {}
+        try:
+            kb0 = await _knowledge_bundle(request=request)
+            ks0 = (
+                kb0.get("knowledge_snapshot")
+                if isinstance(kb0, dict)
+                and isinstance(kb0.get("knowledge_snapshot"), dict)
+                else {}
+            )
+        except Exception:
+            ks_provider_status = "UNAVAILABLE"
+            ks0 = {}
+
+        # Evidence summary must remain deterministic and safe.
+        authoritative_count = 0
+        fresh_count = 0
+        stale_count = 0
+        sources: List[str] = []
+        source_ids: List[str] = []
+
+        payload0 = ks0.get("payload") if isinstance(ks0.get("payload"), dict) else {}
+        has_core = False
+        try:
+            for k in ("tasks", "projects", "goals"):
+                v = payload0.get(k)
+                if isinstance(v, list) and len(v) > 0:
+                    has_core = True
+                    break
+        except Exception:
+            has_core = False
+
+        if ks_provider_status != "UNAVAILABLE":
+            ks_provider_status = "OK" if has_core else "EMPTY"
+
+        ks_ready = bool(ks0.get("ready") is True)
+        ks_expired = bool(ks0.get("expired") is True)
+        if has_core:
+            authoritative_count = 1
+            sources.append("SNAPSHOT")
+            # Keep stable identifiers (avoid timestamps).
+            source_ids.append(
+                f"snapshot:{ks0.get('schema_version') or 'v1'}:{ks0.get('status') or 'unknown'}"
+            )
+            if ks_ready and not ks_expired:
+                fresh_count = 1
+            else:
+                stale_count = 1
+
+        # Memory snapshot is treated as non-authoritative evidence.
+        non_authoritative_count = 0
+        try:
+            if memory_items_count > 0:
+                non_authoritative_count = 1
+                sources.append("MEMORY")
+                source_ids.append(f"memory:{memory_provider}")
+        except Exception:
+            non_authoritative_count = 0
+
+        evidence_summary = {
+            "provider_status": ks_provider_status,
+            "authoritative_count": authoritative_count,
+            "secondary_count": 0,
+            "non_authoritative_count": non_authoritative_count,
+            "fresh_count": fresh_count,
+            "stale_count": stale_count,
+            "sources": sources,
+            "source_ids": source_ids,
+        }
+
+        qclass = classify_question_class(
+            prompt=prompt, turn_gate_intent_category=gate_decision.intent_category
+        )
+        grounding_gate = evaluate_grounding_gate(
+            prompt=prompt,
+            question_class=qclass,
+            evidence_summary=evidence_summary,
+        )
+
+        turn_gate_trace["grounding"] = {
+            "question_class": grounding_gate.get("question_class"),
+            "decision": grounding_gate.get("decision"),
+            "reason_code": grounding_gate.get("reason_code"),
+            "evidence_summary": grounding_gate.get("evidence_summary"),
+            "downstream_constraint": grounding_gate.get("downstream_constraint"),
+        }
+
+        enforce_grounding = (
+            os.getenv("BLOCK3_GROUNDING_ENFORCE") or ""
+        ).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+        }
+        if enforce_grounding and grounding_gate.get("decision") == "FAIL_CLOSED":
+            st0 = (
+                await _get_state(session_id)
+                if session_id
+                else {"armed": False, "armed_at": None}
+            )
+            tr = {
+                "intent": "grounding_fail_closed",
+                "canon": "api_chat_grounding_fail_closed",
+                "turn_gate": turn_gate_trace,
+            }
+            content = {
+                "text": "Ne mogu pouzdano odgovoriti bez svježih autoritativnih izvora. Ako želiš, mogu tražiti da pošalješ/uključiš snapshot ili postavi pitanje kao opštu preporuku.",
+                "proposed_commands": [],
+                "agent_id": "ceo_advisor",
+                "read_only": True,
+                "trace": tr,
+                "notion_ops": {
+                    "armed": bool(st0.get("armed") is True),
+                    "armed_at": st0.get("armed_at"),
+                    "session_id": session_id,
+                    "armed_state": st0,
+                },
+            }
+            content = _attach_and_log_audit(
+                content,
+                session_id=session_id,
+                conversation_id=conversation_id,
+                agent_id=content.get("agent_id"),
+                snapshot=getattr(payload, "snapshot", None),
+                trace=content.get("trace"),
+                grounding={},
+                debug_on=bool(debug_on),
+                exit_path="ceo_chat.block3.grounding.fail_closed",
+            )
+            return JSONResponse(content=_attach_session_id(content, session_id))
 
         # Gate is authoritative for pending proposal replay/dismiss.
         if gate_decision.intent_category == "PENDING_PROPOSAL_CONFIRM" and pending:
